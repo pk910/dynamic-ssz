@@ -101,19 +101,29 @@ func (g *exprVarGenerator) getExprVar(expr string, defaultValue uint64) string {
 // the guard makes those conversions exact. List limits keep their full uint64
 // range by resolving through getExprVar directly.
 func (g *exprVarGenerator) getSizeExprVar(expr string, defaultValue uint64) string {
+	return g.getVectorLenExprVar(expr, defaultValue, false)
+}
+
+// getVectorLenExprVar resolves the length expression of a vector. A vector of
+// variable-size elements leads with one 4-byte offset per element inside its
+// fixed section, so its length is bounded to a quarter of the size limit.
+func (g *exprVarGenerator) getVectorLenExprVar(expr string, defaultValue uint64, dynamicElems bool) string {
 	if expr == "" {
 		return fmt.Sprintf("%v", defaultValue)
 	}
 
 	exprVar := g.getExprVar(expr, defaultValue)
 
-	guardKey := sha256.Sum256([]byte(fmt.Sprintf("sizeguard\n%s\n%v", expr, defaultValue)))
+	bound := "sszutils.MaxSszSize"
+	if dynamicElems {
+		bound += "/4"
+	}
+	guardKey := sha256.Sum256([]byte(fmt.Sprintf("sizeguard\n%s\n%v\n%s", expr, defaultValue, bound)))
 	if _, ok := g.varMap[guardKey]; ok {
 		return exprVar
 	}
 
-	mathPkgName := g.typePrinter.AddImport("math", "math")
-	appendCode(g.codeBuf, 0, "if %s > %s.MaxInt {\n", exprVar, mathPkgName)
+	appendCode(g.codeBuf, 0, "if %s > %s {\n", exprVar, bound)
 	appendCode(g.codeBuf, 1, "err = sszutils.ErrPlatformOverflowFn(\"size expression %s\", %s)\n", expr, exprVar)
 	appendCode(g.codeBuf, 1, "return %s\n", g.retVars)
 	appendCode(g.codeBuf, 0, "}\n")
@@ -210,9 +220,9 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 			retVars = g.exprVarGenerator.retVars
 		}
 		appendCode(g.codeBuf, 0, "%sSigned := new(%s).SizeSSZDyn(ds)\n", sizeVar, typeName)
-		appendCode(g.codeBuf, 0, "if %sSigned < 0 {\n", sizeVar)
+		appendCode(g.codeBuf, 0, "if %sSigned < 0 || %sSigned > sszutils.MaxSszSize {\n", sizeVar, sizeVar)
 		if retVars != "0" {
-			appendCode(g.codeBuf, 1, "err = sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, \"sizer of %s returned negative size %%d\", %sSigned)\n", typeName, sizeVar)
+			appendCode(g.codeBuf, 1, "err = sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, \"sizer of %s returned %%d, outside the SSZ size range\", %sSigned)\n", typeName, sizeVar)
 		}
 		appendCode(g.codeBuf, 1, "return %s\n", retVars)
 		appendCode(g.codeBuf, 0, "}\n")
@@ -253,6 +263,7 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 			return fieldSizeVars[0], nil
 		}
 		appendCode(g.codeBuf, 0, "%s := %s // size expression for '%s'\n", sizeVar, strings.Join(fieldSizeVars, " + "), g.typePrinter.TypeStringWithoutTracking(desc, false))
+		g.appendSizeLimitCheck(sizeVar, "container byte size")
 	case ssztypes.SszVectorType, ssztypes.SszBitvectorType, ssztypes.SszUint128Type, ssztypes.SszUint256Type:
 		sizeExpression := desc.SizeExpression
 		if g.options.WithoutDynamicExpressions {
@@ -292,20 +303,11 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 
 				if itemSizeVar == "1" {
 					// A one-byte element: the resolved size, already bounded
-					// to the platform int, is the byte size.
+					// to the SSZ size limit, is the byte size.
 					appendCode(g.codeBuf, 0, "%s := uint64(%s)\n", sizeVar, exprVar)
 				} else {
-					// Two runtime-resolved factors can pass 2^64 and wrap, so the
-					// product is formed by sszutils.MulSize, which refuses it past
-					// the platform int range like a single resolved size.
-					appendCode(g.codeBuf, 0, "%s, err := sszutils.MulSize(\"vector size\", uint64(%s), uint64(%s))\n", sizeVar, itemSizeVar, exprVar)
-					appendCode(g.codeBuf, 0, "if err != nil {\n")
-					retVars := g.retVars
-					if retVars == "" {
-						retVars = g.exprVarGenerator.retVars
-					}
-					appendCode(g.codeBuf, 1, "return %s\n", retVars)
-					appendCode(g.codeBuf, 0, "}\n")
+					appendCode(g.codeBuf, 0, "%s := uint64(%s) * uint64(%s)\n", sizeVar, itemSizeVar, exprVar)
+					g.appendSizeLimitCheck(sizeVar, "vector byte size")
 				}
 			} else if _, lerr := strconv.ParseUint(itemSizeVar, 10, 64); lerr == nil {
 				// A fully literal product needs the explicit uint64 type to
@@ -313,6 +315,7 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 				appendCode(g.codeBuf, 0, "%s := uint64(%s * %d)\n", sizeVar, itemSizeVar, desc.Len)
 			} else {
 				appendCode(g.codeBuf, 0, "%s := %s * %d\n", sizeVar, itemSizeVar, desc.Len)
+				g.appendSizeLimitCheck(sizeVar, "vector byte size")
 			}
 		}
 
@@ -323,6 +326,21 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 	g.varMap[descHash] = sizeVar
 
 	return sizeVar, nil
+}
+
+// appendSizeLimitCheck emits the refusal of a static size formed from
+// resolved terms: a product of two bounded sizes fits a uint64 and a sum of
+// bounded field sizes cannot wrap, so the formed value is exact and only has
+// to fit the limit itself before it becomes a term elsewhere.
+func (g *staticSizeVarGenerator) appendSizeLimitCheck(sizeVar, what string) {
+	retVars := g.retVars
+	if retVars == "" {
+		retVars = g.exprVarGenerator.retVars
+	}
+	errExpr := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, \"%s %%d exceeds the SSZ size limit\", %s)", what, sizeVar)
+	appendCode(g.codeBuf, 0, "if %s > sszutils.MaxSszSize {\n", sizeVar)
+	appendCode(g.codeBuf, 1, "return %s\n", strings.Replace(retVars, "err", errExpr, 1))
+	appendCode(g.codeBuf, 0, "}\n")
 }
 
 func (g *staticSizeVarGenerator) getCode() string {
@@ -458,7 +476,7 @@ func minSizeExpr(desc *ssztypes.TypeDescriptor, sizeVars *staticSizeVarGenerator
 			return expr, "", exprOk && desc.Len > 0
 		}
 
-		count := sizeVars.exprVarGenerator.getSizeExprVar(*desc.SizeExpression, uint64(desc.Len))
+		count := sizeVars.exprVarGenerator.getVectorLenExprVar(*desc.SizeExpression, uint64(desc.Len), desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0)
 		expr, exprOk := mulOrAddExpr("*", count, perElem)
 
 		// The product is what the caller divides by, so it is what has to be

@@ -8,9 +8,7 @@ import (
 	"cmp"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"math"
-	"math/bits"
 	"unsafe"
 )
 
@@ -150,18 +148,14 @@ func CapToInt(v uint64) int {
 	return int(v)
 }
 
-// MulSize returns a*b as a byte count that fits the platform integer range.
-// Two spec-driven factors (a dimension times an element size, a limit times
-// the offset width) can pass 2^64, so the product is formed in 128 bits and
-// refused with ErrPlatformOverflow when it does not fit in an int; what names
-// the quantity in the error.
-func MulSize(what string, a, b uint64) (uint64, error) {
-	hi, lo := bits.Mul64(a, b)
-	if hi != 0 || lo > math.MaxInt {
-		return 0, ErrPlatformOverflowFn(what, fmt.Sprintf("%d*%d", a, b))
-	}
-	return lo, nil
-}
+// MaxSszSize is the largest byte size the library describes. SSZ offsets are
+// 32-bit, so no size a valid encoding refers to passes 2^32-1; on a host
+// whose int is narrower the int bound applies instead. Declared sizes, spec
+// values that size a type, vector byte sizes and container fixed sections are
+// refused past it at analysis and at spec resolution, so a product of two
+// such sizes fits a uint64 and a sum of them fits the platform int without
+// further checks.
+const MaxSszSize = min(math.MaxUint32, math.MaxInt)
 
 // Min returns the smaller of a and b. Generated code calls the qualified
 // helpers instead of the min/max builtins, which a target package can shadow

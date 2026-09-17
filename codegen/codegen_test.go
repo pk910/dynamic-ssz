@@ -2542,7 +2542,7 @@ type genPlainContainer struct {
 // genBigVec declares a fixed-element vector past the 32-bit int range and
 // genDynVec a vector of variable-size elements.
 type genBigVec struct {
-	V []uint64 `ssz-size:"3000000000"`
+	V []byte `ssz-size:"3000000000"`
 }
 
 type genDynVecElem struct {
@@ -2607,8 +2607,8 @@ func TestGeneratePortableDeclaredSizes(t *testing.T) {
 	if math.MaxInt == math.MaxInt32 {
 		// A host whose int cannot hold the declaration refuses it at analysis
 		// rather than emitting code from wrapped sizes.
-		if err == nil || !strings.Contains(err.Error(), "exceeds the platform integer range") {
-			t.Fatalf("32-bit host: err = %v, want the platform-range refusal", err)
+		if err == nil || !strings.Contains(err.Error(), "SSZ size limit") {
+			t.Fatalf("32-bit host: err = %v, want the size limit refusal", err)
 		}
 		return
 	}
@@ -2617,11 +2617,11 @@ func TestGeneratePortableDeclaredSizes(t *testing.T) {
 	}
 	code := files["gen_big.go"]
 	for _, want := range []string{
-		"if 24000000000 > math.MaxInt {",
+		"if 3000000000 > math.MaxInt {",
 		"sszutils.CapToInt(3000000000)",
-		"if 24000000000 != uint64(buflen) {",
-		"sszutils.ErrFixedFieldsEOFFn(buflen, uint64(24000000000))",
-		"24000000000 > uint64(dec.GetLength())",
+		"if 3000000000 != uint64(buflen) {",
+		"sszutils.ErrFixedFieldsEOFFn(buflen, uint64(3000000000))",
+		"3000000000 > uint64(dec.GetLength())",
 	} {
 		if !strings.Contains(code, want) {
 			t.Errorf("generated code lacks %q:\n%s", want, code)

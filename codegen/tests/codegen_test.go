@@ -731,7 +731,7 @@ func TestCodegenMixedModes(t *testing.T) {
 }
 
 // A declared length is a claim about the input: an 8-byte input against a
-// 65536-element vector of variable-size elements, a 3-billion-element vector
+// 65536-element vector of variable-size elements, a 3-billion-byte vector
 // and a 4 GiB bigint limit is refused on every decode path of both engines
 // without allocating for the declaration, on 64-bit and 32-bit targets alike.
 func TestCodegenDeclaredSizeBounded(t *testing.T) {
@@ -4907,7 +4907,40 @@ func TestCodegenDelegatedShallowFraming(t *testing.T) {
 	}
 }
 
-// Three shapes the type cache refuses; the parser refuses them too (see the
+// Every size formed at run time is bounded where it enters: a vector of
+// variable-size elements to a quarter of the size limit, a container's summed
+// fields and a delegated sizer's result to the limit itself. Both engines
+// refuse the value, and agree on one that fits.
+func TestCodegenSizeInputsBounded(t *testing.T) {
+	if _, generated := any(&SpecSumDelegated{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	huge := map[string]any{"COUNT": uint64(1)<<31 + 1, "SIZE_A": uint64(sszutils.MaxSszSize), "SIZE_B": uint64(sszutils.MaxSszSize)}
+	sane := map[string]any{"COUNT": uint64(3), "SIZE_A": uint64(2), "SIZE_B": uint64(5)}
+	for _, v := range []any{&OffsetTableSpec{}, &SpecSumInline{}, &SpecSumDelegated{}} {
+		gen := dynssz.NewDynSsz(huge)
+		if _, err := gen.MarshalSSZ(v); err == nil {
+			t.Fatalf("%T: generated MarshalSSZ accepted a size past the limit", v)
+		}
+		if size, err := gen.SizeSSZ(v); err != nil || size != 0 {
+			t.Fatalf("%T: generated SizeSSZ = %d, %v, want 0", v, size, err)
+		}
+		refl := dynssz.NewDynSsz(huge, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+		if _, err := refl.MarshalSSZ(v); err == nil {
+			t.Fatalf("%T: reflection accepted a size past the limit", v)
+		}
+		genBytes, err := dynssz.NewDynSsz(sane).MarshalSSZ(v)
+		if err != nil {
+			t.Fatalf("%T: generated MarshalSSZ: %v", v, err)
+		}
+		reflBytes, err := dynssz.NewDynSsz(sane, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz()).MarshalSSZ(v)
+		if err != nil || !bytes.Equal(genBytes, reflBytes) {
+			t.Fatalf("%T: reflection %x, %v, generated %x", v, reflBytes, err, genBytes)
+		}
+	}
+}
+
+// Shapes the type cache refuses; the parser refuses them too (see the
 // generator's parser tests).
 func TestTypeCacheRefusesDivergentShapes(t *testing.T) {
 	for _, tc := range []struct {
@@ -4918,6 +4951,10 @@ func TestTypeCacheRefusesDivergentShapes(t *testing.T) {
 		{"literal bit size zero on an array", BadBitsZero{}, "zero length"},
 		{"None in a compatible union", BadCompatNone{}, "dynssz.None is not a valid compatible union variant"},
 		{"empty compatible union", EmptyCompat{}, "no fields"},
+		{"vector byte size past the SSZ size limit", BadHugeVector{}, "SSZ size limit"},
+		{"fixed section past the SSZ size limit", BadHugeContainer{}, "SSZ size limit"},
+		{"literal length past the SSZ size limit", BadHugeDynVector{}, "SSZ size limit"},
+		{"offset table past the fixed section", BadOffsetTable{}, "offset table limit"},
 	} {
 		_, err := ssztypes.NewTypeCache(nil).GetTypeDescriptor(reflect.TypeOf(tc.v), nil, nil, nil)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {

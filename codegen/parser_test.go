@@ -110,7 +110,7 @@ func TestShallowDescriptorParity(t *testing.T) {
 	}
 }
 
-// Three shapes the type cache refuses are refused by the parser as well.
+// Shapes the type cache refuses are refused by the parser as well.
 func TestParserRefusesDivergentShapes(t *testing.T) {
 	pkg := loadTestsPackage(t)
 	for _, tc := range []struct {
@@ -120,6 +120,10 @@ func TestParserRefusesDivergentShapes(t *testing.T) {
 		{"BadBitsZero", "zero length"},
 		{"BadCompatNone", "dynssz.None is not a valid compatible union variant"},
 		{"EmptyCompat", "no fields"},
+		{"BadHugeVector", "SSZ size limit"},
+		{"BadHugeContainer", "SSZ size limit"},
+		{"BadHugeDynVector", "SSZ size limit"},
+		{"BadOffsetTable", "offset table limit"},
 	} {
 		obj := pkg.Types.Scope().Lookup(tc.name)
 		if obj == nil {
@@ -129,6 +133,19 @@ func TestParserRefusesDivergentShapes(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Fatalf("%s: err = %v, want %q", tc.name, err, tc.want)
 		}
+	}
+}
+
+// A Go array length past the SSZ size limit is refused by the parser; the
+// fixture exists on 64-bit hosts only.
+func TestParserRefusesHugeArrayLength(t *testing.T) {
+	obj := loadTestsPackage(t).Types.Scope().Lookup("BadHugeArray")
+	if obj == nil {
+		t.Skip("the 64-bit fixture is not built on this host")
+	}
+	_, err := NewParser().GetTypeDescriptor(types.NewPointer(obj.Type()), nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "SSZ size limit") {
+		t.Fatalf("err = %v, want the SSZ size limit refusal", err)
 	}
 }
 

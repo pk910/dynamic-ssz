@@ -667,7 +667,7 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			}
 		}
 
-		exprVar := ctx.exprVars.getSizeExprVar(*sizeExpression, defaultValue)
+		exprVar := ctx.exprVars.getVectorLenExprVar(*sizeExpression, defaultValue, desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0)
 
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 			bitlimitVar = exprVar
@@ -809,17 +809,12 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 				ctx.appendCode(indent, "\tenc.EncodeZeroPadding((%s - %s) * %s)\n", intLimit, lenVar, elemSizeStr)
 			} else {
 				// The subtraction runs in uint64 (the size variables are
-				// unsigned) and the product through sszutils.MulSize, since two
-				// spec-driven factors can pass 2^64; the codec surface takes
-				// the byte count as int, so a product past its range is refused
-				// rather than truncated.
+				// unsigned); the padding is at most the vector's byte size,
+				// which is bounded to the SSZ size limit.
 				if elemSizeStr == "1" {
-					// One-byte elements: the limit is bounded to the platform
-					// int, so the difference is the padding.
 					ctx.appendCode(indent, "\tpadding := %s - uint64(%s)\n", limitVar, lenVar)
 				} else {
-					ctx.appendCode(indent, "\tpadding, err := sszutils.MulSize(\"vector padding\", %s-uint64(%s), uint64(%s))\n", limitVar, lenVar, elemSizeStr)
-					ctx.appendCode(indent, "\tif err != nil {\n\t\treturn %s\n\t}\n", typePath.getErrorWith("err"))
+					ctx.appendCode(indent, "\tpadding := (%s - uint64(%s)) * uint64(%s)\n", limitVar, lenVar, elemSizeStr)
 				}
 				ctx.appendCode(indent, "\tenc.EncodeZeroPadding(int(padding))\n")
 			}
@@ -844,9 +839,7 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		if _, err := strconv.ParseUint(limitVar, 10, 64); err == nil {
 			ctx.appendCode(indent, "\toffset := uint64(%s) * 4\n", limitVar)
 		} else {
-			// A spec-resolved limit times the offset width can pass 2^64.
-			ctx.appendCode(indent, "\toffset, err := sszutils.MulSize(\"vector offsets\", %s, 4)\n", limitVar)
-			ctx.appendCode(indent, "\tif err != nil {\n\t\treturn %s\n\t}\n", typePath.getErrorWith("err"))
+			ctx.appendCode(indent, "\toffset := %s * 4\n", limitVar)
 		}
 		ctx.appendCode(indent, "\tfor i := range %s {\n", lenVar)
 		ctx.appendCode(indent, "\t\tif offset > %s.MaxUint32 {\n", mathPkgName)

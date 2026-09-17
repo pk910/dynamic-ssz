@@ -2637,6 +2637,55 @@ type edgeCycleA struct{ Opaque edgeOpaque }
 
 type EdgeCycleParent struct{ A edgeCycleA }
 
+// BadHugeVector declares 2^32 bytes, one past the SSZ size limit.
+type BadHugeVector struct {
+	V []uint64 `ssz-size:"536870912"`
+}
+
+// BadHugeContainer's fixed section sums to 2^32 bytes.
+type BadHugeContainer struct {
+	A []byte `ssz-size:"2147483648"`
+	B []byte `ssz-size:"2147483648"`
+}
+
+// BadHugeDynVector declares 2^61 variable-size elements: a length the
+// vector byte-size check never sees, since the element has no static size.
+type BadHugeDynVector struct {
+	V []DynVecElem `ssz-size:"2305843009213693952"`
+}
+
+// BadOffsetTable declares 2^30 variable-size elements, whose offset table
+// alone fills the fixed section.
+type BadOffsetTable struct {
+	V []DynVecElem `ssz-size:"1073741824"`
+}
+
+// OffsetTableSpec sizes a vector of variable-size elements from a spec value.
+type OffsetTableSpec struct {
+	V []DynVecElem `ssz-size:"1" dynssz-size:"COUNT"`
+}
+
+// specSumInner is sized by two spec values; SpecSumInline inlines it, so the
+// holder's generated prelude sums the two sizes itself. SpecSumInner is its
+// generated twin, whose sizer SpecSumDelegated calls instead.
+type specSumInner struct {
+	A []byte `ssz-size:"1" dynssz-size:"SIZE_A"`
+	B []byte `ssz-size:"1" dynssz-size:"SIZE_B"`
+}
+
+type SpecSumInner struct {
+	A []byte `ssz-size:"1" dynssz-size:"SIZE_A"`
+	B []byte `ssz-size:"1" dynssz-size:"SIZE_B"`
+}
+
+type SpecSumInline struct {
+	V []specSumInner `ssz-size:"1" dynssz-size:"COUNT"`
+}
+
+type SpecSumDelegated struct {
+	V []SpecSumInner `ssz-size:"1" dynssz-size:"COUNT"`
+}
+
 // fixedOctets is a named slice with its own eight-byte fixed codec: it lies
 // on no cycle and must keep its shallow static descriptor.
 type fixedOctets []byte
@@ -4773,10 +4822,10 @@ type MixedNegSizeHolder struct {
 	L []mixedNegSizeCustom `ssz-max:"4" ssz-type:"?,custom"`
 }
 
-// BigVecFixed declares a fixed-element vector past the 32-bit int range; the
-// generated file must still build there and refuse the shape.
+// BigVecFixed declares a vector past the 32-bit int range; the generated
+// file must still build there and refuse the shape.
 type BigVecFixed struct {
-	V []uint64 `ssz-size:"3000000000"`
+	V []byte `ssz-size:"3000000000"`
 }
 
 // DynVecDeclared is a vector of variable-size elements whose declared length

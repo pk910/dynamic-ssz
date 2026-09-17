@@ -628,7 +628,7 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			}
 		}
 
-		exprVar := ctx.exprVars.getSizeExprVar(*sizeExpression, defaultValue)
+		exprVar := ctx.exprVars.getVectorLenExprVar(*sizeExpression, defaultValue, desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0)
 
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 			bitlimitVar = exprVar
@@ -769,17 +769,12 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 				ctx.appendCode(indent, "\tdst = sszutils.AppendZeroPadding(dst, (%s-%s)*%s)\n", intLimit, lenVar, elemSizeStr)
 			} else {
 				// The subtraction runs in uint64 (the size variables are
-				// unsigned) and the product through sszutils.MulSize, since two
-				// spec-driven factors can pass 2^64; the codec surface takes
-				// the byte count as int, so a product past its range is refused
-				// rather than truncated.
+				// unsigned); the padding is at most the vector's byte size,
+				// which is bounded to the SSZ size limit.
 				if elemSizeStr == "1" {
-					// One-byte elements: the limit is bounded to the platform
-					// int, so the difference is the padding.
 					ctx.appendCode(indent, "\tpadding := %s - uint64(%s)\n", limitVar, lenVar)
 				} else {
-					ctx.appendCode(indent, "\tpadding, err := sszutils.MulSize(\"vector padding\", %s-uint64(%s), uint64(%s))\n", limitVar, lenVar, elemSizeStr)
-					ctx.appendCode(indent, "\tif err != nil {\n\t\treturn nil, %s\n\t}\n", typePath.getErrorWith("err"))
+					ctx.appendCode(indent, "\tpadding := (%s - uint64(%s)) * uint64(%s)\n", limitVar, lenVar, elemSizeStr)
 				}
 				ctx.appendCode(indent, "\tdst = sszutils.AppendZeroPadding(dst, int(padding))\n")
 			}

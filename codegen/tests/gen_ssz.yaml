@@ -248,6 +248,14 @@ types:
     output: gen_edgecases.go
   - name: ShallowBasicList
     output: gen_edgecases.go
+  - name: OffsetTableSpec
+    output: gen_edgecases.go
+  - name: SpecSumInner
+    output: gen_edgecases.go
+  - name: SpecSumInline
+    output: gen_edgecases.go
+  - name: SpecSumDelegated
+    output: gen_edgecases.go
   - name: OctetParent
     output: gen_edgecases.go
   - name: WalkerOnlyOuter

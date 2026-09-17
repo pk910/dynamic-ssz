@@ -7,7 +7,6 @@ package ssztypes
 import (
 	"errors"
 	"fmt"
-	"math"
 	"math/big"
 	"reflect"
 	"strings"
@@ -939,19 +938,21 @@ func TestTypeCache_SizeHintExpressions(t *testing.T) {
 
 // A dynssz-size field tag resolving to a value beyond the uint32 size range
 // must error rather than silently truncate during conversion.
-func TestTypeCache_SizeHintExpressionExceedsPlatformInt(t *testing.T) {
-	ds := &dummyDynamicSpecs{
-		specValues: map[string]uint64{"HUGE_SIZE": uint64(math.MaxInt) + 1},
-	}
-	cache := NewTypeCache(ds)
-
+func TestTypeCache_SizeHintExpressionExceedsSizeLimit(t *testing.T) {
 	type TestStruct struct {
 		Data []byte `dynssz-size:"HUGE_SIZE"`
 	}
 
-	_, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	// The limit itself is accepted; one past it is refused.
+	cache := NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"HUGE_SIZE": sszutils.MaxSszSize}})
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil || desc.ContainerDesc.Fields[0].Type.Len != sszutils.MaxSszSize {
+		t.Fatalf("a dynssz-size at the SSZ size limit: err = %v", err)
+	}
+	cache = NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"HUGE_SIZE": sszutils.MaxSszSize + 1}})
+	_, err = cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
 	if err == nil {
-		t.Fatal("expected error for dynssz-size value exceeding the platform integer range")
+		t.Fatal("expected error for dynssz-size value exceeding the SSZ size limit")
 	}
 	if !errors.Is(err, sszutils.ErrPlatformOverflow) {
 		t.Errorf("unexpected error: %v", err)
@@ -959,73 +960,62 @@ func TestTypeCache_SizeHintExpressionExceedsPlatformInt(t *testing.T) {
 }
 
 // annotatedOverflowSize carries a registered annotation whose dynssz-size
-// expression resolves beyond the platform integer range, exercising the
+// expression resolves beyond the SSZ size limit, exercising the
 // annotation-registry resolution path (distinct from struct field tags).
 type annotatedOverflowSize []byte
 
 var _ = sszutils.Annotate[annotatedOverflowSize](`dynssz-size:"HUGE_SIZE"`)
 
-// A registered annotation whose dynssz-size resolves beyond the platform
-// integer range must error during the deferred spec resolution.
-func TestTypeCache_AnnotationSizeHintExceedsPlatformInt(t *testing.T) {
+// A registered annotation whose dynssz-size resolves beyond the SSZ size
+// limit must error during the deferred spec resolution.
+func TestTypeCache_AnnotationSizeHintExceedsSizeLimit(t *testing.T) {
 	ds := &dummyDynamicSpecs{
-		specValues: map[string]uint64{"HUGE_SIZE": uint64(math.MaxInt) + 1},
+		specValues: map[string]uint64{"HUGE_SIZE": sszutils.MaxSszSize + 1},
 	}
 	cache := NewTypeCache(ds)
 
 	_, err := cache.GetTypeDescriptor(reflect.TypeOf(annotatedOverflowSize{}), nil, nil, nil)
 	if err == nil {
-		t.Fatal("expected error for annotation dynssz-size value exceeding the platform integer range")
+		t.Fatal("expected error for annotation dynssz-size value exceeding the SSZ size limit")
 	}
 	if !errors.Is(err, sszutils.ErrPlatformOverflow) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
 
-// A bitsize of math.MaxInt64 must convert to a positive byte length, not
-// overflow int64 into a negative one (bits-to-bytes: []byte field).
-// 64-bit only: on 32-bit, math.MaxInt64 already exceeds math.MaxInt and is
-// rejected earlier by ResolveSpecValue's platform-range check, before ever
-// reaching the conversion this test targets.
-func TestTypeCache_BitsizeMaxInt64NoOverflow(t *testing.T) {
-	if math.MaxInt == math.MaxInt32 {
-		t.Skip("requires 64-bit platform")
-	}
-	ds := &dummyDynamicSpecs{
-		specValues: map[string]uint64{"HUGE_BITS": uint64(math.MaxInt64)},
-	}
-	cache := NewTypeCache(ds)
-
+// A bit size at the SSZ size limit converts to its byte length in the uint64
+// domain; a byte length past the limit is refused, not wrapped.
+func TestTypeCache_BitsizeAtSizeLimit(t *testing.T) {
 	type TestStruct struct {
 		BV []byte `ssz-type:"bitvector" dynssz-bitsize:"HUGE_BITS"`
 	}
 
+	cache := NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"HUGE_BITS": sszutils.MaxSszSize}})
 	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	const wantByteLen = int64(1152921504606846976) // ceil(math.MaxInt64 / 8), computed in the uint64 domain
-
 	field := desc.ContainerDesc.Fields[0]
-	if field.Type.BitSize != math.MaxInt64 {
-		t.Errorf("expected BitSize %d, got %d", int64(math.MaxInt64), field.Type.BitSize)
+	if field.Type.BitSize != sszutils.MaxSszSize || field.Type.Len != (sszutils.MaxSszSize+7)/8 {
+		t.Errorf("BitSize %d Len %d, want %d and %d", field.Type.BitSize, field.Type.Len, uint64(sszutils.MaxSszSize), uint64(sszutils.MaxSszSize+7)/8)
 	}
-	if field.Type.Len != wantByteLen {
-		t.Errorf("expected Len %d, got %d", wantByteLen, field.Type.Len)
+
+	// An element of the limit's byte width times the vector length passes
+	// the limit and is refused by the product bound.
+	type Matrix struct {
+		Rows [][]byte `ssz-size:"9,32" dynssz-size:"9,HUGE_BITS"`
 	}
-	if field.Type.Len < 0 {
-		t.Fatal("Len went negative: the byte-length conversion overflowed")
+	_, err = cache.GetTypeDescriptor(reflect.TypeOf(Matrix{}), nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "SSZ size limit") {
+		t.Fatalf("err = %v, want the SSZ size limit refusal", err)
 	}
 }
 
-// Same as above, but for the fixed Go array field variant.
-func TestTypeCache_BitsizeMaxInt64NoOverflowArray(t *testing.T) {
-	if math.MaxInt == math.MaxInt32 {
-		t.Skip("requires 64-bit platform")
-	}
+// A bit size whose byte length passes an array's backing length is refused
+// as a constraint violation.
+func TestTypeCache_BitsizeExceedsBackingArray(t *testing.T) {
 	ds := &dummyDynamicSpecs{
-		specValues: map[string]uint64{"HUGE_BITS": uint64(math.MaxInt64)},
+		specValues: map[string]uint64{"HUGE_BITS": 128},
 	}
 	cache := NewTypeCache(ds)
 
@@ -1484,6 +1474,21 @@ type cycleOpaqueC struct {
 	Os []cycleDelegatedOpaque `ssz-max:"4"`
 }
 
+// hugeDelegate delegates and reports a static size past the SSZ size limit.
+type hugeDelegate struct{ V uint64 }
+
+func (hugeDelegate) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (hugeDelegate) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (hugeDelegate) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
+	limit := int(sszutils.MaxSszSize)
+	return limit + 1
+}
+func (hugeDelegate) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
 type cycleDelegatedSelf struct {
 	V    uint64
 	Next []cycleDelegatedSelf `ssz-max:"4"`
@@ -1531,6 +1536,7 @@ var (
 	_ = sszutils.Annotate[cycleDelegatedOff](`ssz-static:"true"`)
 	_ = sszutils.Annotate[cycleDelegatedOpaque](`ssz-static:"false"`)
 	_ = sszutils.Annotate[cycleDelegatedSelf](`ssz-static:"false"`)
+	_ = sszutils.Annotate[hugeDelegate](`ssz-static:"true"`)
 	_ = sszutils.Annotate[cycleDelegatedPairA](`ssz-static:"false"`)
 	_ = sszutils.Annotate[cycleDelegatedPairB](`ssz-static:"false"`)
 	_ = sszutils.Annotate[delegatedFixedSize](`ssz-static:"true"`)
@@ -1582,6 +1588,14 @@ func TestTypeCache_DelegatedCycleIsRefused(t *testing.T) {
 		if desc.ContainerDesc != nil || desc.SszCompatFlags&SszCompatFlagDynamicMarshaler == 0 {
 			t.Fatalf("%T: traversed=%v delegated=%v, want a shallow delegated descriptor", v, desc.ContainerDesc != nil, desc.SszCompatFlags&SszCompatFlagDynamicMarshaler != 0)
 		}
+	}
+}
+
+// A delegated sizer's result enters the size domain and is bounded there.
+func TestTypeCache_DelegatedSizePastLimit(t *testing.T) {
+	_, err := NewTypeCache(&dummyDynamicSpecs{}).GetTypeDescriptor(reflect.TypeOf(hugeDelegate{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("a delegated size past the SSZ size limit was accepted")
 	}
 }
 
@@ -3508,6 +3522,35 @@ func TestParseTags_DynamicStaticMaxConflict(t *testing.T) {
 	} {
 		if _, _, _, err := ParseTags(tag); err == nil || !strings.Contains(err.Error(), "conflicting max tags") {
 			t.Fatalf("%s: expected conflicting max tags error, got %v", tag, err)
+		}
+	}
+}
+
+// Every literal size tag is bounded to the SSZ size limit as it is parsed,
+// on the annotation path and on the struct field path.
+func TestParseTags_LiteralSizePastLimit(t *testing.T) {
+	for _, tag := range []string{
+		`ssz-size:"4294967296"`,
+		`ssz-bitsize:"4294967296"`,
+		`ssz-size:"1" dynssz-size:"4294967296"`,
+	} {
+		if _, _, _, err := ParseTags(tag); err == nil || !strings.Contains(err.Error(), "SSZ size limit") {
+			t.Fatalf("%s: err = %v, want the SSZ size limit refusal", tag, err)
+		}
+	}
+	type literalSize struct {
+		Data []byte `ssz-size:"4294967296"`
+	}
+	type literalBitSize struct {
+		Bits []byte `ssz-type:"bitvector" ssz-bitsize:"4294967296"`
+	}
+	type literalDynSize struct {
+		Data []byte `ssz-size:"1" dynssz-size:"4294967296"`
+	}
+	for _, v := range []any{literalSize{}, literalBitSize{}, literalDynSize{}} {
+		_, err := NewTypeCache(nil).GetTypeDescriptor(reflect.TypeOf(v), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "SSZ size limit") {
+			t.Fatalf("field tag %T: err = %v, want the SSZ size limit refusal", v, err)
 		}
 	}
 }

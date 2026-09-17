@@ -4617,19 +4617,29 @@ func TestDescriptorSizeOverflowRejected(t *testing.T) {
 		}
 	})
 
-	t.Run("large sizes within the platform range are valid", func(t *testing.T) {
-		// 8 * 8192 * 65536 == 2^32: past the former uint32 bound, valid SSZ
-		// wherever the platform integer range holds it.
+	t.Run("sizes up to the SSZ size limit are valid", func(t *testing.T) {
+		// 8 * 8191 * 65536 is below 2^32: valid SSZ wherever the platform
+		// integer range holds it.
 		type T struct {
-			V [][]uint64 `ssz-size:"65536,8192"`
+			V [][]uint64 `ssz-size:"65536,8191"`
 		}
 		err := ds.ValidateType(reflect.TypeOf(T{}))
-		if uint64(1)<<32 <= uint64(math.MaxInt) {
+		if uint64(8*8191*65536) <= uint64(math.MaxInt) {
 			if err != nil {
-				t.Fatalf("ValidateType should accept a size within the platform range: %v", err)
+				t.Fatalf("ValidateType should accept a size within the SSZ size limit: %v", err)
 			}
 		} else if err == nil {
 			t.Fatal("ValidateType should reject a size past the platform range")
+		}
+	})
+
+	t.Run("a size past the SSZ size limit is refused on every host", func(t *testing.T) {
+		// 8 * 8192 * 65536 == 2^32: no 32-bit offset can address past it.
+		type T struct {
+			V [][]uint64 `ssz-size:"65536,8192"`
+		}
+		if err := ds.ValidateType(reflect.TypeOf(T{})); err == nil || !strings.Contains(err.Error(), "SSZ size limit") {
+			t.Fatalf("ValidateType err = %v, want the SSZ size limit refusal", err)
 		}
 	})
 
@@ -8140,23 +8150,6 @@ func TestGetTreeIncompleteMerkleization(t *testing.T) {
 	}
 	if node != nil {
 		t.Fatal("GetTree returned a tree alongside the error")
-	}
-}
-
-// A size that fits the platform int on its own must still fit next to the
-// bytes already in the buffer.
-func TestMarshalSSZToPrefixPlusSizeOverflow(t *testing.T) {
-	type huge struct {
-		Data []byte `ssz-size:"1" dynssz-size:"WIDTH"`
-	}
-	ds := NewDynSsz(map[string]any{"WIDTH": uint64(math.MaxInt)}, WithNoDelegation(), WithNoFastSsz())
-	size, err := ds.SizeSSZ(&huge{})
-	if err != nil || size != math.MaxInt {
-		t.Fatalf("size = %d, %v, want %d", size, err, math.MaxInt)
-	}
-	_, err = ds.MarshalSSZTo(&huge{}, []byte{0})
-	if !errors.Is(err, sszutils.ErrPlatformOverflow) {
-		t.Fatalf("err = %v, want ErrPlatformOverflow", err)
 	}
 }
 

@@ -1560,6 +1560,11 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 			isDynamic = true
 			size += 4
 		} else {
+			// A fixed section is addressed by 32-bit offsets, so it is bounded
+			// to the SSZ size limit like every other size.
+			if typeDesc.Size > sszutils.MaxSszSize-size {
+				return fmt.Errorf("container byte size exceeds the SSZ size limit")
+			}
 			size += typeDesc.Size
 		}
 
@@ -1763,10 +1768,24 @@ func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, dataType, 
 	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
 
 	// Calculate size
+	// A vector's length is a size itself; a vector of variable-size elements
+	// also leads with one 4-byte offset per element inside its fixed section.
+	if length > sszutils.MaxSszSize {
+		return fmt.Errorf("vector length %d exceeds the SSZ size limit", length)
+	}
 	if elemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+		if length > sszutils.MaxSszSize/4 {
+			return fmt.Errorf("vector length %d exceeds the SSZ offset table limit", length)
+		}
 		desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
 		desc.Size = 0
 	} else {
+		// A vector's byte size is bounded to the SSZ size limit like every
+		// other size. The bound is checked by division so the product itself
+		// cannot wrap first.
+		if length > 0 && elemDesc.Size > sszutils.MaxSszSize/length {
+			return fmt.Errorf("vector byte size %d*%d exceeds the SSZ size limit", elemDesc.Size, length)
+		}
 		desc.Size = length * elemDesc.Size
 	}
 

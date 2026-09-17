@@ -571,7 +571,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 						// The range check guards the conversion directly rather
 						// than standing as a separate condition, so that what
 						// makes the narrowing safe is visible at the narrowing.
-						if val > math.MaxInt {
+						if val > sszutils.MaxSszSize {
 							return sszutils.ErrPlatformOverflowFn("ssz-size annotation value", val)
 						}
 
@@ -1324,10 +1324,10 @@ func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType refle
 	specs := tc.specs // never nil: NewTypeCache substitutes emptySpecs{}
 	zero := reflect.New(runtimeType).Interface()
 
-	// A sizer returns int; a negative value would corrupt downstream
-	// sizing/offset math, so validate the range.
+	// A sizer returns int; its result enters the size domain here, so it is
+	// bounded to the SSZ size range like every other size.
 	validate := func(n int) (int64, error) {
-		if n < 0 {
+		if n < 0 || n > sszutils.MaxSszSize {
 			return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer for static type %v returned out-of-range size %d", runtimeType, n)
 		}
 		return int64(n), nil
@@ -1715,11 +1715,10 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 		}
 
 		desc.SszTypeFlags |= fieldDesc.Type.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
-		// A wrapped sum would defeat the fixed-section length checks that are
-		// derived from it, so bound the static size to the platform integer
-		// range like every other size.
-		if totalSize > math.MaxInt-sszSize {
-			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "container byte size exceeds the platform integer range")
+		// A fixed section is addressed by 32-bit offsets, so it is bounded to
+		// the SSZ size limit like every other size.
+		if totalSize > sszutils.MaxSszSize-sszSize {
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "container byte size exceeds the SSZ size limit")
 		}
 		totalSize += sszSize
 		desc.ContainerDesc.Fields[fi] = fieldDesc
@@ -2163,16 +2162,23 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 		return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "bitvector ssz type can only be represented by byte slices or arrays, got %v", desc.ElemDesc.Kind.String())
 	}
 
+	// A vector's length is a size itself; a vector of variable-size elements
+	// also leads with one 4-byte offset per element inside its fixed section.
+	if desc.Len > sszutils.MaxSszSize {
+		return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "vector length %d exceeds the SSZ size limit", desc.Len)
+	}
 	if elemDesc.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
+		if desc.Len > sszutils.MaxSszSize/4 {
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "vector length %d exceeds the SSZ offset table limit", desc.Len)
+		}
 		desc.Size = 0
 		desc.SszTypeFlags |= SszTypeFlagIsDynamic
 	} else {
-		// An unchecked product would wrap silently and downstream length
-		// checks would then divide by or allocate from a bogus size, so bound
-		// it to the platform integer range like every other size. The bound is
-		// checked by division so the product itself cannot wrap first.
-		if desc.Len > 0 && elemDesc.Size > math.MaxInt/desc.Len {
-			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "vector byte size %d*%d exceeds the platform integer range", elemDesc.Size, desc.Len)
+		// A vector's byte size is bounded to the SSZ size limit like every
+		// other size. The bound is checked by division so the product itself
+		// cannot wrap first.
+		if desc.Len > 0 && elemDesc.Size > sszutils.MaxSszSize/desc.Len {
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "vector byte size %d*%d exceeds the SSZ size limit", elemDesc.Size, desc.Len)
 		}
 		desc.Size = elemDesc.Size * desc.Len
 	}
