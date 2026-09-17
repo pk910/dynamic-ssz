@@ -2520,6 +2520,42 @@ type RuntimeProduct struct {
 	Data [][]byte `ssz-size:"1,1" dynssz-size:"OUTER,INNER"`
 }
 
+// negShell delegates every operation to its own methods and reports a
+// negative size; NegShellHolder's generated code must refuse it.
+type negShell struct{ V uint64 }
+
+func (negShell) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) { return buf, nil }
+func (negShell) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error           { return nil }
+func (negShell) SizeSSZDyn(_ sszutils.DynamicSpecs) int                            { return -1 }
+func (negShell) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+var _ = sszutils.Annotate[negShell](`ssz-static:"true"`)
+
+type NegShellHolder struct {
+	S negShell
+	N uint64
+}
+
+// BadBitsZero, BadCompatNone and EmptyCompat are refused by both front ends:
+// a literal bit size of zero on an array, dynssz.None in a compatible union,
+// and a compatible union without variants.
+type BadBitsZero struct {
+	B [4]byte `ssz-type:"bitvector" ssz-bitsize:"0"`
+}
+
+type BadCompatNone struct {
+	U dynssz.CompatibleUnion[struct {
+		N dynssz.None
+		A uint64
+	}]
+}
+
+type EmptyCompat struct {
+	U dynssz.CompatibleUnion[struct{}]
+}
+
 // KnownSizeLists carries one fixed-element list and one list of lists large
 // enough that a stream decode seeded from the read buffer would grow them.
 type KnownSizeLists struct {

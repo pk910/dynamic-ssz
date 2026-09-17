@@ -55,6 +55,7 @@ reference.
 | `-with-streaming` | Generate streaming encoder/decoder functions | `false` |
 | `-with-extended-types` | Enable support for non-standard extended types (signed ints, floats, big.Int, optionals) | `false` |
 | `-recursion-depth` | Nesting depth at which the generated methods reject a recursive value; see [Recursion depth](supported-types.md#recursive-types) | `0` (the default depth of 1024) |
+| `-remove` | Move the configured output files aside before loading the package, so generated code from an earlier run cannot block the analysis when the types changed; they are deleted once generation succeeds and restored if it fails | off |
 
 When both `--config` and CLI flags are provided, any CLI flag that is
 explicitly passed overrides the config file's value. See the

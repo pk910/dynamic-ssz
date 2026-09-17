@@ -7,7 +7,9 @@ import (
 	"bytes"
 	"fmt"
 	"math/rand"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	hashtree "github.com/pk910/hashtree-bindings"
 
@@ -251,6 +253,44 @@ func TestAsyncResetInFlight(t *testing.T) {
 	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 42)
 	if got != want {
 		t.Errorf("root after in-flight Reset %x != sync root %x", got, want)
+	}
+}
+
+// A hash function that panics inside a background reduction panics the
+// hasher's caller, as a synchronous reduction would, instead of leaving the
+// caller waiting for a job that never completes.
+func TestAsyncPanicReachesCaller(t *testing.T) {
+	EnableAsyncHashing(2)
+	defer DisableAsyncHashing()
+
+	var calls atomic.Int64
+	hh := NewHasherWithHashFn(func(dst, src []byte) error {
+		// Small reductions run synchronously on the caller; only a job-sized
+		// reduction panics, so the panic originates in a runner.
+		if len(src) >= 1024*32 {
+			calls.Add(1)
+			panic("hash function failed")
+		}
+		return hashtree.HashByteSlice(dst, src)
+	})
+	hh.SetAsyncHashing(true)
+
+	result := make(chan any, 1)
+	go func() {
+		defer func() { result <- recover() }()
+		runAsyncSequence(t, hh, asyncSequence{elemChunks: 8, n: 8192, cadence: 256, limit: 1 << 40}, 42)
+		result <- nil
+	}()
+	select {
+	case r := <-result:
+		if r != "hash function failed" {
+			t.Fatalf("caller got %v, want the hash function's panic", r)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the caller is still waiting on a job whose hash function panicked")
+	}
+	if calls.Load() == 0 {
+		t.Fatal("no job-sized reduction ran; the sequence did not exercise the runner")
 	}
 }
 

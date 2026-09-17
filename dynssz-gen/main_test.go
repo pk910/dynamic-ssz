@@ -56,6 +56,48 @@ func parseTypeSpec(typeStr string) (typeName, outputFile string, viewTypes []str
 }
 
 // Test helper functions for parsing logic
+// -remove moves every distinct configured output file aside, tolerating a
+// missing one; the files are restored on failure and deleted on success.
+func TestStashOutputs(t *testing.T) {
+	dir := t.TempDir()
+	stale := filepath.Join(dir, "gen_a.go")
+	other := filepath.Join(dir, "gen_b.go")
+	for _, f := range []string{stale, other} {
+		if werr := os.WriteFile(f, []byte("package x\n"), 0o600); werr != nil {
+			t.Fatal(werr)
+		}
+	}
+	specs := []typeSpec{{OutputFile: stale}, {OutputFile: stale}, {OutputFile: other}, {OutputFile: filepath.Join(dir, "missing.go")}}
+	stash, err := stashOutputs(specs, false)
+	if err != nil {
+		t.Fatalf("stashOutputs: %v", err)
+	}
+	for _, f := range []string{stale, other} {
+		if _, serr := os.Stat(f); !errors.Is(serr, os.ErrNotExist) {
+			t.Fatalf("%s still in place (%v)", f, serr)
+		}
+	}
+	stash.restore()
+	for _, f := range []string{stale, other} {
+		if data, rerr := os.ReadFile(f); rerr != nil || string(data) != "package x\n" {
+			t.Fatalf("%s not restored: %v", f, rerr)
+		}
+	}
+	stash, err = stashOutputs(specs, false)
+	if err != nil {
+		t.Fatalf("stashOutputs again: %v", err)
+	}
+	stash.discard()
+	for _, f := range []string{stale, other} {
+		if _, serr := os.Stat(f); !errors.Is(serr, os.ErrNotExist) {
+			t.Fatalf("%s survived discard (%v)", f, serr)
+		}
+		if _, serr := os.Stat(f + stashSuffix); !errors.Is(serr, os.ErrNotExist) {
+			t.Fatalf("%s stash survived discard (%v)", f, serr)
+		}
+	}
+}
+
 func TestTypeNameParsing(t *testing.T) {
 	tests := []struct {
 		input            string

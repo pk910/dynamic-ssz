@@ -1646,7 +1646,11 @@ func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, dataType, 
 	case *types.Array:
 		schemaElemType = t.Elem()
 		length = t.Len()
-		if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
+		// A concrete hint (Size > 0) or a bitvector's literal bit size (incl.
+		// ssz-bitsize:"0", rejected below as a zero-length bitvector) is
+		// applied, as the type cache does; a bit size named by an expression
+		// nothing supplied a value for falls back to the array's own length.
+		if len(sizeHints) > 0 && (sizeHints[0].Size > 0 || (sizeHints[0].Bits && sizeHints[0].Expr == "" && desc.SszType == ssztypes.SszBitvectorType)) {
 			byteSize := sizeHints[0].Size
 			if sizeHints[0].Bits {
 				// See the SszCustomType branch above: bounded input, uint64 domain avoids overflow.
@@ -1974,6 +1978,12 @@ func (p *Parser) buildCompatibleUnionDescriptor(desc *ssztypes.TypeDescriptor, d
 	for i := 0; i < schemaDescriptorStruct.NumFields(); i++ {
 		schemaField := schemaDescriptorStruct.Field(i)
 		variantIndex := uint8(i) + 1 // Field order determines the default variant selector, starting at 1
+
+		// A compatible union has no empty option; the None marker only names
+		// one in the classic Union.
+		if p.isNoneMarkerType(schemaField.Type()) {
+			return fmt.Errorf("dynssz.None is not a valid compatible union variant (field %s): only the classic Union declares an empty option", schemaField.Name())
+		}
 
 		if indexStr := p.extractSszIndex(schemaDescriptorStruct.Tag(i)); indexStr != "" {
 			idx, err := strconv.ParseUint(indexStr, 10, 8)

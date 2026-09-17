@@ -6,6 +6,7 @@ package sszutils
 
 import (
 	"encoding/binary"
+	"errors"
 	"io"
 	"math"
 )
@@ -412,11 +413,11 @@ func (e *StreamDecoder) readMore() error {
 		}
 
 		if err != nil {
-			// Only io.EOF is a clean end-of-stream signal. In particular,
-			// io.ErrUnexpectedEOF is an integrity/truncation failure from the
-			// reader and must not turn an open SSZ region into a valid short
-			// payload merely because the reader returned data with it.
-			if err == io.EOF {
+			// Only io.EOF is a clean end-of-stream signal, wrapped or not. In
+			// particular, io.ErrUnexpectedEOF is an integrity/truncation failure
+			// from the reader and must not turn an open SSZ region into a valid
+			// short payload merely because the reader returned data with it.
+			if errors.Is(err, io.EOF) {
 				e.onEOF()
 				return nil
 			}
@@ -545,7 +546,7 @@ func (e *StreamDecoder) readBytes(buf []byte) error {
 		// and authenticated readers commonly report their verdict that way.
 		if totalRead >= remaining {
 			if err != nil {
-				if err == io.EOF {
+				if errors.Is(err, io.EOF) {
 					e.onEOF()
 				} else {
 					return err
@@ -554,7 +555,7 @@ func (e *StreamDecoder) readBytes(buf []byte) error {
 			break
 		}
 		if err != nil {
-			if err == io.EOF || err == io.ErrUnexpectedEOF {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				e.onEOF()
 				return ErrUnexpectedEOF
 			}

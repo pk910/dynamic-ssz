@@ -168,6 +168,10 @@ type asyncJob struct {
 	dstOff  int
 	outLen  int
 	tokened bool
+	// panicked carries a panic raised by fn inside the runner to the hasher
+	// that drains the job, where it is raised again on the caller's
+	// goroutine as a synchronous reduction would have raised it.
+	panicked any
 }
 
 // asyncHandoff passes fully-prepared job slots to the persistent runner
@@ -217,13 +221,25 @@ func asyncJobRunner() {
 		slot := <-asyncHandoff
 		asyncIdle.Add(-1)
 
-		in := slot.in
-		outChunks := slot.outLen / 32
-		for w := len(in) / 32; w > outChunks; w /= 2 {
-			_ = slot.fn(in[:w/2*32], in[:w*32])
-		}
+		reduceAsyncJob(slot)
 		<-slot.st.sem
 		slot.done <- struct{}{}
+	}
+}
+
+// reduceAsyncJob runs one job's reductions. A panic in the hash function is
+// recovered and recorded on the slot so the runner survives and the waiting
+// hasher can raise it on its own goroutine.
+func reduceAsyncJob(slot *asyncJob) {
+	defer func() {
+		if r := recover(); r != nil {
+			slot.panicked = r
+		}
+	}()
+	in := slot.in
+	outChunks := slot.outLen / 32
+	for w := len(in) / 32; w > outChunks; w /= 2 {
+		_ = slot.fn(in[:w/2*32], in[:w*32])
 	}
 }
 
@@ -284,7 +300,9 @@ func (h *Hasher) claimJobSlot(st *asyncShared) *asyncJob {
 func (h *Hasher) finishOldestJob(copyResult bool) {
 	slot := &h.jobRing[h.jobHead]
 	<-slot.done
-	if copyResult {
+	panicked := slot.panicked
+	slot.panicked = nil
+	if copyResult && panicked == nil {
 		// The destination is expected to exist: every path that shrinks the
 		// buffer below a hole drains or discards first, so an out-of-range
 		// copy is an invariant violation and panics via the bounds check
@@ -303,6 +321,9 @@ func (h *Hasher) finishOldestJob(copyResult bool) {
 	slot.in = nil
 	h.jobHead = (h.jobHead + 1) % len(h.jobRing)
 	h.jobCount--
+	if panicked != nil {
+		panic(panicked)
+	}
 }
 
 // drainOldestJob waits for the ring's oldest job and writes its result into

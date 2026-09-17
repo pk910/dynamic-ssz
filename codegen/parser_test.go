@@ -26,6 +26,28 @@ import (
 // methods) fully delegates and is not registered in the parser's CompatFlags, so
 // the gate fires; the resolver supplies the ssz-static declaration. An invalid
 // value is rejected.
+// Three shapes the type cache refuses are refused by the parser as well.
+func TestParserRefusesDivergentShapes(t *testing.T) {
+	pkg := loadTestsPackage(t)
+	for _, tc := range []struct {
+		name string
+		want string
+	}{
+		{"BadBitsZero", "zero length"},
+		{"BadCompatNone", "dynssz.None is not a valid compatible union variant"},
+		{"EmptyCompat", "no fields"},
+	} {
+		obj := pkg.Types.Scope().Lookup(tc.name)
+		if obj == nil {
+			t.Fatalf("%s not found", tc.name)
+		}
+		_, err := NewParser().GetTypeDescriptor(types.NewPointer(obj.Type()), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: err = %v, want %q", tc.name, err, tc.want)
+		}
+	}
+}
+
 func TestParserShallowGate(t *testing.T) {
 	pkgs := []*packages.Package{loadTestsPackage(t)}
 	container := pkgs[0].Types.Scope().Lookup("NestedDelegatedContainer")

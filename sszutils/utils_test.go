@@ -765,15 +765,20 @@ func TestBufferDecoder_PushLimitNegative(t *testing.T) {
 // positions; padding beyond the current capacity grows the buffer like any
 // other write.
 func TestBufferEncoder_OutOfRange(t *testing.T) {
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("encoder panicked on out-of-range position: %v", r)
-		}
-	}()
-
+	// An offset write outside the written buffer is an invariant violation
+	// and panics instead of being dropped.
+	for _, pos := range []int{-1, 13, 1 << 30} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("offset write at %d outside a 16-byte buffer did not panic", pos)
+				}
+			}()
+			NewBufferEncoder(make([]byte, 16)).EncodeOffsetAt(pos, 42)
+		}()
+	}
 	enc := NewBufferEncoder(make([]byte, 16))
-	enc.EncodeOffsetAt(-1, 42)
-	enc.EncodeOffsetAt(1<<30, 42)
+	enc.EncodeOffsetAt(12, 42)
 	enc.EncodeZeroPadding(-1)
 	enc.EncodeZeroPadding(64)
 	if got := len(enc.GetBuffer()); got != 16+64 {
@@ -1162,6 +1167,16 @@ func TestBufferDecoder_Available(t *testing.T) {
 // TestCredibleCount_Guards covers the two early-return guards in CredibleCount:
 // a non-positive count, and a non-positive element size on an unknown-length
 // decoder (where the count cannot be bounded from delivered bytes).
+// An oversized offset table is not kept by the pool: whatever a later Get
+// returns, it is not the one that was put.
+func TestOffsetPoolDropsOversizedSlices(t *testing.T) {
+	big := make([]uint32, maxPooledOffsetSlice+1)
+	PutOffsetSlice(big)
+	if got := GetOffsetSlice(1); cap(got) > maxPooledOffsetSlice {
+		t.Fatalf("an offset slice of %d entries was pooled", cap(got))
+	}
+}
+
 func TestMulSize(t *testing.T) {
 	if got, err := MulSize("vector size", 3, 4); err != nil || got != 12 {
 		t.Fatalf("MulSize(3, 4) = %d, %v", got, err)

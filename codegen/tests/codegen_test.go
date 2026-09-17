@@ -4806,6 +4806,42 @@ func TestCodegenRuntimeSizeProductOverflow(t *testing.T) {
 	}
 }
 
+// A delegated static child whose sizer reports a negative size is refused by
+// the generated decoders, which frame the child by that size, instead of
+// being framed at zero bytes.
+func TestCodegenNegativeDelegatedSize(t *testing.T) {
+	if _, generated := any(&NegShellHolder{}).(sszutils.DynamicUnmarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	gen := dynssz.NewDynSsz(nil)
+	data := make([]byte, 8)
+	if err := gen.UnmarshalSSZ(&NegShellHolder{}, data); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("generated UnmarshalSSZ err = %v, want ErrInvalidValueRange", err)
+	}
+	if err := gen.UnmarshalSSZReader(&NegShellHolder{}, bytes.NewReader(data), len(data)); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("generated UnmarshalSSZReader err = %v, want ErrInvalidValueRange", err)
+	}
+}
+
+// Three shapes the type cache refuses; the parser refuses them too (see the
+// generator's parser tests).
+func TestTypeCacheRefusesDivergentShapes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		v    any
+		want string
+	}{
+		{"literal bit size zero on an array", BadBitsZero{}, "zero length"},
+		{"None in a compatible union", BadCompatNone{}, "dynssz.None is not a valid compatible union variant"},
+		{"empty compatible union", EmptyCompat{}, "no fields"},
+	} {
+		_, err := ssztypes.NewTypeCache(nil).GetTypeDescriptor(reflect.TypeOf(tc.v), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: err = %v, want %q", tc.name, err, tc.want)
+		}
+	}
+}
+
 // A bit-sized vector whose bit count is a spec value with no static bit size
 // falls back to the array's own length in bits, on every path of both engines.
 func TestCodegenBitsizeExpressionWithoutStaticFallback(t *testing.T) {

@@ -240,6 +240,8 @@ types:
     output: gen_edgecases.go
   - name: RuntimeProduct
     output: gen_edgecases.go
+  - name: NegShellHolder
+    output: gen_edgecases.go
   - name: WalkerOnlyOuter
     output: gen_edgecases.go
   - name: WrappedU256Holder

@@ -201,9 +201,22 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 	// implement DynamicSizer (fullyDelegatesSSZ requires it), so that is the only
 	// case to handle here.
 	if desc.SszType == ssztypes.SszUnspecifiedType && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 {
-		// The sizer speaks int; clamping a misbehaving negative to zero keeps
-		// the unsigned sum from wrapping huge.
-		appendCode(g.codeBuf, 0, "%s := uint64(sszutils.Max(new(%s).SizeSSZDyn(ds), 0))\n", sizeVar, g.typePrinter.InnerTypeString(desc))
+		// The sizer speaks int; a negative result is an error, as it is at
+		// the entry points and in the reflection engine. The size path has no
+		// error channel and reports 0.
+		typeName := g.typePrinter.InnerTypeString(desc)
+		retVars := g.retVars
+		if retVars == "" {
+			retVars = g.exprVarGenerator.retVars
+		}
+		appendCode(g.codeBuf, 0, "%sSigned := new(%s).SizeSSZDyn(ds)\n", sizeVar, typeName)
+		appendCode(g.codeBuf, 0, "if %sSigned < 0 {\n", sizeVar)
+		if retVars != "0" {
+			appendCode(g.codeBuf, 1, "err = sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, \"sizer of %s returned negative size %%d\", %sSigned)\n", typeName, sizeVar)
+		}
+		appendCode(g.codeBuf, 1, "return %s\n", retVars)
+		appendCode(g.codeBuf, 0, "}\n")
+		appendCode(g.codeBuf, 0, "%s := uint64(%sSigned)\n", sizeVar, sizeVar)
 		g.varMap[descHash] = sizeVar
 		return sizeVar, nil
 	}

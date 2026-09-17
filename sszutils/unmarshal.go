@@ -59,7 +59,9 @@ func UnmarshallUint8(src []byte) uint8 {
 }
 
 // UnmarshalBool unmarshals a boolean from the src input. An empty buffer decodes
-// to false rather than panicking.
+// to false rather than panicking, and any byte other than 1 decodes to false.
+// It is kept for generated code from earlier versions; the decoders'
+// DecodeBool and the code generated today reject a byte other than 0 or 1.
 func UnmarshalBool(src []byte) bool {
 	if len(src) < 1 {
 		return false

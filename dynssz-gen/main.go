@@ -39,6 +39,10 @@ type Config struct {
 	WithStreaming             bool
 	WithExtendedTypes         bool
 	RecursionDepth            int
+	// Remove moves the configured output files aside before the package is
+	// loaded, so stale generated code cannot block the analysis; they are
+	// deleted once generation succeeds and restored if it fails.
+	Remove bool
 
 	// Method exclusions, settable through the config file only (no CLI
 	// flag counterparts).
@@ -149,6 +153,7 @@ func main() {
 		withStreaming             = flag.Bool("with-streaming", false, "Generate streaming functions")
 		withExtendedTypes         = flag.Bool("with-extended-types", false, "Generate code with extended types")
 		recursionDepth            = flag.Int("recursion-depth", 0, "Nesting depth at which generated code rejects a recursive value (0 = default)")
+		remove                    = flag.Bool("remove", false, "Move the configured output files aside before generating; restored if generation fails")
 		showVersion               = flag.Bool("version", false, "Print version and exit")
 	)
 
@@ -182,6 +187,10 @@ func main() {
 		_, _ = fmt.Fprintf(w, "        ':output=file.go' suffix in -types.\n")
 		_, _ = fmt.Fprintf(w, "  -config string\n")
 		_, _ = fmt.Fprintf(w, "        YAML config file; CLI flags override its top-level values.\n")
+		_, _ = fmt.Fprintf(w, "  -remove\n")
+		_, _ = fmt.Fprintf(w, "        Move the configured output files aside before loading the package,\n")
+		_, _ = fmt.Fprintf(w, "        so generated code from an earlier run cannot block the analysis;\n")
+		_, _ = fmt.Fprintf(w, "        they are deleted once generation succeeds and restored if it fails.\n")
 		_, _ = fmt.Fprintf(w, "  -package-name string\n")
 		_, _ = fmt.Fprintf(w, "        Package name for generated code (default: same as source package)\n")
 		_, _ = fmt.Fprintf(w, "  -header string\n")
@@ -231,6 +240,7 @@ func main() {
 		WithStreaming:             *withStreaming,
 		WithExtendedTypes:         *withExtendedTypes,
 		RecursionDepth:            *recursionDepth,
+		Remove:                    *remove,
 	}
 
 	if *configPath != "" {
@@ -297,6 +307,33 @@ func run(config *Config) error {
 		}
 	}
 
+	var typeSpecs []typeSpec
+	if len(config.TypeSpecs) > 0 {
+		typeSpecs = config.TypeSpecs
+	} else {
+		specs, err := parseTypeSpecs(config.TypeNames, config.OutputFile)
+		if err != nil {
+			return err
+		}
+		typeSpecs = specs
+	}
+	if config.Remove {
+		stash, err := stashOutputs(typeSpecs, config.Verbose)
+		if err != nil {
+			return err
+		}
+		if err := runGeneration(config, typeSpecs); err != nil {
+			stash.restore()
+			return err
+		}
+		stash.discard()
+		return nil
+	}
+	return runGeneration(config, typeSpecs)
+}
+
+// runGeneration loads the package and writes the generated files.
+func runGeneration(config *Config, typeSpecs []typeSpec) error {
 	// Parse the Go package. NeedImports + NeedDeps make the main package's
 	// transitively-loaded dependencies (e.g. "spec/phase0" reached via
 	// "spec/all") available with the same *types.Named instances the main
@@ -335,16 +372,6 @@ func run(config *Config) error {
 
 	if config.Verbose {
 		log.Printf("Successfully loaded package: %s", pkg.Name)
-	}
-
-	var typeSpecs []typeSpec
-	if len(config.TypeSpecs) > 0 {
-		typeSpecs = config.TypeSpecs
-	} else {
-		typeSpecs, err = parseTypeSpecs(config.TypeNames, config.OutputFile)
-		if err != nil {
-			return err
-		}
 	}
 
 	// Find the requested types in the package
@@ -940,6 +967,67 @@ func errCause(err error) error {
 
 // parseTypeSpecs parses the comma-separated type names string into typeSpec structs.
 // Each type can have colon-separated options: TypeName[:output=file.go][:views=View1;View2][:viewonly]
+// stashSuffix is appended to an output file moved aside by -remove. The
+// suffix does not end in .go, so a stashed file is not part of the package.
+const stashSuffix = ".dynssz-gen.orig"
+
+// outputStash holds the output files -remove moved aside: generated code from
+// an earlier run is part of the package the generator type-checks, so it must
+// be out of the way before the package is loaded when the types it was
+// generated for changed. The files come back if generation fails.
+type outputStash struct {
+	moved   []string
+	verbose bool
+}
+
+// stashOutputs moves every distinct existing output file the type specs name
+// aside. A file that does not exist is skipped.
+func stashOutputs(typeSpecs []typeSpec, verbose bool) (*outputStash, error) {
+	stash := &outputStash{verbose: verbose}
+	seen := map[string]bool{}
+	for _, spec := range typeSpecs {
+		if spec.OutputFile == "" || seen[spec.OutputFile] {
+			continue
+		}
+		seen[spec.OutputFile] = true
+		err := os.Rename(spec.OutputFile, spec.OutputFile+stashSuffix)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			stash.restore()
+			return nil, fmt.Errorf("move %s aside: %w", spec.OutputFile, err)
+		}
+		stash.moved = append(stash.moved, spec.OutputFile)
+		if verbose {
+			log.Printf("Moved output file aside: %s", spec.OutputFile)
+		}
+	}
+	return stash, nil
+}
+
+// restore moves the stashed files back, replacing whatever a failed run left.
+func (s *outputStash) restore() {
+	for _, f := range s.moved {
+		if err := os.Rename(f+stashSuffix, f); err != nil {
+			log.Printf("Restoring %s: %v", f, err)
+		} else if s.verbose {
+			log.Printf("Restored output file: %s", f)
+		}
+	}
+	s.moved = nil
+}
+
+// discard deletes the stashed files once generation succeeded.
+func (s *outputStash) discard() {
+	for _, f := range s.moved {
+		if err := os.Remove(f + stashSuffix); err != nil {
+			log.Printf("Removing %s: %v", f+stashSuffix, err)
+		}
+	}
+	s.moved = nil
+}
+
 func parseTypeSpecs(typeNames, defaultOutput string) ([]typeSpec, error) {
 	requestedTypes := strings.Split(typeNames, ",")
 	typeSpecs := make([]typeSpec, 0, len(requestedTypes))
