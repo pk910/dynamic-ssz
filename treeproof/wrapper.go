@@ -445,7 +445,7 @@ func (w *Wrapper) clampIndex(i int) int {
 	return i
 }
 
-// Commit constructs a binary Merkle tree from all nodes added since index i,
+// commit constructs a binary Merkle tree from all nodes added since index i,
 // replaces those nodes with the resulting subtree root, and adds it back to the
 // node list.
 func (w *Wrapper) commit(i int) {

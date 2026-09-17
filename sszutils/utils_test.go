@@ -1164,9 +1164,6 @@ func TestBufferDecoder_Available(t *testing.T) {
 	}
 }
 
-// TestCredibleCount_Guards covers the two early-return guards in CredibleCount:
-// a non-positive count, and a non-positive element size on an unknown-length
-// decoder (where the count cannot be bounded from delivered bytes).
 // An oversized offset table is not kept by the pool: whatever a later Get
 // returns, it is not the one that was put.
 func TestOffsetPoolDropsOversizedSlices(t *testing.T) {
@@ -1177,6 +1174,9 @@ func TestOffsetPoolDropsOversizedSlices(t *testing.T) {
 	}
 }
 
+// TestCredibleCount_Guards covers the two early-return guards in CredibleCount:
+// a non-positive count, and a non-positive element size on an unknown-length
+// decoder (where the count cannot be bounded from delivered bytes).
 func TestCredibleCount_Guards(t *testing.T) {
 	// count <= 0 short-circuits to 0.
 	if got := CredibleCount(NewBufferDecoder(nil), 0, 4); got != 0 {

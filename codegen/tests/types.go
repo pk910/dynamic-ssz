@@ -785,15 +785,16 @@ var UnionExprVariantSize_Payload = UnionExprVariantSize{
 	}]{Variant: 1, Data: []uint16{1, 2, 3, 4}},
 }
 
+// VecDynElemExprSize_Inner is the variable-size element of VecDynElemExprSize.
+type VecDynElemExprSize_Inner struct {
+	D []byte `ssz-max:"8"`
+}
+
 // VecDynElemExprSize is a regression type for the generated stream decoder: a
 // vector of dynamic-size elements whose length comes from a dynssz-size
 // expression. The decoder's first-offset check compares the uint32 offset
 // against `<len-expr>*4`; when the length is a typed int expression the RHS must
 // be cast to uint32, otherwise the generated code failed to compile.
-type VecDynElemExprSize_Inner struct {
-	D []byte `ssz-max:"8"`
-}
-
 type VecDynElemExprSize struct {
 	V []VecDynElemExprSize_Inner `ssz-size:"2" dynssz-size:"VDE_SIZE"`
 }
@@ -2475,14 +2476,15 @@ type RecursiveLeafNode_View1 struct {
 
 var RecursiveLeafNode_Payload = RecursiveLeafNode{Value: 7, Children: []*RecursiveLeafNode{{Value: 8}}}
 
-// EOFMatrix holds the shapes whose decoding depends on how a reader splits
-// its bytes around EOF: nested variable-size lists and a nested container.
+// EOFMatrixInner is the nested container of EOFMatrix.
 type EOFMatrixInner struct {
 	A uint64
 	L []uint64 `ssz-max:"4"`
 	C uint32
 }
 
+// EOFMatrix holds the shapes whose decoding depends on how a reader splits
+// its bytes around EOF: nested variable-size lists and a nested container.
 type EOFMatrix struct {
 	LL [][]uint16 `ssz-max:"4,8"`
 	BL [][]byte   `ssz-max:"4,8"`
@@ -2586,12 +2588,13 @@ type WideAggregate struct {
 	C []byte `ssz-size:"1073741824"`
 }
 
-// WideElems places a 3 GB static field behind a vector of variable-size
-// elements, so the first offset and the element bounds carry the big size.
+// WideElemInner is the variable-size element of WideElems.
 type WideElemInner struct {
 	L []byte `ssz-max:"8"`
 }
 
+// WideElems places a 3 GB static field behind a vector of variable-size
+// elements, so the first offset and the element bounds carry the big size.
 type WideElems struct {
 	V []WideElemInner `ssz-size:"2"`
 	W []byte          `ssz-size:"3000000000"`
@@ -2850,6 +2853,29 @@ func (p *partialComposite) HashTreeRootWith(hh sszutils.HashWalker) error {
 	return nil
 }
 func (p *partialComposite) HashTreeRoot() ([32]byte, error) { return [32]byte{9}, nil }
+
+// flushedComposite leaves a partial chunk and then adds a leaf, which flushes
+// the partial bytes into a padded leaf of their own.
+type flushedComposite struct{ A, B uint64 }
+
+func (p *flushedComposite) HashTreeRootWith(hh sszutils.HashWalker) error {
+	hh.Append([]byte{1, 2, 3, 4, 5, 6, 7, 8})
+	hh.PutUint64(p.B)
+	return nil
+}
+func (p *flushedComposite) HashTreeRoot() ([32]byte, error) { return [32]byte{9}, nil }
+
+type FlushedHolder struct {
+	N uint64
+	P flushedComposite
+	M uint64
+}
+
+type FlushedHolderRefl struct {
+	N uint64
+	P flushedComposite
+	M uint64
+}
 
 type goodComposite struct{ A, B uint64 }
 
@@ -4889,12 +4915,13 @@ var ViewMixHolder_Payload = ViewMixHolder{
 	D: []byte{11},
 }
 
-// ViewMixHolder_SpecsPayload sizes ViewMixChildD.Y from ViewMixHolder_Specs
-// instead of the static default.
+// ViewMixHolder_Specs supplies the spec value ViewMixChildD.Y is sized from.
 var ViewMixHolder_Specs = map[string]any{
 	"VIEWMIX_D_SIZE": uint64(6),
 }
 
+// ViewMixHolder_SpecsPayload sizes ViewMixChildD.Y from ViewMixHolder_Specs
+// instead of the static default.
 var ViewMixHolder_SpecsPayload = ViewMixHolder{
 	A: ViewMixChildA{X: []byte{1}, Y: 2},
 	B: ViewMixChildB{X: []byte{3}, Z: 4},
@@ -5028,12 +5055,13 @@ type BigVecFixed struct {
 	V []byte `ssz-size:"3000000000"`
 }
 
-// DynVecDeclared is a vector of variable-size elements whose declared length
-// is a claim the decoders must not allocate for before the bytes arrive.
+// DynVecElem is the variable-size element of DynVecDeclared.
 type DynVecElem struct {
 	B []byte `ssz-max:"64"`
 }
 
+// DynVecDeclared is a vector of variable-size elements whose declared length
+// is a claim the decoders must not allocate for before the bytes arrive.
 type DynVecDeclared struct {
 	V []DynVecElem `ssz-size:"65536"`
 }

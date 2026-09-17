@@ -115,16 +115,17 @@ func (g *exprVarGenerator) getVectorLenExprVar(expr string, defaultValue uint64,
 	if dynamicElems {
 		bound += "/4"
 	}
-	measured := exprVar
+	// A bit count occupies more than the limit exactly when it passes eight
+	// times the limit, which states the rule without forming the division.
 	if bits {
-		measured = fmt.Sprintf("(%s+7)/8", exprVar)
+		bound += "*8"
 	}
 	guardKey := sha256.Sum256([]byte(fmt.Sprintf("sizeguard\n%s\n%v\n%s\n%v", expr, defaultValue, bound, bits)))
 	if _, ok := g.varMap[guardKey]; ok {
 		return exprVar
 	}
 
-	appendCode(g.codeBuf, 0, "if %s > %s {\n", measured, bound)
+	appendCode(g.codeBuf, 0, "if %s > %s {\n", exprVar, bound)
 	appendCode(g.codeBuf, 1, "err = sszutils.ErrPlatformOverflowFn(\"size expression %s\", %s)\n", expr, exprVar)
 	appendCode(g.codeBuf, 1, "return %s\n", g.retVars)
 	appendCode(g.codeBuf, 0, "}\n")

@@ -89,7 +89,7 @@ type TypeDescriptor struct {
 	GoTypeFlags            GoTypeFlag                `json:"go_flags"`                // Additional go type flags
 }
 
-// FieldDescriptor represents a cached descriptor for a struct field
+// ContainerDescriptor holds the field descriptors of a struct.
 type ContainerDescriptor struct {
 	Fields    []FieldDescriptor    `json:"fields"`     // For structs
 	DynFields []DynFieldDescriptor `json:"dyn_fields"` // Dynamic struct fields

@@ -988,18 +988,6 @@ func (ctx *ReflectionCtx) marshalOptionalList(sourceType *ssztypes.TypeDescripto
 	return nil
 }
 
-// marshalBigInt marshals a BigInt by marshaling its data field as the wrapped type.
-//
-// Parameters:
-//   - sourceType: The TypeDescriptor containing big int field metadata
-//   - sourceValue: The reflect.Value of the big int to encode
-//   - encoder: The encoder instance used to write SSZ-encoded data
-//   - depth: Indentation level for verbose logging
-//
-// Returns:
-//   - error: An error if any field encoding fails
-//
-// The function validates that the Data field is present and marshals the wrapped value using its type descriptor.
 // checkBigIntLimit enforces a static ssz-max on a big.Int payload (1 sign byte +
 // magnitude), matching marshalBigInt. Dynamic (dynssz-max expression) limits are
 // left unchecked so the reflection and codegen engines stay consistent, and so
@@ -1027,6 +1015,18 @@ func bigIntLimitBytes(t *ssztypes.TypeDescriptor) (int, bool) {
 	return int(t.Limit), true
 }
 
+// marshalBigInt marshals a BigInt by marshaling its data field as the wrapped type.
+//
+// Parameters:
+//   - sourceType: The TypeDescriptor containing big int field metadata
+//   - sourceValue: The reflect.Value of the big int to encode
+//   - encoder: The encoder instance used to write SSZ-encoded data
+//   - depth: Indentation level for verbose logging
+//
+// Returns:
+//   - error: An error if any field encoding fails
+//
+// The function validates that the Data field is present and marshals the wrapped value using its type descriptor.
 func (ctx *ReflectionCtx) marshalBigInt(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth reflectionDepth) error {
 	if ctx.verbose {
 		ctx.logCb("%smarshalBigInt: %s\n", strings.Repeat(" ", int(depth.idt)*2), sourceType.Type.Name())

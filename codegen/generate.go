@@ -523,29 +523,6 @@ func dataCompatFlags(opts *CodeGeneratorOptions) ssztypes.SszCompatFlag {
 	return flags
 }
 
-// generateFile creates the complete Go source code for a single file.
-//
-// This internal method handles the generation of one complete Go source file,
-// including package declaration, imports, and all requested SSZ methods for
-// the specified types. It manages import organization, code formatting,
-// and ensures the generated code is valid Go.
-//
-// Parameters:
-//   - fileName: The target file name (used for metadata in generated code)
-//   - packagePath: The Go package path for the generated file
-//   - opts: Complete file generation options with resolved type configurations
-//
-// Returns:
-//   - string: The complete generated Go source code
-//   - error: An error if generation fails due to code generation issues
-//
-// The generated file includes:
-//   - File header with generation metadata and version information
-//   - Package declaration
-//   - Organized import statements
-//   - Variable declarations for error handling
-//   - Generated SSZ methods for all specified types
-//
 // staticAnnotationFor returns the ssz-static annotation declaring whether a
 // generated type is fixed-size (static) or variable-size (dynamic). The
 // reflection typecache uses it to shallow-build the fully-delegated type without
@@ -577,6 +554,28 @@ func packageScopeNames(t types.Type) []string {
 	return named.Obj().Pkg().Scope().Names()
 }
 
+// generateFile creates the complete Go source code for a single file.
+//
+// This internal method handles the generation of one complete Go source file,
+// including package declaration, imports, and all requested SSZ methods for
+// the specified types. It manages import organization, code formatting,
+// and ensures the generated code is valid Go.
+//
+// Parameters:
+//   - fileName: The target file name (used for metadata in generated code)
+//   - packagePath: The Go package path for the generated file
+//   - opts: Complete file generation options with resolved type configurations
+//
+// Returns:
+//   - string: The complete generated Go source code
+//   - error: An error if generation fails due to code generation issues
+//
+// The generated file includes:
+//   - File header with generation metadata and version information
+//   - Package declaration
+//   - Organized import statements
+//   - Variable declarations for error handling
+//   - Generated SSZ methods for all specified types
 func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFileOptions) (string, error) {
 	if len(opts.Types) == 0 {
 		return "", fmt.Errorf("no types requested for generation")

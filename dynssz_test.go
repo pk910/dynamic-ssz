@@ -5844,15 +5844,16 @@ func TestUnknownSizeBitlistTermination(t *testing.T) {
 	}
 }
 
-// benchState stands in for a large beacon-state-shaped payload: a big trailing
-// list of fixed-size records preceded by some dynamic fields. The trailing list
-// is what an unknown-size decode has to consume without knowing where it ends.
+// benchRecord is the fixed-size element of benchState's trailing list.
 type benchRecord struct {
 	Index   uint64
 	Balance uint64
 	Key     [48]byte
 }
 
+// benchState stands in for a large beacon-state-shaped payload: a big trailing
+// list of fixed-size records preceded by some dynamic fields. The trailing list
+// is what an unknown-size decode has to consume without knowing where it ends.
 type benchState struct {
 	Slot    uint64
 	Roots   [][32]byte    `ssz-max:"8192"`

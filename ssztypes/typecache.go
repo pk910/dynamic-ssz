@@ -99,7 +99,6 @@ type TypeCache struct {
 	promotedDelegation sync.Map
 }
 
-// NewTypeCache creates a new type cache
 // emptySpecs is a no-op DynamicSpecs used when a TypeCache is created without a
 // spec provider, so dynssz-* tags resolve to their static fallback instead of
 // dereferencing a nil interface.
@@ -107,6 +106,7 @@ type emptySpecs struct{}
 
 func (emptySpecs) ResolveSpecValue(string) (bool, uint64, error) { return false, 0, nil }
 
+// NewTypeCache creates a new type cache
 func NewTypeCache(specs sszutils.DynamicSpecs) *TypeCache {
 	if specs == nil {
 		specs = emptySpecs{}
@@ -245,9 +245,6 @@ func (tc *TypeCache) GetTypeDescriptorWithSchema(runtimeType, schemaType reflect
 	return tc.getTypeDescriptor(runtimeType, schemaType, sizeHints, maxSizeHints, typeHints)
 }
 
-// getTypeDescriptor returns a cached type descriptor for a (runtime, schema) pair.
-// When runtimeType == schemaType, this is the standard descriptor building.
-// When they differ, it handles view descriptors where schema defines SSZ layout.
 // purgePending drops the cache entries recorded from index from on: they were
 // built against an abandoned graph and never flag-fixed. Entries appended to a
 // hinted variant list sit at its tail, so reverse order pops them correctly
@@ -321,6 +318,9 @@ func (tc *TypeCache) cycleBelow(t reflect.Type, walk func(reflect.Type) reflect.
 	}
 }
 
+// getTypeDescriptor returns a cached type descriptor for a (runtime, schema) pair.
+// When runtimeType == schemaType, this is the standard descriptor building.
+// When they differ, it handles view descriptors where schema defines SSZ layout.
 func (tc *TypeCache) getTypeDescriptor(runtimeType, schemaType reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
 	key := typeKey{runtime: runtimeType, schema: schemaType}
 	cacheable := len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0

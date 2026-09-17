@@ -21,19 +21,14 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-// TestParserShallowGate exercises the parser's shallow-build gate for an external,
-// fully-delegated type. NestedDelegatedContainer (loaded with its generated
-// methods) fully delegates and is not registered in the parser's CompatFlags, so
-// the gate fires; the resolver supplies the ssz-static declaration. An invalid
-// value is rejected.
-// Both front ends describe a fully-delegated child the same way: a basic
-// type keeps its SSZ type and width and an acyclic named slice stays a
-// shallow static value. Both refuse a delegated type on a cycle with the type
-// they are describing.
 // staticTrueAnnotation is the annotation a fully-delegated fixed-size type
 // carries.
 const staticTrueAnnotation = `ssz-static:"true"`
 
+// Both front ends describe a fully-delegated child the same way: a basic
+// type keeps its SSZ type and width and an acyclic named slice stays a
+// shallow static value. Both refuse a delegated type on a cycle with the type
+// they are describing.
 func TestShallowDescriptorParity(t *testing.T) {
 	pkg := loadTestsPackage(t)
 	parse := func(name string) (*ssztypes.TypeDescriptor, error) {
@@ -164,6 +159,11 @@ func TestParserDescribesUnannotatedDelegateCycle(t *testing.T) {
 	}
 }
 
+// TestParserShallowGate exercises the parser's shallow-build gate for an external,
+// fully-delegated type. NestedDelegatedContainer (loaded with its generated
+// methods) fully delegates and is not registered in the parser's CompatFlags, so
+// the gate fires; the resolver supplies the ssz-static declaration. An invalid
+// value is rejected.
 func TestParserShallowGate(t *testing.T) {
 	pkgs := []*packages.Package{loadTestsPackage(t)}
 	container := pkgs[0].Types.Scope().Lookup("NestedDelegatedContainer")

@@ -2117,15 +2117,6 @@ type topLevelClassicUnionAlias = dynssz.Union[struct {
 	B uint64
 }]
 
-// TestValidateTopLevelTypeWrapperShapes pins which wrapper-shaped types may be
-// listed as standalone -types entries.
-//
-// The gate keyed on the descriptor's SSZ type, so it rejected anything that
-// merely *mapped* to a wrapper or union — including an ordinary named struct
-// that can receive methods perfectly well, and which generated fine before the
-// gate existed. Only the library's generics genuinely cannot: they are
-// nameable solely through a transparent alias, so a method receiver would name
-// the foreign generic type.
 // An alias cannot carry methods; a generation target that is an alias is
 // refused up front instead of emitting a receiver for another type.
 func TestValidateTopLevelTypeRejectsAlias(t *testing.T) {
@@ -2155,6 +2146,15 @@ func TestValidateTopLevelTypeRejectsAlias(t *testing.T) {
 	}
 }
 
+// TestValidateTopLevelTypeWrapperShapes pins which wrapper-shaped types may be
+// listed as standalone -types entries.
+//
+// The gate keyed on the descriptor's SSZ type, so it rejected anything that
+// merely *mapped* to a wrapper or union — including an ordinary named struct
+// that can receive methods perfectly well, and which generated fine before the
+// gate existed. Only the library's generics genuinely cannot: they are
+// nameable solely through a transparent alias, so a method receiver would name
+// the foreign generic type.
 func TestValidateTopLevelTypeWrapperShapes(t *testing.T) {
 	tests := []struct {
 		name       string

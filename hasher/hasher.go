@@ -1088,9 +1088,6 @@ func (h *Hasher) collapseProgressiveLayer(layer *treeLayer, indx int) {
 	h.buf = append(h.buf, h.tmp[:32]...)
 }
 
-// Merkleize computes the binary merkle root of the buffer from indx onwards
-// and replaces that region with the 32-byte root. Pops the matching layer
-// if one exists.
 // clampMerkleizeIndex bounds a caller-supplied scope index to the current
 // buffer so an out-of-range value cannot trigger a slice-bounds panic.
 func (h *Hasher) clampMerkleizeIndex(indx int) int {
@@ -1103,6 +1100,9 @@ func (h *Hasher) clampMerkleizeIndex(indx int) int {
 	return indx
 }
 
+// Merkleize computes the binary merkle root of the buffer from indx onwards
+// and replaces that region with the 32-byte root. Pops the matching layer
+// if one exists.
 func (h *Hasher) Merkleize(indx int) {
 	indx = h.clampMerkleizeIndex(indx)
 	// The scope is reduced as whole chunks, and a scope of packed values ends

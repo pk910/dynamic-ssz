@@ -5044,8 +5044,8 @@ func TestCodegenDelegatedShallowFraming(t *testing.T) {
 }
 
 // A composite delegate leaves whole chunks. One that leaves a partial chunk
-// is refused by the hasher and by the tree wrapper, in both engines; one
-// that honours the contract hashes the same everywhere.
+// is refused by the hasher and by the tree wrapper, in both engines; one that
+// honours the contract hashes the same everywhere.
 func TestCompositeDelegateContract(t *testing.T) {
 	if _, generated := any(&PartialHolder{}).(sszutils.DynamicHashRoot); !generated {
 		t.Skip("no generated code present")
@@ -5059,6 +5059,15 @@ func TestCompositeDelegateContract(t *testing.T) {
 			t.Fatalf("%T GetTree err = %v, want ErrCompositeDelegate", v, err)
 		}
 	}
+	// A delegate that adds a leaf after its partial bytes has them flushed
+	// into a padded leaf of their own. The hasher still sees the partial
+	// chunk; the tree walker, whose position is the pending buffer, does not.
+	for _, v := range []any{&FlushedHolder{N: 1, M: 2}, &FlushedHolderRefl{N: 1, M: 2}} {
+		if _, err := ds.HashTreeRoot(v); !errors.Is(err, sszutils.ErrCompositeDelegate) {
+			t.Fatalf("%T HashTreeRoot err = %v, want ErrCompositeDelegate", v, err)
+		}
+	}
+
 	roots := make([][32]byte, 0, 2)
 	for _, v := range []any{&GoodHolder{N: 1, G: goodComposite{A: 3, B: 4}, M: 2}, &GoodHolderRefl{N: 1, G: goodComposite{A: 3, B: 4}, M: 2}} {
 		root, err := ds.HashTreeRoot(v)

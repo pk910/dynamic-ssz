@@ -1008,8 +1008,6 @@ func errCause(err error) error {
 	return err
 }
 
-// parseTypeSpecs parses the comma-separated type names string into typeSpec structs.
-// Each type can have colon-separated options: TypeName[:output=file.go][:views=View1;View2][:viewonly]
 // stashSuffix is appended to an output file moved aside by -remove. The
 // suffix does not end in .go, so a stashed file is not part of the package.
 const stashSuffix = ".dynssz-gen.orig"
@@ -1071,6 +1069,8 @@ func (s *outputStash) discard() {
 	s.moved = nil
 }
 
+// parseTypeSpecs parses the comma-separated type names string into typeSpec structs.
+// Each type can have colon-separated options: TypeName[:output=file.go][:views=View1;View2][:viewonly]
 func parseTypeSpecs(typeNames, defaultOutput string) ([]typeSpec, error) {
 	requestedTypes := strings.Split(typeNames, ",")
 	typeSpecs := make([]typeSpec, 0, len(requestedTypes))

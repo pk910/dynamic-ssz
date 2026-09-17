@@ -226,15 +226,6 @@ func getSszTypeTag(field *reflect.StructField) ([]SszTypeHint, error) {
 //   - bits: A boolean flag indicating whether the size is in bits rather than bytes.
 //   - expr: The dynamic expression used to calculate the size of the field, typically through 'dynssz-size' annotations.
 //
-// exceedsSizeLimit reports whether a declared length passes the SSZ size
-// limit. A bit count is measured by the bytes it occupies, so the limit stays
-// in the byte domain wherever it is applied.
-func exceedsSizeLimit(value uint64, bits bool) bool {
-	if bits {
-		return (value+7)/8 > sszutils.MaxSszSize
-	}
-	return value > sszutils.MaxSszSize
-}
 
 type SszSizeHint struct {
 	Size    int64
@@ -242,6 +233,18 @@ type SszSizeHint struct {
 	Custom  bool
 	Bits    bool
 	Expr    string
+}
+
+// exceedsSizeLimit reports whether a declared length passes the SSZ size
+// limit. A bit count is measured by the bytes it occupies, so the limit stays
+// in the byte domain wherever it is applied: a count occupies more than the
+// limit exactly when it passes eight times the limit, which states the rule
+// without forming the division.
+func exceedsSizeLimit(value uint64, bits bool) bool {
+	if bits {
+		return value > uint64(sszutils.MaxSszSize)*8
+	}
+	return value > sszutils.MaxSszSize
 }
 
 // getSszSizeTag parses the 'ssz-size'/'ssz-bitsize' and 'dynssz-size'/'dynssz-bitsize' tag annotations from a struct field and returns

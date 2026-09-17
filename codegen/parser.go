@@ -138,26 +138,6 @@ type CodegenInfo struct {
 	SchemaType types.Type
 }
 
-// Parser provides compile-time type analysis for SSZ code generation.
-//
-// The Parser analyzes Go types using the go/types package to create TypeDescriptors
-// suitable for code generation. Unlike runtime reflection, this approach can analyze
-// types that may not be available at runtime and provides richer type information
-// for complex code generation scenarios.
-//
-// Key capabilities:
-//   - Compile-time type analysis using go/types
-//   - SSZ type inference and validation
-//   - Struct tag parsing for SSZ annotations
-//   - Interface compatibility checking
-//   - Type descriptor caching for performance
-//
-// The parser handles all SSZ-compatible types including basic types, containers,
-// vectors, lists, and custom types like unions and type wrappers.
-//
-// Fields:
-//   - cache: Type descriptor cache to avoid recomputing analysis for the same types
-//
 // parserHintedVariant is a cached descriptor for a (type pair, hints)
 // combination; the descriptor is a pure function of both plus the parser
 // configuration, so identical hints always yield an identical descriptor.
@@ -199,6 +179,25 @@ type parserPendingKey struct {
 	hinted bool
 }
 
+// Parser provides compile-time type analysis for SSZ code generation.
+//
+// The Parser analyzes Go types using the go/types package to create TypeDescriptors
+// suitable for code generation. Unlike runtime reflection, this approach can analyze
+// types that may not be available at runtime and provides richer type information
+// for complex code generation scenarios.
+//
+// Key capabilities:
+//   - Compile-time type analysis using go/types
+//   - SSZ type inference and validation
+//   - Struct tag parsing for SSZ annotations
+//   - Interface compatibility checking
+//   - Type descriptor caching for performance
+//
+// The parser handles all SSZ-compatible types including basic types, containers,
+// vectors, lists, and custom types like unions and type wrappers.
+//
+// Fields:
+//   - cache: Type descriptor cache to avoid recomputing analysis for the same types
 type Parser struct {
 	cache         map[string]*ssztypes.TypeDescriptor
 	CompatFlags   map[string]ssztypes.SszCompatFlag
