@@ -519,7 +519,10 @@ func TestDecodeSlicePreallocation(t *testing.T) {
 func TestPreallocateDecodeSlice(t *testing.T) {
 	type wideElement [maxDecodeSlicePreallocationBytes]byte
 
-	got := PreallocateDecodeSlice([]wideElement(nil), 512)
+	// An open region has no backed extent, so only a byte-bounded prefix is
+	// reserved before the bodies arrive.
+	undelivered := NewUnknownStreamDecoder(bytes.NewReader(nil), 0, 1<<20)
+	got := PreallocateDecodeSlice(undelivered, []wideElement(nil), 512)
 	if len(got) != 1 || cap(got) != 1 {
 		t.Fatalf("wide preallocation len/cap = %d/%d, want 1/1", len(got), cap(got))
 	}
@@ -537,9 +540,23 @@ func TestPreallocateDecodeSlice(t *testing.T) {
 		t.Fatalf("grown len/cap = %d/%d, want the 8-element geometric chunk", len(got), cap(got))
 	}
 
-	small := PreallocateDecodeSlice([]uint64(nil), 16)
+	small := PreallocateDecodeSlice(undelivered, []uint64(nil), 16)
 	if len(small) != 16 || cap(small) != 16 {
 		t.Fatalf("small preallocation len/cap = %d/%d, want 16/16", len(small), cap(small))
+	}
+
+	// A region already in memory is sized exactly.
+	delivered := NewBufferDecoder(make([]byte, 4096))
+	exact := PreallocateDecodeSlice(delivered, []wideElement(nil), 512)
+	if len(exact) != 512 || cap(exact) != 512 {
+		t.Fatalf("delivered preallocation len/cap = %d/%d, want 512/512", len(exact), cap(exact))
+	}
+	// So is a region of a stream whose length the caller declared: the size
+	// is trusted, whether or not the bytes have arrived yet.
+	declared := NewStreamDecoder(bytes.NewReader(nil), 1<<20, 0)
+	exact = PreallocateDecodeSlice(declared, []wideElement(nil), 512)
+	if len(exact) != 512 || cap(exact) != 512 {
+		t.Fatalf("declared preallocation len/cap = %d/%d, want 512/512", len(exact), cap(exact))
 	}
 }
 
@@ -748,15 +765,31 @@ func TestBufferDecoder_PushLimitNegative(t *testing.T) {
 // positions; padding beyond the current capacity grows the buffer like any
 // other write.
 func TestBufferEncoder_OutOfRange(t *testing.T) {
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("encoder panicked on out-of-range position: %v", r)
-		}
+	// An offset write outside the written buffer is an invariant violation
+	// and panics instead of being dropped.
+	for _, pos := range []int{-1, 13, 1 << 30} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("offset write at %d outside a 16-byte buffer did not panic", pos)
+				}
+			}()
+			NewBufferEncoder(make([]byte, 16)).EncodeOffsetAt(pos, 42)
+		}()
+	}
+	// Spare capacity is not written buffer: a slot that was never reserved
+	// lies outside the bytes GetBuffer returns.
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("offset write into unwritten capacity did not panic")
+			}
+		}()
+		NewBufferEncoder(make([]byte, 0, 64)).EncodeOffsetAt(0, 42)
 	}()
 
 	enc := NewBufferEncoder(make([]byte, 16))
-	enc.EncodeOffsetAt(-1, 42)
-	enc.EncodeOffsetAt(1<<30, 42)
+	enc.EncodeOffsetAt(12, 42)
 	enc.EncodeZeroPadding(-1)
 	enc.EncodeZeroPadding(64)
 	if got := len(enc.GetBuffer()); got != 16+64 {
@@ -1142,6 +1175,16 @@ func TestBufferDecoder_Available(t *testing.T) {
 	}
 }
 
+// An oversized offset table is not kept by the pool: whatever a later Get
+// returns, it is not the one that was put.
+func TestOffsetPoolDropsOversizedSlices(t *testing.T) {
+	big := make([]uint32, maxPooledOffsetSlice+1)
+	PutOffsetSlice(big)
+	if got := GetOffsetSlice(1); cap(got) > maxPooledOffsetSlice {
+		t.Fatalf("an offset slice of %d entries was pooled", cap(got))
+	}
+}
+
 // TestCredibleCount_Guards covers the two early-return guards in CredibleCount:
 // a non-positive count, and a non-positive element size on an unknown-length
 // decoder (where the count cannot be bounded from delivered bytes).
@@ -1156,6 +1199,10 @@ func TestCredibleCount_Guards(t *testing.T) {
 	// A known-length decoder trusts the count unchanged.
 	if got := CredibleCount(NewBufferDecoder(make([]byte, 4)), 7, 4); got != 7 {
 		t.Fatalf("CredibleCount(buffer, 7, 4) = %d, want 7", got)
+	}
+	declared := NewStreamDecoder(bytes.NewReader(make([]byte, 4)), 1<<20, 0)
+	if got := CredibleCount(declared, 1<<16, 4); got != 1<<16 {
+		t.Fatalf("CredibleCount(declared stream, 65536, 4) = %d, want 65536", got)
 	}
 	// An unknown-length decoder with a non-positive element size cannot bound the
 	// count from delivered bytes, so it is returned unchanged.

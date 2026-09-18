@@ -15,6 +15,17 @@ Dynamic SSZ uses struct tags to control SSZ encoding behavior. This guide covers
 | `dynssz-max` | Dynamic maximum with expressions | `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"` |
 | `dynssz-bitsize` | Dynamic bit size for bitvectors | `dynssz-bitsize:"COMMITTEE_SIZE"` |
 
+### Size Limit
+
+SSZ offsets are 32-bit, so every size the library describes is bounded to
+2^32-1 bytes (or the host's `int` where that is narrower): a declared or
+spec-resolved size, a vector's length and byte size, a container's fixed
+section and a delegated sizer's result past the limit are refused at type
+analysis and at spec resolution, in both engines. A vector of variable-size
+elements leads with one 4-byte offset per element inside its fixed section, so
+its length is bounded to a quarter of the limit. Sizes derived from data are
+bounded by the memory that holds the value.
+
 ## Static and Dynamic Tags
 
 ### How They Work Together
@@ -239,6 +250,8 @@ type DynamicAttestation struct {
 
 A dimension has one unit. Pair `ssz-bitsize` with `dynssz-bitsize` and `ssz-size` with `dynssz-size`; mixing the two families on the same dimension (for example `ssz-bitsize:"12" dynssz-size:"X"`) is rejected by both the reflection engine and the code generator.
 
+The static tag is the fallback when the spec value is not defined. Without one, a Go array falls back to its own length in bits; a slice has no length to fall back to, so the reflection engine rejects the type.
+
 ## Maximum Size Annotations
 
 ### ssz-max
@@ -316,7 +329,9 @@ encoded, decoded, sized or hashed, and its Go type does not need to be
 SSZ-compatible. This is useful for caches, computed values, or metadata kept
 alongside the SSZ data. On decode the field is left **unchanged** — it is
 skipped, not reset, so when decoding into a reused object it keeps its previous
-value. Clear or reinitialize such fields yourself if you need them zeroed.
+value as long as the object itself is reused (see the decoding notes in the API
+reference for the list elements that are allocated fresh). Clear or
+reinitialize such fields yourself if you need them zeroed.
 
 ```go
 type Block struct {

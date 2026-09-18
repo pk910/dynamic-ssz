@@ -81,11 +81,13 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int) error
 **Parameters**:
 - `target` - Pointer to object to deserialize into
 - `r` - Source reader
-- `size` - Expected total size of the SSZ data in bytes. A non-negative size is
-  **trusted**: regions and allocations are sized from it before the bytes
-  arrive, so it must come from a source you control (a `stat()` result, a
-  `Content-Length` you are willing to believe). A size above
-  `WithMaxStreamSize` (512 MiB by default) is rejected before anything is read.
+- `size` - Expected total size of the SSZ data in bytes. A non-negative size
+  is **trusted**: it bounds the regions and the reads, is not subject to
+  `WithMaxStreamSize`, and the decoder sizes its allocations from it before the
+  bytes arrive. It must come from a source you control, such as the `stat()`
+  result of a local file or a length your own protocol has already validated,
+  never from an untrusted remote peer. See
+  [Trusted sizes](#trusted-sizes) for what an untrusted size can cost.
   A negative size selects **unknown-size mode**: the payload is consumed to EOF
   without being buffered, so the memory savings of streaming still apply. See
   [Unknown-size decoding](#unknown-size-decoding).
@@ -108,10 +110,39 @@ if err != nil {
 ```
 
 ```go
-// Read from network with known size
+// Read from a network peer: the peer's length prefix is not a trusted size.
+// Decode in unknown-size mode under a cap your protocol permits instead.
 var block BeaconBlock
-err = ds.UnmarshalSSZReader(&block, conn, expectedSize)
+err = ds.UnmarshalSSZReader(&block, conn, -1, dynssz.WithStreamSizeLimit(maxBlockBytes))
 ```
+
+### Trusted sizes
+
+A non-negative `size` is trusted, and the decoder uses it the way a buffer
+decode uses `len(buf)`: every region is measured against it, and a list's Go
+slice is allocated for its full declared element count before the element
+bytes have been read. That is what makes a known-size stream decode as cheap as
+a buffer decode, with none of the incremental growth of unknown-size mode.
+
+The decoder does not, and cannot, check where the size came from. Passing a
+size that an untrusted peer chose hands that peer control over how much memory
+the decode commits before it has sent anything:
+
+- The heap reserved for a list is the declared element count times the Go
+  element size, not the wire size. For a list of pointer elements that is
+  8 bytes of heap per declared wire byte; a few bytes of input carrying a
+  declared 64 MiB list reserve 512 MiB up front.
+- `WithMaxStreamSize` and `WithStreamSizeLimit` do not apply to a declared
+  size, so nothing else bounds it.
+- The memory stays committed for as long as the peer keeps the connection open
+  without delivering the bytes.
+
+Use a non-negative size only when it comes from a source you control: the
+`stat()` result of a local file, a database column, or a length your own
+protocol has already validated against a cap. For anything read off the wire,
+pass a negative size and bound the decode with `WithMaxStreamSize` or
+`WithStreamSizeLimit`; unknown-size mode sizes its allocations from the bytes
+that have actually arrived.
 
 ## Streaming Interfaces
 
@@ -230,10 +261,10 @@ Decoding from a reader is **always bounded** and the bound cannot be disabled:
 ds := dynssz.NewDynSsz(specs, dynssz.WithMaxStreamSize(16*1024*1024))
 ```
 
-The default is 512 MiB. A declared `size` above it is rejected before any byte
-is read, and an unknown-size decode stops at it. This bounds bytes consumed
-from the wire (and the allocation a trusted size can cause) and doubles as
-the remaining-length estimate reported to code that predates unknown-size
+The default is 512 MiB. An unknown-size decode stops at it; a declared `size`
+is its own bound and is not subject to it. A single call can override the
+instance value with `dynssz.WithStreamSizeLimit(n)`. This bounds bytes consumed
+from the wire and doubles as the remaining-length estimate reported to code that predates unknown-size
 decoding (see [Regenerating](#regenerating-generated-code)). `ssz-max` limits
 are enforced while reading. Set the smallest value your application protocol
 and schema permit; the default is deliberately general and is usually too
@@ -427,6 +458,11 @@ func (b *BeaconBlock) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, decoder sszu
 }
 ```
 
+A generated `UnmarshalSSZDecoder` reads exactly its type's bytes and does not
+verify that the decoder's region ends there: the frame belongs to its caller.
+`UnmarshalSSZReader` pushes the payload as the root region and rejects trailing
+bytes; code that drives a generated decoder directly owns that check.
+
 ## How Streaming Works
 
 ### Encoding
@@ -448,6 +484,14 @@ For streaming decoding:
    - Offsets are read and stored for later use
    - Limits are pushed to constrain field boundaries
    - Data is read in order within limit boundaries
+
+### Nested types
+
+A nested type with a registered static surface and no spec expressions is
+read from or written to the stream buffer as one region and handled through
+its static method. Otherwise a nested type with its own streaming methods is
+encoded and decoded through them, so its bytes pass straight through the
+stream buffer. See [Method Delegation](delegation.md) for the complete order.
 
 ### Seek vs Non-Seek Mode
 

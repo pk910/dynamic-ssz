@@ -112,6 +112,11 @@ type CodeGeneratorOptions struct {
 	ViewGoTypesTypes []types.Type   // View types for data+views mode (compile-time)
 	ViewReflectTypes []reflect.Type // View types for data+views mode (runtime)
 	ViewOnly         bool           // Only generate view methods, not data methods
+
+	// generated is the run's generation set, keyed by package-qualified type
+	// name; the generator fills it in before emitting a type, so the emitters
+	// know which types get depth-carrying methods in this run.
+	generated map[string]ssztypes.SszCompatFlag
 }
 
 // CodeGeneratorTypeOption specifies a type to include in code generation with its specific options.
@@ -701,10 +706,21 @@ type fileGenerationRequest struct {
 //  3. Generate code with Generate() or GenerateToMap()
 type CodeGenerator struct {
 	files          []*fileGenerationRequest
-	typeCache      *ssztypes.TypeCache
 	packageName    string
 	headerTemplate string
 	compatFlags    map[string]ssztypes.SszCompatFlag
+
+	// extendedTypes widens every reflect-path analysis, as an instance built
+	// with WithExtendedTypes does; it is read from the cache the generator was
+	// created with.
+	extendedTypes bool
+
+	// typeCaches and parsers hold the analysis state, one per mode, so a type's
+	// descriptors are built under its own options regardless of which other
+	// types share the run. Both are owned by the generator: the cache passed to
+	// NewCodeGenerator is never written.
+	typeCaches map[analysisMode]*ssztypes.TypeCache
+	parsers    map[analysisMode]*Parser
 
 	// annotationResolver returns the merged ssz annotation tag for a go/types
 	// type (or ""), letting the parser read a referenced, fully-delegated type's
@@ -726,41 +742,92 @@ func (cg *CodeGenerator) SetAnnotationResolver(resolver func(types.Type) string)
 	cg.annotationResolver = resolver
 }
 
-// NewCodeGenerator creates a new code generator instance with the specified DynSsz configuration.
+// NewCodeGenerator creates a new code generator instance.
 //
-// The code generator requires a DynSsz instance to perform type analysis and create
-// type descriptors for the types being generated. The DynSsz instance's specification
-// values and configuration directly influence the generated code.
+// The generator analyzes types on caches of its own, with spec resolution
+// disabled: spec expressions are emitted for the generated code to resolve at
+// runtime, so the caller's spec values play no part in the output. The cache
+// argument is read-only; only its extended-types setting is taken, so a cache
+// from an instance built with WithExtendedTypes widens the reflect path like
+// the instance itself. Passing a live instance's cache is safe.
 //
 // Parameters:
-//   - dynSsz: DynSsz instance for type analysis and descriptor creation.
-//     If nil, a default instance with no specifications will be created.
+//   - typeCache: Cache whose extended-types setting is inherited; nil for the
+//     default.
 //
 // Returns:
 //   - *CodeGenerator: A new code generator ready to accept file generation requests
 //
 // Example:
 //
-//	// Create with Ethereum mainnet specifications
-//	specs := map[string]any{
-//	    "SLOTS_PER_HISTORICAL_ROOT": uint64(8192),
-//	    "SYNC_COMMITTEE_SIZE":       uint64(512),
-//	}
-//	dynSsz := dynssz.NewDynSsz(specs)
-//	cg := NewCodeGenerator(dynSsz)
+//	// Inherit the extended-types setting of an instance
+//	cg := NewCodeGenerator(dynSsz.GetTypeCache())
 //
 //	// Create with default configuration
 //	cg := NewCodeGenerator(nil)
 func NewCodeGenerator(typeCache *ssztypes.TypeCache) *CodeGenerator {
-	if typeCache == nil {
-		typeCache = ssztypes.NewTypeCache(nil)
-	}
-
 	return &CodeGenerator{
-		files:       make([]*fileGenerationRequest, 0),
-		typeCache:   typeCache,
-		compatFlags: map[string]ssztypes.SszCompatFlag{},
+		files:         make([]*fileGenerationRequest, 0),
+		compatFlags:   map[string]ssztypes.SszCompatFlag{},
+		extendedTypes: typeCache != nil && typeCache.ExtendedTypes,
+		typeCaches:    make(map[analysisMode]*ssztypes.TypeCache, 1),
+		parsers:       make(map[analysisMode]*Parser, 1),
 	}
+}
+
+// analysisMode is the set of options that change how a descriptor is built:
+// the widened type set and the shallow-build gate. Each mode analyzes on its
+// own cache and parser, so a child shared by types of different modes is built
+// once per mode instead of once for whichever type came first.
+type analysisMode struct {
+	extendedTypes bool
+	noDelegation  bool
+}
+
+func (cg *CodeGenerator) modeFor(opts *CodeGeneratorOptions) analysisMode {
+	return analysisMode{
+		extendedTypes: cg.extendedTypes || opts.ExtendedTypes,
+		// Without dynamic expressions the generated code must never call a
+		// delegated *Dyn method, so a fully-delegated ssz-static type cannot be
+		// reached through its dynamic methods and must instead be inlined from
+		// its traversed structure; the shallow-build shortcut is disabled.
+		noDelegation: opts.WithoutDynamicExpressions,
+	}
+}
+
+// typeCacheFor returns the reflect-path cache for the type's mode. Descriptors
+// built here describe code, not this process: a spec expression is emitted for
+// the generated code to resolve against whatever specs it runs under.
+// Resolving it now would bake the generator's own values in as the
+// compile-time fallback, and would decide list-versus-vector by which values
+// a generating machine happened to have loaded.
+func (cg *CodeGenerator) typeCacheFor(opts *CodeGeneratorOptions) *ssztypes.TypeCache {
+	mode := cg.modeFor(opts)
+	if cache, ok := cg.typeCaches[mode]; ok {
+		return cache
+	}
+	cache := ssztypes.NewTypeCache(nil)
+	cache.DisableSpecResolution()
+	cache.ExtendedTypes = mode.extendedTypes
+	cache.NoDelegation = mode.noDelegation
+	cache.CompatFlags = cg.compatFlags
+	cg.typeCaches[mode] = cache
+	return cache
+}
+
+// parserFor returns the go/types parser for the type's mode.
+func (cg *CodeGenerator) parserFor(opts *CodeGeneratorOptions) *Parser {
+	mode := cg.modeFor(opts)
+	if parser, ok := cg.parsers[mode]; ok {
+		return parser
+	}
+	parser := NewParser()
+	parser.ExtendedTypes = mode.extendedTypes
+	parser.NoDelegation = mode.noDelegation
+	parser.CompatFlags = cg.compatFlags
+	parser.AnnotationResolver = cg.annotationResolver
+	cg.parsers[mode] = parser
+	return parser
 }
 
 // SetPackageName sets the package name for the code generator.

@@ -18,8 +18,196 @@ import (
 
 	"github.com/pk910/dynamic-ssz/codegen/tests"
 	"github.com/pk910/dynamic-ssz/ssztypes"
+	"github.com/pk910/dynamic-ssz/sszutils"
 	"golang.org/x/tools/go/packages"
 )
+
+// staticTrueAnnotation is the annotation a fully-delegated fixed-size type
+// carries.
+const staticTrueAnnotation = `ssz-static:"true"`
+
+// Both front ends describe a fully-delegated child the same way: a basic
+// type keeps its SSZ type and width and an acyclic named slice stays a
+// shallow static value. Both refuse a delegated type on a cycle with the type
+// they are describing.
+func TestShallowDescriptorParity(t *testing.T) {
+	pkg := loadTestsPackage(t)
+	parse := func(name string) (*ssztypes.TypeDescriptor, error) {
+		obj := pkg.Types.Scope().Lookup(name)
+		if obj == nil {
+			t.Fatalf("%s not found", name)
+		}
+		p := NewParser()
+		// The fixtures register their static annotation through
+		// sszutils.Annotate; the parser sees it through this resolver.
+		p.AnnotationResolver = func(t types.Type) string {
+			if ptr, ok := types.Unalias(t).(*types.Pointer); ok {
+				t = ptr.Elem()
+			}
+			if named, ok := types.Unalias(t).(*types.Named); ok {
+				switch named.Obj().Name() {
+				case "shallowBasic", "edgeOpaque", "fixedOctets", "plainExtScalar", "extScalar":
+					return staticTrueAnnotation
+				case "amount":
+					return `ssz-type:"uint128" ssz-static:"true"`
+				case "declaredU64":
+					return `ssz-type:"uint64" ssz-static:"true"`
+				case "customPair":
+					return `ssz-type:"custom" ssz-size:"2" ssz-static:"true"`
+				}
+			}
+			return ""
+		}
+		return p.GetTypeDescriptor(types.NewPointer(obj.Type()), nil, nil, nil)
+	}
+	reflectDesc := func(v any) (*ssztypes.TypeDescriptor, error) {
+		return ssztypes.NewTypeCache(nil).GetTypeDescriptor(reflect.TypeOf(v), nil, nil, nil)
+	}
+	reflectElem := func(slice any) (*ssztypes.TypeDescriptor, error) {
+		return ssztypes.NewTypeCache(nil).GetTypeDescriptor(reflect.TypeOf(slice).Elem(), nil, nil, nil)
+	}
+	// What the emitters consume from a delegated descriptor: whether it is a
+	// basic value and how wide, whether it packs, whether it is dynamic, and
+	// whether it was built shallow. A non-basic shallow type states its size
+	// at run time through its sizer in one front end and statically in the
+	// other, which the emitters handle alike.
+	shape := func(d *ssztypes.TypeDescriptor) string {
+		size := int64(0)
+		if d.SszType.IsBasic() {
+			size = d.Size
+		}
+		return fmt.Sprintf("basic=%v width=%d packed=%d dynamic=%v shallow=%v",
+			d.SszType.IsBasic(), size, packedElemSize(d), d.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0,
+			d.ContainerDesc == nil && d.ElemDesc == nil)
+	}
+	for _, tc := range []struct {
+		name  string
+		value any
+		elem  any
+		want  string
+	}{
+		{name: "shallowBasic", value: tests.ShallowBasicHolder{}.A, want: "basic=true width=2 packed=2 dynamic=false shallow=true"},
+		{name: "fixedOctets", value: tests.OctetParent{}.Data, want: "basic=false width=0 packed=0 dynamic=false shallow=true"},
+		// A width no Go kind states, declared by annotation.
+		{name: "amount", elem: tests.AmountList{}.L, want: "basic=true width=16 packed=16 dynamic=false shallow=true"},
+		// A width the annotation states over a Go kind that states another.
+		{name: "declaredU64", elem: tests.DeclaredU64Holder{}.L, want: "basic=true width=8 packed=8 dynamic=false shallow=true"},
+		// A custom type packs like the basic type its width matches.
+		{name: "customPair", elem: tests.CustomPairList{}.L, want: "basic=false width=0 packed=2 dynamic=false shallow=true"},
+		// A signed basic, which is basic only where extended types are on.
+		{name: "plainExtScalar", elem: tests.PlainExtHolder{}.L, want: "basic=true width=4 packed=4 dynamic=false shallow=true"},
+	} {
+		parsedRoot, err := parse(tc.name)
+		if err != nil {
+			t.Fatalf("parse %s: %v", tc.name, err)
+		}
+		var reflectedRoot *ssztypes.TypeDescriptor
+		if tc.elem != nil {
+			reflectedRoot, err = reflectElem(tc.elem)
+		} else {
+			reflectedRoot, err = reflectDesc(tc.value)
+		}
+		if err != nil {
+			t.Fatalf("type cache %s: %v", tc.name, err)
+		}
+		parsed, reflected := shape(parsedRoot), shape(reflectedRoot)
+		if parsed != tc.want || reflected != tc.want {
+			t.Fatalf("%s: parser %s, type cache %s, want %s", tc.name, parsed, reflected, tc.want)
+		}
+	}
+
+	// edgeOpaque delegates and lies on a cycle with edgeCycleA, which is
+	// described here: both front ends refuse the pair by name.
+	for name, build := range map[string]func() error{
+		"parser":     func() error { _, err := parse("edgeCycleA"); return err },
+		"type cache": func() error { _, err := reflectDesc(tests.EdgeCycleParent{}); return err },
+	} {
+		err := build()
+		if err == nil || !strings.Contains(err.Error(), "edgeOpaque") || !strings.Contains(err.Error(), "edgeCycleA") || !strings.Contains(err.Error(), "generated in one run") {
+			t.Fatalf("%s: err = %v, want the cycle between edgeOpaque and edgeCycleA refused", name, err)
+		}
+	}
+}
+
+// A delegated custom type that declares a fixed framing without a width is
+// refused wherever it is described: the generator has no sizer to call, and a
+// field reference does not make the width knowable.
+func TestParserRefusesSizerCustomField(t *testing.T) {
+	obj := loadTestsPackage(t).Types.Scope().Lookup("SizerCustomField")
+	if obj == nil {
+		t.Fatal("SizerCustomField not found")
+	}
+	p := NewParser()
+	p.AnnotationResolver = func(t types.Type) string {
+		if named, ok := types.Unalias(t).(*types.Named); ok && named.Obj().Name() == "sizerCustom" {
+			return `ssz-type:"custom" ssz-static:"true"`
+		}
+		return ""
+	}
+	_, err := p.GetTypeDescriptor(types.NewPointer(obj.Type()), nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "no ssz-size") {
+		t.Fatalf("err = %v, want the declared-width refusal", err)
+	}
+}
+
+// Shapes the type cache refuses are refused by the parser as well.
+func TestParserRefusesDivergentShapes(t *testing.T) {
+	pkg := loadTestsPackage(t)
+	for _, tc := range []struct {
+		name string
+		want string
+	}{
+		{"BadBitsZero", "zero length"},
+		{"BadCompatNone", "dynssz.None is not a valid compatible union variant"},
+		{"EmptyCompat", "no fields"},
+		{"BadHugeVector", "SSZ size limit"},
+		{"BadHugeContainer", "SSZ size limit"},
+		{"BadHugeDynVector", "SSZ size limit"},
+		{"BadOffsetTable", "offset table limit"},
+	} {
+		obj := pkg.Types.Scope().Lookup(tc.name)
+		if obj == nil {
+			t.Fatalf("%s not found", tc.name)
+		}
+		_, err := NewParser().GetTypeDescriptor(types.NewPointer(obj.Type()), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: err = %v, want %q", tc.name, err, tc.want)
+		}
+	}
+}
+
+// A Go array length past the SSZ size limit is refused by the parser; the
+// fixture exists on 64-bit hosts only.
+func TestParserRefusesHugeArrayLength(t *testing.T) {
+	obj := loadTestsPackage(t).Types.Scope().Lookup("BadHugeArray")
+	if obj == nil {
+		t.Skip("the 64-bit fixture is not built on this host")
+	}
+	_, err := NewParser().GetTypeDescriptor(types.NewPointer(obj.Type()), nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "SSZ size limit") {
+		t.Fatalf("err = %v, want the SSZ size limit refusal", err)
+	}
+}
+
+// The generator describes a cycle through a delegate that carries no
+// annotation, as the reflection type cache does: neither builds such a type
+// shallow, so the cycle refusal never applies to it.
+func TestParserDescribesUnannotatedDelegateCycle(t *testing.T) {
+	obj := loadTestsPackage(t).Types.Scope().Lookup("NoAnnParent")
+	if obj == nil {
+		t.Fatal("NoAnnParent not found")
+	}
+	p := NewParser()
+	p.AnnotationResolver = func(types.Type) string { return "" }
+	if _, err := p.GetTypeDescriptor(types.NewPointer(obj.Type()), nil, nil, nil); err != nil {
+		t.Fatalf("parse NoAnnParent: %v", err)
+	}
+}
+
+// badAnnotated carries an annotation the tag parser rejects.
+type badAnnotated struct{ A uint64 }
+
+var _ = sszutils.Annotate[badAnnotated](`ssz-static:"true" ssz-type:"bogus"`)
 
 // TestParserShallowGate exercises the parser's shallow-build gate for an external,
 // fully-delegated type. NestedDelegatedContainer (loaded with its generated
@@ -43,9 +231,28 @@ func TestParserShallowGate(t *testing.T) {
 		}
 	})
 
+	// An annotation the tag parser rejects is refused here, as the reflection
+	// type cache refuses it.
+	t.Run("InvalidAnnotation", func(t *testing.T) {
+		const annotation = `ssz-static:"true" ssz-type:"bogus"`
+		p := NewParser()
+		p.AnnotationResolver = func(types.Type) string { return annotation }
+		if !p.fullyDelegatesSSZ(ptrType) {
+			t.Skip("generated code not present; NestedDelegatedContainer does not fully delegate")
+		}
+		_, err := p.GetTypeDescriptor(ptrType, nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "bogus") {
+			t.Fatalf("parser: err = %v, want the annotation refused", err)
+		}
+		_, cacheErr := ssztypes.NewTypeCache(nil).GetTypeDescriptor(reflect.TypeOf(badAnnotated{}), nil, nil, nil)
+		if cacheErr == nil || !strings.Contains(cacheErr.Error(), "bogus") {
+			t.Fatalf("type cache: err = %v, want the annotation refused", cacheErr)
+		}
+	})
+
 	t.Run("StaticTrueShallow", func(t *testing.T) {
 		p := NewParser()
-		p.AnnotationResolver = func(types.Type) string { return `ssz-static:"true"` }
+		p.AnnotationResolver = func(types.Type) string { return staticTrueAnnotation }
 		// The shallow gate only fires for a fully-delegated type. When the
 		// generated methods are absent (gen_*.go not produced by go generate),
 		// NestedDelegatedContainer does not delegate and the gate never fires.
@@ -1873,6 +2080,26 @@ func TestCustomTypesAndErrors(t *testing.T) {
 		}
 	})
 
+	t.Run("CustomTypeWithDynamicMethodsOnly", func(t *testing.T) {
+		uint32Type := types.Typ[types.Uint32]
+		parser.CompatFlags[uint32Type.String()] = ssztypes.SszCompatFlagDynamicMarshaler | ssztypes.SszCompatFlagDynamicUnmarshaler |
+			ssztypes.SszCompatFlagDynamicSizer | ssztypes.SszCompatFlagDynamicHashRoot
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszCustomType}}
+		if _, err := parser.buildTypeDescriptor(uint32Type, uint32Type, typeHint, nil, nil); err != nil {
+			t.Fatalf("a custom type served by its dynssz methods must be accepted: %v", err)
+		}
+	})
+
+	t.Run("CustomTypeMissingHasher", func(t *testing.T) {
+		int64Type := types.Typ[types.Int64]
+		parser.CompatFlags[int64Type.String()] = ssztypes.SszCompatFlagFastSSZMarshaler
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszCustomType}}
+		_, err := parser.buildTypeDescriptor(int64Type, int64Type, typeHint, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "missing a fastssz or dynssz hasher") {
+			t.Fatalf("custom type without a hasher: err = %v, want the missing hasher named", err)
+		}
+	})
+
 	t.Run("CustomTypeWithSizeHint", func(t *testing.T) {
 		// Mock a type with FastSSZ compatibility for testing
 		uint64Type := types.Typ[types.Uint64]
@@ -2766,17 +2993,14 @@ func TestBuildVectorDescriptorEdgeCases(t *testing.T) {
 		}
 	})
 
-	t.Run("BitvectorStringWithBitsizeHint", func(t *testing.T) {
-		// Test string as bitvector with bitsize hint
+	t.Run("BitvectorStringRejected", func(t *testing.T) {
+		// A bitvector is stored in bytes, never in a string.
 		stringType := types.Typ[types.String]
 		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszBitvectorType}}
-		sizeHint := []ssztypes.SszSizeHint{{Size: 160, Bits: true}} // 160 bits = 20 bytes
-		desc, err := parser.buildTypeDescriptor(stringType, stringType, typeHint, sizeHint, nil)
-		if err != nil {
-			t.Fatalf("Failed to build string bitvector descriptor: %v", err)
-		}
-		if desc.Len != 20 { // 160 bits = 20 bytes
-			t.Errorf("Expected len 20 (160 bits), got %d", desc.Len)
+		sizeHint := []ssztypes.SszSizeHint{{Size: 160, Bits: true}}
+		_, err := parser.buildTypeDescriptor(stringType, stringType, typeHint, sizeHint, nil)
+		if err == nil || !strings.Contains(err.Error(), "got string") {
+			t.Fatalf("err = %v, want the string bitvector rejection", err)
 		}
 	})
 
@@ -3608,5 +3832,103 @@ func TestFrontEndDescriptorHashParity(t *testing.T) {
 				t.Errorf("MinSize diverges: go/types %d, reflect %d", goDesc.MinSize, reflDesc.MinSize)
 			}
 		})
+	}
+}
+
+// A bitvector or bitlist is stored in bytes; a string backing, or a wider
+// element, is refused as the reflection type cache refuses it.
+func TestParserRejectsStringAndWideBitfields(t *testing.T) {
+	parser := NewParser()
+
+	for _, tc := range []struct {
+		name     string
+		typ      types.Type
+		typeHint ssztypes.SszType
+		sizeHint []ssztypes.SszSizeHint
+		maxHint  []ssztypes.SszMaxSizeHint
+		expected string
+	}{
+		{"bitvector as string", types.Typ[types.String], ssztypes.SszBitvectorType, []ssztypes.SszSizeHint{{Size: 4, Bits: true}}, nil, "got string"},
+		{"bitvector of uint16", types.NewSlice(types.Typ[types.Uint16]), ssztypes.SszBitvectorType, []ssztypes.SszSizeHint{{Size: 16, Bits: true}}, nil, "got uint16"},
+		{"bitlist as string", types.Typ[types.String], ssztypes.SszBitlistType, nil, []ssztypes.SszMaxSizeHint{{Size: 16}}, "bitlist type can only be represented by slice types"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parser.buildTypeDescriptor(tc.typ, tc.typ, []ssztypes.SszTypeHint{{Type: tc.typeHint}}, tc.sizeHint, tc.maxHint)
+			if err == nil || !strings.Contains(err.Error(), tc.expected) {
+				t.Fatalf("err = %v, want an error containing %q", err, tc.expected)
+			}
+		})
+	}
+}
+
+// A HashTreeRootWith parameter qualifies as a walker interface only when the
+// library's walker implements it: every method must exist on the walker with
+// the same signature, not just the same name and arity.
+func TestParserWalkerParameterSignatures(t *testing.T) {
+	parser := NewParser()
+	sig := func(variadic bool, results []types.Type, params ...types.Type) *types.Signature {
+		vars := make([]*types.Var, len(params))
+		for i, p := range params {
+			vars[i] = types.NewVar(0, nil, "", p)
+		}
+		res := make([]*types.Var, len(results))
+		for i, r := range results {
+			res[i] = types.NewVar(0, nil, "", r)
+		}
+		return types.NewSignatureType(nil, nil, nil, types.NewTuple(vars...), types.NewTuple(res...), variadic)
+	}
+	method := func(name string, s *types.Signature) *types.Func { return types.NewFunc(0, nil, name, s) }
+	iface := func(methods ...*types.Func) types.Type {
+		return types.NewInterfaceType(methods, nil).Complete()
+	}
+	bytes := types.NewSlice(types.Typ[types.Byte])
+	u64, i, str := types.Typ[types.Uint64], types.Typ[types.Int], types.Typ[types.String]
+
+	for _, tc := range []struct {
+		name string
+		typ  types.Type
+		want bool
+	}{
+		{"fastssz subset", iface(method("Index", sig(false, []types.Type{i})), method("PutUint64", sig(false, nil, u64)), method("Merkleize", sig(false, nil, i))), true},
+		{"bytes and variadic", iface(method("PutBitlist", sig(false, nil, bytes, u64)), method("PutUint64Array", sig(true, nil, types.NewSlice(u64), types.NewSlice(u64)))), true},
+		{"function parameter", iface(method("WithTemp", sig(false, nil, sig(false, []types.Type{bytes}, bytes)))), true},
+		{"wrong parameter type", iface(method("PutUint64", sig(false, nil, str))), false},
+		{"wrong parameter width", iface(method("Merkleize", sig(false, nil, u64))), false},
+		{"wrong result type", iface(method("Index", sig(false, []types.Type{u64}))), false},
+		{"missing variadic", iface(method("PutUint64Array", sig(false, nil, types.NewSlice(u64), types.NewSlice(u64)))), false},
+		{"unknown method", iface(method("PutSomething", sig(false, nil, u64))), false},
+		{"not an interface", u64, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parser.typeMatches(tc.typ, typeNameHashWalkerParam); got != tc.want {
+				t.Fatalf("typeMatches = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// The library's own walker interface qualifies as a walker parameter: every
+// method spelled through go/types matches its reflect spelling.
+func TestParserWalkerParameterAcceptsHashWalker(t *testing.T) {
+	pkgs, err := packages.Load(&packages.Config{Mode: packages.NeedTypes | packages.NeedDeps | packages.NeedName}, "github.com/pk910/dynamic-ssz/sszutils")
+	if err != nil {
+		t.Fatalf("failed to load package: %v", err)
+	}
+	walker := pkgs[0].Types.Scope().Lookup("HashWalker")
+	if walker == nil {
+		t.Fatal("HashWalker not found")
+	}
+	iface, ok := walker.Type().Underlying().(*types.Interface)
+	if !ok {
+		t.Fatal("HashWalker is not an interface")
+	}
+	for i := range iface.NumMethods() {
+		method := iface.Method(i)
+		if got, want := goTypeKey(method.Type()), hashWalkerMethods[method.Name()]; got != want {
+			t.Errorf("%s: go/types key %q != reflect key %q", method.Name(), got, want)
+		}
+	}
+	if !NewParser().typeMatches(walker.Type(), typeNameHashWalkerParam) {
+		t.Fatal("sszutils.HashWalker does not qualify as a walker parameter")
 	}
 }

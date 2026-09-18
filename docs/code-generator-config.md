@@ -48,6 +48,7 @@ without-dynamic-expressions: false
 without-fastssz: false
 with-streaming: false
 with-extended-types: false
+# recursion-depth: 64   # nesting depth at which generated code rejects a recursive value (0 = default)
 
 # Types to generate (at least one required)
 types:
@@ -92,6 +93,7 @@ types:
 | `without-fastssz` | bool | no | Don't call third-party fastssz methods on referenced types. |
 | `with-streaming` | bool | no | Emit streaming encoder/decoder methods. |
 | `with-extended-types` | bool | no | Allow extended types (signed ints, floats, big.Int, optionals). |
+| `recursion-depth` | int | no | Nesting depth at which the generated methods reject a recursive value. `0` selects the default of 1024. |
 | `skip-marshal` | bool | no | Don't generate marshal methods. |
 | `skip-unmarshal` | bool | no | Don't generate unmarshal methods. |
 | `skip-size` | bool | no | Don't generate size methods. |
@@ -116,6 +118,7 @@ or **full form** (a mapping).
 | `without-fastssz` | bool | Per-type override. |
 | `with-streaming` | bool | Per-type override. |
 | `with-extended-types` | bool | Per-type override. |
+| `recursion-depth` | int | Per-type override. |
 | `skip-marshal` | bool | Per-type override. |
 | `skip-unmarshal` | bool | Per-type override. |
 | `skip-size` | bool | Per-type override. |

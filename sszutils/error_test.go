@@ -6,6 +6,7 @@ package sszutils
 
 import (
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -358,5 +359,37 @@ func TestErrorWithPath_NoMutation(t *testing.T) {
 	}
 	if strings.Contains(b.Error(), "FieldA") {
 		t.Errorf("wrap B leaked FieldA: %q", b.Error())
+	}
+}
+
+// A path segment costs one small allocation whatever the depth, so a decode
+// failing at the nesting bound reports its path in linear memory.
+func TestErrorWithPathLinear(t *testing.T) {
+	err := NewSszError(ErrUnexpectedEOF, "short")
+	for i := 0; i < 2000; i++ {
+		err = ErrorWithPath(err, "F")
+	}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	for i := 0; i < 100; i++ {
+		_ = ErrorWithPath(err, "G")
+	}
+	runtime.ReadMemStats(&after)
+	if perWrap := (after.TotalAlloc - before.TotalAlloc) / 100; perWrap > 256 {
+		t.Fatalf("wrapping a 2000-deep path allocated %d bytes per level, want a constant", perWrap)
+	}
+	var se *sszError
+	if !errors.As(err, &se) {
+		t.Fatal("expected sszError type")
+	}
+	if path := se.Path(); len(path) != 2000 || path[0] != "F" {
+		t.Fatalf("path length %d", len(path))
+	}
+	if msg := err.Error(); !strings.HasPrefix(msg, "F.F.F") || !strings.HasSuffix(msg, ": "+ErrUnexpectedEOF.Error()+": short") {
+		t.Fatalf("unexpected message %q", msg[:40])
+	}
+	if !errors.Is(err, ErrUnexpectedEOF) {
+		t.Fatal("sentinel lost")
 	}
 }

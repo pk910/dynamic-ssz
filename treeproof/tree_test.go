@@ -30,9 +30,10 @@ func TestNewNodeWithValue(t *testing.T) {
 			expectEmpty: false,
 		},
 		{
+			// A zero value is data, not padding.
 			name:        "zero value",
 			value:       sszutils.ZeroBytes()[:32],
-			expectEmpty: true,
+			expectEmpty: false,
 		},
 	}
 
@@ -3192,5 +3193,56 @@ func TestFinalizeAliasedErrors(t *testing.T) {
 			}
 			assertAllBranchesHashed(t, tree)
 		})
+	}
+}
+
+// Each side of a compression owns its data: editing one proof never edits the
+// other, in either direction.
+func TestCompressDecompressOwnData(t *testing.T) {
+	proof := &Multiproof{
+		Indices: []int{4, 5},
+		Leaves:  [][]byte{sum256ToBytes([]byte("leaf1")), sum256ToBytes([]byte("leaf2"))},
+		Hashes:  [][]byte{hasher.GetZeroHash(0), sum256ToBytes([]byte("sibling"))},
+	}
+	compressed := proof.Compress()
+	compressed.Indices[0] = 99
+	compressed.Leaves[0][0] ^= 0xff
+	compressed.Hashes[1][0] ^= 0xff
+	if proof.Indices[0] != 4 || proof.Leaves[0][0] == compressed.Leaves[0][0] || proof.Hashes[1][0] == compressed.Hashes[1][0] {
+		t.Fatal("editing the compressed proof changed the original")
+	}
+
+	back := proof.Compress().Decompress()
+	back.Indices[1] = 98
+	back.Leaves[1][0] ^= 0xff
+	back.Hashes[0][0] ^= 0xff
+	back.Hashes[1][0] ^= 0xff
+	if proof.Indices[1] != 5 || proof.Leaves[1][0] == back.Leaves[1][0] || proof.Hashes[1][0] == back.Hashes[1][0] {
+		t.Fatal("editing the decompressed proof changed the original")
+	}
+	if !bytes.Equal(hasher.GetZeroHash(0), make([]byte, 32)) {
+		t.Fatal("editing a decompressed zero hash changed the shared table")
+	}
+}
+
+// Only padding is empty: a leaf holding an all-zero value is data, and no
+// proof exists below either kind of leaf.
+func TestLeafEmptyOnlyForPadding(t *testing.T) {
+	zero := NewNodeWithValue(make([]byte, 32))
+	if zero.IsEmpty() {
+		t.Fatal("a zero-valued leaf reports itself as padding")
+	}
+	if !EmptyLeaf().IsEmpty() || !NewEmptyNode(hasher.GetZeroHash(0)).IsEmpty() {
+		t.Fatal("padding leaves do not report themselves as padding")
+	}
+	root, err := TreeFromNodes([]*Node{zero, NewNodeWithValue([]byte{1})}, 2)
+	if err != nil {
+		t.Fatalf("tree: %v", err)
+	}
+	if _, err := root.Prove(4); err == nil {
+		t.Fatal("a proof below a zero-valued leaf was produced")
+	}
+	if _, err := root.Prove(2); err != nil {
+		t.Fatalf("proof of the zero-valued leaf: %v", err)
 	}
 }

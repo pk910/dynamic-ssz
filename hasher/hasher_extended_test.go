@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	buildinfo "runtime/debug"
 	"testing"
 
 	"github.com/pk910/dynamic-ssz/sszutils"
@@ -1507,5 +1508,72 @@ func TestHashReturnsDeferredScopeRoot(t *testing.T) {
 				t.Errorf("list root: got %x, want %x", root, expListRoot)
 			}
 		})
+	}
+}
+
+// hugeBitlist returns a bitlist of exactly 2^31 zero bits with its delimiter:
+// 256 MiB of data plus one byte. Its bit count exceeds the 32-bit int range.
+func hugeBitlist() []byte {
+	data := make([]byte, (1<<28)+1)
+	data[len(data)-1] = 1
+	return data
+}
+
+// hugeBitlistRoot is the root of hugeBitlist under a limit of 2^31 bits: 2^23
+// zero chunks merkleized to depth 23, mixed with the bit count.
+func hugeBitlistRoot() [32]byte {
+	var node [32]byte
+	var pair [64]byte
+	for range 23 {
+		copy(pair[:32], node[:])
+		copy(pair[32:], node[:])
+		node = sha256.Sum256(pair[:])
+	}
+	copy(pair[:32], node[:])
+	clear(pair[32:])
+	binary.LittleEndian.PutUint64(pair[32:], 1<<31)
+	return sha256.Sum256(pair[:])
+}
+
+// A bitlist longer than the 32-bit int range in bits keeps its exact bit
+// count through the parser and the length mixin.
+// raceDetectorEnabled reports whether this binary was built with the race
+// detector. A test that walks hundreds of megabytes through a single
+// goroutine costs it minutes and gives it nothing to find.
+func raceDetectorEnabled() bool {
+	info, ok := buildinfo.ReadBuildInfo()
+	if !ok {
+		return false
+	}
+	for _, setting := range info.Settings {
+		if setting.Key == "-race" {
+			return setting.Value == "true"
+		}
+	}
+	return false
+}
+
+func TestBitlistBitCountBeyondInt32(t *testing.T) {
+	if raceDetectorEnabled() {
+		// A quarter-gigabyte bitlist through one goroutine: the race detector
+		// multiplies the cost by sixty and has no concurrency to inspect. The
+		// builds without it run this in full.
+		t.Skip("skipped under the race detector")
+	}
+	data := hugeBitlist()
+	_, count := ParseBitlist(data[:0:len(data)], data)
+	if count != 1<<31 {
+		t.Fatalf("ParseBitlist count = %d, want %d", count, uint64(1)<<31)
+	}
+
+	data = hugeBitlist()
+	h := NewHasher()
+	h.PutBitlist(data, 1<<31)
+	root, err := h.HashRoot()
+	if err != nil {
+		t.Fatalf("HashRoot: %v", err)
+	}
+	if want := hugeBitlistRoot(); root != want {
+		t.Fatalf("PutBitlist root = %x, want %x", root, want)
 	}
 }

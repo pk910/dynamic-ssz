@@ -165,9 +165,10 @@ func (n *Node) Value() []byte
 
 Node values are full 32-byte chunks: leaf constructors zero-pad shorter
 input at construction time, so `Value()` and `Proof.Leaf` always return 32
-bytes. `NewNodeWithValue` drops input bytes beyond 32 — use `LeafFromBytes`
-to merkleize longer input into a subtree. All constructors copy their input,
-so a later mutation of the caller's buffer never changes the tree.
+bytes. `NewNodeWithValue` panics on input longer than 32 bytes, since a leaf
+cannot hold it — use `LeafFromBytes` to merkleize longer input into a
+subtree. All constructors copy their input, so a later mutation of the
+caller's buffer never changes the tree.
 
 #### Finalization
 

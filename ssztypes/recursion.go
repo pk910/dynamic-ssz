@@ -79,9 +79,10 @@ func FixupRecursiveFlags(root *TypeDescriptor) {
 			var derived SszTypeFlag
 
 			// Mirror the build-time propagation rules exactly: containers OR the
-			// flags of every field, single-element collections OR their element's
-			// flags. Unions and large uints propagate nothing from their children
-			// (matching the builders), and leaves have nothing to derive.
+			// flags of every field, unions the flags of every variant,
+			// single-element collections their element's flags. Large uints
+			// propagate nothing from their children, and leaves have nothing
+			// to derive.
 			switch desc.SszType {
 			case SszContainerType, SszProgressiveContainerType:
 				if desc.ContainerDesc != nil {
@@ -96,9 +97,15 @@ func FixupRecursiveFlags(root *TypeDescriptor) {
 				if desc.ElemDesc != nil {
 					derived |= desc.ElemDesc.SszTypeFlags
 				}
+			case SszUnionType, SszCompatibleUnionType:
+				for _, variantDesc := range desc.UnionVariants {
+					if variantDesc != nil {
+						derived |= variantDesc.SszTypeFlags
+					}
+				}
 			default:
-				// Primitives, large uints, unions and custom types derive no flags
-				// from children (matching the builders).
+				// Primitives, large uints and custom types derive no flags from
+				// children.
 			}
 
 			raised := (derived & childDerivedFlags) &^ desc.SszTypeFlags
@@ -125,50 +132,33 @@ func FixupRecursiveFlags(root *TypeDescriptor) {
 // markRecursionMembers flags every descriptor that lies on a recursive cycle
 // with SszTypeFlagRecursionMember. The walkers and the code generator count one
 // nesting level per flagged descriptor entered, so the flag defines what the
-// nesting bound measures — and both engines mark from the same graph shape, so
+// nesting bound measures, and both engines mark from the same graph shape, so
 // they count identically.
 //
 // Type wrappers are transparent: they attach tags to their element without
 // adding a structural level, so they stay unflagged (the cycle they sit on is
-// still counted through its other members — a cycle cannot consist of wrappers
-// alone, as a wrapper only wraps). Pointers never appear as separate
-// descriptors (GoTypeFlagIsPointer folds them into their element), so a trip
-// around a cycle costs exactly one level per structural member.
+// still counted through its other members, as a wrapper only wraps). Pointers
+// never appear as separate descriptors (GoTypeFlagIsPointer folds them into
+// their element), so a trip around a cycle costs exactly one level per
+// structural member.
 //
-// Cycle membership is a property of the descriptor graph itself — a descriptor
-// either can reach itself or it cannot, regardless of which root the walk
-// started from — so marking shared cached descriptors is stable across builds.
+// A descriptor is on a cycle exactly when it belongs to a strongly connected
+// component with more than one member, or has an edge to itself; the
+// components are found with Tarjan's algorithm. Membership is a property of
+// the descriptor graph alone, and a component lies within its members'
+// reachable subgraph, which is complete once a member has been published, so
+// the first build reaching a descriptor marks it and a later build finds the
+// bit already set: a published descriptor is never written.
 func markRecursionMembers(root *TypeDescriptor) {
-	// A descriptor is on a cycle exactly when a walk from it can reach it
-	// again, so a depth-first walk that remembers its current path flags
-	// everything between a back edge's target and the node that closed it.
-	var path []*TypeDescriptor
-	onPath := map[*TypeDescriptor]int{}
-	done := map[*TypeDescriptor]struct{}{}
+	type node struct {
+		index, lowlink int
+		onStack        bool
+	}
+	nodes := map[*TypeDescriptor]*node{}
+	var stack []*TypeDescriptor
+	next := 0
 
-	var visit func(desc *TypeDescriptor)
-	visit = func(desc *TypeDescriptor) {
-		if desc == nil {
-			return
-		}
-		if start, cycling := onPath[desc]; cycling {
-			for _, member := range path[start:] {
-				// A member reached through an already-built descriptor carries
-				// the bit already; re-setting it would write to a published
-				// descriptor that other goroutines read lock-free.
-				if member.SszType != SszTypeWrapperType && member.SszTypeFlags&SszTypeFlagRecursionMember == 0 {
-					member.SszTypeFlags |= SszTypeFlagRecursionMember
-				}
-			}
-			return
-		}
-		if _, settled := done[desc]; settled {
-			return
-		}
-
-		onPath[desc] = len(path)
-		path = append(path, desc)
-
+	edges := func(desc *TypeDescriptor, visit func(child *TypeDescriptor)) {
 		if desc.ContainerDesc != nil {
 			for i := range desc.ContainerDesc.Fields {
 				visit(desc.ContainerDesc.Fields[i].Type)
@@ -178,14 +168,56 @@ func markRecursionMembers(root *TypeDescriptor) {
 		for _, variant := range desc.UnionVariants {
 			visit(variant)
 		}
-
-		path = path[:len(path)-1]
-		delete(onPath, desc)
-		// Only a fully explored node that has left the path is settled; one
-		// still on the path may yet be reached by a back edge.
-		done[desc] = struct{}{}
 	}
-	visit(root)
+
+	var connect func(desc *TypeDescriptor)
+	connect = func(desc *TypeDescriptor) {
+		n := &node{index: next, lowlink: next, onStack: true}
+		nodes[desc] = n
+		next++
+		stack = append(stack, desc)
+
+		selfEdge := false
+		edges(desc, func(child *TypeDescriptor) {
+			if child == nil {
+				return
+			}
+			if child == desc {
+				selfEdge = true
+				return
+			}
+			if childNode, seen := nodes[child]; !seen {
+				connect(child)
+				n.lowlink = min(n.lowlink, nodes[child].lowlink)
+			} else if childNode.onStack {
+				n.lowlink = min(n.lowlink, childNode.index)
+			}
+		})
+
+		if n.lowlink != n.index {
+			return
+		}
+		// desc is the root of a component: pop its members.
+		var members []*TypeDescriptor
+		for {
+			top := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			nodes[top].onStack = false
+			members = append(members, top)
+			if top == desc {
+				break
+			}
+		}
+		if len(members) == 1 && !selfEdge {
+			return
+		}
+		for _, member := range members {
+			if member.SszType != SszTypeWrapperType && member.SszTypeFlags&SszTypeFlagRecursionMember == 0 {
+				member.SszTypeFlags |= SszTypeFlagRecursionMember
+			}
+		}
+	}
+	connect(root)
 }
 
 // marshalCyclicDescriptor serializes a descriptor graph that contains cycles

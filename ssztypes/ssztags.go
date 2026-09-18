@@ -6,7 +6,6 @@ package ssztypes
 
 import (
 	"fmt"
-	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -226,12 +225,26 @@ func getSszTypeTag(field *reflect.StructField) ([]SszTypeHint, error) {
 //     'dynssz-size' annotations, suggesting a deviation from standard size expectations that might influence the encoding or decoding process.
 //   - bits: A boolean flag indicating whether the size is in bits rather than bytes.
 //   - expr: The dynamic expression used to calculate the size of the field, typically through 'dynssz-size' annotations.
+//
+
 type SszSizeHint struct {
 	Size    int64
 	Dynamic bool
 	Custom  bool
 	Bits    bool
 	Expr    string
+}
+
+// exceedsSizeLimit reports whether a declared length passes the SSZ size
+// limit. A bit count is measured by the bytes it occupies, so the limit stays
+// in the byte domain wherever it is applied: a count occupies more than the
+// limit exactly when it passes eight times the limit, which states the rule
+// without forming the division.
+func exceedsSizeLimit(value uint64, bits bool) bool {
+	if bits {
+		return value > uint64(sszutils.MaxSszSize)*8
+	}
+	return value > sszutils.MaxSszSize
 }
 
 // getSszSizeTag parses the 'ssz-size'/'ssz-bitsize' and 'dynssz-size'/'dynssz-bitsize' tag annotations from a struct field and returns
@@ -283,12 +296,18 @@ func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszS
 				if err != nil {
 					return sszSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing ssz-bitsize tag for '%v' field: %v", field.Name, err)
 				}
+				if exceedsSizeLimit(sszSizeInt, true) {
+					return sszSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "ssz-bitsize tag for '%v' field: %d bits exceed the SSZ size limit", field.Name, sszSizeInt)
+				}
 				sszSize.Size = int64(sszSizeInt)
 				sszSize.Bits = true
 			case sszSizeStr != "?":
 				sszSizeInt, err := strconv.ParseUint(sszSizeStr, 10, 63)
 				if err != nil {
 					return sszSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing ssz-size tag for '%v' field: %v", field.Name, err)
+				}
+				if sszSizeInt > sszutils.MaxSszSize {
+					return sszSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "ssz-size tag for '%v' field: %d exceeds the SSZ size limit", field.Name, sszSizeInt)
 				}
 				sszSize.Size = int64(sszSizeInt)
 			default:
@@ -350,6 +369,9 @@ func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszS
 			if sizeExpr == "?" {
 				sszSize.Dynamic = true
 			} else if sszSizeInt, err := strconv.ParseUint(sizeExpr, 10, 63); err == nil {
+				if exceedsSizeLimit(sszSizeInt, sszSize.Bits) {
+					return sszSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "dynssz-size tag for '%v' field: %d exceeds the SSZ size limit", field.Name, sszSizeInt)
+				}
 				sszSize.Size = int64(sszSizeInt)
 			} else {
 				ok, specVal, err := ds.ResolveSpecValue(sizeExpr)
@@ -360,7 +382,7 @@ func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszS
 				isExpr = true
 				if ok {
 					// dynamic value from spec
-					if specVal > math.MaxInt {
+					if exceedsSizeLimit(specVal, sszSize.Bits) {
 						return sszSizes, sszutils.ErrPlatformOverflowFn(fmt.Sprintf("dynssz-size value for field %q", field.Name), specVal)
 					}
 					if specVal == 0 {
@@ -608,6 +630,20 @@ func rejectZeroSizeHint(sizeHints []SszSizeHint) error {
 	return nil
 }
 
+// SameSszTypes reports whether two type-hint lists declare the same SSZ type
+// per dimension.
+func SameSszTypes(a, b []SszTypeHint) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Type != b[i].Type {
+			return false
+		}
+	}
+	return true
+}
+
 // JoinFieldAnnotationTag returns the effective SSZ tag for a struct field whose
 // type carries a registered annotation: the field tag is joined in front of the
 // annotation tag, so a key present in both resolves to the field's value
@@ -688,6 +724,9 @@ func ParseTags(tag string) (typeHints []SszTypeHint, sizeHints []SszSizeHint, ma
 				if parseErr != nil {
 					return nil, nil, nil, fmt.Errorf("error parsing ssz-size tag: %v", parseErr)
 				}
+				if exceedsSizeLimit(sizeInt, true) {
+					return nil, nil, nil, fmt.Errorf("ssz-bitsize tag: %d bits exceed the SSZ size limit", sizeInt)
+				}
 
 				hint.Size = int64(sizeInt)
 				hint.Bits = true
@@ -695,6 +734,9 @@ func ParseTags(tag string) (typeHints []SszTypeHint, sizeHints []SszSizeHint, ma
 				sizeInt, parseErr := strconv.ParseUint(strings.TrimSpace(sszSizeStr), 10, 63)
 				if parseErr != nil {
 					return nil, nil, nil, fmt.Errorf("error parsing ssz-size tag: %v", parseErr)
+				}
+				if sizeInt > sszutils.MaxSszSize {
+					return nil, nil, nil, fmt.Errorf("ssz-size tag: %d exceeds the SSZ size limit", sizeInt)
 				}
 
 				hint.Size = int64(sizeInt)
@@ -750,6 +792,9 @@ func ParseTags(tag string) (typeHints []SszTypeHint, sizeHints []SszSizeHint, ma
 			if sizeExpr == "?" {
 				sszSize.Dynamic = true
 			} else if sszSizeInt, parseErr := strconv.ParseUint(sizeExpr, 10, 63); parseErr == nil {
+				if exceedsSizeLimit(sszSizeInt, sszSize.Bits) {
+					return nil, nil, nil, fmt.Errorf("dynssz-size tag: %d exceeds the SSZ size limit", sszSizeInt)
+				}
 				sszSize.Size = int64(sszSizeInt)
 			} else {
 				// An expression names a length, so the dimension is a vector;

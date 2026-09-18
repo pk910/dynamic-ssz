@@ -745,8 +745,10 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 //   - No offset points outside the data bounds
 //   - Each element consumes exactly the expected bytes
 func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth reflectionDepth) error {
+	// The offset table holds four bytes per element and its size is computed
+	// in int below, so the length is bounded by what that product can hold.
 	dynVecLen := targetType.Len
-	if dynVecLen > math.MaxInt {
+	if dynVecLen > math.MaxInt/4 {
 		return sszutils.ErrPlatformOverflowFn("dynamic vector length", targetType.Len)
 	}
 
@@ -1089,7 +1091,7 @@ func (ctx *ReflectionCtx) unmarshalListUntilEOF(targetType *ssztypes.TypeDescrip
 	// allocated element instead would cost an allocation per item, which for a
 	// large trailing list is worse than the buffering this path exists to avoid.
 	// Seed from the bytes that have arrived rather than from the declaration.
-	initialLen := 8
+	initialLen := decoder.Available() / itemSize
 	if declared >= 0 {
 		initialLen = sszutils.CredibleCount(decoder, declared, itemSize)
 	}
@@ -1305,12 +1307,13 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 		fieldT = fieldT.Elem()
 	}
 
-	// A known region is already backed by the caller's complete input and keeps
-	// the existing exact-allocation path. For an open stream region, the offset
-	// table proves the element count but not that any element body exists, so
-	// reserve only a byte-bounded prefix and grow as bodies are reached.
+	// A known region is backed by the caller's complete input (a buffer or a
+	// declared stream length) and keeps the exact-allocation path. For an open
+	// stream region, the offset table proves the element count but not that
+	// any element body exists, so reserve only a byte-bounded prefix and grow
+	// as bodies are reached.
 	initialLen := sliceLen
-	if !lengthKnown {
+	if !decoder.LengthKnown() {
 		initialLen = dynamicListPreallocation(sliceLen, uint64(fieldT.Elem().Size()))
 	}
 	newValue := reflect.MakeSlice(fieldT, initialLen, initialLen)
@@ -1474,7 +1477,7 @@ func (ctx *ReflectionCtx) unmarshalBitlist(targetType *ssztypes.TypeDescriptor, 
 
 	if targetType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
 		msb := uint8(bits.Len8(byteSlice[sszLen-1])) - 1
-		bitCount := uint64(8*(sszLen-1)) + uint64(msb)
+		bitCount := uint64(sszLen-1)*8 + uint64(msb)
 		if bitCount > targetType.Limit {
 			return sszutils.ErrBitlistLengthFn(bitCount, targetType.Limit)
 		}

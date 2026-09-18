@@ -54,7 +54,7 @@ type DynSszOption func(*DynSszOptions)
 | `WithStreamWriterBufferSize(n)` | Set stream encoder buffer size (default 2KB) |
 | `WithStreamReaderBufferSize(n)` | Set stream decoder buffer size (default 2KB) |
 | `WithNoDelegation()` | Disable delegation to generated Dynamic* methods (fastssz is governed by `WithNoFastSsz`) |
-| `WithMaxStreamSize(n)` | Cap the payload size of `UnmarshalSSZReader` (default 512MB): a larger declared size is rejected up front, an unknown-length decode stops there |
+| `WithMaxStreamSize(n)` | Cap an unknown-length `UnmarshalSSZReader` decode (default 512MB); a declared size is its own bound; `WithStreamSizeLimit` overrides it per call |
 | `WithMaxNestingDepth(n)` | Bound recursion-cycle nesting (default 1024); guards the stack against deeply nested payloads |
 | `WithAsyncHashing(workers)` | Opt this instance's `HashTreeRoot` into background subtree reduction; `workers > 0` also sets the process-wide worker limit (see [Async hashing](performance.md#2-async-hashing)) |
 
@@ -95,6 +95,18 @@ data, err = ds.MarshalSSZ(body, dynssz.WithViewDescriptor((*Phase0BodyView)(nil)
 
 See [SSZ Views](views.md) for detailed documentation.
 
+#### WithStreamSizeLimit
+
+```go
+func WithStreamSizeLimit(size int) CallOption
+```
+
+Bounds one unknown-length `UnmarshalSSZReader` decode, overriding `WithMaxStreamSize` for that call. A non-positive value keeps the instance default; a declared size is its own bound and is not affected. Other operations ignore the option.
+
+```go
+err := ds.UnmarshalSSZReader(&block, body, -1, dynssz.WithStreamSizeLimit(4*1024*1024))
+```
+
 ## Serialization Methods
 
 ### MarshalSSZ
@@ -132,10 +144,14 @@ err := ds.UnmarshalSSZ(&decoded, data)
 ```
 
 **Decoding reuses what the target already holds.** A slice long enough for the
-result keeps its backing array, and a non-nil pointer — a struct field or a
-slice element — is decoded into rather than replaced. Only an empty slot is
-allocated. This saves allocations when a target is decoded into repeatedly, and
-it is the same behaviour in both engines.
+result keeps its backing array, a non-nil pointer field is decoded into rather
+than replaced, and a non-nil pointer element of a list of fixed-size elements
+is decoded into on the buffer and known-size stream paths. This saves
+allocations when a target is decoded into repeatedly. Elements are allocated
+fresh, and an existing element and its excluded fields are dropped, in these
+cases: elements of a list of variable-size elements in the reflection engine,
+elements of any list on an unknown-size stream, and optional values in
+generated code.
 
 The consequence is that a decode writes through to objects the caller still
 references:
@@ -167,7 +183,7 @@ Serializes directly to an `io.Writer` for memory-efficient streaming.
 func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...CallOption) error
 ```
 
-Deserializes from an `io.Reader`. The `size` parameter specifies the expected total SSZ data size in bytes.
+Deserializes from an `io.Reader`. The `size` parameter specifies the expected total SSZ data size in bytes. A non-negative size is trusted input: allocations are sized from it before the bytes arrive, so it must come from a source you control (a local file's `stat()` result, a length your own protocol validated), never from an untrusted peer. Pass a negative size for input read off the wire and bound it with `WithMaxStreamSize` or `WithStreamSizeLimit`.
 
 See [Streaming Support](streaming.md) for details.
 
@@ -297,6 +313,15 @@ of `HashTreeRoot()` when its parameter is an interface that the library's
 `HashWalker` satisfies (such as fastssz's `ssz.HashWalker`). The
 `HashTreeRootWith(*ssz.Hasher)` form that `sszgen` emits by default takes a
 concrete foreign type, so it is not called; `HashTreeRoot()` is used instead.
+
+Hash methods are called wherever the value sits. A list or vector of basic
+values opens a packed walker scope (`StartTree` with `sszutils.TreeTypePacked`
+set on the shape), in which the walker's `Put*` methods append the packed bytes
+of a value instead of a padded chunk; the same method therefore packs its value
+as a list element and leaves a chunk as a field. A method owns what it leaves
+on the walker: the engines do not verify it, and both walkers lay bytes out
+identically, so a method that leaves something else produces the same root
+through `HashTreeRoot` and through `GetTree`.
 
 ### Dynamic Interfaces (spec-aware)
 
@@ -530,7 +555,7 @@ payload := PayloadUnion{
 
 ```go
 func NewCodeGenerator(typeCache *ssztypes.TypeCache) *CodeGenerator
-// pass ds.GetTypeCache() to share an instance's cache, or nil for a fresh one
+// the cache is read-only: only its extended-types setting is inherited; nil for the default
 
 func (cg *CodeGenerator) BuildFile(fileName string, opts ...CodeGeneratorOption)
 func (cg *CodeGenerator) Generate() error

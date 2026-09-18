@@ -13,6 +13,20 @@ import (
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
+// delegatedSize validates a size reported by a type's own sizer. A negative
+// size would drive the offset table below its own start, and a size past the
+// SSZ size limit is one no encoding can refer to: both are refused here, where
+// the reported size enters the size domain.
+func delegatedSize(desc *ssztypes.TypeDescriptor, size int) (int64, error) {
+	if size < 0 {
+		return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer of %v returned negative size %d", desc.Type, size)
+	}
+	if size > sszutils.MaxSszSize {
+		return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer of %v returned size %d, past the SSZ size limit", desc.Type, size)
+	}
+	return int64(size), nil
+}
+
 // getSszValueSize calculates the exact SSZ-encoded size of a value.
 //
 // This internal function is used by SizeSSZ to determine buffer requirements for serialization.
@@ -79,7 +93,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		if !ctx.noDelegation && targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewSizer != 0 {
 			if sizer, ok := getPtr(targetValue).Interface().(sszutils.DynamicViewSizer); ok {
 				if sizeFn := sizer.SizeSSZDynView(*targetType.CodegenInfo); sizeFn != nil {
-					return int64(sizeFn(ctx.ds)), nil
+					return delegatedSize(targetType, sizeFn(ctx.ds))
 				}
 			}
 		}
@@ -96,14 +110,14 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 
 		if useFastSsz {
 			if marshaller, ok := getPtr(targetValue).Interface().(sszutils.FastsszMarshaler); ok {
-				return int64(marshaller.SizeSSZ()), nil
+				return delegatedSize(targetType, marshaller.SizeSSZ())
 			}
 		}
 
 		if targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 &&
 			(!ctx.noDelegation || targetType.SszType == ssztypes.SszCustomType) {
 			if sizer, ok := getPtr(targetValue).Interface().(sszutils.DynamicSizer); ok {
-				return int64(sizer.SizeSSZDyn(ctx.ds)), nil
+				return delegatedSize(targetType, sizer.SizeSSZDyn(ctx.ds))
 			}
 		}
 	}
@@ -148,7 +162,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 
 		fieldType := targetType.ElemDesc
 		switch {
-		case fieldType.Kind == reflect.Uint8:
+		case fieldType.SszType == ssztypes.SszUint8Type:
 			staticSize = uint64(targetType.Len)
 		case fieldType.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0:
 			// vector with dynamic size items, so we have to go through each item
@@ -214,7 +228,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 
 		if sliceLen > 0 {
 			switch {
-			case fieldType.Kind == reflect.Uint8:
+			case fieldType.SszType == ssztypes.SszUint8Type:
 				staticSize = uint64(sliceLen)
 			case fieldType.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0:
 				// slice with dynamic size items, so we have to go through each item
@@ -362,8 +376,11 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		return 0, sszutils.ErrUnknownTypeFn(targetType.Kind)
 	}
 
-	if staticSize > uint64(math.MaxInt) {
-		return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "SSZ size %d exceeds the platform integer range", staticSize)
+	// The accumulated size is a size like any other: a value whose encoding no
+	// 32-bit offset can address is refused here, where the terms are summed,
+	// and not only at each delegate that reported one.
+	if staticSize > sszutils.MaxSszSize {
+		return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "SSZ size %d exceeds the SSZ size limit", staticSize)
 	}
 
 	return int64(staticSize), nil

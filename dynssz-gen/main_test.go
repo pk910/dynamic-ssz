@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"go/ast"
@@ -14,10 +15,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/pk910/dynamic-ssz/codegen"
+	"github.com/pk910/dynamic-ssz/dynssz-gen/testpkg"
+	"github.com/pk910/dynamic-ssz/sszutils"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -53,6 +58,295 @@ func parseTypeSpec(typeStr string) (typeName, outputFile string, viewTypes []str
 }
 
 // Test helper functions for parsing logic
+// -remove moves every distinct configured output file aside, tolerating a
+// missing one; the files are restored on failure and deleted on success.
+func TestStashOutputs(t *testing.T) {
+	dir := t.TempDir()
+	stale := filepath.Join(dir, "gen_a.go")
+	other := filepath.Join(dir, "gen_b.go")
+	for _, f := range []string{stale, other} {
+		if werr := os.WriteFile(f, []byte("package x\n"), 0o600); werr != nil {
+			t.Fatal(werr)
+		}
+	}
+	specs := []typeSpec{{OutputFile: stale}, {OutputFile: stale}, {OutputFile: other}, {OutputFile: filepath.Join(dir, "missing.go")}}
+	stash, err := stashOutputs(specs)
+	if err != nil {
+		t.Fatalf("stashOutputs: %v", err)
+	}
+	for _, f := range []string{stale, other} {
+		if _, serr := os.Stat(f); !errors.Is(serr, os.ErrNotExist) {
+			t.Fatalf("%s still in place (%v)", f, serr)
+		}
+	}
+	stash.restore()
+	for _, f := range []string{stale, other} {
+		if data, rerr := os.ReadFile(f); rerr != nil || string(data) != "package x\n" {
+			t.Fatalf("%s not restored: %v", f, rerr)
+		}
+	}
+	stash, err = stashOutputs(specs)
+	if err != nil {
+		t.Fatalf("stashOutputs again: %v", err)
+	}
+	stash.discard()
+	for _, f := range []string{stale, other} {
+		if _, serr := os.Stat(f); !errors.Is(serr, os.ErrNotExist) {
+			t.Fatalf("%s survived discard (%v)", f, serr)
+		}
+		if _, serr := os.Stat(f + stashSuffix); !errors.Is(serr, os.ErrNotExist) {
+			t.Fatalf("%s stash survived discard (%v)", f, serr)
+		}
+	}
+}
+
+// -remove through run(): a successful run replaces the stale output and
+// leaves no stash behind; a failing run restores the stale output.
+func TestRun_RemoveStashesAndRestores(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "gen.go")
+	stale := []byte("package testpkg // stale\n")
+	if err := os.WriteFile(out, stale, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	config := Config{
+		PackagePath: "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg",
+		TypeNames:   "RepeatedSame",
+		OutputFile:  out,
+		Remove:      true,
+	}
+	if err := run(&config); err != nil {
+		t.Fatalf("run with -remove: %v", err)
+	}
+	generated, err := os.ReadFile(out)
+	if err != nil || bytes.Equal(generated, stale) || !bytes.Contains(generated, []byte("RepeatedSame")) {
+		t.Fatalf("stale output not replaced: %v", err)
+	}
+	if _, serr := os.Stat(out + stashSuffix); !errors.Is(serr, os.ErrNotExist) {
+		t.Fatalf("stash survived a successful run (%v)", serr)
+	}
+
+	config.TypeNames = "NonExistentType"
+	if rerr := run(&config); rerr == nil || !strings.Contains(rerr.Error(), "not found") {
+		t.Fatalf("run err = %v, want the missing type", rerr)
+	}
+	restored, err := os.ReadFile(out)
+	if err != nil || !bytes.Equal(restored, generated) {
+		t.Fatalf("output not restored after a failed run: %v", err)
+	}
+	if _, serr := os.Stat(out + stashSuffix); !errors.Is(serr, os.ErrNotExist) {
+		t.Fatalf("stash survived a failed run (%v)", serr)
+	}
+}
+
+// Two spellings of one output file name one target: the spellings that clean
+// to the same path group together, and any other pair is refused rather than
+// generated twice and written onto each other.
+func TestOutputPathAliases(t *testing.T) {
+	specs, err := parseTypeSpecs("A:output=gen.go,B:output=./gen.go", "")
+	if err != nil {
+		t.Fatalf("parseTypeSpecs: %v", err)
+	}
+	for _, spec := range specs {
+		if spec.OutputFile != "gen.go" {
+			t.Fatalf("output %q, want gen.go", spec.OutputFile)
+		}
+	}
+	if err := checkOutputCollisions(specs); err != nil {
+		t.Fatalf("equal spellings were refused: %v", err)
+	}
+
+	abs, absErr := filepath.Abs("gen.go")
+	if absErr != nil {
+		t.Fatal(absErr)
+	}
+	mixed := []typeSpec{{TypeName: "A", OutputFile: "gen.go"}, {TypeName: "B", OutputFile: abs}}
+	if err := checkOutputCollisions(mixed); err == nil || !strings.Contains(err.Error(), "name the same file") {
+		t.Fatalf("err = %v, want the collision refusal", err)
+	}
+
+	// A type with no output file of its own is grouped by the run's default
+	// output, so it names nothing here.
+	if err := checkOutputCollisions([]typeSpec{{TypeName: "A"}, {TypeName: "B"}}); err != nil {
+		t.Fatalf("specs without an output were refused: %v", err)
+	}
+
+	// The run refuses a colliding set before it generates anything.
+	if err := run(&Config{TypeSpecs: mixed, PackagePath: "."}); err == nil || !strings.Contains(err.Error(), "name the same file") {
+		t.Fatalf("run: err = %v, want the collision refusal", err)
+	}
+
+	// A linked directory is another spelling of the directory it points at, so
+	// the two paths name one file.
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real")
+	if err := os.Mkdir(target, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "alias")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	linked := []typeSpec{
+		{TypeName: "A", OutputFile: filepath.Join(target, "gen.go")},
+		{TypeName: "B", OutputFile: filepath.Join(link, "gen.go")},
+	}
+	if err := checkOutputCollisions(linked); err == nil || !strings.Contains(err.Error(), "name the same file") {
+		t.Fatalf("err = %v, want the collision refusal", err)
+	}
+}
+
+// Resolving an output path fails only when the process has no working
+// directory to resolve against, which is what a deleted one leaves behind.
+func TestOutputPathResolveFailure(t *testing.T) {
+	gone := filepath.Join(t.TempDir(), "gone")
+	if err := os.Mkdir(gone, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(orig) }()
+	if err := os.Chdir(gone); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := checkOutputCollisions([]typeSpec{{TypeName: "A", OutputFile: "gen.go"}}); err == nil || !strings.Contains(err.Error(), "resolve output") {
+		t.Fatalf("err = %v, want the resolve failure", err)
+	}
+}
+
+// A stash left behind by an interrupted run is never overwritten: the run is
+// refused and nothing else is moved.
+func TestStashOutputs_RefusesExistingStash(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "gen_a.go")
+	second := filepath.Join(dir, "gen_b.go")
+	for _, f := range []string{first, second, second + stashSuffix} {
+		if err := os.WriteFile(f, []byte("package x // "+filepath.Base(f)+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := stashOutputs([]typeSpec{{OutputFile: first}, {OutputFile: second}})
+	if err == nil || !strings.Contains(err.Error(), "interrupted") {
+		t.Fatalf("err = %v, want the stash refusal", err)
+	}
+	for _, f := range []string{first, second, second + stashSuffix} {
+		if data, rerr := os.ReadFile(f); rerr != nil || string(data) != "package x // "+filepath.Base(f)+"\n" {
+			t.Fatalf("%s changed: %v", f, rerr)
+		}
+	}
+	if _, serr := os.Stat(first + stashSuffix); !errors.Is(serr, os.ErrNotExist) {
+		t.Fatalf("%s was left moved aside (%v)", first, serr)
+	}
+}
+
+// A generation that panics gets its output files back before the panic
+// continues.
+func TestWithStashedOutputs_RestoresOnPanic(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "gen.go")
+	if err := os.WriteFile(out, []byte("package x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if r := recover(); r != "generator panic" {
+			t.Fatalf("recovered %v, want the generation panic", r)
+		}
+		if data, err := os.ReadFile(out); err != nil || string(data) != "package x\n" {
+			t.Fatalf("output not restored after the panic: %v", err)
+		}
+		if _, serr := os.Stat(out + stashSuffix); !errors.Is(serr, os.ErrNotExist) {
+			t.Fatalf("stash survived the panic (%v)", serr)
+		}
+	}()
+	_ = withStashedOutputs([]typeSpec{{OutputFile: out}}, func() error {
+		if _, serr := os.Stat(out); !errors.Is(serr, os.ErrNotExist) {
+			t.Fatalf("output still in place during generation (%v)", serr)
+		}
+		panic("generator panic")
+	})
+}
+
+// A file that cannot be moved aside fails the stash and puts back what was
+// already moved.
+func TestStashOutputs_MoveFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("a read-only directory does not stop root")
+	}
+	dir := t.TempDir()
+	movable := filepath.Join(dir, "gen_a.go")
+	if err := os.WriteFile(movable, []byte("package x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	locked := filepath.Join(dir, "locked")
+	if err := os.Mkdir(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stuck := filepath.Join(locked, "gen_b.go")
+	if err := os.WriteFile(stuck, []byte("package x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+
+	_, err := stashOutputs([]typeSpec{{OutputFile: movable}, {OutputFile: stuck}})
+	if err == nil || !strings.Contains(err.Error(), "move") {
+		t.Fatalf("err = %v, want the move failure", err)
+	}
+	if _, serr := os.Stat(movable); serr != nil {
+		t.Fatalf("the file moved before the failure was not put back: %v", serr)
+	}
+
+	// The same failure ends a run before the package is loaded.
+	config := Config{
+		PackagePath: "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg",
+		TypeNames:   "RepeatedSame",
+		OutputFile:  stuck,
+		Remove:      true,
+	}
+	if rerr := run(&config); rerr == nil || !strings.Contains(rerr.Error(), "move") {
+		t.Fatalf("run err = %v, want the move failure", rerr)
+	}
+
+	// A restore or discard that cannot complete is logged, not fatal: the
+	// stash of a file in a directory locked after the move stays in place,
+	// and a stash removed by hand is nothing to discard.
+	if cerr := os.Chmod(locked, 0o700); cerr != nil {
+		t.Fatal(cerr)
+	}
+	stash, err := stashOutputs([]typeSpec{{OutputFile: stuck}})
+	if err != nil {
+		t.Fatalf("stashOutputs: %v", err)
+	}
+	if cerr := os.Chmod(locked, 0o500); cerr != nil {
+		t.Fatal(cerr)
+	}
+	stash.restore()
+	if cerr := os.Chmod(locked, 0o700); cerr != nil {
+		t.Fatal(cerr)
+	}
+	if _, serr := os.Stat(stuck + stashSuffix); serr != nil {
+		t.Fatalf("stash of a locked directory vanished: %v", serr)
+	}
+	if rerr := os.Rename(stuck+stashSuffix, stuck); rerr != nil {
+		t.Fatal(rerr)
+	}
+	stash, err = stashOutputs([]typeSpec{{OutputFile: stuck}})
+	if err != nil {
+		t.Fatalf("stashOutputs: %v", err)
+	}
+	if rerr := os.Remove(stuck + stashSuffix); rerr != nil {
+		t.Fatal(rerr)
+	}
+	stash.discard()
+}
+
 func TestTypeNameParsing(t *testing.T) {
 	tests := []struct {
 		input            string
@@ -666,50 +960,57 @@ func TestParseAnnotateTag_Multiple(t *testing.T) {
 
 // findAnnotateCall tests
 
-func TestFindAnnotateCall_Found(t *testing.T) {
-	cfg := &packages.Config{
-		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName | packages.NeedDeps,
-	}
+// One go/packages load is cached per target: loading a fixture package
+// type-checks it and its dependencies, which costs seconds, and the tests
+// below only read the result, so one load serves them all.
+var (
+	loadedPackagesMu sync.Mutex
+	loadedPackages   = map[string]*packages.Package{}
+)
 
-	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
-	if err != nil {
-		t.Fatalf("failed to load package: %v", err)
+func loadTestPackage(t *testing.T, target string) *packages.Package {
+	t.Helper()
+	loadedPackagesMu.Lock()
+	defer loadedPackagesMu.Unlock()
+	if pkg, ok := loadedPackages[target]; ok {
+		return pkg
 	}
+	cfg := &packages.Config{Mode: packages.NeedName | packages.NeedTypes | packages.NeedTypesInfo |
+		packages.NeedSyntax | packages.NeedImports | packages.NeedDeps}
+	pkgs, err := packages.Load(cfg, target)
+	if err != nil {
+		t.Fatalf("failed to load package %s: %v", target, err)
+	}
+	if len(pkgs) == 0 {
+		t.Fatalf("no packages loaded for %s", target)
+	}
+	loadedPackages[target] = pkgs[0]
+	return pkgs[0]
+}
+
+func TestFindAnnotateCall_Found(t *testing.T) {
+	pkg := loadTestPackage(t, "github.com/pk910/dynamic-ssz/codegen/tests")
 
 	// The merged tag also carries the generated ssz-static declaration.
-	tag := findAnnotateCall(pkgs[0], lookupNamed(pkgs[0], "AnnotatedList"))
+	tag := findAnnotateCall(pkg, lookupNamed(pkg, "AnnotatedList"))
 	if !strings.Contains(tag, `ssz-max:"20"`) {
 		t.Fatalf("expected tag to contain ssz-max:\"20\", got: %q", tag)
 	}
 }
 
 func TestFindAnnotateCall_Found2(t *testing.T) {
-	cfg := &packages.Config{
-		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName | packages.NeedDeps,
-	}
+	pkg := loadTestPackage(t, "github.com/pk910/dynamic-ssz/codegen/tests")
 
-	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
-	if err != nil {
-		t.Fatalf("failed to load package: %v", err)
-	}
-
-	tag := findAnnotateCall(pkgs[0], lookupNamed(pkgs[0], "AnnotatedList2"))
+	tag := findAnnotateCall(pkg, lookupNamed(pkg, "AnnotatedList2"))
 	if !strings.Contains(tag, `ssz-max:"10"`) {
 		t.Fatalf("expected tag to contain ssz-max:\"10\", got: %q", tag)
 	}
 }
 
 func TestFindAnnotateCall_NotFound(t *testing.T) {
-	cfg := &packages.Config{
-		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName | packages.NeedDeps,
-	}
+	pkg := loadTestPackage(t, "github.com/pk910/dynamic-ssz/codegen/tests")
 
-	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
-	if err != nil {
-		t.Fatalf("failed to load package: %v", err)
-	}
-
-	tag := findAnnotateCall(pkgs[0], lookupNamed(pkgs[0], "NonExistentType"))
+	tag := findAnnotateCall(pkg, lookupNamed(pkg, "NonExistentType"))
 	if tag != "" {
 		t.Fatalf("expected empty tag for non-existent type, got: %q", tag)
 	}
@@ -767,16 +1068,9 @@ func TestRun_AnnotatedTypeVerbose(t *testing.T) {
 
 func TestFindAnnotateCall_InitFunction(t *testing.T) {
 	// Covers main.go:373-380 (init() function body scanning)
-	cfg := &packages.Config{
-		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName | packages.NeedDeps,
-	}
+	pkg := loadTestPackage(t, "github.com/pk910/dynamic-ssz/codegen/tests")
 
-	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
-	if err != nil {
-		t.Fatalf("failed to load package: %v", err)
-	}
-
-	tag := findAnnotateCall(pkgs[0], lookupNamed(pkgs[0], "InitAnnotatedList"))
+	tag := findAnnotateCall(pkg, lookupNamed(pkg, "InitAnnotatedList"))
 	if tag != `ssz-max:"8"` {
 		t.Fatalf("expected tag from init(), got: %q", tag)
 	}
@@ -784,16 +1078,9 @@ func TestFindAnnotateCall_InitFunction(t *testing.T) {
 
 func TestFindAnnotateCall_InterpretedString(t *testing.T) {
 	// Covers main.go:432-437 (interpreted string literal path)
-	cfg := &packages.Config{
-		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName | packages.NeedDeps,
-	}
+	pkg := loadTestPackage(t, "github.com/pk910/dynamic-ssz/codegen/tests")
 
-	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
-	if err != nil {
-		t.Fatalf("failed to load package: %v", err)
-	}
-
-	tag := findAnnotateCall(pkgs[0], lookupNamed(pkgs[0], "InterpretedAnnotatedList"))
+	tag := findAnnotateCall(pkg, lookupNamed(pkg, "InterpretedAnnotatedList"))
 	if tag != `ssz-max:"12"` {
 		t.Fatalf("expected tag from interpreted string, got: %q", tag)
 	}
@@ -1149,14 +1436,8 @@ func TestRun_BadAnnotateTagInSource(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestFindAnnotateCall_AliasedImport(t *testing.T) {
-	cfg := &packages.Config{
-		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName | packages.NeedDeps,
-	}
-	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg")
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	tag := findAnnotateCall(pkgs[0], lookupNamed(pkgs[0], "AliasedAnnotated"))
+	pkg := loadTestPackage(t, "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg")
+	tag := findAnnotateCall(pkg, lookupNamed(pkg, "AliasedAnnotated"))
 	if tag != `ssz-max:"16"` {
 		t.Fatalf("expected aliased tag, got %q", tag)
 	}
@@ -1166,25 +1447,19 @@ func TestFindAnnotateCall_AliasedImport(t *testing.T) {
 // alongside an AssignStmt — covers the non-ExprStmt continue branch in
 // findAnnotateCallInDecl.
 func TestFindAnnotateCall_InitMixedStmts(t *testing.T) {
-	cfg := &packages.Config{
-		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName | packages.NeedDeps,
-	}
-	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg")
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
+	pkg := loadTestPackage(t, "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg")
 	// This type's Annotate is registered via an AssignStmt in init() — the
 	// scanner only finds Annotate in ExprStmts, so it must NOT match.
 	// But the loop must still iterate past the assign stmt without crashing
 	// and past the unrelated-call ExprStmt.
-	tag := findAnnotateCall(pkgs[0], lookupNamed(pkgs[0], "NonExprInitMarker"))
+	tag := findAnnotateCall(pkg, lookupNamed(pkg, "NonExprInitMarker"))
 	if tag != "" {
 		t.Fatalf("expected empty tag (Annotate was in AssignStmt not ExprStmt), got %q", tag)
 	}
 
 	// Meanwhile InvalidAnnotated still resolves correctly, proving the
 	// scanner didn't get confused by the mixed init() body.
-	tag = findAnnotateCall(pkgs[0], lookupNamed(pkgs[0], "InvalidAnnotated"))
+	tag = findAnnotateCall(pkg, lookupNamed(pkg, "InvalidAnnotated"))
 	if tag == "" {
 		t.Fatal("expected InvalidAnnotated tag to still be found")
 	}
@@ -1325,42 +1600,52 @@ func TestMatchAnnotateCall_RawString(t *testing.T) {
 	}
 }
 
-// findAnnotateCallInDecl has a `continue` for non-ValueSpec entries inside
+// findAnnotateCallsInVarDecl has a `continue` for non-ValueSpec entries inside
 // a VAR GenDecl. Valid Go won't produce that, so we hand-craft a GenDecl
 // with mixed spec types.
-func TestFindAnnotateCallInDecl_NonValueSpec(t *testing.T) {
+func TestFindAnnotateCallsInVarDecl_NonValueSpec(t *testing.T) {
 	decl := &ast.GenDecl{
 		Tok: token.VAR,
 		Specs: []ast.Spec{
 			&ast.ImportSpec{}, // deliberately wrong spec type for a VAR decl
 		},
 	}
-	if got := findAnnotateCallInDecl(nil, decl, "sszutils", testNamedFoo); got != "" {
-		t.Errorf("expected empty from GenDecl with non-ValueSpec, got %q", got)
+	if got := findAnnotateCallsInVarDecl(nil, decl, "sszutils", testNamedFoo); len(got) != 0 {
+		t.Errorf("expected no tags from GenDecl with non-ValueSpec, got %q", got)
 	}
 }
 
-func TestFindAnnotateCallInDecl_GenDeclNotVar(t *testing.T) {
-	// TYPE decls are ignored outright — exercises the early return at the
-	// top of findAnnotateCallInDecl.
+func TestFindAnnotateCallsInVarDecl_GenDeclNotVar(t *testing.T) {
+	// TYPE decls are ignored outright.
 	src := `package p
 type T int
 `
 	f := astFileFromString(t, src)
 	for _, decl := range f.Decls {
-		if got := findAnnotateCallInDecl(nil, decl, "sszutils", testNamedT); got != "" {
-			t.Errorf("expected empty, got %q", got)
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok {
+			t.Fatalf("expected a GenDecl, got %T", decl)
+		}
+		if got := findAnnotateCallsInVarDecl(nil, gen, "sszutils", testNamedT); len(got) != 0 {
+			t.Errorf("expected no tags, got %q", got)
 		}
 	}
 }
 
-func TestFindAnnotateCallInDecl_OtherDeclKind(t *testing.T) {
-	// A LabeledStmt is not *ast.GenDecl or *ast.FuncDecl — it's also not a
-	// top-level Decl, but we can still hand it as an untyped Decl to force
-	// the switch's default (no branch taken). We use a BadDecl for clarity.
-	var d ast.Decl = &ast.BadDecl{}
-	if got := findAnnotateCallInDecl(nil, d, "sszutils", testNamedFoo); got != "" {
-		t.Errorf("expected empty from BadDecl, got %q", got)
+func TestFindAnnotateCallsInInit_OtherFunc(t *testing.T) {
+	// Only init functions are scanned.
+	src := `package p
+func helper() { sszutils.Annotate[Foo]("tag") }
+`
+	f := astFileFromString(t, src)
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok {
+			t.Fatalf("expected a FuncDecl, got %T", decl)
+		}
+		if got := findAnnotateCallsInInit(nil, fn, "sszutils", testNamedFoo); len(got) != 0 {
+			t.Errorf("expected no tags from a helper function, got %q", got)
+		}
 	}
 }
 
@@ -1569,5 +1854,38 @@ func TestWriteTempFileFailure(t *testing.T) {
 	plain := errors.New("plain failure")
 	if got := errCause(plain); got != plain {
 		t.Fatalf("errCause must pass through non-path errors, got: %v", got)
+	}
+}
+
+// A type registered more than once resolves a duplicated key to the same
+// registration in the generator as in the runtime registry: the last one in
+// the package's initialization order.
+func TestFindAnnotateCall_RepeatedRegistrations(t *testing.T) {
+	pkg := loadTestPackage(t, "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg")
+
+	for _, tc := range []struct {
+		name string
+		typ  reflect.Type
+		key  string
+		want string
+	}{
+		{"RepeatedAnnotated", reflect.TypeOf(testpkg.RepeatedAnnotated(nil)), "ssz-size", "8"},
+		{"RepeatedBlock", reflect.TypeOf(testpkg.RepeatedBlock(nil)), "ssz-max", "8"},
+		{"RepeatedSame", reflect.TypeOf(testpkg.RepeatedSame(nil)), "ssz-max", "4"},
+	} {
+		generated := findAnnotateCall(pkg, lookupNamed(pkg, tc.name))
+		runtime, ok := sszutils.LookupAnnotation(tc.typ)
+		if !ok {
+			t.Fatalf("%s: no runtime annotation", tc.name)
+		}
+		if got := reflect.StructTag(generated).Get(tc.key); got != tc.want {
+			t.Errorf("%s: generator resolves %s to %q (tag %q), want %q", tc.name, tc.key, got, generated, tc.want)
+		}
+		if got := reflect.StructTag(runtime).Get(tc.key); got != tc.want {
+			t.Errorf("%s: runtime resolves %s to %q (tag %q), want %q", tc.name, tc.key, got, runtime, tc.want)
+		}
+		if generated != runtime {
+			t.Errorf("%s: generator tag %q != runtime tag %q", tc.name, generated, runtime)
+		}
 	}
 }

@@ -136,7 +136,12 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 			appendCode(codeBuilder, 0, "// SizeSSZ returns the SSZ encoded size of the %s.\n", typeName)
 			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "SizeSSZ", "", "", "size int", "0", false)
 			if rootTypeDesc.Size > 0 {
-				appendCode(codeBuilder, 1, "return %d\n", rootTypeDesc.Size)
+				// A size past the target's int range cannot be produced there;
+				// the size path has no error channel, so it reports 0.
+				platformGuard(func(indent int, code string, args ...any) {
+					appendCode(codeBuilder, indent+1, code, args...)
+				}, 0, ctx.typePrinter, uint64(rootTypeDesc.Size), false, "return 0")
+				appendCode(codeBuilder, 1, "return %s\n", intLitStr(fmt.Sprintf("%d", rootTypeDesc.Size)))
 			} else {
 				appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 				appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
@@ -258,10 +263,13 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 		// and must never call a *Dyn method. A child exposing a static SizeSSZ
 		// (every dynssz-generated child in this mode, plus external fastssz types)
 		// is reached through it even when fastssz delegation is otherwise disabled.
-		useFastSsz := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0 && !hasDynamicSize &&
-			(!ctx.options.NoFastSsz || staticBuild)
-		if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
-			useFastSsz = true
+		isFastsszSizer := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+		useFastSsz := isFastsszSizer && !hasDynamicSize && (!ctx.options.NoFastSsz || staticBuild)
+		if desc.SszType == ssztypes.SszCustomType {
+			// A custom type has no structure to inline: it is reached through its
+			// spec-aware method when it has one and dynamic calls are allowed,
+			// otherwise through its static one.
+			useFastSsz = desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer == 0 || (staticBuild && isFastsszSizer)
 		}
 
 		if staticBuild {
@@ -401,6 +409,18 @@ func (ctx *sizeContext) sizeOptional(desc *ssztypes.TypeDescriptor, varName, siz
 // nil → 0 bytes. Non-nil → size of the single element, plus 4 bytes for the
 // offset header when the element is dynamic.
 func (ctx *sizeContext) sizeOptionalList(desc *ssztypes.TypeDescriptor, varName, sizeVar string, indent int) error {
+	// A delegate's sizer is only known at run time; a present element of
+	// zero size would be indistinguishable from an absent one. The size path
+	// has no error channel, so it reports 0 for a value that cannot be
+	// serialized.
+	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 &&
+		desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+		elemSizeVar, err := ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
+		if err != nil {
+			return err
+		}
+		ctx.appendCode(indent, "if %s == 0 {\n\treturn 0\n}\n", elemSizeVar)
+	}
 	ctx.appendCode(indent, "if %s != nil {\n", varName)
 	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 		ctx.appendCode(indent+1, "%s += 4 // optional-list offset header\n", sizeVar)
@@ -429,7 +449,10 @@ func (ctx *sizeContext) sizeContainer(desc *ssztypes.TypeDescriptor, varName, si
 	}
 
 	if staticSize > 0 {
-		ctx.appendCode(indent, "%s += %d\n", sizeVar, staticSize)
+		// A size past the target's int range cannot be produced there; the
+		// size path has no error channel, so it reports 0.
+		platformGuard(ctx.appendCode, indent, ctx.typePrinter, uint64(staticSize), false, "return 0")
+		ctx.appendCode(indent, "%s += %s\n", sizeVar, intLitStr(fmt.Sprintf("%d", staticSize)))
 	}
 
 	// Add calculated size for static fields
@@ -488,6 +511,20 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 		usedVar = true
 	}
 
+	// A static vector sized by a resolved value, its own or its element's,
+	// adds the byte size the prelude formed and bounded; every other shape
+	// derives its size from the literal length below.
+	runtimeStatic := !ctx.options.WithoutDynamicExpressions && desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 &&
+		(sizeExpression != nil || desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0)
+	if runtimeStatic {
+		vecSizeVar, err := ctx.staticSizeVars.getStaticSizeVar(desc)
+		if err != nil {
+			return err
+		}
+		ctx.appendCode(indent, "%s += int(%s)\n", sizeVar, vecSizeVar)
+		return nil
+	}
+
 	limitVar := ctx.getLimitVar()
 	if sizeExpression != nil {
 		defaultValue := uint64(desc.Len)
@@ -495,11 +532,11 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 			if desc.BitSize > 0 {
 				defaultValue = uint64(desc.BitSize)
 			} else {
-				defaultValue = uint64(desc.Len * 8)
+				defaultValue = uint64(desc.Len) * 8
 			}
 		}
 
-		exprVar := ctx.exprVars.getSizeExprVar(*sizeExpression, defaultValue)
+		exprVar := ctx.exprVars.getVectorLenExprVar(*sizeExpression, defaultValue, desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0, desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0)
 
 		rawLimit := exprVar
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
@@ -513,30 +550,14 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 		}
 		ctx.appendCode(indent, "%s := int(%s)%s\n", limitVar, rawLimit, convSuppress)
 	} else {
-		ctx.appendCode(indent, "%s := %d\n", limitVar, desc.Len)
+		ctx.appendCode(indent, "%s := %s\n", limitVar, intLitStr(fmt.Sprintf("%d", desc.Len)))
 	}
 
 	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
-		switch {
-		case desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions:
-			// The element size follows from its size expression, not from the
-			// values present: missing rows are zero-padded on the wire, so the
-			// size must not depend on how many elements are set (SizeSSZ has to
-			// equal len(MarshalSSZ) even for a fully-empty value).
-			innerSizeVar, err := ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
-			if err != nil {
-				return err
-			}
-			elemConvSuppress := ""
-			if ctx.exprVars.isSlice {
-				elemConvSuppress = convSuppressComment
-			}
-			ctx.appendCode(indent, "%s += int(%s) * %s%s\n", sizeVar, innerSizeVar, limitVar, elemConvSuppress)
-		case desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 || desc.ElemDesc.Size == 1:
-			// For byte arrays, size is just the vector length
+		// A literal length times a literal element size, bounded at analysis.
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 || desc.ElemDesc.Size == 1 {
 			ctx.appendCode(indent, "%s += %s\n", sizeVar, limitVar)
-		default:
-			// Fixed size elements - simple multiplication
+		} else {
 			ctx.appendCode(indent, "%s += %s * %d\n", sizeVar, limitVar, desc.ElemDesc.Size)
 		}
 	} else {
@@ -646,7 +667,8 @@ func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName, sizeVar
 			if desc.ElemDesc.Size == 1 {
 				ctx.appendCode(indent, "%s += len(%s)\n", sizeVar, valueVar)
 			} else {
-				ctx.appendCode(indent, "%s += len(%s) * %d\n", sizeVar, valueVar, desc.ElemDesc.Size)
+				platformGuard(ctx.appendCode, indent, ctx.typePrinter, uint64(desc.ElemDesc.Size), false, "return 0")
+				ctx.appendCode(indent, "%s += len(%s) * %s\n", sizeVar, valueVar, intLitStr(fmt.Sprintf("%d", desc.ElemDesc.Size)))
 			}
 		} else {
 			useVar()

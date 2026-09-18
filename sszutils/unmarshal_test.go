@@ -38,4 +38,15 @@ func TestSizeListSlice(t *testing.T) {
 	if got == nil || len(got) != 0 {
 		t.Fatalf("undelivered bytes must not size the allocation, got len %d", len(got))
 	}
+
+	// A declared stream length is trusted input: the slice is sized from it
+	// before the bytes arrive, as a buffer decode sizes from its buffer.
+	declared := NewStreamDecoder(bytes.NewReader(make([]byte, 16)), 1<<20, 0)
+	if err := declared.Prefill(); err != nil {
+		t.Fatal(err)
+	}
+	got = SizeListSlice(declared, []uint64(nil), 1<<17, 8)
+	if len(got) != 1<<17 || cap(got) != 1<<17 {
+		t.Fatalf("declared length len/cap = %d/%d, want exact 131072", len(got), cap(got))
+	}
 }

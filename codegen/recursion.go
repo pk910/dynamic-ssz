@@ -106,13 +106,13 @@ func describeDescriptor(desc *ssztypes.TypeDescriptor) string {
 	return "<unnamed>"
 }
 
-// descriptorPkgPath returns the package path of the named Go type behind a
-// descriptor, with any pointer stripped ("" for unnamed types). Generated
-// depth-carrying methods are unexported, so a caller may only name them on
-// types of the package being generated.
-func descriptorPkgPath(desc *ssztypes.TypeDescriptor) string {
+// descriptorTypeName returns the package path and the package-qualified name
+// of the named Go type behind a descriptor, with any pointer stripped (both
+// "" for unnamed types). Generated depth-carrying methods are unexported, so
+// a caller may only name them on types of the package being generated.
+func descriptorTypeName(desc *ssztypes.TypeDescriptor) (pkgPath, qualifiedName string) {
 	if desc == nil {
-		return ""
+		return "", ""
 	}
 
 	if desc.Type != nil {
@@ -120,7 +120,10 @@ func descriptorPkgPath(desc *ssztypes.TypeDescriptor) string {
 		if t.Kind() == reflect.Pointer {
 			t = t.Elem()
 		}
-		return t.PkgPath()
+		if t.PkgPath() == "" || t.Name() == "" {
+			return "", ""
+		}
+		return t.PkgPath(), t.PkgPath() + "." + t.Name()
 	}
 
 	if desc.CodegenInfo != nil {
@@ -130,12 +133,19 @@ func descriptorPkgPath(desc *ssztypes.TypeDescriptor) string {
 				t = types.Unalias(ptr.Elem())
 			}
 			if named, isNamed := t.(*types.Named); isNamed && named.Obj().Pkg() != nil {
-				return named.Obj().Pkg().Path()
+				return named.Obj().Pkg().Path(), named.String()
 			}
 		}
 	}
 
-	return ""
+	return "", ""
+}
+
+// descriptorPkgPath returns the package path of the named Go type behind a
+// descriptor ("" for unnamed types).
+func descriptorPkgPath(desc *ssztypes.TypeDescriptor) string {
+	pkgPath, _ := descriptorTypeName(desc)
+	return pkgPath
 }
 
 // defaultRecursionDepth bounds how many times a recursive type may re-enter
@@ -161,6 +171,10 @@ type recursionBound struct {
 	// restarting the count.
 	pkgPath string
 
+	// generated is the run's generation set, keyed by package-qualified type
+	// name: only a type generated in this run has depth-carrying methods.
+	generated map[string]ssztypes.SszCompatFlag
+
 	// contains memoizes whether a descriptor's subtree holds a cycle member,
 	// which is what forces a type's methods to carry the depth through.
 	contains map[*ssztypes.TypeDescriptor]bool
@@ -174,9 +188,10 @@ func newRecursionBound(root *ssztypes.TypeDescriptor, opts *CodeGeneratorOptions
 	}
 
 	return &recursionBound{
-		maxDepth: maxDepth,
-		pkgPath:  descriptorPkgPath(root),
-		contains: map[*ssztypes.TypeDescriptor]bool{},
+		maxDepth:  maxDepth,
+		pkgPath:   descriptorPkgPath(root),
+		generated: opts.generated,
+		contains:  map[*ssztypes.TypeDescriptor]bool{},
 	}
 }
 
@@ -232,14 +247,85 @@ func (b *recursionBound) threads(desc *ssztypes.TypeDescriptor) bool {
 	return found
 }
 
-// callableDepthMethods reports whether desc's depth-carrying methods can be
-// named from the generated code: they are unexported, so only within the
-// package being generated. A reference that crosses a package boundary must
-// go through the public methods and restarts the count — a cycle never spans
+// depthMethodFlags maps each delegate method to the compat flag whose presence
+// in the generation set means the method, and with it its depth twin, is
+// emitted in this run.
+var depthMethodFlags = map[string]ssztypes.SszCompatFlag{
+	"MarshalSSZDyn":           ssztypes.SszCompatFlagDynamicMarshaler,
+	"UnmarshalSSZDyn":         ssztypes.SszCompatFlagDynamicUnmarshaler,
+	"SizeSSZDyn":              ssztypes.SszCompatFlagDynamicSizer,
+	"HashTreeRootWithDyn":     ssztypes.SszCompatFlagDynamicHashRoot,
+	"MarshalSSZEncoder":       ssztypes.SszCompatFlagDynamicEncoder,
+	"UnmarshalSSZDecoder":     ssztypes.SszCompatFlagDynamicDecoder,
+	"MarshalSSZTo":            ssztypes.SszCompatFlagFastSSZMarshaler,
+	"UnmarshalSSZ":            ssztypes.SszCompatFlagFastSSZMarshaler,
+	"SizeSSZ":                 ssztypes.SszCompatFlagFastSSZMarshaler,
+	"HashTreeRootWith":        ssztypes.SszCompatFlagHashTreeRootWith,
+	"MarshalSSZDynView":       ssztypes.SszCompatFlagDynamicViewMarshaler,
+	"UnmarshalSSZDynView":     ssztypes.SszCompatFlagDynamicViewUnmarshaler,
+	"SizeSSZDynView":          ssztypes.SszCompatFlagDynamicViewSizer,
+	"HashTreeRootWithDynView": ssztypes.SszCompatFlagDynamicViewHashRoot,
+	"MarshalSSZEncoderView":   ssztypes.SszCompatFlagDynamicViewEncoder,
+	"UnmarshalSSZDecoderView": ssztypes.SszCompatFlagDynamicViewDecoder,
+}
+
+// callableDepthMethods reports whether the depth-carrying twin of desc's fnName
+// can be named from the generated code. Being unexported, a twin can only be
+// named within the package being generated, and it exists only where the
+// method is generated: in this run, which the generation set records per
+// method, or by an earlier run, which the go/types front end sees in the
+// parsed package. A reflect-built descriptor cannot see unexported methods, so
+// a child from an earlier in-process run is reached through its public method.
+// Any other reference goes through the public method and restarts the count:
+// a hand-written type owns its own recursion safety, and a cycle never spans
 // packages (that would be an import cycle), so each side stays independently
 // bounded.
-func (b *recursionBound) callableDepthMethods(desc *ssztypes.TypeDescriptor) bool {
-	return b != nil && b.pkgPath != "" && descriptorPkgPath(desc) == b.pkgPath
+func (b *recursionBound) callableDepthMethods(desc *ssztypes.TypeDescriptor, fnName string) bool {
+	if b == nil || b.pkgPath == "" {
+		return false
+	}
+	pkgPath, name := descriptorTypeName(desc)
+	if pkgPath != b.pkgPath {
+		return false
+	}
+	flags, generated := b.generated[name]
+	if !generated {
+		flags, generated = b.generated["*"+name]
+	}
+	if generated && flags&depthMethodFlags[fnName] != 0 {
+		return true
+	}
+	return descriptorDeclaresMethod(desc, depthMethodName(fnName))
+}
+
+// descriptorDeclaresMethod reports whether the go/types type behind desc
+// declares the named method itself (not through an embedded field).
+func descriptorDeclaresMethod(desc *ssztypes.TypeDescriptor, name string) bool {
+	if desc == nil || desc.CodegenInfo == nil {
+		return false
+	}
+	info, ok := (*desc.CodegenInfo).(*CodegenInfo)
+	if !ok || info.Type == nil {
+		return false
+	}
+	return typeDeclaresMethod(info.Type, name)
+}
+
+// typeDeclaresMethod reports whether t declares the named method itself (not
+// through an embedded field).
+func typeDeclaresMethod(t types.Type, name string) bool {
+	t = types.Unalias(t)
+	if _, isPtr := t.(*types.Pointer); !isPtr {
+		t = types.NewPointer(t)
+	}
+	methods := types.NewMethodSet(t)
+	for i := 0; i < methods.Len(); i++ {
+		method := methods.At(i)
+		if method.Obj().Name() == name && len(method.Index()) == 1 {
+			return true
+		}
+	}
+	return false
 }
 
 // maxEmitNesting bounds how deep an emission walk may nest. No legal type
@@ -379,12 +465,12 @@ func depthForwardArg(depthAware bool) string {
 // crosses into another type's code. A child on a cycle is entered through its
 // depth twin with the count advanced; a child that merely contains a cycle is
 // entered through its twin with the count unchanged, so the depth threads
-// through unbroken. Only when the twin cannot be named — the child belongs to
-// another package, or the emitting method carries no depth — is the public
-// method called, which starts a fresh count: a cycle never spans packages, so
-// each side stays independently bounded.
+// through unbroken. Only when the twin cannot be named — the child's method is
+// not generated in this package, the child belongs to another package, or the
+// emitting method carries no depth — is the public method called, which starts
+// a fresh count.
 func descendCall(depthAware bool, bound *recursionBound, desc *ssztypes.TypeDescriptor, fnName string) (string, string) {
-	if !depthAware || !bound.threads(desc) || !bound.callableDepthMethods(desc) {
+	if !depthAware || !bound.threads(desc) || !bound.callableDepthMethods(desc, fnName) {
 		return fnName, ""
 	}
 	if bound.countsLevel(desc) {

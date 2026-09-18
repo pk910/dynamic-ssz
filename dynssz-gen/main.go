@@ -38,6 +38,11 @@ type Config struct {
 	WithoutFastSsz            bool
 	WithStreaming             bool
 	WithExtendedTypes         bool
+	RecursionDepth            int
+	// Remove moves the configured output files aside before the package is
+	// loaded, so stale generated code cannot block the analysis; they are
+	// deleted once generation succeeds and restored if it fails.
+	Remove bool
 
 	// Method exclusions, settable through the config file only (no CLI
 	// flag counterparts).
@@ -71,6 +76,7 @@ type typeSpec struct {
 	WithoutFastSsz            bool
 	WithStreaming             bool
 	WithExtendedTypes         bool
+	RecursionDepth            int
 	SkipMarshal               bool
 	SkipUnmarshal             bool
 	SkipSize                  bool
@@ -146,6 +152,8 @@ func main() {
 		withoutFastSsz            = flag.Bool("without-fastssz", false, "Generate code without using fast ssz generated methods")
 		withStreaming             = flag.Bool("with-streaming", false, "Generate streaming functions")
 		withExtendedTypes         = flag.Bool("with-extended-types", false, "Generate code with extended types")
+		recursionDepth            = flag.Int("recursion-depth", 0, "Nesting depth at which generated code rejects a recursive value (0 = default)")
+		remove                    = flag.Bool("remove", false, "Move the configured output files aside before generating; restored if generation fails")
 		showVersion               = flag.Bool("version", false, "Print version and exit")
 	)
 
@@ -179,6 +187,11 @@ func main() {
 		_, _ = fmt.Fprintf(w, "        ':output=file.go' suffix in -types.\n")
 		_, _ = fmt.Fprintf(w, "  -config string\n")
 		_, _ = fmt.Fprintf(w, "        YAML config file; CLI flags override its top-level values.\n")
+		_, _ = fmt.Fprintf(w, "  -remove\n")
+		_, _ = fmt.Fprintf(w, "        Move the configured output files aside before loading the package,\n")
+		_, _ = fmt.Fprintf(w, "        so generated code from an earlier run cannot block the analysis;\n")
+		_, _ = fmt.Fprintf(w, "        they are deleted once generation succeeds and restored if it fails.\n")
+		_, _ = fmt.Fprintf(w, "        A stash left behind by an interrupted run (<output>.dynssz-gen.orig) is never overwritten.\n")
 		_, _ = fmt.Fprintf(w, "  -package-name string\n")
 		_, _ = fmt.Fprintf(w, "        Package name for generated code (default: same as source package)\n")
 		_, _ = fmt.Fprintf(w, "  -header string\n")
@@ -227,6 +240,8 @@ func main() {
 		WithoutFastSsz:            *withoutFastSsz,
 		WithStreaming:             *withStreaming,
 		WithExtendedTypes:         *withExtendedTypes,
+		RecursionDepth:            *recursionDepth,
+		Remove:                    *remove,
 	}
 
 	if *configPath != "" {
@@ -293,6 +308,83 @@ func run(config *Config) error {
 		}
 	}
 
+	var typeSpecs []typeSpec
+	if len(config.TypeSpecs) > 0 {
+		typeSpecs = config.TypeSpecs
+	} else {
+		specs, err := parseTypeSpecs(config.TypeNames, config.OutputFile)
+		if err != nil {
+			return err
+		}
+		typeSpecs = specs
+	}
+	if err := checkOutputCollisions(typeSpecs); err != nil {
+		return err
+	}
+	if config.Remove {
+		return withStashedOutputs(typeSpecs, func() error {
+			return runGeneration(config, typeSpecs)
+		})
+	}
+	return runGeneration(config, typeSpecs)
+}
+
+// checkOutputCollisions refuses two output paths that name one file. Every
+// path is cleaned when it is parsed, so equal spellings already group
+// together; two spellings of the same file that survive cleaning (a relative
+// and an absolute one, or two directories linked to each other) would
+// otherwise be generated separately and then written onto each other, keeping
+// only the last.
+func checkOutputCollisions(typeSpecs []typeSpec) error {
+	seen := map[string]string{}
+	for _, spec := range typeSpecs {
+		if spec.OutputFile == "" {
+			continue
+		}
+		abs, err := filepath.Abs(spec.OutputFile)
+		if err != nil {
+			return fmt.Errorf("resolve output %s: %w", spec.OutputFile, err)
+		}
+		// A link in the path names the same file under another spelling, which
+		// only the filesystem can resolve. The output file itself is created by
+		// this run, so only its directory can be resolved; a directory that
+		// does not exist yet is created here and holds no links.
+		if dir, linkErr := filepath.EvalSymlinks(filepath.Dir(abs)); linkErr == nil {
+			abs = filepath.Join(dir, filepath.Base(abs))
+		}
+		if first, ok := seen[abs]; ok && first != spec.OutputFile {
+			return fmt.Errorf("output files %s and %s name the same file: spell the target the same way in every type", first, spec.OutputFile)
+		}
+		seen[abs] = spec.OutputFile
+	}
+	return nil
+}
+
+// withStashedOutputs runs generate with the output files moved aside. They
+// are deleted when generate returns nil and restored otherwise, including
+// when generate panics: the panic continues after the files are back.
+func withStashedOutputs(typeSpecs []typeSpec, generate func() error) (err error) {
+	stash, err := stashOutputs(typeSpecs)
+	if err != nil {
+		return err
+	}
+	done := false
+	defer func() {
+		if done {
+			stash.discard()
+		} else {
+			stash.restore()
+		}
+	}()
+	if err := generate(); err != nil {
+		return err
+	}
+	done = true
+	return nil
+}
+
+// runGeneration loads the package and writes the generated files.
+func runGeneration(config *Config, typeSpecs []typeSpec) error {
 	// Parse the Go package. NeedImports + NeedDeps make the main package's
 	// transitively-loaded dependencies (e.g. "spec/phase0" reached via
 	// "spec/all") available with the same *types.Named instances the main
@@ -331,16 +423,6 @@ func run(config *Config) error {
 
 	if config.Verbose {
 		log.Printf("Successfully loaded package: %s", pkg.Name)
-	}
-
-	var typeSpecs []typeSpec
-	if len(config.TypeSpecs) > 0 {
-		typeSpecs = config.TypeSpecs
-	} else {
-		typeSpecs, err = parseTypeSpecs(config.TypeNames, config.OutputFile)
-		if err != nil {
-			return err
-		}
 	}
 
 	// Find the requested types in the package
@@ -511,8 +593,15 @@ func run(config *Config) error {
 		}
 	}
 
-	// Build options for all types
-	for outFile, specs := range generateFiles {
+	// Build options for all types, in a stable file order so a run's log and
+	// its first reported error do not depend on map iteration.
+	outFiles := make([]string, 0, len(generateFiles))
+	for outFile := range generateFiles {
+		outFiles = append(outFiles, outFile)
+	}
+	sort.Strings(outFiles)
+	for _, outFile := range outFiles {
+		specs := generateFiles[outFile]
 		var typeOptions []codegen.CodeGeneratorOption
 
 		for _, spec := range specs {
@@ -571,6 +660,7 @@ func run(config *Config) error {
 				WithoutFastSsz:            config.WithoutFastSsz,
 				WithStreaming:             config.WithStreaming,
 				WithExtendedTypes:         config.WithExtendedTypes,
+				RecursionDepth:            config.RecursionDepth,
 				SkipMarshal:               config.SkipMarshal,
 				SkipUnmarshal:             config.SkipUnmarshal,
 				SkipSize:                  config.SkipSize,
@@ -667,16 +757,16 @@ func annotateTypeArgMatches(pkg *packages.Package, arg ast.Expr, target *types.N
 }
 
 // findAnnotateCall scans package AST for sszutils.Annotate[target]("...")
-// calls and returns the tag string literal, or "" if not found.
+// calls and returns the merged tag, or "" if not found. The calls are taken
+// in the package's initialization order (package-level variables of every
+// file in file order, then the init functions) and merged newest first, as
+// the runtime registration does, so a key registered twice resolves to the
+// same registration in both.
 func findAnnotateCall(pkg *packages.Package, target *types.Named) string {
 	if target == nil {
 		return ""
 	}
-	// A type may be annotated from several places (a hand-written constraint plus
-	// a generated ssz-static declaration, possibly in different files), so collect
-	// every Annotate call for the type and merge them into one space-separated tag.
-	var tags []string
-	seen := map[string]struct{}{}
+	var varTags, initTags []string
 
 	for _, file := range pkg.Syntax {
 		// Resolve which import alias (if any) maps to sszutils
@@ -699,58 +789,71 @@ func findAnnotateCall(pkg *packages.Package, target *types.Named) string {
 		}
 
 		for _, decl := range file.Decls {
-			tag := findAnnotateCallInDecl(pkg, decl, sszutilsAlias, target)
-			if tag != "" {
-				if _, ok := seen[tag]; !ok {
-					seen[tag] = struct{}{}
-					tags = append(tags, tag)
-				}
+			switch d := decl.(type) {
+			case *ast.GenDecl:
+				varTags = append(varTags, findAnnotateCallsInVarDecl(pkg, d, sszutilsAlias, target)...)
+			case *ast.FuncDecl:
+				initTags = append(initTags, findAnnotateCallsInInit(pkg, d, sszutilsAlias, target)...)
 			}
 		}
 	}
 
-	return strings.Join(tags, " ")
+	ordered := make([]string, 0, len(varTags)+len(initTags))
+	ordered = append(ordered, varTags...)
+	ordered = append(ordered, initTags...)
+	merged := make([]string, 0, len(ordered))
+	seen := make(map[string]struct{}, len(ordered))
+	for i := len(ordered) - 1; i >= 0; i-- {
+		if _, ok := seen[ordered[i]]; ok {
+			continue
+		}
+		seen[ordered[i]] = struct{}{}
+		merged = append(merged, ordered[i])
+	}
+
+	return strings.Join(merged, " ")
 }
 
-// findAnnotateCallInDecl checks a single declaration for an Annotate call.
-func findAnnotateCallInDecl(pkg *packages.Package, decl ast.Decl, alias string, target *types.Named) string {
-	switch d := decl.(type) {
-	case *ast.GenDecl:
-		if d.Tok != token.VAR {
-			return ""
+// findAnnotateCallsInVarDecl returns the tags of every Annotate call for
+// target among the initializers of a package-level var declaration.
+func findAnnotateCallsInVarDecl(pkg *packages.Package, d *ast.GenDecl, alias string, target *types.Named) []string {
+	if d.Tok != token.VAR {
+		return nil
+	}
+	var tags []string
+	for _, spec := range d.Specs {
+		vs, ok := spec.(*ast.ValueSpec)
+		if !ok {
+			continue
 		}
 
-		for _, spec := range d.Specs {
-			vs, ok := spec.(*ast.ValueSpec)
-			if !ok {
-				continue
-			}
-
-			for _, val := range vs.Values {
-				if tag := matchAnnotateCall(pkg, val, alias, target); tag != "" {
-					return tag
-				}
-			}
-		}
-	case *ast.FuncDecl:
-		// Check init() functions
-		if d.Name.Name != "init" || d.Body == nil {
-			return ""
-		}
-
-		for _, stmt := range d.Body.List {
-			exprStmt, ok := stmt.(*ast.ExprStmt)
-			if !ok {
-				continue
-			}
-
-			if tag := matchAnnotateCall(pkg, exprStmt.X, alias, target); tag != "" {
-				return tag
+		for _, val := range vs.Values {
+			if tag := matchAnnotateCall(pkg, val, alias, target); tag != "" {
+				tags = append(tags, tag)
 			}
 		}
 	}
+	return tags
+}
 
-	return ""
+// findAnnotateCallsInInit returns the tags of every Annotate call for target
+// among the statements of an init function.
+func findAnnotateCallsInInit(pkg *packages.Package, d *ast.FuncDecl, alias string, target *types.Named) []string {
+	if d.Name.Name != "init" || d.Body == nil {
+		return nil
+	}
+	var tags []string
+	for _, stmt := range d.Body.List {
+		exprStmt, ok := stmt.(*ast.ExprStmt)
+		if !ok {
+			continue
+		}
+
+		if tag := matchAnnotateCall(pkg, exprStmt.X, alias, target); tag != "" {
+			tags = append(tags, tag)
+		}
+	}
+	return tags
 }
 
 // matchAnnotateCall checks if an expression is sszutils.Annotate[target]("...tag...")
@@ -913,6 +1016,67 @@ func errCause(err error) error {
 	return err
 }
 
+// stashSuffix is appended to an output file moved aside by -remove. The
+// suffix does not end in .go, so a stashed file is not part of the package.
+const stashSuffix = ".dynssz-gen.orig"
+
+// outputStash holds the output files -remove moved aside: generated code from
+// an earlier run is part of the package the generator type-checks, so it must
+// be out of the way before the package is loaded when the types it was
+// generated for changed. The files come back if generation fails.
+type outputStash struct {
+	moved []string
+}
+
+// stashOutputs moves every distinct existing output file the type specs name
+// aside. A file that does not exist is skipped.
+func stashOutputs(typeSpecs []typeSpec) (*outputStash, error) {
+	stash := &outputStash{}
+	seen := map[string]bool{}
+	for _, spec := range typeSpecs {
+		if spec.OutputFile == "" || seen[spec.OutputFile] {
+			continue
+		}
+		seen[spec.OutputFile] = true
+		// A stash left behind by an interrupted run is the only copy of that
+		// run's input; it is never overwritten.
+		if _, statErr := os.Lstat(spec.OutputFile + stashSuffix); statErr == nil {
+			stash.restore()
+			return nil, fmt.Errorf("%s exists: a previous -remove run was interrupted; restore or delete it", spec.OutputFile+stashSuffix)
+		}
+		err := os.Rename(spec.OutputFile, spec.OutputFile+stashSuffix)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			stash.restore()
+			return nil, fmt.Errorf("move %s aside: %w", spec.OutputFile, err)
+		}
+		stash.moved = append(stash.moved, spec.OutputFile)
+	}
+	return stash, nil
+}
+
+// restore moves the stashed files back, replacing whatever a failed run left.
+func (s *outputStash) restore() {
+	for _, f := range s.moved {
+		if err := os.Rename(f+stashSuffix, f); err != nil {
+			log.Printf("Restoring %s: %v", f, err)
+		}
+	}
+	s.moved = nil
+}
+
+// discard deletes the stashed files once generation succeeded.
+func (s *outputStash) discard() {
+	for _, f := range s.moved {
+		if err := os.Remove(f + stashSuffix); err != nil {
+			log.Printf("Removing %s: %v", f+stashSuffix, err)
+		}
+	}
+	s.moved = nil
+}
+
 // parseTypeSpecs parses the comma-separated type names string into typeSpec structs.
 // Each type can have colon-separated options: TypeName[:output=file.go][:views=View1;View2][:viewonly]
 func parseTypeSpecs(typeNames, defaultOutput string) ([]typeSpec, error) {
@@ -984,6 +1148,7 @@ func parseTypeSpecs(typeNames, defaultOutput string) ([]typeSpec, error) {
 			}
 			spec.OutputFile = defaultOutput
 		}
+		spec.OutputFile = filepath.Clean(spec.OutputFile)
 
 		typeSpecs = append(typeSpecs, spec)
 	}

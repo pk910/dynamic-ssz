@@ -354,6 +354,7 @@ func TestTypeCache_ErrorCases(t *testing.T) {
 			name     string
 			typ      reflect.Type
 			sizeHint []SszSizeHint
+			maxHint  []SszMaxSizeHint
 			typeHint []SszTypeHint
 			expected string
 		}{
@@ -383,11 +384,25 @@ func TestTypeCache_ErrorCases(t *testing.T) {
 				sizeHint: []SszSizeHint{{Size: 4}},
 				expected: "bitvector ssz type can only be represented by byte slices or arrays",
 			},
+			{
+				name:     "bitvector as string",
+				typ:      reflect.TypeOf(""),
+				typeHint: []SszTypeHint{{Type: SszBitvectorType}},
+				sizeHint: []SszSizeHint{{Size: 4, Bits: true}},
+				expected: "bitvector ssz type can only be represented by byte slices or arrays, got string",
+			},
+			{
+				name:     "bitlist as string",
+				typ:      reflect.TypeOf(""),
+				typeHint: []SszTypeHint{{Type: SszBitlistType}},
+				maxHint:  []SszMaxSizeHint{{Size: 16}},
+				expected: "bitlist ssz type can only be represented by byte slices",
+			},
 		}
 
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				_, err := cache.GetTypeDescriptor(tt.typ, tt.sizeHint, nil, tt.typeHint)
+				_, err := cache.GetTypeDescriptor(tt.typ, tt.sizeHint, tt.maxHint, tt.typeHint)
 				if err == nil {
 					t.Errorf("Expected error for %s", tt.name)
 					return
@@ -924,19 +939,21 @@ func TestTypeCache_SizeHintExpressions(t *testing.T) {
 
 // A dynssz-size field tag resolving to a value beyond the uint32 size range
 // must error rather than silently truncate during conversion.
-func TestTypeCache_SizeHintExpressionExceedsPlatformInt(t *testing.T) {
-	ds := &dummyDynamicSpecs{
-		specValues: map[string]uint64{"HUGE_SIZE": uint64(math.MaxInt) + 1},
-	}
-	cache := NewTypeCache(ds)
-
+func TestTypeCache_SizeHintExpressionExceedsSizeLimit(t *testing.T) {
 	type TestStruct struct {
 		Data []byte `dynssz-size:"HUGE_SIZE"`
 	}
 
-	_, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	// The limit itself is accepted; one past it is refused.
+	cache := NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"HUGE_SIZE": sszutils.MaxSszSize}})
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil || desc.ContainerDesc.Fields[0].Type.Len != sszutils.MaxSszSize {
+		t.Fatalf("a dynssz-size at the SSZ size limit: err = %v", err)
+	}
+	cache = NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"HUGE_SIZE": sszutils.MaxSszSize + 1}})
+	_, err = cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
 	if err == nil {
-		t.Fatal("expected error for dynssz-size value exceeding the platform integer range")
+		t.Fatal("expected error for dynssz-size value exceeding the SSZ size limit")
 	}
 	if !errors.Is(err, sszutils.ErrPlatformOverflow) {
 		t.Errorf("unexpected error: %v", err)
@@ -944,73 +961,69 @@ func TestTypeCache_SizeHintExpressionExceedsPlatformInt(t *testing.T) {
 }
 
 // annotatedOverflowSize carries a registered annotation whose dynssz-size
-// expression resolves beyond the platform integer range, exercising the
+// expression resolves beyond the SSZ size limit, exercising the
 // annotation-registry resolution path (distinct from struct field tags).
 type annotatedOverflowSize []byte
 
 var _ = sszutils.Annotate[annotatedOverflowSize](`dynssz-size:"HUGE_SIZE"`)
 
-// A registered annotation whose dynssz-size resolves beyond the platform
-// integer range must error during the deferred spec resolution.
-func TestTypeCache_AnnotationSizeHintExceedsPlatformInt(t *testing.T) {
+// A registered annotation whose dynssz-size resolves beyond the SSZ size
+// limit must error during the deferred spec resolution.
+func TestTypeCache_AnnotationSizeHintExceedsSizeLimit(t *testing.T) {
 	ds := &dummyDynamicSpecs{
-		specValues: map[string]uint64{"HUGE_SIZE": uint64(math.MaxInt) + 1},
+		specValues: map[string]uint64{"HUGE_SIZE": sszutils.MaxSszSize + 1},
 	}
 	cache := NewTypeCache(ds)
 
 	_, err := cache.GetTypeDescriptor(reflect.TypeOf(annotatedOverflowSize{}), nil, nil, nil)
 	if err == nil {
-		t.Fatal("expected error for annotation dynssz-size value exceeding the platform integer range")
+		t.Fatal("expected error for annotation dynssz-size value exceeding the SSZ size limit")
 	}
 	if !errors.Is(err, sszutils.ErrPlatformOverflow) {
 		t.Errorf("unexpected error: %v", err)
 	}
+
+	// A spec value spans the full uint64 range, so it can also stand past the
+	// signed size domain the hint is kept in.
+	cache = NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"HUGE_SIZE": math.MaxUint64}})
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(annotatedOverflowSize{}), nil, nil, nil); !errors.Is(err, sszutils.ErrPlatformOverflow) {
+		t.Errorf("a spec value past the signed size domain: err = %v", err)
+	}
 }
 
-// A bitsize of math.MaxInt64 must convert to a positive byte length, not
-// overflow int64 into a negative one (bits-to-bytes: []byte field).
-// 64-bit only: on 32-bit, math.MaxInt64 already exceeds math.MaxInt and is
-// rejected earlier by ResolveSpecValue's platform-range check, before ever
-// reaching the conversion this test targets.
-func TestTypeCache_BitsizeMaxInt64NoOverflow(t *testing.T) {
-	if math.MaxInt == math.MaxInt32 {
-		t.Skip("requires 64-bit platform")
-	}
-	ds := &dummyDynamicSpecs{
-		specValues: map[string]uint64{"HUGE_BITS": uint64(math.MaxInt64)},
-	}
-	cache := NewTypeCache(ds)
-
+// A bit size at the SSZ size limit converts to its byte length in the uint64
+// domain; a byte length past the limit is refused, not wrapped.
+func TestTypeCache_BitsizeAtSizeLimit(t *testing.T) {
 	type TestStruct struct {
 		BV []byte `ssz-type:"bitvector" dynssz-bitsize:"HUGE_BITS"`
 	}
 
+	cache := NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"HUGE_BITS": sszutils.MaxSszSize}})
 	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	const wantByteLen = int64(1152921504606846976) // ceil(math.MaxInt64 / 8), computed in the uint64 domain
-
 	field := desc.ContainerDesc.Fields[0]
-	if field.Type.BitSize != math.MaxInt64 {
-		t.Errorf("expected BitSize %d, got %d", int64(math.MaxInt64), field.Type.BitSize)
+	if field.Type.BitSize != sszutils.MaxSszSize || field.Type.Len != (sszutils.MaxSszSize+7)/8 {
+		t.Errorf("BitSize %d Len %d, want %d and %d", field.Type.BitSize, field.Type.Len, uint64(sszutils.MaxSszSize), uint64(sszutils.MaxSszSize+7)/8)
 	}
-	if field.Type.Len != wantByteLen {
-		t.Errorf("expected Len %d, got %d", wantByteLen, field.Type.Len)
+
+	// An element of the limit's byte width times the vector length passes
+	// the limit and is refused by the product bound.
+	type Matrix struct {
+		Rows [][]byte `ssz-size:"9,32" dynssz-size:"9,HUGE_BITS"`
 	}
-	if field.Type.Len < 0 {
-		t.Fatal("Len went negative: the byte-length conversion overflowed")
+	_, err = cache.GetTypeDescriptor(reflect.TypeOf(Matrix{}), nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "SSZ size limit") {
+		t.Fatalf("err = %v, want the SSZ size limit refusal", err)
 	}
 }
 
-// Same as above, but for the fixed Go array field variant.
-func TestTypeCache_BitsizeMaxInt64NoOverflowArray(t *testing.T) {
-	if math.MaxInt == math.MaxInt32 {
-		t.Skip("requires 64-bit platform")
-	}
+// A bit size whose byte length passes an array's backing length is refused
+// as a constraint violation.
+func TestTypeCache_BitsizeExceedsBackingArray(t *testing.T) {
 	ds := &dummyDynamicSpecs{
-		specValues: map[string]uint64{"HUGE_BITS": uint64(math.MaxInt64)},
+		specValues: map[string]uint64{"HUGE_BITS": 128},
 	}
 	cache := NewTypeCache(ds)
 
@@ -1262,50 +1275,59 @@ func TestTypeCache_ZeroFieldContainerRejected(t *testing.T) {
 	}
 }
 
-// delegationMethods implements the full dynamic SSZ operation set; embedding it
-// makes a type fully delegated. The bodies are inert — only the method set matters.
-// delegationOps implements the dynamic marshal/unmarshal/hash-root operations.
-type delegationOps struct{}
+// The shallow-build fixtures declare the full dynamic SSZ operation set on the
+// type itself: a method promoted from an embedded field does not delegate.
+// The bodies are inert -- only the method set matters. Each fixture carries a
+// structurally-invalid innard (an empty struct field) that would be rejected
+// if the typecache recursed into it.
+type delegatedFixedSize struct{ Bad struct{} }
 
-func (delegationOps) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+func (delegatedFixedSize) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
 	return buf, nil
 }
-func (delegationOps) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
-func (delegationOps) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+func (delegatedFixedSize) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (delegatedFixedSize) SizeSSZDyn(_ sszutils.DynamicSpecs) int                  { return 32 }
+func (delegatedFixedSize) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
 	return nil
 }
 
-// delegationMethods adds a constant-size sizer, making a type fully delegated.
-type delegationMethods struct{ delegationOps }
+type delegatedVarSize struct{ Bad struct{} }
 
-func (delegationMethods) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 32 }
+func (delegatedVarSize) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (delegatedVarSize) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (delegatedVarSize) SizeSSZDyn(_ sszutils.DynamicSpecs) int                  { return 32 }
+func (delegatedVarSize) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
 
-// Each fixture carries a structurally-invalid innard (an empty struct field) that
-// would be rejected if the typecache recursed into it.
-type delegatedFixedSize struct {
-	delegationMethods
-	Bad struct{}
+type delegatedNoAnnotation struct{ Value uint64 }
+
+func (delegatedNoAnnotation) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
 }
-type delegatedVarSize struct {
-	delegationMethods
-	Bad struct{}
-}
-type delegatedNoAnnotation struct {
-	delegationMethods
-	Value uint64
+func (delegatedNoAnnotation) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (delegatedNoAnnotation) SizeSSZDyn(_ sszutils.DynamicSpecs) int                  { return 32 }
+func (delegatedNoAnnotation) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
 }
 
 // delegatedSpecStatic is a static type whose fixed size depends on a spec value,
 // proving the size is taken from the sizer (resolved against the cache specs),
 // not from the annotation.
-type delegatedSpecStatic struct {
-	delegationOps
-	Bad struct{}
-}
+type delegatedSpecStatic struct{ Bad struct{} }
 
+func (delegatedSpecStatic) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (delegatedSpecStatic) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
 func (delegatedSpecStatic) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
 	n, _ := sszutils.ResolveSpecValueWithDefault(ds, "STATIC_SIZE", 16)
 	return int(n)
+}
+func (delegatedSpecStatic) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
 }
 
 type partiallyDelegated struct {
@@ -1333,38 +1355,198 @@ func (viewDelegationMethods) HashTreeRootWithDynView(any) func(sszutils.DynamicS
 	return nil
 }
 
-// delegatedViewRuntime carries the view methods; delegatedViewSchema carries the
-// annotation (the schema type defines the SSZ layout for a view descriptor).
-type delegatedViewRuntime struct {
-	viewDelegationMethods
-	Bad struct{}
+// delegatedViewRuntime declares the view methods; delegatedViewSchema carries
+// the annotation (the schema type defines the SSZ layout for a view descriptor).
+type delegatedViewRuntime struct{ Bad struct{} }
+
+func (delegatedViewRuntime) MarshalSSZDynView(any) func(sszutils.DynamicSpecs, []byte) ([]byte, error) {
+	return nil
 }
+func (delegatedViewRuntime) UnmarshalSSZDynView(any) func(sszutils.DynamicSpecs, []byte) error {
+	return nil
+}
+func (delegatedViewRuntime) SizeSSZDynView(any) func(sszutils.DynamicSpecs) int {
+	return func(sszutils.DynamicSpecs) int { return 32 }
+}
+func (delegatedViewRuntime) HashTreeRootWithDynView(any) func(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
 type delegatedViewSchema struct {
 	Bad struct{}
 }
 
 // delegatedBadStatic carries an invalid ssz-static value; delegatedNegSize's
 // sizer returns an out-of-range size. Both must be rejected.
-type delegatedBadStatic struct{ delegationMethods }
-type delegatedNegSize struct{ delegationOps }
+type delegatedBadStatic struct{}
 
-func (delegatedNegSize) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return -1 }
-
-// viewNilSizerMethods fully delegates the view interfaces but its view sizer
-// yields no size function, so a static view descriptor cannot resolve its size.
-type viewNilSizerMethods struct{ viewDelegationMethods }
-
-func (viewNilSizerMethods) SizeSSZDynView(any) func(sszutils.DynamicSpecs) int { return nil }
-
-type delegatedViewNilRuntime struct {
-	viewNilSizerMethods
-	Bad struct{}
+func (delegatedBadStatic) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
 }
+func (delegatedBadStatic) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (delegatedBadStatic) SizeSSZDyn(_ sszutils.DynamicSpecs) int                  { return 32 }
+func (delegatedBadStatic) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+type delegatedNegSize struct{}
+
+func (delegatedNegSize) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (delegatedNegSize) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (delegatedNegSize) SizeSSZDyn(_ sszutils.DynamicSpecs) int                  { return -1 }
+func (delegatedNegSize) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+// delegatedViewNilRuntime fully delegates the view interfaces but its view
+// sizer yields no size function, so a static view descriptor cannot resolve
+// its size.
+type delegatedViewNilRuntime struct{ Bad struct{} }
+
+func (delegatedViewNilRuntime) MarshalSSZDynView(any) func(sszutils.DynamicSpecs, []byte) ([]byte, error) {
+	return nil
+}
+func (delegatedViewNilRuntime) UnmarshalSSZDynView(any) func(sszutils.DynamicSpecs, []byte) error {
+	return nil
+}
+func (delegatedViewNilRuntime) SizeSSZDynView(any) func(sszutils.DynamicSpecs) int { return nil }
+func (delegatedViewNilRuntime) HashTreeRootWithDynView(any) func(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
 type delegatedViewNilSchema struct {
 	Bad struct{}
 }
 
+// cycleDelegatedA delegates every operation to its own methods and lies on a
+// cycle with cycleDelegatedB, which has no methods. cycleDelegatedOff delegates
+// the same way but lies on no cycle. cycleDelegatedOpaque lies on a cycle with
+// cycleOpaqueC and holds a field that cannot be described. cycleDelegatedSelf
+// lies on a cycle with itself only; cycleDelegatedPairA and cycleDelegatedPairB
+// form a cycle whose members both delegate.
+type cycleDelegatedA struct {
+	V  uint64
+	Bs []cycleDelegatedB `ssz-max:"4"`
+}
+
+func (cycleDelegatedA) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (cycleDelegatedA) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (cycleDelegatedA) SizeSSZDyn(_ sszutils.DynamicSpecs) int                  { return 12 }
+func (cycleDelegatedA) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+type cycleDelegatedB struct {
+	W  uint32
+	As []cycleDelegatedA `ssz-max:"4"`
+}
+
+type cycleDelegatedOff struct {
+	V uint64
+}
+
+func (cycleDelegatedOff) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (cycleDelegatedOff) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (cycleDelegatedOff) SizeSSZDyn(_ sszutils.DynamicSpecs) int                  { return 8 }
+func (cycleDelegatedOff) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+type cycleDelegatedOffHolder struct {
+	D cycleDelegatedOff
+	N uint64
+}
+
+type cycleDelegatedOpaque struct {
+	Bad struct{}
+	Cs  []cycleOpaqueC `ssz-max:"4"`
+}
+
+func (cycleDelegatedOpaque) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (cycleDelegatedOpaque) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (cycleDelegatedOpaque) SizeSSZDyn(_ sszutils.DynamicSpecs) int                  { return 4 }
+func (cycleDelegatedOpaque) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+type cycleOpaqueC struct {
+	W  uint32
+	Os []cycleDelegatedOpaque `ssz-max:"4"`
+}
+
+// hugeDelegate delegates and reports a static size past the SSZ size limit.
+type hugeDelegate struct{ V uint64 }
+
+func (hugeDelegate) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (hugeDelegate) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (hugeDelegate) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
+	limit := int(sszutils.MaxSszSize)
+	return limit + 1
+}
+func (hugeDelegate) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+type cycleDelegatedSelf struct {
+	V    uint64
+	Next []cycleDelegatedSelf `ssz-max:"4"`
+}
+
+func (cycleDelegatedSelf) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (cycleDelegatedSelf) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (cycleDelegatedSelf) SizeSSZDyn(_ sszutils.DynamicSpecs) int                  { return 12 }
+func (cycleDelegatedSelf) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+type cycleDelegatedPairA struct {
+	V  uint64
+	Bs []cycleDelegatedPairB `ssz-max:"4"`
+}
+
+func (cycleDelegatedPairA) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (cycleDelegatedPairA) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (cycleDelegatedPairA) SizeSSZDyn(_ sszutils.DynamicSpecs) int                  { return 12 }
+func (cycleDelegatedPairA) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+type cycleDelegatedPairB struct {
+	W  uint32
+	As []cycleDelegatedPairA `ssz-max:"4"`
+}
+
+func (cycleDelegatedPairB) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (cycleDelegatedPairB) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (cycleDelegatedPairB) SizeSSZDyn(_ sszutils.DynamicSpecs) int                  { return 8 }
+func (cycleDelegatedPairB) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
 var (
+	_ = sszutils.Annotate[cycleDelegatedA](`ssz-static:"false"`)
+	_ = sszutils.Annotate[cycleDelegatedOff](`ssz-static:"true"`)
+	_ = sszutils.Annotate[cycleDelegatedOpaque](`ssz-static:"false"`)
+	_ = sszutils.Annotate[cycleDelegatedSelf](`ssz-static:"false"`)
+	_ = sszutils.Annotate[hugeDelegate](`ssz-static:"true"`)
+	_ = sszutils.Annotate[cycleDelegatedPairA](`ssz-static:"false"`)
+	_ = sszutils.Annotate[cycleDelegatedPairB](`ssz-static:"false"`)
 	_ = sszutils.Annotate[delegatedFixedSize](`ssz-static:"true"`)
 	_ = sszutils.Annotate[delegatedVarSize](`ssz-static:"false"`)
 	_ = sszutils.Annotate[delegatedSpecStatic](`ssz-static:"true"`)
@@ -1378,6 +1560,53 @@ var (
 // A fully-delegated type that declares ssz-static must build a shallow descriptor:
 // no subtree recursion (so a structurally-invalid innard is never reached) and
 // size-ness from the annotation, with the fixed size read from the type's sizer.
+// A fully-delegated type is built shallow unless its structure closes a cycle
+// with a build in flight: then it is traversed, so both members carry the
+// recursion flag and the walkers count the cycle's levels. An opaque partner
+// on a cycle keeps the shallow descriptor.
+func TestTypeCache_DelegatedCycleIsRefused(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	// A delegated type on a cycle with a type described here is refused,
+	// whether its structure could be traversed or not.
+	for _, tc := range []struct {
+		root    any
+		partner string
+		member  string
+	}{
+		{cycleDelegatedB{}, "cycleDelegatedA", "cycleDelegatedB"},
+		{cycleOpaqueC{}, "cycleDelegatedOpaque", "cycleOpaqueC"},
+	} {
+		_, err := cache.GetTypeDescriptor(reflect.TypeOf(tc.root), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), tc.partner) || !strings.Contains(err.Error(), tc.member) || !strings.Contains(err.Error(), "generated in one run") {
+			t.Fatalf("build %T: err = %v, want the cycle between %s and %s refused", tc.root, err, tc.partner, tc.member)
+		}
+	}
+
+	// A delegated type off any cycle, one whose cycle stays within itself and
+	// a pair that delegate together are built shallow.
+	for _, v := range []any{cycleDelegatedOffHolder{}, cycleDelegatedSelf{}, cycleDelegatedPairA{}} {
+		desc, err := cache.GetTypeDescriptor(reflect.TypeOf(v), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("build %T: %v", v, err)
+		}
+		if _, holder := v.(cycleDelegatedOffHolder); holder {
+			desc = desc.ContainerDesc.Fields[0].Type
+		}
+		if desc.ContainerDesc != nil || desc.SszCompatFlags&SszCompatFlagDynamicMarshaler == 0 {
+			t.Fatalf("%T: traversed=%v delegated=%v, want a shallow delegated descriptor", v, desc.ContainerDesc != nil, desc.SszCompatFlags&SszCompatFlagDynamicMarshaler != 0)
+		}
+	}
+}
+
+// A delegated sizer's result enters the size domain and is bounded there.
+func TestTypeCache_DelegatedSizePastLimit(t *testing.T) {
+	_, err := NewTypeCache(&dummyDynamicSpecs{}).GetTypeDescriptor(reflect.TypeOf(hugeDelegate{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("a delegated size past the SSZ size limit was accepted")
+	}
+}
+
 func TestTypeCache_DelegatedShallowBuild(t *testing.T) {
 	cache := NewTypeCache(&dummyDynamicSpecs{})
 
@@ -1389,7 +1618,7 @@ func TestTypeCache_DelegatedShallowBuild(t *testing.T) {
 		if desc.ContainerDesc != nil {
 			t.Error("expected shallow descriptor (nil ContainerDesc), subtree was built")
 		}
-		// 32 comes from delegationMethods.SizeSSZDyn, called on a zero value.
+		// 32 comes from the type's SizeSSZDyn, called on a zero value.
 		if desc.Size != 32 || desc.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
 			t.Errorf("expected fixed Size 32 from sizer, got Size=%d dynamic=%v", desc.Size, desc.SszTypeFlags&SszTypeFlagIsDynamic != 0)
 		}
@@ -1704,6 +1933,113 @@ func TestTypeCache_BitvectorWithBitSize(t *testing.T) {
 	field := desc.ContainerDesc.Fields[0]
 	if field.Type.BitSize != 32 {
 		t.Errorf("expected BitSize 32, got %d", field.Type.BitSize)
+	}
+}
+
+// annotatedBitsArray and annotatedBitsSlice carry a bit size by expression
+// only, as a type-level annotation.
+type annotatedBitsArray [4]byte
+
+var _ = sszutils.Annotate[annotatedBitsArray](`ssz-type:"bitvector" dynssz-bitsize:"UNDEFINED_ANN_BITS"`)
+
+type annotatedBitsSlice []byte
+
+var _ = sszutils.Annotate[annotatedBitsSlice](`ssz-type:"bitvector" dynssz-bitsize:"UNDEFINED_ANN_BITS"`)
+
+// annotatedBitsMatrix names the bit size of its inner dimension, which is an
+// array; annotatedBitsScalarDim names a bit size for a dimension that is a
+// scalar and has no length at all.
+type annotatedBitsMatrix [2][4]byte
+
+var _ = sszutils.Annotate[annotatedBitsMatrix](`ssz-type:"?,bitvector" dynssz-bitsize:"?,UNDEFINED_ANN_BITS"`)
+
+type annotatedBitsScalarDim [4]byte
+
+var _ = sszutils.Annotate[annotatedBitsScalarDim](`dynssz-bitsize:"?,UNDEFINED_ANN_BITS"`)
+
+// annotatedBitsPtrMatrix reaches its inner array through a pointer;
+// annotatedBitsDeepDim names a dimension the type does not have.
+type annotatedBitsPtrMatrix [2]*[4]byte
+
+var _ = sszutils.Annotate[annotatedBitsPtrMatrix](`ssz-type:"?,bitvector" dynssz-bitsize:"?,UNDEFINED_ANN_BITS"`)
+
+type annotatedBitsDeepDim [4]byte
+
+var _ = sszutils.Annotate[annotatedBitsDeepDim](`dynssz-bitsize:"?,?,UNDEFINED_ANN_BITS"`)
+
+// The array fallback applies to an annotated top-level type as it does to a
+// field tag; an annotated slice still has nothing to fall back to.
+func TestTypeCache_AnnotatedBitsizeExpressionWithoutStaticFallback(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(annotatedBitsArray{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("annotated array: %v", err)
+	}
+	if desc.Len != 4 || desc.BitSize != 0 || desc.SizeExpression == nil || *desc.SizeExpression != "UNDEFINED_ANN_BITS" {
+		t.Fatalf("annotated array: Len=%d BitSize=%d expr=%v, want 4, 0, UNDEFINED_ANN_BITS", desc.Len, desc.BitSize, desc.SizeExpression)
+	}
+	_, err = cache.GetTypeDescriptor(reflect.TypeOf(annotatedBitsSlice{}), nil, nil, nil)
+	if !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Fatalf("annotated slice: err = %v, want ErrInvalidConstraint", err)
+	}
+	desc, err = cache.GetTypeDescriptor(reflect.TypeOf(annotatedBitsMatrix{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("annotated matrix: %v", err)
+	}
+	if desc.ElemDesc.Len != 4 || desc.ElemDesc.BitSize != 0 {
+		t.Fatalf("annotated matrix inner: Len=%d BitSize=%d, want 4, 0", desc.ElemDesc.Len, desc.ElemDesc.BitSize)
+	}
+	_, err = cache.GetTypeDescriptor(reflect.TypeOf(annotatedBitsScalarDim{}), nil, nil, nil)
+	if !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Fatalf("annotated scalar dimension: err = %v, want ErrInvalidConstraint", err)
+	}
+	desc, err = cache.GetTypeDescriptor(reflect.TypeOf(annotatedBitsPtrMatrix{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("annotated pointer matrix: %v", err)
+	}
+	if desc.ElemDesc.Len != 4 || desc.ElemDesc.BitSize != 0 {
+		t.Fatalf("annotated pointer matrix inner: Len=%d BitSize=%d, want 4, 0", desc.ElemDesc.Len, desc.ElemDesc.BitSize)
+	}
+	_, err = cache.GetTypeDescriptor(reflect.TypeOf(annotatedBitsDeepDim{}), nil, nil, nil)
+	if !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Fatalf("annotated missing dimension: err = %v, want ErrInvalidConstraint", err)
+	}
+}
+
+// A bit size named by an expression with no static fallback leaves an array
+// at its own length while the value is undefined, and takes the resolved
+// width once it is.
+func TestTypeCache_BitsizeExpressionWithoutStaticFallback(t *testing.T) {
+	type TestStruct struct {
+		Flags [4]byte `ssz-type:"bitvector" dynssz-bitsize:"FLAG_BITS"`
+	}
+	for _, tc := range []struct {
+		name    string
+		specs   map[string]uint64
+		len     int64
+		bitSize int64
+	}{
+		{"undefined", nil, 4, 0},
+		{"12 bits", map[string]uint64{"FLAG_BITS": 12}, 2, 12},
+		{"32 bits", map[string]uint64{"FLAG_BITS": 32}, 4, 32},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := NewTypeCache(&dummyDynamicSpecs{specValues: tc.specs})
+			desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			field := desc.ContainerDesc.Fields[0].Type
+			if field.Len != tc.len {
+				t.Errorf("Len = %d, want %d", field.Len, tc.len)
+			}
+			if field.BitSize != tc.bitSize {
+				t.Errorf("BitSize = %d, want %d", field.BitSize, tc.bitSize)
+			}
+			if field.SizeExpression == nil || *field.SizeExpression != "FLAG_BITS" {
+				t.Errorf("SizeExpression = %v, want FLAG_BITS", field.SizeExpression)
+			}
+		})
 	}
 }
 
@@ -3194,6 +3530,42 @@ func TestParseTags_DynamicStaticMaxConflict(t *testing.T) {
 	} {
 		if _, _, _, err := ParseTags(tag); err == nil || !strings.Contains(err.Error(), "conflicting max tags") {
 			t.Fatalf("%s: expected conflicting max tags error, got %v", tag, err)
+		}
+	}
+}
+
+// Every literal size tag is bounded to the SSZ size limit as it is parsed,
+// on the annotation path and on the struct field path.
+func TestParseTags_LiteralSizePastLimit(t *testing.T) {
+	for _, tag := range []string{
+		`ssz-size:"4294967296"`,
+		// A bit count is measured by the bytes it occupies, so the limit is
+		// eight times as many bits.
+		`ssz-bitsize:"34359738368"`,
+		`ssz-size:"1" dynssz-size:"4294967296"`,
+	} {
+		if _, _, _, err := ParseTags(tag); err == nil || !strings.Contains(err.Error(), "SSZ size limit") {
+			t.Fatalf("%s: err = %v, want the SSZ size limit refusal", tag, err)
+		}
+	}
+
+	// 2^32 bits occupy 512 MiB, well inside the limit.
+	if _, _, _, err := ParseTags(`ssz-bitsize:"4294967296"`); err != nil {
+		t.Fatalf("a 512 MiB bitvector was refused: %v", err)
+	}
+	type literalSize struct {
+		Data []byte `ssz-size:"4294967296"`
+	}
+	type literalBitSize struct {
+		Bits []byte `ssz-type:"bitvector" ssz-bitsize:"34359738368"`
+	}
+	type literalDynSize struct {
+		Data []byte `ssz-size:"1" dynssz-size:"4294967296"`
+	}
+	for _, v := range []any{literalSize{}, literalBitSize{}, literalDynSize{}} {
+		_, err := NewTypeCache(nil).GetTypeDescriptor(reflect.TypeOf(v), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "SSZ size limit") {
+			t.Fatalf("field tag %T: err = %v, want the SSZ size limit refusal", v, err)
 		}
 	}
 }
@@ -5164,6 +5536,53 @@ func TestTypeCache_ProgressiveIndexBound(t *testing.T) {
 // An explicit ssz-size:"0" on a slice or string must be rejected instead of
 // silently degrading to an unbounded list (zero-length vectors are illegal
 // in SSZ).
+// delegatedZeroSize is a fully delegated static type whose sizer reports 0.
+type delegatedZeroSize struct{}
+
+var _ = sszutils.Annotate[delegatedZeroSize](`ssz-static:"true"`)
+
+func (*delegatedZeroSize) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+
+func (*delegatedZeroSize) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+
+func (*delegatedZeroSize) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 0 }
+
+func (*delegatedZeroSize) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(0)
+	return nil
+}
+
+// An optional-list of a zero-size element could never decode presence, so it
+// is rejected like a list of it; a plain pointer to the element stays valid.
+func TestTypeCache_OptionalListZeroSizeElementRejected(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	cache.ExtendedTypes = true
+
+	type optHolder struct {
+		Item *delegatedZeroSize `ssz-type:"optional-list"`
+	}
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(optHolder{}), nil, nil, nil)
+	if !errors.Is(err, sszutils.ErrInvalidConstraint) || !strings.Contains(err.Error(), "optional-list element type") {
+		t.Fatalf("optional-list of a zero-size element: err = %v, want ErrInvalidConstraint naming the element", err)
+	}
+
+	type listHolder struct {
+		Items []delegatedZeroSize `ssz-max:"1"`
+	}
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(listHolder{}), nil, nil, nil); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Fatalf("list of a zero-size element: err = %v, want ErrInvalidConstraint", err)
+	}
+
+	type plainHolder struct {
+		Item *delegatedZeroSize
+	}
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(plainHolder{}), nil, nil, nil); err != nil {
+		t.Fatalf("plain pointer to a zero-size element: %v", err)
+	}
+}
+
 func TestTypeCache_ZeroSizeSliceRejected(t *testing.T) {
 	cache := NewTypeCache(&dummyDynamicSpecs{})
 
@@ -5670,6 +6089,76 @@ func TestRecursionMemberMarking(t *testing.T) {
 		}
 	})
 
+	t.Run("overlapping_cycles", func(t *testing.T) {
+		// A is on two cycles, A-B and A-C-B, which share B. Every member of
+		// both is flagged from the first build that reaches them.
+		desc, err := cache.GetTypeDescriptor(reflect.TypeFor[recOverlapA](), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		descB := desc.ContainerDesc.Fields[0].Type.ElemDesc
+		descC := desc.ContainerDesc.Fields[1].Type.ElemDesc
+		for name, d := range map[string]*TypeDescriptor{"A": desc, "B": descB, "C": descC, "A.B": desc.ContainerDesc.Fields[0].Type, "A.C": desc.ContainerDesc.Fields[1].Type, "C.B": descC.ContainerDesc.Fields[0].Type} {
+			if !flagged(d) {
+				t.Errorf("%s must be flagged", name)
+			}
+		}
+
+		// A later build through the shared descriptors leaves them as they are.
+		before := descC.SszTypeFlags
+		if _, err := cache.GetTypeDescriptor(reflect.TypeFor[recOverlapX](), nil, nil, nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if descC.SszTypeFlags != before {
+			t.Errorf("building X changed the published C flags %v -> %v", before, descC.SszTypeFlags)
+		}
+	})
+
+	t.Run("build_order_independent", func(t *testing.T) {
+		// The flags of every shared type are the same whichever type is built
+		// first.
+		roots := []reflect.Type{reflect.TypeFor[recOverlapA](), reflect.TypeFor[recOverlapB](), reflect.TypeFor[recOverlapC](), reflect.TypeFor[recOverlapX]()}
+		shared := roots[:3]
+		var want []SszTypeFlag
+		for _, root := range roots {
+			fresh := NewTypeCache(&dummyDynamicSpecs{})
+			if _, err := fresh.GetTypeDescriptor(root, nil, nil, nil); err != nil {
+				t.Fatalf("%v: %v", root, err)
+			}
+			got := make([]SszTypeFlag, len(shared))
+			for i, typ := range shared {
+				d, err := fresh.GetTypeDescriptor(typ, nil, nil, nil)
+				if err != nil {
+					t.Fatalf("%v: %v", typ, err)
+				}
+				got[i] = d.SszTypeFlags
+			}
+			if want == nil {
+				want = got
+				continue
+			}
+			for i := range shared {
+				if got[i] != want[i] {
+					t.Errorf("root %v: %v flags %v, want %v as built from %v", root, shared[i], got[i], want[i], roots[0])
+				}
+			}
+		}
+	})
+
+	t.Run("self_edge", func(t *testing.T) {
+		// A list whose element is the list itself is a one-node cycle.
+		desc, err := cache.GetTypeDescriptor(reflect.TypeFor[recSelfList](), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.ElemDesc != desc {
+			t.Fatalf("the element descriptor is not the list itself")
+		}
+		if !flagged(desc) {
+			t.Error("a descriptor with an edge to itself must be flagged")
+		}
+	})
+
 	t.Run("acyclic_graph_untouched", func(t *testing.T) {
 		desc, err := cache.GetTypeDescriptor(reflect.TypeFor[recAcyclicHolder](), nil, nil, nil)
 		if err != nil {
@@ -5730,6 +6219,28 @@ type recCycleThroughFixed struct {
 	Value uint64
 	Next  *recCycleThroughFixed
 }
+
+type recOverlapA struct {
+	B []recOverlapB `ssz-max:"1"`
+	C []recOverlapC `ssz-max:"1"`
+}
+
+type recOverlapB struct {
+	A []recOverlapA `ssz-max:"1"`
+}
+
+type recOverlapC struct {
+	B []recOverlapB `ssz-max:"1"`
+}
+
+type recOverlapX struct {
+	C recOverlapC
+	X []recOverlapX `ssz-max:"1"`
+}
+
+type recSelfList []recSelfList
+
+var _ = sszutils.Annotate[recSelfList](`ssz-max:"1"`)
 
 type recMutualFixedA struct {
 	Value uint64
@@ -5881,6 +6392,97 @@ func TestTypeCache_PromotedCompatSuppression(t *testing.T) {
 	}
 	if desc.HashTreeRootWithMethod != nil {
 		t.Error("promoted HashTreeRootWith method not discarded")
+	}
+}
+
+// promotedViewCompatOuter satisfies the view delegation surface only through
+// methods promoted from its embedded field; delegating through any of them
+// would drop Label.
+type promotedViewCompatOuter struct {
+	viewDelegationMethods
+	Label uint32
+}
+
+func TestTypeCache_PromotedViewCompatSuppression(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(promotedViewCompatOuter{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	suppressed := SszCompatFlagDynamicViewMarshaler | SszCompatFlagDynamicViewUnmarshaler |
+		SszCompatFlagDynamicViewSizer | SszCompatFlagDynamicViewHashRoot
+	if got := desc.SszCompatFlags & suppressed; got != 0 {
+		t.Errorf("promoted view compat flags not suppressed: %b", got)
+	}
+}
+
+// walkerOnlyInner exposes only HashTreeRootWith, a delegation surface with no
+// interface of its own.
+type walkerOnlyInner struct{ A uint64 }
+
+func (v *walkerOnlyInner) HashTreeRootWith(hh sszutils.HashWalker) error {
+	hh.PutUint64(v.A)
+	return nil
+}
+
+type walkerOnlyOuter struct {
+	walkerOnlyInner
+	B uint64
+}
+
+type walkerOnlyPtrOuter struct {
+	*walkerOnlyInner
+	B uint64
+}
+
+// valueReceiverOuter embeds a delegating struct and declares three delegation
+// methods of its own with value receivers.
+type valueReceiverOuter struct {
+	testFastsszMarshaler
+	Label uint32
+}
+
+func (valueReceiverOuter) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+
+func (valueReceiverOuter) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+func (valueReceiverOuter) HashTreeRootWith(_ sszutils.HashWalker) error { return nil }
+
+// A promoted HashTreeRootWith is detected like any other delegation method,
+// through a value or a pointer embed; a method the outer type declares with a
+// value receiver is its own and is never reported as promoted.
+func TestPromotedDelegationWalkerMethodAndValueReceivers(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	for _, typ := range []reflect.Type{reflect.TypeOf(walkerOnlyOuter{}), reflect.TypeOf(walkerOnlyPtrOuter{})} {
+		promoted := cache.PromotedDelegationMethods(typ)
+		if !promoted["HashTreeRootWith"] {
+			t.Errorf("%v: promoted HashTreeRootWith not detected: %v", typ, promoted)
+		}
+		desc, err := cache.GetTypeDescriptor(typ, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("%v: %v", typ, err)
+		}
+		if desc.SszCompatFlags&SszCompatFlagHashTreeRootWith != 0 || desc.HashTreeRootWithMethod != nil {
+			t.Errorf("%v: promoted HashTreeRootWith still delegable", typ)
+		}
+	}
+
+	promoted := cache.PromotedDelegationMethods(reflect.TypeOf(valueReceiverOuter{}))
+	for _, own := range []string{"MarshalSSZDyn", "HashTreeRootWithDyn", "HashTreeRootWith"} {
+		if promoted[own] {
+			t.Errorf("declared value-receiver %s reported as promoted", own)
+		}
+	}
+	for _, inherited := range []string{"MarshalSSZTo", "UnmarshalSSZ", "SizeSSZ", "HashTreeRoot"} {
+		if !promoted[inherited] {
+			t.Errorf("promoted %s not detected: %v", inherited, promoted)
+		}
 	}
 }
 
@@ -6046,5 +6648,45 @@ func TestParseTagsFastsszTag(t *testing.T) {
 	}
 	if _, _, _, err := ParseTags(`ssz:"bitlist" ssz-type:"bitlist"`); err == nil {
 		t.Fatal("both tags accepted")
+	}
+}
+
+// A reference that declares a different SSZ type than the annotation is an
+// override, per dimension.
+func TestSameSszTypes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		a, b []SszTypeHint
+		want bool
+	}{
+		{"both empty", nil, nil, true},
+		{"same", []SszTypeHint{{Type: SszUint64Type}}, []SszTypeHint{{Type: SszUint64Type}}, true},
+		{"different length", []SszTypeHint{{Type: SszUint64Type}}, nil, false},
+		{"different type", []SszTypeHint{{Type: SszUint64Type}}, []SszTypeHint{{Type: SszUint32Type}}, false},
+		{"different in the second dimension",
+			[]SszTypeHint{{Type: SszListType}, {Type: SszUint64Type}},
+			[]SszTypeHint{{Type: SszListType}, {Type: SszUint32Type}}, false},
+	} {
+		if got := SameSszTypes(tc.a, tc.b); got != tc.want {
+			t.Errorf("%s: SameSszTypes = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// badAnnotatedType carries an annotation that states a valid ssz-static and an
+// SSZ type the tag parser rejects.
+type badAnnotatedType struct{ A uint64 }
+
+var _ = sszutils.Annotate[badAnnotatedType](`ssz-static:"true" ssz-type:"bogus"`)
+
+// Deciding whether a reference overrides the type's own annotation reads that
+// annotation, so an unparsable one is refused there too.
+func TestTypeCache_OverrideCheckRefusesBadAnnotation(t *testing.T) {
+	type holder struct {
+		F badAnnotatedType `ssz-type:"container"`
+	}
+	_, err := NewTypeCache(nil).GetTypeDescriptor(reflect.TypeOf(holder{}), nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "bogus") {
+		t.Fatalf("err = %v, want the annotation refused", err)
 	}
 }

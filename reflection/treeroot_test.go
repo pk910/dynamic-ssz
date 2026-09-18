@@ -1289,6 +1289,21 @@ func TestHashTreeRootWithMethodError(t *testing.T) {
 	}
 }
 
+func TestHashTreeRootWithBasicDelegatePads(t *testing.T) {
+	// The walker-hashed two-byte field leaves a partial chunk; the sibling
+	// must land in the next chunk, so the root is the hash of two chunks.
+	dynssz := NewDynSsz(nil)
+	root, err := dynssz.HashTreeRoot(&TestWalkerU16Holder{A: 0x0201, B: 7})
+	if err != nil {
+		t.Fatalf("HashTreeRoot: %v", err)
+	}
+	var chunks [64]byte
+	chunks[0], chunks[1], chunks[32] = 0x01, 0x02, 7
+	if want := sha256.Sum256(chunks[:]); root != want {
+		t.Fatalf("root %x, want %x", root, want)
+	}
+}
+
 func TestVectorElementHashError(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithNoFastSsz())
 

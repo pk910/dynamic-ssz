@@ -12,8 +12,8 @@
 // Shown here:
 //  1. Stream-encoding to a file with MarshalSSZWriter.
 //  2. Stream-decoding from a file with UnmarshalSSZReader and a known size.
-//  3. A size-known / size-unknown fallback helper for HTTP bodies
-//     (Content-Length present vs chunked responses).
+//  3. Decoding an HTTP body to EOF without trusting its Content-Length
+//     (whether or not the server sent one).
 //  4. Network-style streaming through an io.Pipe without any intermediate
 //     buffer.
 //  5. An allocation comparison between buffered and streamed decoding.
@@ -130,10 +130,11 @@ func run() error {
 
 	fmt.Printf("  hash tree roots match: %v\n", originalRoot == decodedRoot)
 
-	// 3. The download pattern: a chunked HTTP response has no Content-Length,
-	// so the size is not known up front. Passing a negative size streams to
-	// EOF rather than buffering the payload first.
-	fmt.Println("\n3. Unknown size (HTTP chunked download pattern):")
+	// 3. The download pattern: an HTTP response body is decoded to EOF with a
+	// negative size, whether or not the server sent a Content-Length. A size
+	// passed to UnmarshalSSZReader is trusted, and a remote server's header
+	// is not a source to trust with the decoder's allocations.
+	fmt.Println("\n3. Unknown size (HTTP download pattern):")
 
 	chunked, err := os.Open(file.Name())
 	if err != nil {
@@ -141,17 +142,17 @@ func run() error {
 	}
 
 	var fromChunked ValidatorRegistry
-	if err = decodeSSZ(ds, &fromChunked, chunked, -1); err != nil {
+	if err = decodeSSZ(ds, &fromChunked, chunked); err != nil {
 		return fmt.Errorf("failed to decode without size: %w", err)
 	}
 
-	fmt.Printf("  chunked response (unknown size) streamed to EOF: %d validators\n",
+	fmt.Printf("  HTTP body (unknown size) streamed to EOF: %d validators\n",
 		len(fromChunked.Validators))
 
 	// 4. Network-style streaming: encoder and decoder connected by a pipe.
 	// Nothing is ever fully buffered — bytes flow from MarshalSSZWriter to
-	// UnmarshalSSZReader as they are produced. The receiver only needs to
-	// know the total size up front (an SSZ response's Content-Length).
+	// UnmarshalSSZReader as they are produced. The receiver passes the size
+	// it computed itself from the value being sent, a value it can trust.
 	fmt.Println("\n4. io.Pipe — sender and receiver with no intermediate buffer:")
 
 	pipeReader, pipeWriter := io.Pipe()
@@ -209,21 +210,16 @@ func run() error {
 	return nil
 }
 
-// decodeSSZ streams a beacon API download either way: with the payload size
-// when it is known (Content-Length), and to EOF when it is not (chunked
-// encoding). Neither path buffers the payload.
-//
-// Prefer passing the size when you have it: knowing where the payload ends
-// keeps the fail-fast validation and avoids growing the trailing collection.
-// An unknown-size decode is byte-bounded by WithMaxStreamSize, but the HTTP
-// caller must still configure a request context/client timeout: the bound does
-// not stop a server from withholding EOF while staying below it.
-func decodeSSZ(ds *dynssz.DynSsz, target any, data io.ReadCloser, size int64) error {
+// decodeSSZ streams a beacon API download to EOF without buffering the
+// payload. A non-negative size passed to UnmarshalSSZReader is trusted input
+// that sizes allocations before the bytes arrive, so it must come from a
+// source you control, such as a file's Stat result; a Content-Length is the
+// server's claim and is not passed on. An unknown-size decode is byte-bounded
+// by WithMaxStreamSize (or WithStreamSizeLimit per call), but the HTTP caller
+// must still configure a request context/client timeout: the bound does not
+// stop a server from withholding EOF while staying below it.
+func decodeSSZ(ds *dynssz.DynSsz, target any, data io.ReadCloser) error {
 	defer func() { _ = data.Close() }()
-
-	if size > 0 {
-		return ds.UnmarshalSSZReader(target, data, int(size))
-	}
 
 	return ds.UnmarshalSSZReader(target, data, -1)
 }

@@ -57,7 +57,9 @@ func UnmarshallUint8(src []byte) uint8 {
 }
 
 // UnmarshalBool unmarshals a boolean from the src input. An empty buffer decodes
-// to false rather than panicking.
+// to false rather than panicking, and any byte other than 1 decodes to false.
+// It is kept for generated code from earlier versions; the decoders'
+// DecodeBool and the code generated today reject a byte other than 0 or 1.
 func UnmarshalBool(src []byte) bool {
 	if len(src) < 1 {
 		return false
@@ -146,6 +148,15 @@ func CapToInt(v uint64) int {
 	return int(v)
 }
 
+// MaxSszSize is the largest byte size the library describes. SSZ offsets are
+// 32-bit, so no size a valid encoding refers to passes 2^32-1; on a host
+// whose int is narrower the int bound applies instead. Declared sizes, spec
+// values that size a type, vector byte sizes and container fixed sections are
+// refused past it at analysis and at spec resolution, so a product of two
+// such sizes fits a uint64 and a sum of them fits the platform int without
+// further checks.
+const MaxSszSize = min(math.MaxUint32, math.MaxInt)
+
 // Min returns the smaller of a and b. Generated code calls the qualified
 // helpers instead of the min/max builtins, which a target package can shadow
 // with its own function.
@@ -218,27 +229,33 @@ func decodeSlicePreallocation(count int, elemSize uint64) int {
 	return count
 }
 
-// PreallocateDecodeSlice reserves a byte-bounded prefix of a declared dynamic
-// list. Callers extend the result geometrically with GrowSlice as later chunks
-// are reached.
+// PreallocateDecodeSlice sizes src for a dynamic list of count elements. A
+// region whose extent is backed by known input (a buffer, a stream with a
+// declared length, or a region that fits in the bytes already read) is sized
+// exactly. Otherwise the offset table proves the count but not that any body
+// exists, so a byte-bounded prefix is reserved and callers extend it
+// geometrically with GrowSlice as bodies are reached.
 //
 // ExpandSlice is intentional here: GrowSlice's small-slice capacity floor is a
 // throughput win during incremental growth, but reserving eight wide elements
 // would defeat the byte bound this helper provides.
-func PreallocateDecodeSlice[T any](src []T, count int) []T {
+func PreallocateDecodeSlice[T any](dec Decoder, src []T, count int) []T {
+	if dec.LengthKnown() {
+		return ExpandSlice(src, count)
+	}
 	var zero T
 	initialCount := decodeSlicePreallocation(count, uint64(unsafe.Sizeof(zero)))
 	return ExpandSlice(src, initialCount)
 }
 
-// CredibleCount clamps a count declared by the input to what the bytes already
-// read can account for, at elemSize bytes per element.
+// CredibleCount returns the count an allocation may be sized from.
 //
-// A count taken from an offset or a region length is only a claim until the
-// bytes behind it arrive. Sizing an allocation from the claim lets a peer turn a
-// few delivered bytes into an arbitrary one; sizing it from what has arrived
-// costs the peer the bytes. When the extent is already backed by known input the
-// count is returned unchanged.
+// When the region's extent is known (a buffer, a stream whose length the
+// caller declared, or a region that fits in the bytes already read) the
+// declared count is returned unchanged. In unknown-length mode the count is
+// only a claim until the bytes behind it arrive, so it is clamped to what the
+// bytes already read account for at elemSize bytes per element, and callers
+// grow the allocation as the rest arrives.
 func CredibleCount(dec Decoder, count, elemSize int) int {
 	if count <= 0 {
 		return 0

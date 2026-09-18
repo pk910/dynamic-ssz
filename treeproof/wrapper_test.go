@@ -16,16 +16,43 @@ import (
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
+// The wrapper keeps its bytes the way hasher.Hasher does and cuts them into
+// leaves when a region is reduced, so what used to be "the node list" is now
+// the chunks the buffer holds. These helpers state the old assertions against
+// that state.
+
+// nodeCount reports how many chunks the walker holds.
+func nodeCount(w *Wrapper) int { return (len(w.buf) + 31) / 32 }
+
+// nodeAt returns what sits in chunk i: the subtree root that begins there, or
+// a leaf of the chunk's bytes.
+func nodeAt(w *Wrapper, i int) *Node {
+	off := i * 32
+	if j := w.nodeIndexAt(off); j >= 0 {
+		return w.nodes[j].node
+	}
+	w.fillRegionUpTo32(0)
+	w.materialize(off, off+32)
+	return LeafFromBytes(w.buf[off : off+32])
+}
+
+// reduceBinaryAt reduces the region that began at off with no limit, which is
+// what the removed commit helper did.
+func (w *Wrapper) reduceBinaryAt(off int) { w.reduceBinary(off) }
+
+// reduceProgressiveWithActiveFields reduces the region progressively and mixes
+// in an active-fields bitvector.
+func (w *Wrapper) reduceProgressiveWithActiveFields(off int, activeFields []byte) {
+	w.MerkleizeProgressiveWithActiveFields(off, activeFields)
+}
+
 func TestNewWrapper(t *testing.T) {
 	w := NewWrapper()
 
 	if w == nil {
 		t.Fatal("wrapper should not be nil")
 	}
-	if w.nodes == nil {
-		t.Error("nodes should be initialized")
-	}
-	if len(w.nodes) != 0 {
+	if nodeCount(w) != 0 {
 		t.Error("nodes should be empty")
 	}
 	if w.buf == nil {
@@ -66,23 +93,23 @@ func TestWrapperIndex(t *testing.T) {
 		t.Errorf("initial index should be 0, got %d", w.Index())
 	}
 
+	// A scope opens where the buffer stands, and every node occupies a chunk,
+	// so both indices count bytes.
 	w.AddNode(NewNodeWithValue([]byte{1}))
-	if w.Index() != 1 {
-		t.Errorf("index after adding node should be 1, got %d", w.Index())
+	if w.Index() != 32 {
+		t.Errorf("index after adding node should be 32, got %d", w.Index())
 	}
 
 	w.AddNode(NewNodeWithValue([]byte{2}))
-	if w.Index() != 2 {
-		t.Errorf("index after adding second node should be 2, got %d", w.Index())
+	if w.Index() != 64 {
+		t.Errorf("index after adding second node should be 64, got %d", w.Index())
 	}
 
-	// CurrentIndex reflects the pending (unflushed) buffer length rather than the
-	// node count.
-	if w.CurrentIndex() != 0 {
-		t.Errorf("current index should be 0 with no buffered bytes, got %d", w.CurrentIndex())
+	if w.CurrentIndex() != 64 {
+		t.Errorf("current index should be 64 after two nodes, got %d", w.CurrentIndex())
 	}
 	w.Append([]byte{1, 2, 3})
-	if w.CurrentIndex() != 3 {
+	if w.CurrentIndex() != 67 {
 		t.Errorf("current index should track buffered bytes, got %d", w.CurrentIndex())
 	}
 }
@@ -240,18 +267,18 @@ func TestWrapperMerkleize(t *testing.T) {
 	initialBufLen := len(w.buf)
 	w.Merkleize(0)
 
-	// Buffer should be cleared
-	if len(w.buf) != 0 {
-		t.Error("buffer should be cleared after Merkleize")
+	// The region is replaced by the one chunk its root occupies.
+	if len(w.buf) != 32 {
+		t.Errorf("buffer holds %d bytes after Merkleize, want one chunk", len(w.buf))
 	}
 
 	// Should have created a tree node
-	if len(w.nodes) != 1 {
-		t.Errorf("expected 1 node, got %d", len(w.nodes))
+	if nodeCount(w) != 1 {
+		t.Errorf("expected 1 node, got %d", nodeCount(w))
 	}
 
 	// Node should represent the merkleized data
-	if w.nodes[0] == nil {
+	if nodeAt(w, 0) == nil {
 		t.Error("node should not be nil")
 	}
 
@@ -272,12 +299,12 @@ func TestWrapperMerkleizeWithMixin(t *testing.T) {
 	w.MerkleizeWithMixin(0, 4, 4)
 
 	// Should have one node representing the tree with mixin
-	if len(w.nodes) != 1 {
-		t.Errorf("expected 1 node, got %d", len(w.nodes))
+	if nodeCount(w) != 1 {
+		t.Errorf("expected 1 node, got %d", nodeCount(w))
 	}
 
 	// The root should have a mixin (right child with length)
-	root := w.nodes[0]
+	root := nodeAt(w, 0)
 	if root.IsLeaf() {
 		t.Error("root should be a branch node with mixin")
 	}
@@ -294,8 +321,8 @@ func TestWrapperMerkleizeProgressive(t *testing.T) {
 	w.MerkleizeProgressive(0)
 
 	// Should have one node representing the progressive tree
-	if len(w.nodes) != 1 {
-		t.Errorf("expected 1 node, got %d", len(w.nodes))
+	if nodeCount(w) != 1 {
+		t.Errorf("expected 1 node, got %d", nodeCount(w))
 	}
 }
 
@@ -311,18 +338,18 @@ func TestWrapperMerkleizeProgressiveWithMixin(t *testing.T) {
 	w.MerkleizeProgressiveWithMixin(0, 3)
 
 	// Should have one node representing the progressive tree with mixin
-	if len(w.nodes) != 1 {
-		t.Errorf("expected 1 node, got %d", len(w.nodes))
+	if nodeCount(w) != 1 {
+		t.Errorf("expected 1 node, got %d", nodeCount(w))
 	}
 
 	// The root should be a branch node (has mixin)
-	if w.nodes[0].IsLeaf() {
+	if nodeAt(w, 0).IsLeaf() {
 		t.Error("root should be a branch node with mixin")
 	}
 
-	// Buffer should be cleared
-	if len(w.buf) != 0 {
-		t.Error("buffer should be cleared after MerkleizeProgressiveWithMixin")
+	// The region is replaced by the one chunk its root occupies.
+	if len(w.buf) != 32 {
+		t.Errorf("buffer holds %d bytes after MerkleizeProgressiveWithMixin, want one chunk", len(w.buf))
 	}
 }
 
@@ -341,18 +368,18 @@ func TestWrapperMerkleizeProgressiveWithActiveFields(t *testing.T) {
 	w.MerkleizeProgressiveWithActiveFields(0, activeFields)
 
 	// Should have one node representing the progressive tree with active fields
-	if len(w.nodes) != 1 {
-		t.Errorf("expected 1 node, got %d", len(w.nodes))
+	if nodeCount(w) != 1 {
+		t.Errorf("expected 1 node, got %d", nodeCount(w))
 	}
 
 	// The root should be a branch node (has active fields mixin)
-	if w.nodes[0].IsLeaf() {
+	if nodeAt(w, 0).IsLeaf() {
 		t.Error("root should be a branch node with active fields mixin")
 	}
 
-	// Buffer should be cleared
-	if len(w.buf) != 0 {
-		t.Error("buffer should be cleared after MerkleizeProgressiveWithActiveFields")
+	// The region is replaced by the one chunk its root occupies.
+	if len(w.buf) != 32 {
+		t.Errorf("buffer holds %d bytes after MerkleizeProgressiveWithActiveFields, want one chunk", len(w.buf))
 	}
 }
 
@@ -366,8 +393,8 @@ func TestWrapperPutBitlist(t *testing.T) {
 	w.PutBitlist(bitlist, maxSize)
 
 	// Should have created a tree with mixin
-	if len(w.nodes) != 1 {
-		t.Errorf("expected 1 node, got %d", len(w.nodes))
+	if nodeCount(w) != 1 {
+		t.Errorf("expected 1 node, got %d", nodeCount(w))
 	}
 }
 
@@ -380,23 +407,25 @@ func TestWrapperPutProgressiveBitlist(t *testing.T) {
 	w.PutProgressiveBitlist(bitlist)
 
 	// Should have created a progressive tree with mixin
-	if len(w.nodes) != 1 {
-		t.Errorf("expected 1 node, got %d", len(w.nodes))
+	if nodeCount(w) != 1 {
+		t.Errorf("expected 1 node, got %d", nodeCount(w))
 	}
 }
 
+// A field write buffers its chunk, as hasher.Hasher does; the leaf appears
+// when the buffer is flushed, at the next scope boundary or node addition.
 func TestWrapperPutMethods(t *testing.T) {
 	t.Run("PutBool", func(t *testing.T) {
 		w := NewWrapper()
 		w.PutBool(true)
 
-		if len(w.nodes) != 1 {
+		if nodeCount(w) != 1 {
 			t.Error("PutBool should add one node")
 		}
 
 		expected := make([]byte, 32)
 		expected[0] = 1
-		if !bytes.Equal(w.nodes[0].value[:], expected) {
+		if !bytes.Equal(nodeAt(w, 0).value[:], expected) {
 			t.Error("PutBool value mismatch")
 		}
 	})
@@ -407,7 +436,7 @@ func TestWrapperPutMethods(t *testing.T) {
 		smallBytes := []byte{1, 2, 3, 4}
 		w.PutBytes(smallBytes)
 
-		if len(w.nodes) != 1 {
+		if nodeCount(w) != 1 {
 			t.Error("PutBytes (small) should add one node")
 		}
 
@@ -421,41 +450,24 @@ func TestWrapperPutMethods(t *testing.T) {
 		}
 	})
 
-	t.Run("PutUint64", func(t *testing.T) {
-		w := NewWrapper()
-		w.PutUint64(12345)
+	for _, tc := range []struct {
+		name string
+		put  func(w *Wrapper)
+	}{
+		{"PutUint64", func(w *Wrapper) { w.PutUint64(12345) }},
+		{"PutUint32", func(w *Wrapper) { w.PutUint32(12345) }},
+		{"PutUint16", func(w *Wrapper) { w.PutUint16(12345) }},
+		{"PutUint8", func(w *Wrapper) { w.PutUint8(123) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := NewWrapper()
+			tc.put(w)
 
-		if len(w.nodes) != 1 {
-			t.Error("PutUint64 should add one node")
-		}
-	})
-
-	t.Run("PutUint32", func(t *testing.T) {
-		w := NewWrapper()
-		w.PutUint32(12345)
-
-		if len(w.nodes) != 1 {
-			t.Error("PutUint32 should add one node")
-		}
-	})
-
-	t.Run("PutUint16", func(t *testing.T) {
-		w := NewWrapper()
-		w.PutUint16(12345)
-
-		if len(w.nodes) != 1 {
-			t.Error("PutUint16 should add one node")
-		}
-	})
-
-	t.Run("PutUint8", func(t *testing.T) {
-		w := NewWrapper()
-		w.PutUint8(123)
-
-		if len(w.nodes) != 1 {
-			t.Error("PutUint8 should add one node")
-		}
-	})
+			if nodeCount(w) != 1 {
+				t.Errorf("%s should add one node", tc.name)
+			}
+		})
+	}
 }
 
 func TestWrapperPutUint64Array(t *testing.T) {
@@ -464,7 +476,7 @@ func TestWrapperPutUint64Array(t *testing.T) {
 		arr := []uint64{1, 2, 3, 4}
 		w.PutUint64Array(arr)
 
-		if len(w.nodes) != 1 {
+		if nodeCount(w) != 1 {
 			t.Error("PutUint64Array should create one merkleized node")
 		}
 	})
@@ -475,12 +487,12 @@ func TestWrapperPutUint64Array(t *testing.T) {
 		maxCap := uint64(10)
 		w.PutUint64Array(arr, maxCap)
 
-		if len(w.nodes) != 1 {
+		if nodeCount(w) != 1 {
 			t.Error("PutUint64Array with max capacity should create one merkleized node")
 		}
 
 		// Should be a tree with mixin
-		if w.nodes[0].IsLeaf() {
+		if nodeAt(w, 0).IsLeaf() {
 			t.Error("dynamic array should create branch node with mixin")
 		}
 	})
@@ -492,7 +504,7 @@ func TestWrapperAddMethods(t *testing.T) {
 		w := NewWrapper()
 		w.AddBytes([]byte{1, 2, 3})
 
-		if len(w.nodes) != 1 {
+		if nodeCount(w) != 1 {
 			t.Error("AddBytes (small) should add one node")
 		}
 
@@ -509,14 +521,46 @@ func TestWrapperAddMethods(t *testing.T) {
 		w := NewWrapper()
 		w.AddUint64(0xFFFFFFFFFFFFFFFF)
 
-		if len(w.nodes) != 1 {
+		if nodeCount(w) != 1 {
 			t.Error("AddUint64 should add one node")
 		}
 
 		expected := make([]byte, 32)
 		binary.LittleEndian.PutUint64(expected[:8], 0xFFFFFFFFFFFFFFFF)
-		if !bytes.Equal(w.nodes[0].value[:], expected) {
+		if !bytes.Equal(nodeAt(w, 0).value[:], expected) {
 			t.Error("AddUint64 value mismatch")
+		}
+	})
+
+	t.Run("AddSmallUints", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			add  func(w *Wrapper)
+			want []byte
+		}{
+			{"AddUint32", func(w *Wrapper) { w.AddUint32(0x11223344) }, []byte{0x44, 0x33, 0x22, 0x11}},
+			{"AddUint16", func(w *Wrapper) { w.AddUint16(0x1122) }, []byte{0x22, 0x11}},
+			{"AddUint8", func(w *Wrapper) { w.AddUint8(0x11) }, []byte{0x11}},
+		} {
+			w := NewWrapper()
+			tc.add(w)
+			if nodeCount(w) != 1 {
+				t.Fatalf("%s added %d chunks, want 1", tc.name, nodeCount(w))
+			}
+			want := make([]byte, 32)
+			copy(want, tc.want)
+			if got := nodeAt(w, 0).value[:]; !bytes.Equal(got, want) {
+				t.Errorf("%s value = %x, want %x", tc.name, got, want)
+			}
+		}
+	})
+
+	t.Run("AddBytesEmpty", func(t *testing.T) {
+		// An empty value contributes nothing, as in hasher.Hasher.
+		w := NewWrapper()
+		w.AddBytes(nil)
+		if nodeCount(w) != 0 || len(w.buf) != 0 {
+			t.Errorf("empty AddBytes left %d chunks and %d bytes, want none", nodeCount(w), len(w.buf))
 		}
 	})
 
@@ -525,7 +569,7 @@ func TestWrapperAddMethods(t *testing.T) {
 		node := NewNodeWithValue(bytes.Repeat([]byte{42}, 32))
 		w.AddNode(node)
 
-		if len(w.nodes) != 1 || w.nodes[0] != node {
+		if nodeCount(w) != 1 || w.nodes[0].node != node {
 			t.Error("AddNode failed")
 		}
 	})
@@ -534,11 +578,11 @@ func TestWrapperAddMethods(t *testing.T) {
 		w := NewWrapper()
 		w.addEmpty()
 
-		if len(w.nodes) != 1 {
+		if nodeCount(w) != 1 {
 			t.Error("AddEmpty should add one node")
 		}
 
-		if !w.nodes[0].IsEmpty() {
+		if !nodeAt(w, 0).IsEmpty() {
 			t.Error("AddEmpty should add empty node")
 		}
 	})
@@ -597,7 +641,7 @@ func TestWrapperHash(t *testing.T) {
 	}
 
 	// Hash should match the last node's hash
-	expectedHash := w.nodes[len(w.nodes)-1].Hash()
+	expectedHash := nodeAt(w, nodeCount(w)-1).Hash()
 	if !bytes.Equal(hash, expectedHash) {
 		t.Error("Hash() should return last node's hash")
 	}
@@ -681,7 +725,7 @@ func TestWrapperCommitAliases(t *testing.T) {
 	// AddEmpty adds a zero leaf like the internal addEmpty.
 	w := NewWrapper()
 	w.AddEmpty()
-	if len(w.nodes) != 1 || !w.nodes[0].isEmpty {
+	if nodeCount(w) != 1 || !w.nodes[0].node.isEmpty {
 		t.Error("AddEmpty should append a single zero leaf")
 	}
 }
@@ -735,10 +779,13 @@ func TestWrapperHashToleratesUnflushedBuffer(t *testing.T) {
 		t.Fatalf("Hash() after second chunk = %x; want %x", got, v2[:])
 	}
 
+	// An empty walker has nothing to report, as hasher.Hasher has not.
 	empty := NewWrapper()
-	z := empty.Hash()
-	if len(z) != 32 || !bytes.Equal(z, make([]byte, 32)) {
-		t.Fatalf("empty Hash() = %x; want 32-byte zero chunk", z)
+	if z := empty.Hash(); len(z) != 0 {
+		t.Fatalf("empty Hash() = %x; want no bytes", z)
+	}
+	if z := hasher.NewHasher().Hash(); len(z) != 0 {
+		t.Fatalf("empty hasher Hash() = %x; want no bytes", z)
 	}
 }
 
@@ -752,11 +799,11 @@ func TestWrapperCommit(t *testing.T) {
 	w.AddNode(NewNodeWithValue([]byte{4}))
 
 	// Commit from index 0
-	w.commit(0)
+	w.reduceBinaryAt(0)
 
 	// Should have one merkleized node
-	if len(w.nodes) != 1 {
-		t.Errorf("expected 1 node after commit, got %d", len(w.nodes))
+	if nodeCount(w) != 1 {
+		t.Errorf("expected 1 node after commit, got %d", nodeCount(w))
 	}
 
 	// Test partial commit
@@ -766,12 +813,12 @@ func TestWrapperCommit(t *testing.T) {
 	w2.AddNode(NewNodeWithValue([]byte{3}))
 	w2.AddNode(NewNodeWithValue([]byte{4}))
 
-	// Commit only last 2 nodes
-	w2.commit(2)
+	// Reduce only the last 2 nodes, which begin at the third chunk.
+	w2.reduceBinaryAt(64)
 
-	// Should have 3 nodes: first 2 original + 1 merkleized
-	if len(w2.nodes) != 3 {
-		t.Errorf("expected 3 nodes after partial commit, got %d", len(w2.nodes))
+	// Should have 3 chunks: first 2 original + 1 merkleized
+	if nodeCount(w2) != 3 {
+		t.Errorf("expected 3 chunks after partial commit, got %d", nodeCount(w2))
 	}
 }
 
@@ -783,15 +830,15 @@ func TestWrapperCommitWithMixin(t *testing.T) {
 		w.AddNode(LeafFromUint64(uint64(i)))
 	}
 
-	w.commitWithMixin(0, 4, 4)
+	w.reduceBinaryWithMixin(0, 4, 4)
 
 	// Should have one node with mixin
-	if len(w.nodes) != 1 {
+	if nodeCount(w) != 1 {
 		t.Error("CommitWithMixin should produce one node")
 	}
 
 	// Root should be a branch (has mixin)
-	if w.nodes[0].IsLeaf() {
+	if nodeAt(w, 0).IsLeaf() {
 		t.Error("node should have mixin")
 	}
 }
@@ -804,10 +851,10 @@ func TestWrapperCommitProgressive(t *testing.T) {
 		w.AddNode(LeafFromUint64(uint64(i)))
 	}
 
-	w.commitProgressive(0)
+	w.reduceProgressive(0)
 
 	// Should have one progressive tree node
-	if len(w.nodes) != 1 {
+	if nodeCount(w) != 1 {
 		t.Error("CommitProgressive should produce one node")
 	}
 }
@@ -820,10 +867,10 @@ func TestWrapperCommitProgressiveWithMixin(t *testing.T) {
 		w.AddNode(LeafFromUint64(uint64(i)))
 	}
 
-	w.commitProgressiveWithMixin(0, 5)
+	w.reduceProgressiveWithMixin(0, 5)
 
 	// Should have one node with mixin
-	if len(w.nodes) != 1 {
+	if nodeCount(w) != 1 {
 		t.Error("CommitProgressiveWithMixin should produce one node")
 	}
 }
@@ -837,48 +884,103 @@ func TestWrapperCommitProgressiveWithActiveFields(t *testing.T) {
 	}
 
 	activeFields := []byte{0b00000111} // First 3 fields active
-	w.commitProgressiveWithActiveFields(0, activeFields)
+	w.reduceProgressiveWithActiveFields(0, activeFields)
 
 	// Should have one node with active fields mixin
-	if len(w.nodes) != 1 {
+	if nodeCount(w) != 1 {
 		t.Error("CommitProgressiveWithActiveFields should produce one node")
 	}
 }
 
-func TestWrapperAppendBytesAsNodes(t *testing.T) {
+// Bytes become leaves when a region is reduced: the region is padded to whole
+// chunks counted from its start, and each chunk is one leaf. An empty value
+// contributes nothing, matching hasher.Hasher.
+// The terminal methods report what is missing: an open scope, or a buffer that
+// is not one chunk. Hash reports the last chunk of a longer buffer, and
+// Collapse is a hint this walker has no use for.
+func TestWrapperTerminalStates(t *testing.T) {
 	w := NewWrapper()
+	idx := w.StartTree(sszutils.TreeTypeBinary)
+	w.PutUint64(1)
+	w.Collapse()
+	if _, err := w.Root(); err == nil || !strings.Contains(err.Error(), "unfinished hashing scopes") {
+		t.Fatalf("Root with an open scope: err = %v", err)
+	}
+	w.Merkleize(idx)
 
-	t.Run("empty bytes", func(t *testing.T) {
-		initialLen := len(w.nodes)
-		w.appendBytesAsNodes([]byte{})
+	w.PutUint64(2)
+	if _, err := w.HashRoot(); err == nil || !strings.Contains(err.Error(), "want 32") {
+		t.Fatalf("HashRoot with two chunks: err = %v", err)
+	}
+	// Hash reports the last chunk, not the whole buffer.
+	tail := w.Hash()
+	if len(tail) != 32 || !bytes.Equal(tail, w.buf[32:]) {
+		t.Fatalf("Hash() = %x, want the last chunk %x", tail, w.buf[32:])
+	}
+}
 
-		// Empty input contributes no leaf, matching hasher.Hasher.
-		if len(w.nodes) != initialLen {
-			t.Error("empty bytes should add no node")
+// A node added through the legacy Add* API keeps its identity as a leaf of the
+// enclosing scope, even when bytes were appended before it: it takes a chunk
+// of its own rather than being smeared across two.
+func TestWrapperAddNodeKeepsLeafIdentity(t *testing.T) {
+	w := NewWrapper()
+	idx := w.StartTree(sszutils.TreeTypeNone)
+	w.AppendUint64(0x1122334455667788)
+	w.AddUint64(0xdeadbeef)
+	w.Merkleize(idx)
+
+	root, err := w.Root()
+	if err != nil {
+		t.Fatalf("Root: %v", err)
+	}
+	if root.left == nil || root.right == nil {
+		t.Fatalf("root is not a two-leaf tree: %v", root)
+	}
+	want := LeafFromUint64(0xdeadbeef)
+	if !bytes.Equal(root.right.Hash(), want.Hash()) {
+		t.Fatalf("second leaf = %x, want the added node %x", root.right.Hash(), want.Hash())
+	}
+}
+
+func TestWrapperRegionLeaves(t *testing.T) {
+	t.Run("empty region", func(t *testing.T) {
+		w := NewWrapper()
+		if leaves := w.regionLeaves(0); len(leaves) != 0 {
+			t.Errorf("empty region gave %d leaves, want none", len(leaves))
 		}
 	})
 
 	t.Run("exact 32 bytes", func(t *testing.T) {
-		w2 := NewWrapper()
+		w := NewWrapper()
 		data := bytes.Repeat([]byte{0xAB}, 32)
-		w2.appendBytesAsNodes(data)
+		w.Append(data)
 
-		if len(w2.nodes) != 1 {
-			t.Error("32 bytes should create one node")
+		leaves := w.regionLeaves(0)
+		if len(leaves) != 1 {
+			t.Fatalf("32 bytes gave %d leaves, want 1", len(leaves))
 		}
-
-		if !bytes.Equal(w2.nodes[0].value[:], data) {
-			t.Error("node value mismatch")
+		if !bytes.Equal(leaves[0].value[:], data) {
+			t.Error("leaf value mismatch")
 		}
 	})
 
 	t.Run("non-32 byte aligned", func(t *testing.T) {
-		w3 := NewWrapper()
-		data := bytes.Repeat([]byte{0xFF}, 50) // Will need padding to 64 bytes
-		w3.appendBytesAsNodes(data)
+		w := NewWrapper()
+		w.Append(bytes.Repeat([]byte{0xFF}, 50))
 
-		if len(w3.nodes) != 2 {
-			t.Error("50 bytes should create 2 nodes (padded to 64)")
+		if leaves := w.regionLeaves(0); len(leaves) != 2 {
+			t.Errorf("50 bytes gave %d leaves, want 2 (padded to 64)", len(leaves))
+		}
+	})
+
+	t.Run("region that began off a chunk boundary", func(t *testing.T) {
+		w := NewWrapper()
+		w.Append(bytes.Repeat([]byte{0x01}, 5))
+		w.Append(bytes.Repeat([]byte{0xFF}, 50))
+
+		// Chunks are counted from the region start, not from the buffer start.
+		if leaves := w.regionLeaves(5); len(leaves) != 2 {
+			t.Errorf("50 bytes at offset 5 gave %d leaves, want 2", len(leaves))
 		}
 	})
 }
@@ -921,8 +1023,8 @@ func TestWrapperEdgeCases(t *testing.T) {
 		w.Merkleize(1)
 
 		// Should have 2 nodes: original + merkleized
-		if len(w.nodes) != 2 {
-			t.Errorf("expected 2 nodes, got %d", len(w.nodes))
+		if nodeCount(w) != 2 {
+			t.Errorf("expected 2 nodes, got %d", nodeCount(w))
 		}
 	})
 
@@ -940,7 +1042,7 @@ func TestWrapperEdgeCases(t *testing.T) {
 		w.AddBytes([]byte{7, 8, 9}) // 3 nodes
 
 		// Directly call TreeFromNodes with invalid limit
-		_, err := TreeFromNodes(w.nodes, 3) // 3 is not a power of 2, should error
+		_, err := TreeFromNodes([]*Node{nodeAt(w, 0)}, 3) // 3 is not a power of 2, should error
 		if err != nil {
 			panic(err) // This will trigger the expected panic
 		}
@@ -970,12 +1072,12 @@ func TestWrapperCommitErrorHandling(t *testing.T) {
 		w.AddNode(NewNodeWithValue([]byte{2}))
 
 		// Commit from an index that has nodes after it
-		initialCount := len(w.nodes)
-		w.commit(1) // Should merkleize the nodes from index 1 onwards
+		initialCount := nodeCount(w)
+		w.reduceBinaryAt(1) // Should merkleize the nodes from index 1 onwards
 
 		// Should have fewer or equal nodes after commit
-		if len(w.nodes) > initialCount {
-			t.Errorf("commit should not increase node count: initial=%d, after=%d", initialCount, len(w.nodes))
+		if nodeCount(w) > initialCount {
+			t.Errorf("commit should not increase node count: initial=%d, after=%d", initialCount, nodeCount(w))
 		}
 	})
 
@@ -984,11 +1086,11 @@ func TestWrapperCommitErrorHandling(t *testing.T) {
 		w.AddNode(NewNodeWithValue([]byte{1}))
 
 		// Commit from index 0 with only one node
-		w.commit(0)
+		w.reduceBinaryAt(0)
 
 		// Should still have 1 node
-		if len(w.nodes) != 1 {
-			t.Errorf("expected 1 node, got %d", len(w.nodes))
+		if nodeCount(w) != 1 {
+			t.Errorf("expected 1 node, got %d", nodeCount(w))
 		}
 	})
 }
@@ -998,8 +1100,8 @@ func TestAddNodeWithNilSlice(t *testing.T) {
 	w := &Wrapper{}
 	w.AddNode(NewNodeWithValue([]byte{1}))
 
-	if len(w.nodes) != 1 {
-		t.Fatalf("expected 1 node, got %d", len(w.nodes))
+	if nodeCount(w) != 1 {
+		t.Fatalf("expected 1 node, got %d", nodeCount(w))
 	}
 }
 
@@ -1010,7 +1112,7 @@ func TestWrapperAddNodeNil(t *testing.T) {
 	w.AddNode(nil)
 
 	// Should have one node (even if nil)
-	if len(w.nodes) != 1 {
+	if nodeCount(w) != 1 {
 		t.Error("AddNode should add the node even if nil")
 	}
 }
@@ -1232,7 +1334,7 @@ func TestWrapperCollapseNoop(t *testing.T) {
 	w := NewWrapper()
 	w.AddNode(LeafFromUint64(1))
 	w.Collapse()
-	if len(w.nodes) != 1 {
+	if nodeCount(w) != 1 {
 		t.Fatal("Collapse should not modify the wrapper")
 	}
 }
@@ -1249,7 +1351,7 @@ func TestWrapperCommitPanicInjected(t *testing.T) {
 	expectPanicWithError(t, injected, func() {
 		w := NewWrapper()
 		w.AddNode(LeafFromUint64(1))
-		w.commit(0)
+		w.reduceBinaryAt(0)
 	})
 }
 
@@ -1265,7 +1367,7 @@ func TestWrapperCommitWithMixinPanicInjected(t *testing.T) {
 	expectPanicWithError(t, injected, func() {
 		w := NewWrapper()
 		w.AddNode(LeafFromUint64(1))
-		w.commitWithMixin(0, 1, 1)
+		w.reduceBinaryWithMixin(0, 1, 1)
 	})
 }
 
@@ -1281,7 +1383,7 @@ func TestWrapperCommitProgressivePanicInjected(t *testing.T) {
 	expectPanicWithError(t, injected, func() {
 		w := NewWrapper()
 		w.AddNode(LeafFromUint64(1))
-		w.commitProgressive(0)
+		w.reduceProgressive(0)
 	})
 }
 
@@ -1297,7 +1399,7 @@ func TestWrapperCommitProgressiveWithMixinPanicInjected(t *testing.T) {
 	expectPanicWithError(t, injected, func() {
 		w := NewWrapper()
 		w.AddNode(LeafFromUint64(1))
-		w.commitProgressiveWithMixin(0, 1)
+		w.reduceProgressiveWithMixin(0, 1)
 	})
 }
 
@@ -1313,7 +1415,7 @@ func TestWrapperCommitProgressiveWithActiveFieldsPanicInjected(t *testing.T) {
 	expectPanicWithError(t, injected, func() {
 		w := NewWrapper()
 		w.AddNode(LeafFromUint64(1))
-		w.commitProgressiveWithActiveFields(0, []byte{0x01})
+		w.reduceProgressiveWithActiveFields(0, []byte{0x01})
 	})
 }
 
@@ -1549,7 +1651,7 @@ func TestWrapperHashRootRequiresCompleteMerkleization(t *testing.T) {
 		if err == nil {
 			t.Fatalf("HashRoot() = %x, want an incomplete-merkleization error", root)
 		}
-		if !strings.Contains(err.Error(), "wrapper holds 2 nodes, want 1") {
+		if !strings.Contains(err.Error(), "wrapper holds 64 bytes, want 32") {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
@@ -1589,4 +1691,93 @@ func TestWrapperHashRootRequiresCompleteMerkleization(t *testing.T) {
 			t.Fatalf("root = %x, want %x", root, want)
 		}
 	})
+}
+
+// A packed scope on the wrapper buffers the Put* forms like the Append* forms;
+// a scope opened inside a packed one, and any scope after it, add whole
+// leaves again.
+// The convenience methods that merkleize a subtree of their own leave the
+// scope stack as they found it, so a long sequence of them inside one scope
+// keeps that scope's packing state intact.
+func TestWrapperConvenienceMethodsKeepScopeStack(t *testing.T) {
+	for name, put := range map[string]func(*Wrapper){
+		"bitlist":             func(w *Wrapper) { w.PutBitlist([]byte{1}, 8) },
+		"progressive-bitlist": func(w *Wrapper) { w.PutProgressiveBitlist([]byte{1}) },
+		"long-bytes":          func(w *Wrapper) { w.PutBytes(make([]byte, 64)) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := NewWrapper()
+			idx := w.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+			for range 100 {
+				put(w)
+			}
+			if got := len(w.scopes); got != 1 {
+				t.Fatalf("scope stack holds %d entries inside one open scope, want 1", got)
+			}
+			if !w.inPackedScope() {
+				t.Fatal("the open packed scope lost its packing state")
+			}
+			w.Merkleize(idx)
+			if got := len(w.scopes); got != 0 {
+				t.Fatalf("scope stack holds %d entries after the scope closed, want 0", got)
+			}
+		})
+	}
+}
+
+func TestWrapperPackedScope(t *testing.T) {
+	w := NewWrapper()
+	idx := w.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+	w.PutUint64(1)
+	w.PutUint32(2)
+	w.PutUint16(3)
+	w.PutUint8(4)
+	w.PutBool(true)
+	w.PutBytes([]byte{5, 6})
+	if got := w.CurrentIndex(); got != 8+4+2+1+1+2 {
+		t.Fatalf("packed scope buffered %d bytes, want 18", got)
+	}
+	w.FillUpTo32()
+	w.MerkleizeWithMixin(idx, 6, 4)
+
+	h := hasher.NewHasher()
+	defer h.Reset()
+	hidx := h.StartTree(sszutils.TreeTypeBinary)
+	h.AppendUint64(1)
+	h.AppendUint32(2)
+	h.AppendUint16(3)
+	h.AppendUint8(4)
+	h.AppendBool(true)
+	h.Append([]byte{5, 6})
+	h.FillUpTo32()
+	h.MerkleizeWithMixin(hidx, 6, 4)
+	if !bytes.Equal(w.Hash(), h.Hash()) {
+		t.Fatalf("wrapper packed root %x != hasher root %x", w.Hash(), h.Hash())
+	}
+
+	w = NewWrapper()
+	outer := w.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+	inner := w.StartTree(sszutils.TreeTypeNone)
+	w.PutUint64(1)
+	// A scope inside a packed scope is not packed: the value takes a whole
+	// chunk, which becomes its leaf when the scope closes.
+	if nodeCount(w) != 1 || len(w.buf) != 32 {
+		t.Fatalf("scope inside a packed scope holds %d chunks and %d bytes, want one chunk", nodeCount(w), len(w.buf))
+	}
+	w.Merkleize(inner)
+	if nodeCount(w) != 1 || len(w.buf) != 32 {
+		t.Fatalf("closing the inner scope left %d chunks and %d bytes, want one chunk", nodeCount(w), len(w.buf))
+	}
+	w.PutUint64(2)
+	if len(w.buf) != 40 {
+		t.Fatalf("packed scope after a nested scope holds %d bytes, want the chunk plus 8", len(w.buf))
+	}
+	w.FillUpTo32()
+	w.Merkleize(outer)
+	w.PutUint64(3)
+	// Outside a packed scope the value takes a whole chunk, not its 8 packed
+	// bytes, so the closed scope no longer packs.
+	if len(w.buf) != 64 {
+		t.Fatalf("closed packed scope buffered %d bytes, want a whole chunk", len(w.buf))
+	}
 }

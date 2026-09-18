@@ -239,13 +239,12 @@ func (ctx *marshalContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 	// fastssz types) is reached through that static method even when fastssz
 	// delegation is otherwise disabled, because the dynamic path is forbidden.
 	useFastSsz := isFastsszMarshaler && !hasDynamicSize && (!ctx.options.NoFastSsz || ctx.options.WithoutDynamicExpressions)
-	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
-		useFastSsz = true
-	}
-	// Custom types prefer their spec-aware dynssz methods over fastssz.
-	if desc.SszType == ssztypes.SszCustomType &&
-		desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicMarshaler|ssztypes.SszCompatFlagDynamicEncoder) != 0 {
-		useFastSsz = false
+	if desc.SszType == ssztypes.SszCustomType {
+		// A custom type has no structure to inline: it is reached through its
+		// spec-aware methods when it has them and dynamic calls are allowed,
+		// otherwise through its static ones.
+		useFastSsz = desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicMarshaler|ssztypes.SszCompatFlagDynamicEncoder) == 0 ||
+			(ctx.options.WithoutDynamicExpressions && isFastsszMarshaler)
 	}
 
 	isView := desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
@@ -455,6 +454,16 @@ func (ctx *marshalContext) marshalOptional(desc *ssztypes.TypeDescriptor, varNam
 // nil → empty list (no bytes); non-nil → single-element list. When the element
 // is dynamic, a 4-byte offset (=4) precedes the element bytes.
 func (ctx *marshalContext) marshalOptionalList(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
+	// A delegate's sizer is only known at run time; a present element of
+	// zero size would be indistinguishable from an absent one.
+	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 &&
+		desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+		sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
+		if err != nil {
+			return err
+		}
+		ctx.appendCode(indent, "if %s == 0 {\n\treturn nil, %s\n}\n", sizeVar, typePath.getErrorWith(`sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "optional-list element size resolved to 0")`))
+	}
 	ctx.appendCode(indent, "if %s != nil {\n", varName)
 	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 		binaryPkg := ctx.typePrinter.AddImport("encoding/binary", "binary")
@@ -474,7 +483,7 @@ func (ctx *marshalContext) marshalBigInt(desc *ssztypes.TypeDescriptor, varName 
 	// (dynssz-max expressions) are left unchecked so generated code stays
 	// consistent with the reflection path.
 	if desc.MaxExpression == nil && desc.Limit > 0 {
-		errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", uint64(1+len(%s.Bytes())), %d)", varName, desc.Limit)
+		errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", uint64(1+len(%s.Bytes())), %s)", varName, uintLitArg(fmt.Sprintf("%d", desc.Limit)))
 		ctx.appendCode(indent, "if uint64(1+len(%s.Bytes())) > %d {\n\treturn nil, %s\n}\n", varName, desc.Limit, typePath.getErrorWith(errCode))
 	}
 	// sign byte (0 = non-negative, 1 = negative) followed by the big-endian magnitude
@@ -526,7 +535,7 @@ func (ctx *marshalContext) marshalContainer(desc *ssztypes.TypeDescriptor, varNa
 			if offsetGroup != -1 {
 				offsetGroupBytes += 4
 				if offsetGroupDiff > 0 {
-					offsetExprs[idx] = fmt.Sprintf("%s+%d", offsetExprs[offsetGroup], offsetGroupDiff)
+					offsetExprs[idx] = fmt.Sprintf("%s+%s", offsetExprs[offsetGroup], posLit(offsetGroupDiff))
 				} else {
 					offsetExprs[idx] = offsetExprs[offsetGroup]
 				}
@@ -615,11 +624,11 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			if desc.BitSize > 0 {
 				defaultValue = uint64(desc.BitSize)
 			} else {
-				defaultValue = uint64(desc.Len * 8)
+				defaultValue = uint64(desc.Len) * 8
 			}
 		}
 
-		exprVar := ctx.exprVars.getSizeExprVar(*sizeExpression, defaultValue)
+		exprVar := ctx.exprVars.getVectorLenExprVar(*sizeExpression, defaultValue, desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0, desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0)
 
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 			bitlimitVar = exprVar
@@ -635,7 +644,9 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			bitlimitVar = fmt.Sprintf("%d", desc.BitSize)
 		}
 		limitVar = fmt.Sprintf("%d", desc.Len)
-		intLimit = limitVar
+		intLimit = intLitStr(limitVar)
+		declared, overflow := declaredVectorBytes(desc)
+		platformGuard(ctx.appendCode, indent, ctx.typePrinter, declared, overflow, "return nil, "+typePath.getErrorWith(fmt.Sprintf("sszutils.ErrPlatformOverflowFn(\"vector size\", uint64(%d))", declared)))
 	}
 
 	valueVar := varName
@@ -681,7 +692,7 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent, "vlen := %s\n", intLimit)
 		lenVar = varNameVLen
 	default:
-		lenVar = fmt.Sprintf("%d", desc.Len)
+		lenVar = intLimit
 	}
 
 	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
@@ -715,7 +726,7 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 				}
 			}
 			ctx.appendCode(indent, "dst = append(dst, %s[:%s]...)\n", getValueVar(false, ""), lenVar)
-		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0:
+		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.Kind == reflect.Uint64 && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0:
 			ctx.appendCode(indent, "dst = sszutils.MarshalUint64Slice(dst, %s[:%s])\n", getValueVar(false, ""), lenVar)
 		case isBulkBytesElem(desc.ElemDesc):
 			// fixed byte-array elements (e.g. []Root) are contiguous: append in one copy
@@ -749,23 +760,23 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			// per-element byte size must be the runtime-resolved size when the
 			// element itself is dynssz-sized (e.g. a multi-dimensional fixed
 			// vector), not the static fallback baked at generation time.
-			elemSizeStr := fmt.Sprintf("%d", desc.ElemDesc.Size)
-			elemIsLiteral := true
-			if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
-				sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
-				if err != nil {
-					return err
-				}
-				elemSizeStr = sizeVar
-				elemIsLiteral = false
+			elemSizeStr, elemIsLiteral, err := ctx.staticSizeVars.elemSizeExpr(desc.ElemDesc)
+			if err != nil {
+				return err
 			}
 			ctx.appendCode(indent, "if %s {\n", uintCmpExpr(lenVar, "<", limitVar))
 			if _, limErr := strconv.ParseUint(limitVar, 10, 64); limErr == nil && elemIsLiteral {
-				ctx.appendCode(indent, "\tdst = sszutils.AppendZeroPadding(dst, (%s-%s)*%s)\n", limitVar, lenVar, elemSizeStr)
+				ctx.appendCode(indent, "\tdst = sszutils.AppendZeroPadding(dst, (%s-%s)*%s)\n", intLimit, lenVar, intLitStr(elemSizeStr))
 			} else {
-				// The subtraction and product run in uint64 (the size variables
-				// are unsigned); the codec surface takes the byte count as int.
-				ctx.appendCode(indent, "\tdst = sszutils.AppendZeroPadding(dst, int((%s-uint64(%s))*%s))\n", limitVar, lenVar, elemSizeStr)
+				// The subtraction runs in uint64 (the size variables are
+				// unsigned); the padding is at most the vector's byte size,
+				// which is bounded to the SSZ size limit.
+				if elemSizeStr == "1" {
+					ctx.appendCode(indent, "\tpadding := %s - uint64(%s)\n", limitVar, lenVar)
+				} else {
+					ctx.appendCode(indent, "\tpadding := (%s - uint64(%s)) * uint64(%s)\n", limitVar, lenVar, elemSizeStr)
+				}
+				ctx.appendCode(indent, "\tdst = sszutils.AppendZeroPadding(dst, int(padding))\n")
 			}
 			ctx.appendCode(indent, "}\n")
 		}
@@ -888,7 +899,7 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 		switch {
 		case desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0:
 			ctx.appendCode(indent, "dst = append(dst, %s[:]...)\n", getValueVar(false, ""))
-		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0:
+		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.Kind == reflect.Uint64 && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0:
 			addVlen()
 			ctx.appendCode(indent, "dst = sszutils.MarshalUint64Slice(dst, %s[:vlen])\n", getValueVar(false, ""))
 		case isBulkBytesElem(desc.ElemDesc):
@@ -1003,9 +1014,9 @@ func (ctx *marshalContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 	if hasMax {
 		bitsPkgName := ctx.typePrinter.AddImport("math/bits", "bits")
 		ctx.appendCode(indent, "if vlen > 0 {\n")
-		ctx.appendCode(indent+1, "bitCount := 8*(vlen-1) + %s.Len8(bval[vlen-1]) - 1\n", bitsPkgName)
+		ctx.appendCode(indent+1, "bitCount := uint64(vlen-1)*8 + uint64(%s.Len8(bval[vlen-1])) - 1\n", bitsPkgName)
 		errCode := fmt.Sprintf("sszutils.ErrBitlistLengthFn(bitCount, %s)", uintLitArg(maxVar))
-		ctx.appendCode(indent+1, "if %s {\n\treturn nil, %s\n}\n", uintCmpExpr("bitCount", ">", maxVar), typePath.getErrorWith(errCode))
+		ctx.appendCode(indent+1, "if bitCount > %s {\n\treturn nil, %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
 	}
 

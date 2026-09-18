@@ -54,6 +54,8 @@ reference.
 | `-without-fastssz` | Generate code without using fast ssz generated methods | `false` |
 | `-with-streaming` | Generate streaming encoder/decoder functions | `false` |
 | `-with-extended-types` | Enable support for non-standard extended types (signed ints, floats, big.Int, optionals) | `false` |
+| `-recursion-depth` | Nesting depth at which the generated methods reject a recursive value; see [Recursion depth](supported-types.md#recursive-types) | `0` (the default depth of 1024) |
+| `-remove` | Move the configured output files aside before loading the package, so generated code from an earlier run cannot block the analysis when the types changed; they are deleted once generation succeeds and restored if it fails, a panic included. A stash left behind by an interrupted run (`<output>.dynssz-gen.orig`) is never overwritten: restore or delete it first | off |
 
 When both `--config` and CLI flags are provided, any CLI flag that is
 explicitly passed overrides the config file's value. See the
@@ -249,6 +251,11 @@ func generateSSZ() error {
 }
 ```
 
+The generator analyzes types on caches of its own and never writes to the cache
+it is given; passing a live instance's cache only inherits its extended-types
+setting. The instance keeps resolving spec values as before, and the generated
+code carries the spec expressions rather than the instance's values.
+
 ### Multiple Files Example
 
 ```go
@@ -395,6 +402,16 @@ func (b *BeaconBlock) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.
 }
 ```
 
+### How generated code reaches nested types
+
+A generated method reaches a nested type that has SSZ methods of its own
+through them. A child with a registered static surface and no spec expressions
+is reached through its static method on every path; otherwise a buffer method
+calls the child's `*Dyn` method and a streaming method calls the child's
+streaming method. Code generated with `-without-dynamic-expressions` reaches
+every child through its static methods only. The full order and the effect of
+the options are in [Method Delegation](delegation.md).
+
 ### With `-legacy`: Additional Legacy Methods
 
 When using `-legacy` flag, additional fastssz-compatible methods are generated:
@@ -442,15 +459,26 @@ the same batch delegates to their preset-capable `*Dyn` methods and then omits
 its own static twins. The `*Dyn` methods and the `ds.*` entry points are always
 present — use those rather than relying on the static method set.
 
+The members of a recursive cycle are generated in one run. A run inlines the
+members it does not generate itself, so its code counts the whole cycle, and
+a hand-written member owns its own recursion safety. A member that already
+carries generated methods from an earlier run is delegated to and never
+traversed, so a run that meets such a member on a cycle with a type it
+generates fails with an error naming both types: regenerate the whole cycle
+together (`-remove` clears the earlier output first). The same rule holds at
+run time, in the reflection engine and in generation through the Go API:
+describing a type without generated methods that lies on a cycle with a
+generated type fails with the same error.
+
 ### With `-without-dynamic-expressions`: Static Methods Only
 
-When using `-without-dynamic-expressions`, only static legacy methods are generated (no `*Dyn` methods):
+When using `-without-dynamic-expressions`, only static methods are generated
+(no `*Dyn` methods): `MarshalSSZTo`, `UnmarshalSSZ`, `SizeSSZ`, `HashTreeRoot`
+and `HashTreeRootWith`, plus the streaming pair with `-with-streaming`. The
+allocating `MarshalSSZ` wrapper is a legacy method and only comes with
+`-legacy`.
 
 ```go
-func (b *BeaconBlock) MarshalSSZ() ([]byte, error) {
-    // Static marshaling for default preset only
-}
-
 func (b *BeaconBlock) MarshalSSZTo(buf []byte) ([]byte, error) {
     // Static marshaling to buffer
 }
@@ -550,18 +578,29 @@ The generator supports all Dynamic SSZ types and annotations:
 - Byte arrays: `[]byte`, `[N]byte`
 - Strings: `string`
 
-Inside a list or vector, elements of a basic type narrower than 32 bytes are
-packed into shared chunks by the engine itself, so SSZ methods declared on such
-an element type (`type Slot uint64` with generated methods) are not called
-there. A basic-typed field or root value still delegates to its methods.
+A value's own SSZ hash methods are always called where the value sits. A list
+or vector of basic values (up to 16 bytes; a wrapper around one counts as the
+wrapped value) opens a packed scope on the hash walker
+(`sszutils.TreeTypePacked`): inside it the walker's `Put*` methods append the
+value's packed bytes instead of a padded chunk, so a method declared on such an
+element type (`type Slot uint64` with generated methods, or a hand-written
+`hh.PutUint64(...)`) packs the value with its neighbours as the SSZ
+specification requires, and the same method leaves a whole chunk as a field or
+root. A method that merkleizes a leaf of its own inside a packed scope shifts
+the elements that follow; the engines do not check this, and both walkers
+produce the same shifted root. A method that only
+returns a root (`HashTreeRoot()`) contributes the packed prefix of that root,
+which for a basic value is the value itself.
 
-A `ssz-type:"custom"` value always delegates. After the delegate returns, the
-engine pads the hasher to the next 32-byte chunk, so a hash method may either
-leave a complete leaf or append only the packed bytes of its value. Inside a
-list or vector, a custom type whose declared `ssz-size` is one a basic type
-could have (a power of two up to 16 bytes) is packed exactly like that basic
-type when its hash method appends only those bytes; any other size gets a leaf
-of its own, as a composite element does.
+A `ssz-type:"custom"` value always delegates. Outside a packed scope the engine
+pads the hasher to the next 32-byte chunk after the delegate returns, so a hash
+method may either leave a complete leaf or append only the packed bytes of its
+value. A generated or fastssz composite type is not padded: its method leaves
+exactly one root. Inside a list or vector, a custom type whose declared `ssz-size` is one a
+basic type could have (a power of two up to 16 bytes, without a size
+expression) stands in for that basic type: the scope is packed and its hash
+method is held to the rule above. Any other size gets a leaf of its own, as a
+composite element does.
 
 ### Non-Struct Types with `sszutils.Annotate[T]()`
 
@@ -714,7 +753,7 @@ so what a generating machine has loaded cannot reach the output:
 
 ```go
 // Generated static method (assuming default preset values)
-func (s *State) MarshalSSZ() ([]byte, error) {
+func (s *State) MarshalSSZTo(buf []byte) ([]byte, error) {
     // Hard-coded limits for maximum performance
     // Falls back to reflection for non-default presets
 }

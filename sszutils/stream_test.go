@@ -857,16 +857,63 @@ func TestStreamDecoder_SkipBytes_NotSupported(t *testing.T) {
 	}
 }
 
-func TestStreamDecoder_PushLimit_ClampToLastLimit(t *testing.T) {
-	reader := bytes.NewReader(make([]byte, 10))
-	dec := NewStreamDecoder(reader, 10, 0)
+// A region declared past an established bound keeps its declared extent and
+// marks the input truncated: the bytes it promises do not exist, so every
+// read of it fails instead of shrinking to what is left.
+func TestStreamDecoder_PushLimit_PastEstablishedBound(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mk   func() *StreamDecoder
+	}{
+		{"known length", func() *StreamDecoder { return NewStreamDecoder(bytes.NewReader(make([]byte, 10)), 10, 0) }},
+		{"unknown length after EOF", func() *StreamDecoder {
+			dec := NewUnknownStreamDecoder(bytes.NewReader(make([]byte, 10)), 64, 0)
+			if err := dec.Prefill(); err != nil {
+				t.Fatal(err)
+			}
+			return dec
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dec := tc.mk()
+			dec.PushLimit(20)
+			if dec.GetLength() != 20 {
+				t.Fatalf("declared length = %d, want 20", dec.GetLength())
+			}
+			if _, err := dec.More(); !errors.Is(err, ErrUnexpectedEOF) {
+				t.Fatalf("More err = %v, want ErrUnexpectedEOF", err)
+			}
+			if _, err := dec.DecodeUint32(); !errors.Is(err, ErrUnexpectedEOF) {
+				t.Fatalf("DecodeUint32 err = %v, want ErrUnexpectedEOF", err)
+			}
+			if _, err := dec.DecodeRemaining(-1); !errors.Is(err, ErrUnexpectedEOF) {
+				t.Fatalf("DecodeRemaining err = %v, want ErrUnexpectedEOF", err)
+			}
+			if err := dec.FinishRegion(); !errors.Is(err, ErrUnexpectedEOF) {
+				t.Fatalf("FinishRegion err = %v, want ErrUnexpectedEOF", err)
+			}
+			if _, err := dec.DecodeUint8(); !errors.Is(err, ErrUnexpectedEOF) {
+				t.Fatalf("DecodeUint8 err = %v, want ErrUnexpectedEOF", err)
+			}
+			if _, err := dec.DecodeBool(); !errors.Is(err, ErrUnexpectedEOF) {
+				t.Fatalf("DecodeBool err = %v, want ErrUnexpectedEOF", err)
+			}
+			// A read wider than the buffer takes the slow path.
+			if _, err := dec.DecodeBytes(make([]byte, 4096)); !errors.Is(err, ErrUnexpectedEOF) {
+				t.Fatalf("DecodeBytes err = %v, want ErrUnexpectedEOF", err)
+			}
+		})
+	}
 
-	// Push a limit that exceeds the stream length
-	dec.PushLimit(20)
-
-	// The limit should be clamped to the stream length
-	if dec.GetLength() != 10 {
-		t.Errorf("expected length 10, got %d", dec.GetLength())
+	// Against the open allowance the child is still clamped: its bytes may
+	// yet arrive, and the allowance is what bounds the whole stream.
+	open := NewUnknownStreamDecoder(bytes.NewReader(make([]byte, 100)), 8, 64)
+	open.PushLimit(80)
+	if open.GetLength() != 64 {
+		t.Fatalf("length within the allowance = %d, want 64", open.GetLength())
+	}
+	if _, err := open.DecodeUint32(); err != nil {
+		t.Fatalf("read within the allowance: %v", err)
 	}
 }
 

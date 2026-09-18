@@ -6,6 +6,7 @@ package sszutils
 
 import (
 	"encoding/binary"
+	"errors"
 	"io"
 	"math"
 )
@@ -71,6 +72,10 @@ type StreamDecoder struct {
 	// eofSeen is sticky: once the reader reports EOF, streamLen is exact and
 	// every open region has collapsed to a bounded one.
 	eofSeen bool
+	// truncated is sticky: a region declared its end past an established
+	// bound, so bytes the input promised do not exist. Every read from then on
+	// fails with ErrUnexpectedEOF.
+	truncated bool
 
 	// Internal buffer for reading from stream
 	buffer    []byte
@@ -83,8 +88,8 @@ var _ Decoder = (*StreamDecoder)(nil)
 // NewStreamDecoder creates a new StreamDecoder that reads SSZ data from the
 // provided io.Reader. totalLen specifies the total expected byte length of the
 // SSZ payload and is trusted as such: regions and allocations are sized from
-// it before the bytes arrive, so a caller must bound it (DynSsz holds it to
-// its maximum stream size). A negative totalLen selects unknown-length mode
+// it before the bytes arrive, so it must come from a source the caller
+// controls. A negative totalLen selects unknown-length mode
 // with the default maximum stream size (see NewUnknownStreamDecoder).
 // maxBufSize controls the maximum internal read buffer size; if <= 0,
 // DefaultStreamDecoderBufSize is used.
@@ -240,12 +245,21 @@ func (e *StreamDecoder) PushLimit(limit int) {
 	limitPos := e.position + limit
 	if limitPos < e.position {
 		// integer overflow on a hostile limit
+		e.truncated = true
 		limitPos = e.lastLimit
 	}
-	// lastLimit is always a real bound -- the allowance when the region is
-	// open -- so one clamp covers both cases.
+	// An open region's bound is the allowance, which a child may not exceed
+	// either. An established bound -- a bounded parent, or an open one that
+	// EOF has made exact -- ends where the input ends: a child declared past
+	// it keeps its declared end, so the child computes its content from the
+	// declaration and every read of it fails, instead of shrinking to whatever
+	// is left and succeeding on nothing.
 	if limitPos > e.lastLimit {
-		limitPos = e.lastLimit
+		if e.lastOpen {
+			limitPos = e.lastLimit
+		} else {
+			e.truncated = true
+		}
 	}
 
 	e.limits = append(e.limits, limitPos)
@@ -399,11 +413,11 @@ func (e *StreamDecoder) readMore() error {
 		}
 
 		if err != nil {
-			// Only io.EOF is a clean end-of-stream signal. In particular,
-			// io.ErrUnexpectedEOF is an integrity/truncation failure from the
-			// reader and must not turn an open SSZ region into a valid short
-			// payload merely because the reader returned data with it.
-			if err == io.EOF {
+			// Only io.EOF is a clean end-of-stream signal, wrapped or not. In
+			// particular, io.ErrUnexpectedEOF is an integrity/truncation failure
+			// from the reader and must not turn an open SSZ region into a valid
+			// short payload merely because the reader returned data with it.
+			if errors.Is(err, io.EOF) {
 				e.onEOF()
 				return nil
 			}
@@ -459,6 +473,9 @@ func (e *StreamDecoder) regionOverrun() error {
 
 // readByte reads a single byte from the buffer
 func (e *StreamDecoder) readByte() (byte, error) {
+	if e.truncated {
+		return 0, ErrUnexpectedEOF
+	}
 	// Never read across the current region limit; a malformed region must
 	// fail cleanly instead of consuming bytes of subsequent regions.
 	if e.position+1 > e.lastLimit {
@@ -479,6 +496,9 @@ func (e *StreamDecoder) readByte() (byte, error) {
 func (e *StreamDecoder) readBytes(buf []byte) error {
 	n := len(buf)
 
+	if e.truncated {
+		return ErrUnexpectedEOF
+	}
 	// Never read across the current region limit; a malformed region must
 	// fail cleanly instead of consuming bytes of subsequent regions.
 	if e.position+n > e.lastLimit {
@@ -526,7 +546,7 @@ func (e *StreamDecoder) readBytes(buf []byte) error {
 		// and authenticated readers commonly report their verdict that way.
 		if totalRead >= remaining {
 			if err != nil {
-				if err == io.EOF {
+				if errors.Is(err, io.EOF) {
 					e.onEOF()
 				} else {
 					return err
@@ -535,7 +555,7 @@ func (e *StreamDecoder) readBytes(buf []byte) error {
 			break
 		}
 		if err != nil {
-			if err == io.EOF || err == io.ErrUnexpectedEOF {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				e.onEOF()
 				return ErrUnexpectedEOF
 			}
@@ -559,6 +579,9 @@ func (e *StreamDecoder) readBytes(buf []byte) error {
 // readBytesRef returns a slice reference to n bytes in the buffer.
 // The returned slice is only valid until the next read operation.
 func (e *StreamDecoder) readBytesRef(n int) ([]byte, error) {
+	if e.truncated {
+		return nil, ErrUnexpectedEOF
+	}
 	// Never read across the current region limit; a malformed region must
 	// fail cleanly instead of consuming bytes of subsequent regions.
 	if e.position+n > e.lastLimit {
@@ -610,6 +633,9 @@ func (e *StreamDecoder) Prefill() error {
 // every known-length decode, and every region of an unknown-length decode once
 // EOF has closed it. Only a genuinely open region has to probe the reader.
 func (e *StreamDecoder) FinishRegion() error {
+	if e.truncated {
+		return ErrUnexpectedEOF
+	}
 	if !e.lastOpen {
 		if diff := e.PopLimit(); diff != 0 {
 			return ErrTrailingDataFn(diff)
@@ -638,6 +664,9 @@ func (e *StreamDecoder) FinishRegion() error {
 // bounded region the answer comes from the limit; for an open region the reader
 // is probed, which is what turns "no more data" into a discovered EOF.
 func (e *StreamDecoder) More() (bool, error) {
+	if e.truncated {
+		return false, ErrUnexpectedEOF
+	}
 	if !e.lastOpen {
 		return e.lastLimit-e.position > 0, nil
 	}
@@ -662,6 +691,9 @@ func (e *StreamDecoder) More() (bool, error) {
 // A bounded region that the input cannot fill fails with ErrUnexpectedEOF; only
 // an open region legitimately ends where the input does.
 func (e *StreamDecoder) DecodeRemaining(maxLen int) ([]byte, error) {
+	if e.truncated {
+		return nil, ErrUnexpectedEOF
+	}
 	// Only preallocate when the extent is backed by input known to exist; a
 	// limit derived from an unverified offset must be consumed incrementally.
 	if e.LengthKnown() {
@@ -757,6 +789,9 @@ func (e *StreamDecoder) DecodeRemaining(maxLen int) ([]byte, error) {
 }
 
 func (e *StreamDecoder) DecodeBool() (bool, error) {
+	if e.truncated {
+		return false, ErrUnexpectedEOF
+	}
 	// Validate before consuming, so an invalid byte leaves the position
 	// unchanged exactly as the buffer-backed decoder leaves it.
 	if e.position+1 > e.lastLimit {
@@ -782,7 +817,7 @@ func (e *StreamDecoder) DecodeUint16() (uint16, error) {
 	// Fast path: the 2 bytes are within the region limit and already buffered,
 	// so read them inline without the readBytesRef/ensureBuffered calls. This is
 	// exactly readBytesRef's buffered case; anything else defers to it.
-	if e.position+2 <= e.lastLimit && e.bufferLen-e.bufferPos >= 2 {
+	if !e.truncated && e.position+2 <= e.lastLimit && e.bufferLen-e.bufferPos >= 2 {
 		v := binary.LittleEndian.Uint16(e.buffer[e.bufferPos : e.bufferPos+2])
 		e.bufferPos += 2
 		e.position += 2
@@ -799,7 +834,7 @@ func (e *StreamDecoder) DecodeUint32() (uint32, error) {
 	// Fast path: the 4 bytes are within the region limit and already buffered,
 	// so read them inline without the readBytesRef/ensureBuffered calls. This is
 	// exactly readBytesRef's buffered case; anything else defers to it.
-	if e.position+4 <= e.lastLimit && e.bufferLen-e.bufferPos >= 4 {
+	if !e.truncated && e.position+4 <= e.lastLimit && e.bufferLen-e.bufferPos >= 4 {
 		v := binary.LittleEndian.Uint32(e.buffer[e.bufferPos : e.bufferPos+4])
 		e.bufferPos += 4
 		e.position += 4
@@ -816,7 +851,7 @@ func (e *StreamDecoder) DecodeUint64() (uint64, error) {
 	// Fast path: the 8 bytes are within the region limit and already buffered,
 	// so read them inline without the readBytesRef/ensureBuffered calls. This is
 	// exactly readBytesRef's buffered case; anything else defers to it.
-	if e.position+8 <= e.lastLimit && e.bufferLen-e.bufferPos >= 8 {
+	if !e.truncated && e.position+8 <= e.lastLimit && e.bufferLen-e.bufferPos >= 8 {
 		v := binary.LittleEndian.Uint64(e.buffer[e.bufferPos : e.bufferPos+8])
 		e.bufferPos += 8
 		e.position += 8
@@ -834,7 +869,7 @@ func (e *StreamDecoder) DecodeBytes(buf []byte) ([]byte, error) {
 	// instead of calling readBytes (which the inliner cannot take). This mirrors
 	// readBytes' buffered case exactly; anything else defers to it.
 	n := len(buf)
-	if e.position+n <= e.lastLimit && e.bufferLen-e.bufferPos >= n {
+	if !e.truncated && e.position+n <= e.lastLimit && e.bufferLen-e.bufferPos >= n {
 		copy(buf, e.buffer[e.bufferPos:e.bufferPos+n])
 		e.bufferPos += n
 		e.position += n

@@ -16,6 +16,7 @@ import (
 	"math/big"
 	"reflect"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"testing"
@@ -846,6 +847,10 @@ func skipUnless64Bit(t *testing.T) {
 	}
 }
 
+// The 2 GiB vector of testLargeContainer is within the SSZ size limit on a
+// 64-bit host and past it on a 32-bit one, where the declaration is refused as
+// it is parsed.
+//
 // skipUnless32Bit skips the test on platforms where int is wider than 32 bits.
 func skipUnless32Bit(t *testing.T) {
 	t.Helper()
@@ -860,8 +865,8 @@ func TestMarshalSSZLargeObjectOverflow(t *testing.T) {
 	container := &testLargeContainer{}
 
 	_, err := ds.MarshalSSZ(container)
-	if err == nil || !strings.Contains(err.Error(), "platform int") {
-		t.Fatalf("expected a platform integer range error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "SSZ size limit") {
+		t.Fatalf("expected the SSZ size limit refusal, got: %v", err)
 	}
 }
 
@@ -871,8 +876,8 @@ func TestMarshalSSZToLargeObjectOverflow(t *testing.T) {
 	container := &testLargeContainer{}
 
 	_, err := ds.MarshalSSZTo(container, nil)
-	if err == nil || !strings.Contains(err.Error(), "platform int") {
-		t.Fatalf("expected a platform integer range error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "SSZ size limit") {
+		t.Fatalf("expected the SSZ size limit refusal, got: %v", err)
 	}
 }
 
@@ -883,8 +888,8 @@ func TestMarshalSSZWriterLargeObjectOverflow(t *testing.T) {
 
 	var buf bytes.Buffer
 	err := ds.MarshalSSZWriter(container, &buf)
-	if err == nil || !strings.Contains(err.Error(), "platform int") {
-		t.Fatalf("expected a platform integer range error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "SSZ size limit") {
+		t.Fatalf("expected the SSZ size limit refusal, got: %v", err)
 	}
 }
 
@@ -919,8 +924,8 @@ func TestHashTreeRootLargeObjectOverflow(t *testing.T) {
 	container := &testLargeContainer{}
 
 	_, err := ds.HashTreeRoot(container)
-	if err == nil || !strings.Contains(err.Error(), "platform int") {
-		t.Fatalf("expected a platform integer range error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "SSZ size limit") {
+		t.Fatalf("expected the SSZ size limit refusal, got: %v", err)
 	}
 }
 
@@ -3558,6 +3563,28 @@ func TestBigIntMaxEnforced(t *testing.T) {
 	}
 }
 
+// A limit no platform int can hold gives the decoder no read cap to apply, so
+// it decodes without one and the value is checked afterwards as before.
+func TestBigIntMaxPastThePlatformRange(t *testing.T) {
+	type T struct {
+		N big.Int `ssz-max:"9223372036854775808"`
+	}
+	ds := NewDynSsz(nil, WithExtendedTypes())
+
+	v := &T{N: *big.NewInt(0x1122334455)}
+	encoded, err := ds.MarshalSSZ(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back T
+	if err := ds.UnmarshalSSZ(&back, encoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.N.Cmp(&v.N) != 0 {
+		t.Fatalf("round trip = %v, want %v", back.N.String(), v.N.String())
+	}
+}
+
 // The decoder enforces the same static ssz-max as the encoder; without the
 // check it would accept a payload whose decoded value can be neither
 // re-encoded nor hashed.
@@ -3676,6 +3703,66 @@ func (b *inconsistentSizeCustom) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, _ 
 
 func (b *inconsistentSizeCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
 	return nil
+}
+
+// pastLimitCustom reports a size past the SSZ size limit without writing it.
+type pastLimitCustom struct{}
+
+func (h *pastLimitCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
+	// One past the widest size SSZ can express. Where int is no wider than
+	// that size, the step wraps negative, which is refused just the same.
+	top := int(sszutils.MaxSszSize)
+	return top + 1
+}
+
+func (h *pastLimitCustom) MarshalSSZEncoder(_ sszutils.DynamicSpecs, _ sszutils.Encoder) error {
+	return nil
+}
+
+func (h *pastLimitCustom) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, _ sszutils.Decoder) error {
+	return nil
+}
+
+func (h *pastLimitCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+// limitSizeCustom reports the widest size SSZ can express without writing it.
+type limitSizeCustom struct{}
+
+func (h *limitSizeCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return int(sszutils.MaxSszSize) }
+func (h *limitSizeCustom) MarshalSSZEncoder(_ sszutils.DynamicSpecs, _ sszutils.Encoder) error {
+	return nil
+}
+
+func (h *limitSizeCustom) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, _ sszutils.Decoder) error {
+	return nil
+}
+
+func (h *limitSizeCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+// A size a delegate reports is refused where it enters the size domain, and
+// the sum of sizes is refused where the terms are added: one delegate at the
+// limit plus any other field leaves the range. Nothing is allocated for either
+// figure, since the size is refused before it is used.
+func TestSizeSSZRefusesDelegatedSizePastTheLimit(t *testing.T) {
+	ds := NewDynSsz(nil)
+	type overHolder struct {
+		C pastLimitCustom `ssz-type:"custom"`
+	}
+	if _, err := ds.SizeSSZ(&overHolder{}); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Errorf("a delegate past the limit: err = %v, want ErrInvalidValueRange", err)
+	}
+
+	type sumHolder struct {
+		A uint64
+		C limitSizeCustom `ssz-type:"custom" ssz-static:"true"`
+	}
+	if _, err := ds.SizeSSZ(&sumHolder{}); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Errorf("a sum past the limit: err = %v, want ErrInvalidValueRange", err)
+	}
 }
 
 // zeroSizeCustom is a custom static type whose sizer reports zero bytes. As a
@@ -4617,19 +4704,29 @@ func TestDescriptorSizeOverflowRejected(t *testing.T) {
 		}
 	})
 
-	t.Run("large sizes within the platform range are valid", func(t *testing.T) {
-		// 8 * 8192 * 65536 == 2^32: past the former uint32 bound, valid SSZ
-		// wherever the platform integer range holds it.
+	t.Run("sizes up to the SSZ size limit are valid", func(t *testing.T) {
+		// 8 * 8191 * 65536 is below 2^32: valid SSZ wherever the platform
+		// integer range holds it.
 		type T struct {
-			V [][]uint64 `ssz-size:"65536,8192"`
+			V [][]uint64 `ssz-size:"65536,8191"`
 		}
 		err := ds.ValidateType(reflect.TypeOf(T{}))
-		if uint64(1)<<32 <= uint64(math.MaxInt) {
+		if uint64(8*8191*65536) <= uint64(math.MaxInt) {
 			if err != nil {
-				t.Fatalf("ValidateType should accept a size within the platform range: %v", err)
+				t.Fatalf("ValidateType should accept a size within the SSZ size limit: %v", err)
 			}
 		} else if err == nil {
 			t.Fatal("ValidateType should reject a size past the platform range")
+		}
+	})
+
+	t.Run("a size past the SSZ size limit is refused on every host", func(t *testing.T) {
+		// 8 * 8192 * 65536 == 2^32: no 32-bit offset can address past it.
+		type T struct {
+			V [][]uint64 `ssz-size:"65536,8192"`
+		}
+		if err := ds.ValidateType(reflect.TypeOf(T{})); err == nil || !strings.Contains(err.Error(), "SSZ size limit") {
+			t.Fatalf("ValidateType err = %v, want the SSZ size limit refusal", err)
 		}
 	})
 
@@ -4807,14 +4904,13 @@ func TestSizeSSZValueOverflowRejected(t *testing.T) {
 	if err != nil || sz != 4+268435456 {
 		t.Fatalf("n=1: size=%d err=%v", sz, err)
 	}
-	// 17 elements put the total past the former uint32 bound; sizes are valid
-	// up to the platform integer range, past which SizeSSZ reports the
-	// platform bound instead of wrapping.
+	// 17 elements put the total past the SSZ size limit, which the size walk
+	// refuses rather than reporting a size no encoding can refer to.
 	const total = int64(4) + 17*268435456
 	sz, err = ds.SizeSSZ(&OuterList{Items: make([]InnerHuge, 17)})
-	if total > math.MaxInt {
+	if total > sszutils.MaxSszSize {
 		if err == nil {
-			t.Errorf("n=17: expected platform overflow error, got size %d", sz)
+			t.Errorf("n=17: expected the size limit refusal, got size %d", sz)
 		}
 	} else if err != nil || int64(sz) != total {
 		t.Errorf("n=17: size=%d err=%v", sz, err)
@@ -4927,6 +5023,198 @@ func TestEmbeddedPromotionNoFalseDelegation(t *testing.T) {
 	}
 }
 
+// hugeBits is a bitlist whose limit exceeds the 32-bit int range in bits.
+type hugeBits []byte
+
+var _ = sszutils.Annotate[hugeBits](`ssz-type:"bitlist" ssz-max:"2147483648"`)
+
+// A bitlist of exactly 2^31 bits is within its limit on every platform: the
+// reflection engine writes, hashes and reads it back.
+// raceDetectorEnabled reports whether this binary was built with the race
+// detector. A test that walks hundreds of megabytes through a single
+// goroutine costs it minutes and gives it nothing to find.
+func raceDetectorEnabled() bool {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return false
+	}
+	for _, setting := range info.Settings {
+		if setting.Key == "-race" {
+			return setting.Value == "true"
+		}
+	}
+	return false
+}
+
+func TestReflectionBitlistBitCountBeyondInt32(t *testing.T) {
+	if raceDetectorEnabled() {
+		// A quarter-gigabyte bitlist through one goroutine: the race detector
+		// multiplies the cost by sixty and has no concurrency to inspect. The
+		// builds without it run this in full.
+		t.Skip("skipped under the race detector")
+	}
+	data := make([]byte, (1<<28)+1)
+	data[len(data)-1] = 1
+	value := hugeBits(data)
+	ds := NewDynSsz(nil, WithNoDelegation(), WithNoFastSsz())
+
+	if err := ds.MarshalSSZWriter(&value, io.Discard); err != nil {
+		t.Fatalf("MarshalSSZWriter: %v", err)
+	}
+	size, err := ds.SizeSSZ(&value)
+	if err != nil || size != len(data) {
+		t.Fatalf("SizeSSZ = %d, %v; want %d", size, err, len(data))
+	}
+
+	var want [32]byte
+	var pair [64]byte
+	for range 23 {
+		copy(pair[:32], want[:])
+		copy(pair[32:], want[:])
+		want = sha256.Sum256(pair[:])
+	}
+	copy(pair[:32], want[:])
+	clear(pair[32:])
+	binary.LittleEndian.PutUint64(pair[32:], 1<<31)
+	want = sha256.Sum256(pair[:])
+	root, err := ds.HashTreeRoot(&value)
+	if err != nil || root != want {
+		t.Fatalf("HashTreeRoot = %x, %v; want %x", root, err, want)
+	}
+
+	var decoded hugeBits
+	if err := ds.UnmarshalSSZ(&decoded, data); err != nil || len(decoded) != len(data) {
+		t.Fatalf("UnmarshalSSZ = %d bytes, %v; want %d", len(decoded), err, len(data))
+	}
+}
+
+// promotedViewInner serializes its own B through hand-written view methods
+// for promotedViewSchema.
+type promotedViewInner struct{ B uint64 }
+
+// promotedViewSchema is the view schema both types are read against.
+type promotedViewSchema struct{ B uint64 }
+
+func (i *promotedViewInner) MarshalSSZDynView(view any) func(sszutils.DynamicSpecs, []byte) ([]byte, error) {
+	if _, ok := view.(*promotedViewSchema); !ok {
+		return nil
+	}
+	return func(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+		return binary.LittleEndian.AppendUint64(buf, i.B), nil
+	}
+}
+
+func (i *promotedViewInner) MarshalSSZEncoderView(view any) func(sszutils.DynamicSpecs, sszutils.Encoder) error {
+	if _, ok := view.(*promotedViewSchema); !ok {
+		return nil
+	}
+	return func(_ sszutils.DynamicSpecs, enc sszutils.Encoder) error {
+		enc.EncodeUint64(i.B)
+		return nil
+	}
+}
+
+func (i *promotedViewInner) UnmarshalSSZDynView(view any) func(sszutils.DynamicSpecs, []byte) error {
+	if _, ok := view.(*promotedViewSchema); !ok {
+		return nil
+	}
+	return func(_ sszutils.DynamicSpecs, buf []byte) error {
+		if len(buf) != 8 {
+			return sszutils.ErrUnexpectedEOF
+		}
+		i.B = binary.LittleEndian.Uint64(buf)
+		return nil
+	}
+}
+
+func (i *promotedViewInner) UnmarshalSSZDecoderView(view any) func(sszutils.DynamicSpecs, sszutils.Decoder) error {
+	if _, ok := view.(*promotedViewSchema); !ok {
+		return nil
+	}
+	return func(_ sszutils.DynamicSpecs, dec sszutils.Decoder) error {
+		v, err := dec.DecodeUint64()
+		i.B = v
+		return err
+	}
+}
+
+func (i *promotedViewInner) SizeSSZDynView(view any) func(sszutils.DynamicSpecs) int {
+	if _, ok := view.(*promotedViewSchema); !ok {
+		return nil
+	}
+	return func(sszutils.DynamicSpecs) int { return 8 }
+}
+
+func (i *promotedViewInner) HashTreeRootWithDynView(view any) func(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	if _, ok := view.(*promotedViewSchema); !ok {
+		return nil
+	}
+	return func(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+		hh.PutUint64(i.B)
+		return nil
+	}
+}
+
+// promotedViewOuter embeds the inner type and shadows its field, so the view
+// schema's B is the outer field while the promoted methods know only the
+// inner one.
+type promotedViewOuter struct {
+	promotedViewInner
+	B uint64
+}
+
+// A view method promoted from an embedded field is never delegated to: the
+// outer struct is walked against the view schema, so its own field is what
+// every path serializes, and the embedded type keeps delegating on its own.
+func TestEmbeddedPromotionViewMethods(t *testing.T) {
+	ds := NewDynSsz(nil)
+	view := WithViewDescriptor((*promotedViewSchema)(nil))
+	v := &promotedViewOuter{promotedViewInner: promotedViewInner{B: 1}, B: 2}
+	want := binary.LittleEndian.AppendUint64(nil, 2)
+
+	enc, err := ds.MarshalSSZ(v, view)
+	if err != nil || !bytes.Equal(enc, want) {
+		t.Fatalf("MarshalSSZ = %x, %v; want %x", enc, err, want)
+	}
+	size, err := ds.SizeSSZ(v, view)
+	if err != nil || size != 8 {
+		t.Fatalf("SizeSSZ = %d, %v; want 8", size, err)
+	}
+	var stream bytes.Buffer
+	if err = ds.MarshalSSZWriter(v, &stream, view); err != nil || !bytes.Equal(stream.Bytes(), want) {
+		t.Fatalf("MarshalSSZWriter = %x, %v; want %x", stream.Bytes(), err, want)
+	}
+	root, err := ds.HashTreeRoot(v, view)
+	if err != nil {
+		t.Fatalf("HashTreeRoot: %v", err)
+	}
+	plainRoot, err := ds.HashTreeRoot(&promotedViewSchema{B: 2})
+	if err != nil || root != plainRoot {
+		t.Fatalf("HashTreeRoot = %x, %v; want the plain root %x", root, err, plainRoot)
+	}
+
+	var back promotedViewOuter
+	if err = ds.UnmarshalSSZ(&back, want, view); err != nil {
+		t.Fatalf("UnmarshalSSZ: %v", err)
+	}
+	if back.B != 2 || back.promotedViewInner.B != 0 {
+		t.Fatalf("UnmarshalSSZ decoded %+v; want B=2 on the outer field only", back)
+	}
+	var streamed promotedViewOuter
+	if err = ds.UnmarshalSSZReader(&streamed, bytes.NewReader(want), len(want), view); err != nil {
+		t.Fatalf("UnmarshalSSZReader: %v", err)
+	}
+	if streamed.B != 2 || streamed.promotedViewInner.B != 0 {
+		t.Fatalf("UnmarshalSSZReader decoded %+v; want B=2 on the outer field only", streamed)
+	}
+
+	inner := &promotedViewInner{B: 3}
+	encInner, err := ds.MarshalSSZ(inner, view)
+	if err != nil || binary.LittleEndian.Uint64(encInner) != 3 {
+		t.Fatalf("inner MarshalSSZ = %x, %v; want its own B", encInner, err)
+	}
+}
+
 // shadowInner is a delegating inner type.
 type shadowInner struct{ S uint16 }
 
@@ -5033,6 +5321,323 @@ func TestEmbeddedInterfaceNoFalseDelegation(t *testing.T) {
 
 	if enc, err := ds.MarshalSSZ(v); err == nil {
 		t.Fatalf("expected an error for the interface-typed field, got %d bytes (%x)", len(enc), enc)
+	}
+}
+
+// Reader segmentation: whichever way a reader splits its bytes, and whether
+// it reports EOF together with the last bytes or on its own, a truncated
+// message is rejected by the stream path exactly when the buffer path
+// rejects it, and a valid one is accepted everywhere.
+type eofListOfLists struct {
+	L [][]uint16 `ssz-max:"4,8"`
+}
+
+type eofByteLists struct {
+	L [][]byte `ssz-max:"4,8"`
+	T uint8
+}
+
+type eofThreeByteLists struct {
+	A []byte `ssz-max:"8"`
+	B []byte `ssz-max:"8"`
+	C []byte `ssz-max:"8"`
+}
+
+type eofNested struct {
+	X uint16
+	D struct {
+		A uint64
+		L []uint64 `ssz-max:"4"`
+		C uint32
+	}
+}
+
+func eofReaders(data []byte) map[string]io.Reader {
+	return map[string]io.Reader{
+		"bytes":           bytes.NewReader(data),
+		"data+EOF":        iotest.DataErrReader(bytes.NewReader(data)),
+		"onebyte+EOF":     iotest.DataErrReader(iotest.OneByteReader(bytes.NewReader(data))),
+		"halfreads+EOF":   iotest.DataErrReader(iotest.HalfReader(bytes.NewReader(data))),
+		"halfreads+plain": iotest.HalfReader(bytes.NewReader(data)),
+	}
+}
+
+func TestReaderSegmentationMatchesBuffer(t *testing.T) {
+	values := []any{
+		&eofListOfLists{L: [][]uint16{{1, 2}, {3}}},
+		&eofByteLists{L: [][]byte{{1, 2}, {3}}, T: 4},
+		&eofThreeByteLists{A: []byte{0xaa}, B: []byte{0xbb}, C: []byte{0xcc}},
+		&eofNested{X: 7, D: struct {
+			A uint64
+			L []uint64 `ssz-max:"4"`
+			C uint32
+		}{A: 1, L: []uint64{3, 4}, C: 5}},
+	}
+	for _, bufSize := range []int{1, 8, 0} {
+		ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation(), WithStreamReaderBufferSize(bufSize))
+		for _, v := range values {
+			full, err := ds.MarshalSSZ(v)
+			if err != nil {
+				t.Fatalf("%T: %v", v, err)
+			}
+			target := reflect.New(reflect.TypeOf(v).Elem()).Interface()
+			for cut := 0; cut < len(full); cut++ {
+				data := full[:len(full)-cut]
+				bufferOK := ds.UnmarshalSSZ(target, data) == nil
+				for _, size := range []int{-1, len(data), len(full)} {
+					for name, r := range eofReaders(data) {
+						err := ds.UnmarshalSSZReader(target, r, size)
+						wantOK := bufferOK && size != len(full) || cut == 0
+						if (err == nil) != wantOK {
+							t.Errorf("%T buf=%d cut=%d size=%d reader=%s: err=%v, buffer accepts=%v", v, bufSize, cut, size, name, err, bufferOK)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// hugeSizer reports a size no encoding can refer to while writing eight bytes.
+type hugeSizer struct{ A uint64 }
+
+func (n *hugeSizer) SizeSSZDyn(sszutils.DynamicSpecs) int { return math.MaxInt }
+func (n *hugeSizer) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, 0, 0, 0, 0, 0, 0, 0, 0), nil
+}
+
+// A sizer that reports more than any encoding can refer to is refused where
+// its report enters the size domain, instead of a size the output contradicts.
+func TestDelegatedSizePastLimit(t *testing.T) {
+	if sszutils.MaxSszSize == math.MaxInt {
+		t.Skip("the limit is the platform int here, so no reported size can pass it")
+	}
+	ds := NewDynSsz(nil)
+	if _, err := ds.SizeSSZ(&hugeSizer{}); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("SizeSSZ err = %v, want ErrInvalidValueRange", err)
+	}
+	if _, err := ds.MarshalSSZ(&hugeSizer{}); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("MarshalSSZ err = %v, want ErrInvalidValueRange", err)
+	}
+	// MarshalSSZTo appends what the value's own marshaller writes and never
+	// needs a size, so it does not ask for one: a reported size is bounded
+	// only where a path actually uses it.
+	if out, err := ds.MarshalSSZTo(&hugeSizer{}, []byte{1}); err != nil || len(out) != 9 {
+		t.Fatalf("MarshalSSZTo = %d bytes, %v, want the delegate's own output", len(out), err)
+	}
+}
+
+// A value whose own size is the largest one allowed still has to fit next to
+// the bytes already in the caller's buffer.
+func TestMarshalSSZToPrefixPlusSize(t *testing.T) {
+	type wide struct {
+		Data []byte `ssz-size:"1" dynssz-size:"WIDTH"`
+	}
+	ds := NewDynSsz(map[string]any{"WIDTH": uint64(sszutils.MaxSszSize)}, WithNoDelegation(), WithNoFastSsz())
+	size, err := ds.SizeSSZ(&wide{})
+	if err != nil || size != sszutils.MaxSszSize {
+		t.Fatalf("size = %d, %v, want the SSZ size limit", size, err)
+	}
+	if math.MaxInt > sszutils.MaxSszSize {
+		// Marshalling would allocate the whole declared extent here, which the
+		// check under test is not about.
+		return
+	}
+	if _, err := ds.MarshalSSZTo(&wide{}, []byte{0}); !errors.Is(err, sszutils.ErrPlatformOverflow) {
+		t.Fatalf("one-byte prefix err = %v, want ErrPlatformOverflow", err)
+	}
+}
+
+// The spec map a caller passes stays the caller's: the library reads its own
+// copy, so a caller that keeps writing to its map cannot race the library.
+func TestSpecValuesAreCopied(t *testing.T) {
+	specs := map[string]any{"SIZE": uint64(4)}
+	ds := NewDynSsz(specs)
+	type payload struct {
+		Data []byte `ssz-size:"1" dynssz-size:"SIZE"`
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 2000; i++ {
+			specs["SIZE"] = uint64(i%8 + 1)
+		}
+	}()
+	for i := 0; i < 2000; i++ {
+		if _, err := ds.SizeSSZ(&payload{Data: make([]byte, 4)}); err != nil {
+			t.Fatalf("size: %v", err)
+		}
+	}
+	<-done
+	size, err := ds.SizeSSZ(&payload{Data: make([]byte, 4)})
+	if err != nil || size != 4 {
+		t.Fatalf("size = %d, %v, want the size the constructor was given", size, err)
+	}
+}
+
+// negSizer reports a negative size through its own sizer.
+type negSizer struct{ A uint64 }
+
+func (n *negSizer) SizeSSZDyn(sszutils.DynamicSpecs) int { return -1 }
+func (n *negSizer) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, 0, 0, 0, 0, 0, 0, 0, 0), nil
+}
+
+// A negative size from a type's own sizer is an error at the entry points,
+// as it is inside the engines, instead of an allocation from it.
+func TestNegativeDelegatedSizeAtEntryPoints(t *testing.T) {
+	ds := NewDynSsz(nil)
+	if _, err := ds.MarshalSSZ(&negSizer{}); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("MarshalSSZ err = %v, want ErrInvalidValueRange", err)
+	}
+	if _, err := ds.SizeSSZ(&negSizer{}); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("SizeSSZ err = %v, want ErrInvalidValueRange", err)
+	}
+	// The view paths take the size from the view sizer.
+	view := &testDynViewAll{MarshalBuf: []byte{1}, Size: -1}
+	if _, err := ds.MarshalSSZ(view, WithViewDescriptor(&testViewType{})); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("view MarshalSSZ err = %v, want ErrInvalidValueRange", err)
+	}
+	if _, err := ds.SizeSSZ(view, WithViewDescriptor(&testViewType{})); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("view SizeSSZ err = %v, want ErrInvalidValueRange", err)
+	}
+}
+
+// A declared size is trusted, so a known-size reader decode sizes its lists
+// from the declaration like a buffer decode does: the only allocations it
+// adds are the decoder and its read buffer, never a growth series.
+func TestKnownSizeReaderAllocatesLikeBuffer(t *testing.T) {
+	type lists struct {
+		L  []uint32   `ssz-max:"1048576"`
+		LL [][]uint16 `ssz-max:"16384,64"`
+	}
+	value := lists{L: make([]uint32, 100000), LL: make([][]uint16, 8000)}
+	for i := range value.LL {
+		value.LL[i] = []uint16{uint16(i)}
+	}
+	ds := NewDynSsz(nil, WithNoFastSsz())
+	full, err := ds.MarshalSSZ(&value)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	buffer := testing.AllocsPerRun(5, func() {
+		if err := ds.UnmarshalSSZ(&lists{}, full); err != nil {
+			t.Fatal(err)
+		}
+	})
+	reader := testing.AllocsPerRun(5, func() {
+		if err := ds.UnmarshalSSZReader(&lists{}, bytes.NewReader(full), len(full)); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if reader > buffer+8 {
+		t.Fatalf("known-size reader decode: %v allocs, buffer decode: %v", reader, buffer)
+	}
+}
+
+// A truncated list of lists whose second element's declared start lies past
+// the input is rejected with the default reader buffer as well, when the
+// reader hands over the last bytes together with EOF.
+func TestReaderEOFWithDataDefaultBuffer(t *testing.T) {
+	first := make([]byte, 2048)
+	for i := range first {
+		first[i] = byte(i + 1)
+	}
+	type lists struct {
+		L [][]byte `ssz-max:"4,4096"`
+	}
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+	full, err := ds.MarshalSSZ(&lists{L: [][]byte{first, {7}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Cut inside the first element: the second element's offset now lies past
+	// the end of the input.
+	data := full[:len(full)-3]
+	if err := ds.UnmarshalSSZ(&lists{}, data); err == nil {
+		t.Fatal("buffer path accepted the truncated message")
+	}
+	if err := ds.UnmarshalSSZReader(&lists{}, iotest.DataErrReader(bytes.NewReader(data)), -1); err == nil {
+		t.Fatal("stream path accepted the truncated message")
+	}
+	if err := ds.UnmarshalSSZReader(&lists{}, iotest.DataErrReader(bytes.NewReader(full)), -1); err != nil {
+		t.Fatalf("stream path rejected the valid message: %v", err)
+	}
+}
+
+// walkerOnlyInner exposes only HashTreeRootWith; walkerOnlyOuter inherits it
+// and adds a sibling the promoted method knows nothing about.
+type walkerOnlyInner struct{ A uint64 }
+
+func (v *walkerOnlyInner) HashTreeRootWith(hh sszutils.HashWalker) error {
+	hh.PutUint64(v.A)
+	return nil
+}
+
+type walkerOnlyOuter struct {
+	walkerOnlyInner
+	B uint64
+}
+
+func TestEmbeddedPromotionWalkerMethodKeepsSiblings(t *testing.T) {
+	ds := NewDynSsz(nil)
+	structural := NewDynSsz(nil, WithNoDelegation(), WithNoFastSsz())
+	v := &walkerOnlyOuter{walkerOnlyInner: walkerOnlyInner{A: 1}, B: 2}
+
+	root, err := ds.HashTreeRoot(v)
+	if err != nil {
+		t.Fatalf("HashTreeRoot: %v", err)
+	}
+	want, err := structural.HashTreeRoot(v)
+	if err != nil || root != want {
+		t.Fatalf("root %x, %v; want the structural root %x", root, err, want)
+	}
+	other, err := ds.HashTreeRoot(&walkerOnlyOuter{walkerOnlyInner: walkerOnlyInner{A: 1}, B: 99})
+	if err != nil || other == root {
+		t.Fatalf("changing the sibling did not change the root (%x, %v)", other, err)
+	}
+	tree, err := ds.GetTree(v)
+	if err != nil {
+		t.Fatalf("GetTree: %v", err)
+	}
+	if !bytes.Equal(tree.Hash(), root[:]) {
+		t.Fatalf("tree root %x != root %x", tree.Hash(), root)
+	}
+	// The embedded type itself still delegates.
+	inner, err := ds.HashTreeRoot(&walkerOnlyInner{A: 1})
+	if err != nil || binary.LittleEndian.Uint64(inner[:8]) != 1 {
+		t.Fatalf("inner root %x, %v; want its own leaf", inner, err)
+	}
+}
+
+// valueReceiverOuter embeds a delegating type and declares its own delegation
+// methods with value receivers; they are called and their errors reach the
+// caller.
+type valueReceiverOuter struct {
+	PromotedInner
+	B uint64
+}
+
+var errValueReceiver = errors.New("value receiver method called")
+
+func (valueReceiverOuter) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return errValueReceiver
+}
+
+func (valueReceiverOuter) MarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) ([]byte, error) {
+	return nil, errValueReceiver
+}
+
+func (valueReceiverOuter) SizeSSZDyn(sszutils.DynamicSpecs) int { return 0 }
+
+func TestEmbeddedPromotionValueReceiverIsOwn(t *testing.T) {
+	ds := NewDynSsz(nil)
+	v := &valueReceiverOuter{PromotedInner: PromotedInner{Seconds: 1}, B: 2}
+	if _, err := ds.HashTreeRoot(v); !errors.Is(err, errValueReceiver) {
+		t.Fatalf("HashTreeRoot err = %v, want the declared method's error", err)
+	}
+	if _, err := ds.MarshalSSZ(v); !errors.Is(err, errValueReceiver) {
+		t.Fatalf("MarshalSSZ err = %v, want the declared method's error", err)
 	}
 }
 
@@ -5310,59 +5915,58 @@ func TestUnknownSizeMaxStreamSize(t *testing.T) {
 	}
 }
 
-// A declared size is trusted, so it is held to the maximum stream size before
-// any byte is read: the maximum is the most a single call can allocate up
-// front, on the reflection path and on the delegated path alike.
-func TestKnownSizeMaxStreamSize(t *testing.T) {
+// A declared size is trusted input: it is the read bound of the call and is
+// not subject to WithMaxStreamSize, which bounds unknown-size decodes only.
+func TestKnownSizeAboveMaxStreamSize(t *testing.T) {
 	type payload struct {
 		A    uint64
 		Data []byte `ssz-max:"1099511627776"`
 	}
-	ds := NewDynSsz(nil, WithNoFastSsz(), WithMaxStreamSize(64))
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithMaxStreamSize(8))
 	full, err := ds.MarshalSSZ(&payload{A: 1, Data: []byte{1, 2, 3}})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-
-	// At the cap the decode proceeds normally.
-	if err = ds.UnmarshalSSZReader(&payload{}, bytes.NewReader(full), len(full)); err != nil {
-		t.Fatalf("decode within cap: %v", err)
+	if len(full) <= 8 {
+		t.Fatalf("payload of %d bytes does not exceed the configured maximum", len(full))
 	}
 
-	// Above the cap the size is rejected without touching the reader.
-	rd := &countingReader{r: bytes.NewReader(full)}
-	err = ds.UnmarshalSSZReader(&payload{}, rd, 65)
-	if !errors.Is(err, sszutils.ErrStreamTooLarge) {
-		t.Fatalf("err = %v, want ErrStreamTooLarge", err)
+	// The declared size exceeds the maximum stream size and decodes normally.
+	var back payload
+	if err = ds.UnmarshalSSZReader(&back, bytes.NewReader(full), len(full)); err != nil {
+		t.Fatalf("decode with a size above the maximum: %v", err)
 	}
-	if rd.n != 0 {
-		t.Fatalf("reader consumed %d bytes before the size was rejected", rd.n)
+	if back.A != 1 || !bytes.Equal(back.Data, []byte{1, 2, 3}) {
+		t.Fatalf("decoded %+v", back)
 	}
 
-	// The default bound applies when none is configured, and a size beyond it
-	// is rejected before the allocation it would otherwise cause.
-	dsd := NewDynSsz(nil, WithNoFastSsz())
-	var before, after runtime.MemStats
-	runtime.ReadMemStats(&before)
-	err = dsd.UnmarshalSSZReader(&payload{}, bytes.NewReader(full), sszutils.DefaultMaxStreamSize+1)
-	runtime.ReadMemStats(&after)
-	if !errors.Is(err, sszutils.ErrStreamTooLarge) {
-		t.Fatalf("err = %v, want ErrStreamTooLarge", err)
+	// A per-call limit overrides the instance value for an unknown-size decode
+	// in both directions; a non-positive value keeps the instance default.
+	back = payload{}
+	if err = ds.UnmarshalSSZReader(&back, bytes.NewReader(full), -1, WithStreamSizeLimit(len(full))); err != nil {
+		t.Fatalf("decode with a per-call limit above the instance maximum: %v", err)
 	}
-	if grew := after.TotalAlloc - before.TotalAlloc; grew > 1<<20 {
-		t.Fatalf("rejecting the size allocated %d bytes", grew)
+	if back.A != 1 || !bytes.Equal(back.Data, []byte{1, 2, 3}) {
+		t.Fatalf("decoded %+v", back)
 	}
-}
+	if err = ds.UnmarshalSSZReader(&payload{}, bytes.NewReader(full), -1, WithStreamSizeLimit(0)); !errors.Is(err, sszutils.ErrStreamTooLarge) {
+		t.Fatalf("zero per-call limit err = %v, want ErrStreamTooLarge from the instance maximum", err)
+	}
+	dsl := NewDynSsz(nil, WithNoFastSsz())
+	if err = dsl.UnmarshalSSZReader(&payload{}, bytes.NewReader(full), -1, WithStreamSizeLimit(8)); !errors.Is(err, sszutils.ErrStreamTooLarge) {
+		t.Fatalf("per-call limit below the payload err = %v, want ErrStreamTooLarge", err)
+	}
+	if err = dsl.UnmarshalSSZReader(&payload{}, bytes.NewReader(full), len(full), WithStreamSizeLimit(8)); err != nil {
+		t.Fatalf("declared size with a smaller per-call limit: %v", err)
+	}
 
-type countingReader struct {
-	r io.Reader
-	n int
-}
-
-func (c *countingReader) Read(p []byte) (int, error) {
-	n, err := c.r.Read(p)
-	c.n += n
-	return n, err
+	// A size the input does not fill ends in ErrUnexpectedEOF: A, then the
+	// offset of Data, then nothing of the 4084 declared bytes behind it.
+	short := []byte{1, 0, 0, 0, 0, 0, 0, 0, 12, 0, 0, 0}
+	err = NewDynSsz(nil, WithNoFastSsz()).UnmarshalSSZReader(&payload{}, bytes.NewReader(short), 4096)
+	if !errors.Is(err, sszutils.ErrUnexpectedEOF) {
+		t.Fatalf("err = %v, want ErrUnexpectedEOF", err)
+	}
 }
 
 // ssz-max must be enforced while reading, so an over-long list is rejected
@@ -5421,15 +6025,16 @@ func TestUnknownSizeBitlistTermination(t *testing.T) {
 	}
 }
 
-// benchState stands in for a large beacon-state-shaped payload: a big trailing
-// list of fixed-size records preceded by some dynamic fields. The trailing list
-// is what an unknown-size decode has to consume without knowing where it ends.
+// benchRecord is the fixed-size element of benchState's trailing list.
 type benchRecord struct {
 	Index   uint64
 	Balance uint64
 	Key     [48]byte
 }
 
+// benchState stands in for a large beacon-state-shaped payload: a big trailing
+// list of fixed-size records preceded by some dynamic fields. The trailing list
+// is what an unknown-size decode has to consume without knowing where it ends.
 type benchState struct {
 	Slot    uint64
 	Roots   [][32]byte    `ssz-max:"8192"`
@@ -6593,6 +7198,24 @@ func TestMarshalNegativeDelegatedSize(t *testing.T) {
 	if _, err := ds.SizeSSZ(v); err == nil {
 		t.Error("SizeSSZ should reject a negative size")
 	}
+
+	// A nested delegate is rejected where its size is taken, before it can
+	// drive an offset below the table.
+	type negHolder struct {
+		A negSizeCustom
+		B []byte `ssz-max:"8"`
+	}
+	h := &negHolder{B: []byte{1, 2}}
+	if _, err := ds.MarshalSSZ(h); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Errorf("MarshalSSZ nested: err = %v, want ErrInvalidValueRange", err)
+	}
+	var w bytes.Buffer
+	if err := ds.MarshalSSZWriter(h, &w); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Errorf("MarshalSSZWriter nested: err = %v, want ErrInvalidValueRange", err)
+	}
+	if _, err := ds.SizeSSZ(h); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Errorf("SizeSSZ nested: err = %v, want ErrInvalidValueRange", err)
+	}
 }
 
 // Claimed element sizes drive the offset tables the streaming marshal writes
@@ -6603,17 +7226,15 @@ func TestMarshalWriterOffsetOverflow(t *testing.T) {
 
 	expectOffsetErr := func(t *testing.T, err error) {
 		t.Helper()
-		// On 32-bit platforms the size walk rejects the claimed totals with
-		// the platform range error before any offset write runs; both verdicts
-		// reject the value.
-		if math.MaxInt <= math.MaxInt32 {
-			if err == nil {
-				t.Error("expected an error for the oversized claims")
-			}
+		// A claimed total past the SSZ size limit is refused by the size walk
+		// before any offset write runs; a value the walk accepts is refused at
+		// the first offset that cannot be represented. Both verdicts reject.
+		if err == nil {
+			t.Error("expected an error for the oversized claims")
 			return
 		}
-		if err == nil || !errors.Is(err, sszutils.ErrOffset) {
-			t.Errorf("expected offset range error, got: %v", err)
+		if !errors.Is(err, sszutils.ErrOffset) && !errors.Is(err, sszutils.ErrInvalidValueRange) {
+			t.Errorf("expected an offset or size error, got: %v", err)
 		}
 	}
 
@@ -6628,6 +7249,52 @@ func TestMarshalWriterOffsetOverflow(t *testing.T) {
 		}
 		ctx := reflection.NewReflectionCtx(ds, nil, false, true, false, 0)
 		expectOffsetErr(t, ctx.MarshalSSZ(desc, reflect.ValueOf(v), sszutils.NewStreamEncoder(io.Discard, 0)))
+	})
+
+	// The walk that precedes a public marshal refuses a claimed total past the
+	// SSZ size limit, so the offset writes below are reached by driving the
+	// reflection context directly, on a value whose total is refused but whose
+	// individual offsets are what the writer forms first.
+	directDesc := func(t *testing.T, v any, sizeHints []ssztypes.SszSizeHint, maxHints []ssztypes.SszMaxSizeHint) *ssztypes.TypeDescriptor {
+		t.Helper()
+		desc, err := ds.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(v), sizeHints, maxHints, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return desc
+	}
+	marshalDirect := func(t *testing.T, v any, desc *ssztypes.TypeDescriptor) error {
+		t.Helper()
+		ctx := reflection.NewReflectionCtx(ds, nil, false, true, false, 0)
+		return ctx.MarshalSSZ(desc, reflect.ValueOf(v), sszutils.NewStreamEncoder(io.Discard, 0))
+	}
+
+	t.Run("list element offsets accumulate", func(t *testing.T) {
+		v := make([]hugeSizeCustom, 3)
+		desc := directDesc(t, v, nil, []ssztypes.SszMaxSizeHint{{Size: 16}})
+		expectOffsetErr(t, marshalDirect(t, v, desc))
+	})
+
+	t.Run("vector element offsets accumulate", func(t *testing.T) {
+		v := make([]hugeSizeCustom, 3)
+		desc := directDesc(t, v, []ssztypes.SszSizeHint{{Size: 3}}, nil)
+		expectOffsetErr(t, marshalDirect(t, v, desc))
+	})
+
+	t.Run("vector zero-fill element offsets accumulate", func(t *testing.T) {
+		v := make([]hugeSizeCustom, 1)
+		desc := directDesc(t, v, []ssztypes.SszSizeHint{{Size: 4}}, nil)
+		expectOffsetErr(t, marshalDirect(t, v, desc))
+	})
+
+	t.Run("container field offsets past the range", func(t *testing.T) {
+		type C struct {
+			A hugeSizeCustom `ssz-type:"custom"`
+			B hugeSizeCustom `ssz-type:"custom"`
+			C hugeSizeCustom `ssz-type:"custom"`
+		}
+		v := C{}
+		expectOffsetErr(t, marshalDirect(t, v, directDesc(t, v, nil, nil)))
 	})
 
 	t.Run("list offsets accumulate", func(t *testing.T) {
@@ -6920,12 +7587,8 @@ func TestSizerWithoutMarshalerIsUsed(t *testing.T) {
 	}
 }
 
-// basicWithMethods is a named uint64 whose hash methods fail: inside a list or
-// vector its values are packed by the engine itself, never through them. The
-// serialization methods are correct.
+// basicWithMethods is a named uint64 whose hash methods put the value.
 type basicWithMethods uint64
-
-var errBasicDelegated = errors.New("hash method called on a packed basic element")
 
 func (b *basicWithMethods) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
 	return binary.LittleEndian.AppendUint64(buf, uint64(*b)), nil
@@ -6943,12 +7606,15 @@ func (b *basicWithMethods) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
 	return 8
 }
 
-func (b *basicWithMethods) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
-	return errBasicDelegated
+func (b *basicWithMethods) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(uint64(*b))
+	return nil
 }
 
 func (b *basicWithMethods) HashTreeRoot() ([32]byte, error) {
-	return [32]byte{}, errBasicDelegated
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:], uint64(*b))
+	return root, nil
 }
 
 type basicMethodsHolder struct {
@@ -6961,8 +7627,8 @@ type basicMethodsPlain struct {
 	V [4]uint64
 }
 
-// A list or vector of a named basic type packs its elements like the plain
-// type does, whatever methods the named type declares.
+// A list or vector of a named basic type with its own hash methods packs its
+// elements like the plain type does.
 func TestPackedBasicElementsAreNotDelegated(t *testing.T) {
 	holder := &basicMethodsHolder{L: []basicWithMethods{1, 2, 3}, V: [4]basicWithMethods{4, 5, 6, 7}}
 	plain := &basicMethodsPlain{L: []uint64{1, 2, 3}, V: [4]uint64{4, 5, 6, 7}}
@@ -7151,5 +7817,616 @@ func TestZeroSizeStaticDelegateFraming(t *testing.T) {
 		dsr := NewDynSsz(nil, WithStreamReaderBufferSize(bufSize))
 		got = &zeroShellHolder{}
 		check(fmt.Sprintf("reader(-1,buf=%d)", bufSize), got, dsr.UnmarshalSSZReader(got, bytes.NewReader(want), -1))
+	}
+}
+
+// wrappedWithMethods is a type wrapper around a uint64 whose hash methods put
+// the wrapped value.
+type wrappedWithMethods struct {
+	Data uint64
+}
+
+func (w *wrappedWithMethods) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(w.Data)
+	return nil
+}
+
+func (w *wrappedWithMethods) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:], w.Data)
+	return root, nil
+}
+
+// leafCustom is a custom type of a basic size (8 bytes) whose walker method
+// merkleizes a leaf of its own.
+type leafCustom struct{ V uint64 }
+
+func (c *leafCustom) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(buf, c.V), nil
+}
+
+func (c *leafCustom) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	c.V = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+
+func (c *leafCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 8 }
+
+func (c *leafCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	idx := hh.StartTree(sszutils.TreeTypeNone)
+	hh.PutUint64(c.V)
+	hh.Merkleize(idx)
+	return nil
+}
+
+type leafCustomHolder struct {
+	L []leafCustom `ssz-type:"?,custom" ssz-size:"?,8" ssz-max:"4"`
+}
+
+// rootOnlyCustom is a custom type of a basic size (2 bytes) whose only hash
+// method returns its root, the padded value.
+type rootOnlyCustom struct{ V uint16 }
+
+func (c *rootOnlyCustom) MarshalSSZ() ([]byte, error) { return c.MarshalSSZTo(nil) }
+
+func (c *rootOnlyCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint16(buf, c.V), nil
+}
+
+func (c *rootOnlyCustom) SizeSSZ() int { return 2 }
+
+func (c *rootOnlyCustom) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 2 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	c.V = binary.LittleEndian.Uint16(buf)
+	return nil
+}
+
+func (c *rootOnlyCustom) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint16(root[:], c.V)
+	return root, nil
+}
+
+type rootOnlyCustomHolder struct {
+	R  []rootOnlyCustom  `ssz-type:"?,custom" ssz-size:"?,2" ssz-max:"8"`
+	RV [4]rootOnlyCustom `ssz-type:"?,custom" ssz-size:"4,2"`
+}
+
+type rootOnlyCustomPlain struct {
+	R  []uint16 `ssz-max:"8"`
+	RV [4]uint16
+}
+
+type wrappedMethodsHolder struct {
+	L []wrappedWithMethods  `ssz-max:"8" ssz-type:"?,wrapper"`
+	V [4]wrappedWithMethods `ssz-type:"?,wrapper"`
+}
+
+type wrappedFieldHolder struct {
+	F wrappedWithMethods `ssz-type:"wrapper"`
+}
+
+// A list or vector of wrappers around a basic value packs the wrapped values
+// like the plain type does; a wrapper field is one leaf.
+func TestPackedWrappedElementsAreNotDelegated(t *testing.T) {
+	holder := &wrappedMethodsHolder{L: []wrappedWithMethods{{1}, {2}, {3}, {4}, {5}}, V: [4]wrappedWithMethods{{6}, {7}, {8}, {9}}}
+	plain := &basicMethodsPlain{L: []uint64{1, 2, 3, 4, 5}, V: [4]uint64{6, 7, 8, 9}}
+
+	for _, ds := range []*DynSsz{NewDynSsz(nil), NewDynSsz(nil, WithNoFastSsz()), NewDynSsz(nil, WithNoDelegation())} {
+		holderBytes, err := ds.MarshalSSZ(holder)
+		if err != nil {
+			t.Fatalf("marshal holder: %v", err)
+		}
+		plainBytes, err := ds.MarshalSSZ(plain)
+		if err != nil {
+			t.Fatalf("marshal plain: %v", err)
+		}
+		if !bytes.Equal(holderBytes, plainBytes) {
+			t.Fatalf("holder bytes %x != plain bytes %x", holderBytes, plainBytes)
+		}
+
+		holderRoot, err := ds.HashTreeRoot(holder)
+		if err != nil {
+			t.Fatalf("hash holder: %v", err)
+		}
+		plainRoot, err := ds.HashTreeRoot(plain)
+		if err != nil {
+			t.Fatalf("hash plain: %v", err)
+		}
+		if holderRoot != plainRoot {
+			t.Fatalf("holder root %x != plain root %x", holderRoot, plainRoot)
+		}
+
+		tree, err := ds.GetTree(holder)
+		if err != nil {
+			t.Fatalf("tree holder: %v", err)
+		}
+		if !bytes.Equal(tree.Hash(), holderRoot[:]) {
+			t.Fatalf("tree root %x != root %x", tree.Hash(), holderRoot)
+		}
+
+		// Every element has to reach the root.
+		for i := range len(holder.L) + len(holder.V) {
+			mutated := &wrappedMethodsHolder{L: append([]wrappedWithMethods(nil), holder.L...), V: holder.V}
+			if i < len(holder.L) {
+				mutated.L[i].Data = 0xff
+			} else {
+				mutated.V[i-len(holder.L)].Data = 0xff
+			}
+			mutatedRoot, mutateErr := ds.HashTreeRoot(mutated)
+			if mutateErr != nil {
+				t.Fatalf("hash mutated element %d: %v", i, mutateErr)
+			}
+			if mutatedRoot == holderRoot {
+				t.Errorf("element %d does not reach the root", i)
+			}
+		}
+
+		// A wrapper field is one leaf.
+		fieldRoot, err := ds.HashTreeRoot(&wrappedFieldHolder{F: wrappedWithMethods{1}})
+		if err != nil {
+			t.Fatalf("hash wrapper field: %v", err)
+		}
+		plainFieldRoot, err := ds.HashTreeRoot(&struct{ F uint64 }{F: 1})
+		if err != nil {
+			t.Fatalf("hash plain field: %v", err)
+		}
+		if fieldRoot != plainFieldRoot {
+			t.Fatalf("wrapper field root %x != plain field root %x", fieldRoot, plainFieldRoot)
+		}
+	}
+}
+
+// A custom element of a basic size whose walker method merkleizes a leaf of
+// its own breaks the packed contract: it is not refused, and both walkers give
+// the same root for it. One with only a root method hashes like the basic type
+// it stands in for.
+func TestPackedCustomDelegates(t *testing.T) {
+	ds := NewDynSsz(nil)
+	leaf := &leafCustomHolder{L: []leafCustom{{1}, {2}, {3}}}
+	leafRoot, err := ds.HashTreeRoot(leaf)
+	if err != nil {
+		t.Fatalf("leaf delegate: %v", err)
+	}
+	leafTree, err := ds.GetTree(leaf)
+	if err != nil {
+		t.Fatalf("leaf delegate tree: %v", err)
+	}
+	if !bytes.Equal(leafTree.Hash(), leafRoot[:]) {
+		t.Fatalf("leaf delegate tree %x != hasher %x", leafTree.Hash(), leafRoot)
+	}
+
+	holder := &rootOnlyCustomHolder{R: []rootOnlyCustom{{1}, {2}, {3}}, RV: [4]rootOnlyCustom{{4}, {5}, {6}, {7}}}
+	plain := &rootOnlyCustomPlain{R: []uint16{1, 2, 3}, RV: [4]uint16{4, 5, 6, 7}}
+	holderRoot, err := ds.HashTreeRoot(holder)
+	if err != nil {
+		t.Fatalf("hash holder: %v", err)
+	}
+	plainRoot, err := ds.HashTreeRoot(plain)
+	if err != nil {
+		t.Fatalf("hash plain: %v", err)
+	}
+	if holderRoot != plainRoot {
+		t.Fatalf("holder root %x != plain root %x", holderRoot, plainRoot)
+	}
+	tree, err := ds.GetTree(holder)
+	if err != nil {
+		t.Fatalf("tree holder: %v", err)
+	}
+	if !bytes.Equal(tree.Hash(), holderRoot[:]) {
+		t.Fatalf("tree root %x != root %x", tree.Hash(), holderRoot)
+	}
+	for i := range 7 {
+		mutated := &rootOnlyCustomHolder{R: append([]rootOnlyCustom(nil), holder.R...), RV: holder.RV}
+		if i < 3 {
+			mutated.R[i].V = 0xff
+		} else {
+			mutated.RV[i-3].V = 0xff
+		}
+		mutatedRoot, mutateErr := ds.HashTreeRoot(mutated)
+		if mutateErr != nil {
+			t.Fatalf("hash mutated element %d: %v", i, mutateErr)
+		}
+		if mutatedRoot == holderRoot {
+			t.Errorf("element %d does not reach the root", i)
+		}
+	}
+}
+
+// viewNum is a basic type with a hand-written view hash method that puts the
+// value as a basic type does; leafViewNum's view method merkleizes a leaf.
+type viewNum uint16
+
+func (v *viewNum) HashTreeRootWithDynView(view any) func(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	if _, ok := view.(*uint16); !ok {
+		return nil
+	}
+	return func(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+		hh.PutUint16(uint16(*v))
+		return nil
+	}
+}
+
+type leafViewNum uint16
+
+func (v *leafViewNum) HashTreeRootWithDynView(view any) func(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	if _, ok := view.(*uint16); !ok {
+		return nil
+	}
+	return func(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+		idx := hh.StartTree(sszutils.TreeTypeNone)
+		hh.PutUint16(uint16(*v))
+		hh.Merkleize(idx)
+		return nil
+	}
+}
+
+type viewNumHolder struct {
+	V []viewNum
+	F viewNum
+}
+
+type viewNumSchema struct {
+	V []uint16 `ssz-max:"4"`
+	F uint16
+}
+
+type leafViewHolder struct {
+	L []leafViewNum
+}
+
+type leafViewSchema struct {
+	L []uint16 `ssz-max:"4"`
+}
+
+// A basic-typed view element hashes through its view method like the plain
+// schema; a view method that merkleizes a leaf of its own is rejected.
+func TestPackedBasicViewElements(t *testing.T) {
+	holder := &viewNumHolder{V: []viewNum{1, 2, 3}, F: 4}
+	plain := &viewNumSchema{V: []uint16{1, 2, 3}, F: 4}
+	view := WithViewDescriptor((*viewNumSchema)(nil))
+
+	for _, ds := range []*DynSsz{NewDynSsz(nil), NewDynSsz(nil, WithNoDelegation())} {
+		holderRoot, err := ds.HashTreeRoot(holder, view)
+		if err != nil {
+			t.Fatalf("hash holder: %v", err)
+		}
+		plainRoot, err := ds.HashTreeRoot(plain)
+		if err != nil {
+			t.Fatalf("hash plain: %v", err)
+		}
+		if holderRoot != plainRoot {
+			t.Fatalf("holder root %x != plain root %x", holderRoot, plainRoot)
+		}
+		tree, err := ds.GetTree(holder, view)
+		if err != nil {
+			t.Fatalf("tree holder: %v", err)
+		}
+		if !bytes.Equal(tree.Hash(), holderRoot[:]) {
+			t.Fatalf("tree root %x != root %x", tree.Hash(), holderRoot)
+		}
+		for i := range 4 {
+			mutated := &viewNumHolder{V: append([]viewNum(nil), holder.V...), F: holder.F}
+			if i < 3 {
+				mutated.V[i] = 0xff
+			} else {
+				mutated.F = 0xff
+			}
+			mutatedRoot, mutateErr := ds.HashTreeRoot(mutated, view)
+			if mutateErr != nil {
+				t.Fatalf("hash mutated element %d: %v", i, mutateErr)
+			}
+			if mutatedRoot == holderRoot {
+				t.Errorf("element %d does not reach the root", i)
+			}
+		}
+	}
+
+	// A view method that merkleizes a leaf of its own inside a packed scope
+	// breaks the contract; it is not refused, and both walkers agree on the
+	// root it produces.
+	ds := NewDynSsz(nil)
+	leafView := WithViewDescriptor((*leafViewSchema)(nil))
+	viewRoot, err := ds.HashTreeRoot(&leafViewHolder{L: []leafViewNum{1, 2, 3}}, leafView)
+	if err != nil {
+		t.Fatalf("leaf view: %v", err)
+	}
+	viewTree, err := ds.GetTree(&leafViewHolder{L: []leafViewNum{1, 2, 3}}, leafView)
+	if err != nil {
+		t.Fatalf("leaf view tree: %v", err)
+	}
+	if !bytes.Equal(viewTree.Hash(), viewRoot[:]) {
+		t.Fatalf("leaf view tree %x != hasher %x", viewTree.Hash(), viewRoot)
+	}
+}
+
+// unionSpecVariants has a variant whose width comes from a spec value.
+type unionSpecVariants struct {
+	Bytes [8]byte `ssz-size:"4" dynssz-size:"WIDTH"`
+}
+
+type unionSpecChild struct {
+	Choice Union[unionSpecVariants]
+}
+
+type compatUnionSpecChild struct {
+	Choice CompatibleUnion[unionSpecVariants]
+}
+
+// unionSpecLegacyChild carries fastssz methods baked at the default width of 4.
+type unionSpecLegacyChild struct {
+	Choice Union[unionSpecVariants]
+}
+
+func (c *unionSpecLegacyChild) SizeSSZ() int { return 4 + 1 + 4 }
+
+func (c *unionSpecLegacyChild) MarshalSSZ() ([]byte, error) { return c.MarshalSSZTo(nil) }
+
+func (c *unionSpecLegacyChild) MarshalSSZTo(buf []byte) ([]byte, error) {
+	buf = binary.LittleEndian.AppendUint32(buf, 4)
+	buf = append(buf, c.Choice.Variant)
+	data, _ := c.Choice.Data.([8]byte)
+	return append(buf, data[:4]...), nil
+}
+
+func (c *unionSpecLegacyChild) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 9 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	var data [8]byte
+	copy(data[:4], buf[5:9])
+	c.Choice = Union[unionSpecVariants]{Variant: buf[4], Data: data}
+	return nil
+}
+
+type unionSpecParent struct {
+	Child unionSpecLegacyChild
+}
+
+// A union carries the spec-dependence flags of its variants, so a container
+// holding one is spec-dependent and never delegated to methods that bake the
+// default width.
+func TestUnionVariantsPropagateSpecFlags(t *testing.T) {
+	ds := NewDynSsz(map[string]any{"WIDTH": uint64(8)})
+	for _, typ := range []reflect.Type{reflect.TypeOf(unionSpecChild{}), reflect.TypeOf(compatUnionSpecChild{})} {
+		desc, err := ds.typeCache.GetTypeDescriptor(typ, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("%v: %v", typ, err)
+		}
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr == 0 || desc.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize == 0 {
+			t.Errorf("%v: flags %v lack the size expression flags of the variant", typ, desc.SszTypeFlags)
+		}
+	}
+
+	parent := &unionSpecParent{Child: unionSpecLegacyChild{Choice: Union[unionSpecVariants]{Variant: 0, Data: [8]byte{1, 2, 3, 4, 5, 6, 7, 8}}}}
+	structural, err := NewDynSsz(map[string]any{"WIDTH": uint64(8)}, WithNoDelegation(), WithNoFastSsz()).MarshalSSZ(parent)
+	if err != nil {
+		t.Fatalf("structural marshal: %v", err)
+	}
+	if len(structural) != 4+4+1+8 {
+		t.Fatalf("structural encoding is %d bytes, want 17", len(structural))
+	}
+	got, err := ds.MarshalSSZ(parent)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Equal(got, structural) {
+		t.Fatalf("delegating marshal %x != structural %x", got, structural)
+	}
+	var decoded unionSpecParent
+	if err := ds.UnmarshalSSZ(&decoded, got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(&decoded, parent) {
+		t.Fatalf("decoded %+v != %+v", decoded, *parent)
+	}
+	if size, err := ds.SizeSSZ(parent); err != nil || size != len(structural) {
+		t.Fatalf("size %d err %v, want %d", size, err, len(structural))
+	}
+}
+
+type unionCycleA struct {
+	U Union[unionCycleAV]
+}
+
+type unionCycleAV struct {
+	B []*unionCycleB `ssz-max:"1"`
+}
+
+type unionCycleB struct {
+	A    *unionCycleA
+	Leaf [8]byte `ssz-size:"4" dynssz-size:"WIDTH"`
+}
+
+// A cycle closed through a union variant gets the spec-dependence flags of
+// the member built last, on every descriptor of the cycle.
+func TestUnionCycleFlagsFixup(t *testing.T) {
+	ds := NewDynSsz(map[string]any{"WIDTH": uint64(8)})
+	descB, err := ds.typeCache.GetTypeDescriptor(reflect.TypeOf(unionCycleB{}), nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descA := descB.ContainerDesc.Fields[0].Type
+	descU := descA.ContainerDesc.Fields[0].Type
+	if descU.SszType != ssztypes.SszUnionType || len(descU.UnionVariants) != 1 {
+		t.Fatalf("union descriptor: type %v, %d variants", descU.SszType, len(descU.UnionVariants))
+	}
+	descAV := descU.UnionVariants[0]
+	for name, desc := range map[string]*ssztypes.TypeDescriptor{"B": descB, "A": descA, "union": descU, "variant": descAV} {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr == 0 {
+			t.Errorf("%s: flags %v lack the size expression flag", name, desc.SszTypeFlags)
+		}
+	}
+}
+
+type recRaceA struct {
+	B []recRaceB `ssz-max:"1"`
+	C []recRaceC `ssz-max:"1"`
+}
+
+type recRaceB struct {
+	A []recRaceA `ssz-max:"1"`
+}
+
+type recRaceC struct {
+	B []recRaceB `ssz-max:"1"`
+}
+
+type recRaceX struct {
+	C recRaceC
+	X []recRaceX `ssz-max:"1"`
+}
+
+// A published descriptor is never written by a later build: a walker may read
+// it lock-free while another type that reaches it is built.
+func TestPublishedDescriptorUnchangedByLaterBuild(t *testing.T) {
+	ds := NewDynSsz(nil)
+	if _, err := ds.typeCache.GetTypeDescriptor(reflect.TypeOf(recRaceA{}), nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	descC, err := ds.typeCache.GetTypeDescriptor(reflect.TypeOf(recRaceC{}), nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := reflection.NewReflectionCtx(ds, nil, false, true, true, 1024)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		value := reflect.ValueOf(recRaceC{})
+		for range 20000 {
+			if _, err := ctx.SizeSSZ(descC, value); err != nil {
+				return
+			}
+		}
+	}()
+	if _, err := ds.typeCache.GetTypeDescriptor(reflect.TypeOf(recRaceX{}), nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+}
+
+// wideByteCustom is a custom type stored in a uint8 whose SSZ width is four
+// bytes.
+type wideByteCustom uint8
+
+func (c *wideByteCustom) SizeSSZ() int { return 4 }
+
+func (c *wideByteCustom) MarshalSSZ() ([]byte, error) { return c.MarshalSSZTo(nil) }
+
+func (c *wideByteCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint32(buf, uint32(*c)), nil
+}
+
+func (c *wideByteCustom) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 4 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	*c = wideByteCustom(binary.LittleEndian.Uint32(buf))
+	return nil
+}
+
+func (c *wideByteCustom) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint32(root[:], uint32(*c))
+	return root, nil
+}
+
+type wideByteCustomHolder struct {
+	L []wideByteCustom  `ssz-type:"?,custom" ssz-size:"?,4" ssz-max:"8"`
+	V [3]wideByteCustom `ssz-type:"?,custom" ssz-size:"3,4"`
+}
+
+// A custom element stored in a uint8 is sized at its declared width, so the
+// size agrees with the encoding and the value marshals on every path.
+func TestSizeWideByteCustomElements(t *testing.T) {
+	ds := NewDynSsz(nil)
+	holder := &wideByteCustomHolder{L: []wideByteCustom{1, 2}, V: [3]wideByteCustom{3, 4, 5}}
+	encoded, err := ds.MarshalSSZ(holder)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if want := 4 + 3*4 + 2*4; len(encoded) != want {
+		t.Fatalf("encoding is %d bytes, want %d", len(encoded), want)
+	}
+	size, err := ds.SizeSSZ(holder)
+	if err != nil || size != len(encoded) {
+		t.Fatalf("size %d err %v, want %d", size, err, len(encoded))
+	}
+	var stream bytes.Buffer
+	if err := ds.MarshalSSZWriter(holder, &stream); err != nil || !bytes.Equal(stream.Bytes(), encoded) {
+		t.Fatalf("writer: err %v, %x != %x", err, stream.Bytes(), encoded)
+	}
+	var decoded wideByteCustomHolder
+	if err := ds.UnmarshalSSZ(&decoded, encoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(&decoded, holder) {
+		t.Fatalf("decoded %+v != %+v", decoded, *holder)
+	}
+}
+
+// twoLeafDelegate breaks the one-leaf contract at the top level.
+type twoLeafDelegate struct{ A, B uint64 }
+
+func (t *twoLeafDelegate) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(t.A)
+	hh.PutUint64(t.B)
+	return nil
+}
+
+// A delegate that leaves the walker with several nodes is an error from every
+// entry point; the tree builder must not panic where the hasher errors.
+func TestGetTreeIncompleteMerkleization(t *testing.T) {
+	ds := NewDynSsz(nil)
+	v := &twoLeafDelegate{A: 1, B: 2}
+	if _, err := ds.HashTreeRoot(v); err == nil {
+		t.Fatal("HashTreeRoot accepted a two-leaf delegate")
+	}
+	node, err := ds.GetTree(v)
+	if err == nil || !strings.Contains(err.Error(), "incomplete merkleization") {
+		t.Fatalf("GetTree err = %v, want incomplete merkleization", err)
+	}
+	if node != nil {
+		t.Fatal("GetTree returned a tree alongside the error")
+	}
+}
+
+// wrappedEOFReader reports the end of its data as an error wrapping io.EOF,
+// as decompressing and authenticating readers do.
+type wrappedEOFReader struct{ data []byte }
+
+func (r *wrappedEOFReader) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, fmt.Errorf("stream closed: %w", io.EOF)
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	return n, nil
+}
+
+// An unknown-size decode ends cleanly on a wrapped io.EOF, not only on the
+// bare sentinel.
+func TestUnknownSizeWrappedEOF(t *testing.T) {
+	type payload struct {
+		A uint64
+		L []uint32 `ssz-max:"8"`
+	}
+	ds := NewDynSsz(nil, WithNoFastSsz())
+	full, err := ds.MarshalSSZ(&payload{A: 7, L: []uint32{1, 2, 3}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back payload
+	if err := ds.UnmarshalSSZReader(&back, &wrappedEOFReader{data: full}, -1); err != nil {
+		t.Fatalf("wrapped EOF was not treated as end of stream: %v", err)
+	}
+	if back.A != 7 || len(back.L) != 3 {
+		t.Fatalf("decoded %+v", back)
 	}
 }

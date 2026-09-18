@@ -82,14 +82,14 @@ type TypeDescriptor struct {
 	MaxExpression          *string                   `json:"max_expr,omitempty"`      // The dynamic expression used to calculate the max size of the type
 	BitSize                int64                     `json:"bit_size,omitempty"`      // Bit size for bit vector types (ssz-bitsize tag)
 	MinSize                int64                     `json:"min_size,omitempty"`      // Smallest serialization of this type; 0 when it has no floor (see SetMinSize)
-	WrapperFieldIndex      uint8                     `json:"wrapper_field,omitempty"` // Index of the wrapped value field in a wrapper struct (excluded fields may precede it)
+	WrapperFieldIndex      uint32                    `json:"wrapper_field,omitempty"` // Index of the wrapped value field in a wrapper struct (excluded fields may precede it)
 	SszType                SszType                   `json:"type"`                    // SSZ type of the type
 	SszTypeFlags           SszTypeFlag               `json:"flags"`                   // SSZ type flags
 	SszCompatFlags         SszCompatFlag             `json:"compat"`                  // SSZ compatibility flags
 	GoTypeFlags            GoTypeFlag                `json:"go_flags"`                // Additional go type flags
 }
 
-// FieldDescriptor represents a cached descriptor for a struct field
+// ContainerDescriptor holds the field descriptors of a struct.
 type ContainerDescriptor struct {
 	Fields    []FieldDescriptor    `json:"fields"`     // For structs
 	DynFields []DynFieldDescriptor `json:"dyn_fields"` // Dynamic struct fields
@@ -103,12 +103,12 @@ type FieldDescriptor struct {
 	Name       string          `json:"name"`                  // Name of the field (from schema struct)
 	Type       *TypeDescriptor `json:"type"`                  // Type descriptor (built from runtime/schema pair)
 	SszIndex   uint16          `json:"index,omitempty"`       // SSZ index for progressive containers
-	FieldIndex uint16          `json:"field_index,omitempty"` // Index into the runtime struct's field list
+	FieldIndex uint32          `json:"field_index,omitempty"` // Index into the runtime struct's field list
 }
 
 // DynFieldDescriptor represents a dynamic field descriptor for a struct
 type DynFieldDescriptor struct {
 	Field        *FieldDescriptor `json:"field"`
 	HeaderOffset int64            `json:"offset"`
-	Index        int16            `json:"index"` // Index of the field in the struct
+	Index        int32            `json:"index"` // Index of the field in the struct
 }

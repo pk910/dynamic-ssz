@@ -123,15 +123,22 @@ const (
 	TreeTypeBinary
 	// TreeTypeProgressive is the progressive merkle tree (subtree_fill_progressive).
 	TreeTypeProgressive
+
+	// TreeTypePacked marks a scope whose elements are packed basic values; it
+	// is combined with the shape (TreeTypeBinary|TreeTypePacked). Inside a
+	// packed scope the walker's Put* methods append the value's packed bytes
+	// instead of a padded chunk; the scope pads the trailing chunk itself.
+	TreeTypePacked TreeType = 0x80
 )
 
 // HashWalker is our own interface that mirrors fastssz.HashWalker
 // This allows us to avoid importing fastssz directly while still being
 // compatible with types that implement HashTreeRootWith
 type HashWalker interface {
-	// Hash returns the latest hash generated during merkleize; deferred
-	// reductions are completed first. The returned slice is only valid until
-	// the next walker operation.
+	// Hash returns the last 32 bytes of the walker's state: the latest hash
+	// generated during merkleize, or bytes appended since that are not
+	// merkleized yet; deferred reductions are completed first. The returned
+	// slice is only valid until the next walker operation.
 	Hash() []byte
 
 	// Methods for appending single values
@@ -156,7 +163,7 @@ type HashWalker interface {
 	// Buffer manipulation methods
 	FillUpTo32()
 	Append(i []byte)
-	Index() int                      // deprecated: use StartTree(TreeTypeNone) instead
+	Index() int                      // deprecated: opens a scope like StartTree(TreeTypeNone) but without flushing the enclosing scope's pending reductions
 	CurrentIndex() int               // returns the current buffer index (debug only)
 	StartTree(treeType TreeType) int // start a new SSZ object scope and return the buffer index (close with Merkleize*)
 	Collapse()                       // Hint to collapse accumulated chunks if threshold is reached
@@ -164,7 +171,9 @@ type HashWalker interface {
 	// temporary buffer methods
 	WithTemp(func(tmp []byte) []byte)
 
-	// Merkleization methods
+	// Merkleization methods. Each reduce pads a partial trailing chunk of the
+	// scope to a full chunk before reducing, so a scope of packed values or a
+	// short value needs no FillUpTo32 before it.
 	Merkleize(indx int)
 	MerkleizeWithMixin(indx int, num, limit uint64)
 	MerkleizeProgressive(indx int)

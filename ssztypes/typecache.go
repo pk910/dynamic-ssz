@@ -79,12 +79,16 @@ type TypeCache struct {
 	descriptors       map[typeKey]*TypeDescriptor
 	hintedDescriptors map[typeKey][]*hintedVariant
 	building          map[typeKey][]*buildEntry
-	dynDepth          int
-	recursion         bool
-	pendingKeys       []pendingKey
-	CompatFlags       map[string]SszCompatFlag
-	ExtendedTypes     bool
-	NoDelegation      bool
+	// buildingTypes counts the pointer-stripped Go types with a build in
+	// flight, so a fully-delegated type can tell whether its structure closes
+	// a cycle with one of them.
+	buildingTypes map[reflect.Type]int
+	dynDepth      int
+	recursion     bool
+	pendingKeys   []pendingKey
+	CompatFlags   map[string]SszCompatFlag
+	ExtendedTypes bool
+	NoDelegation  bool
 
 	// noSpecResolution marks a cache that builds descriptors for code generation
 	// rather than for this process. See DisableSpecResolution.
@@ -95,7 +99,6 @@ type TypeCache struct {
 	promotedDelegation sync.Map
 }
 
-// NewTypeCache creates a new type cache
 // emptySpecs is a no-op DynamicSpecs used when a TypeCache is created without a
 // spec provider, so dynssz-* tags resolve to their static fallback instead of
 // dereferencing a nil interface.
@@ -103,6 +106,7 @@ type emptySpecs struct{}
 
 func (emptySpecs) ResolveSpecValue(string) (bool, uint64, error) { return false, 0, nil }
 
+// NewTypeCache creates a new type cache
 func NewTypeCache(specs sszutils.DynamicSpecs) *TypeCache {
 	if specs == nil {
 		specs = emptySpecs{}
@@ -112,8 +116,27 @@ func NewTypeCache(specs sszutils.DynamicSpecs) *TypeCache {
 		descriptors:       make(map[typeKey]*TypeDescriptor),
 		hintedDescriptors: make(map[typeKey][]*hintedVariant),
 		building:          make(map[typeKey][]*buildEntry),
+		buildingTypes:     make(map[reflect.Type]int),
 		CompatFlags:       map[string]SszCompatFlag{},
 		ExtendedTypes:     false,
+	}
+}
+
+// dimensionKind returns the Go kind of the type at size dimension dim of t,
+// walking through pointers and one array or slice level per dimension.
+func dimensionKind(t reflect.Type, dim int) reflect.Kind {
+	for {
+		for t.Kind() == reflect.Pointer {
+			t = t.Elem()
+		}
+		if dim == 0 {
+			return t.Kind()
+		}
+		if t.Kind() != reflect.Array && t.Kind() != reflect.Slice {
+			return reflect.Invalid
+		}
+		t = t.Elem()
+		dim--
 	}
 }
 
@@ -222,6 +245,79 @@ func (tc *TypeCache) GetTypeDescriptorWithSchema(runtimeType, schemaType reflect
 	return tc.getTypeDescriptor(runtimeType, schemaType, sizeHints, maxSizeHints, typeHints)
 }
 
+// purgePending drops the cache entries recorded from index from on: they were
+// built against an abandoned graph and never flag-fixed. Entries appended to a
+// hinted variant list sit at its tail, so reverse order pops them correctly
+// even with multiple appends per key.
+func (tc *TypeCache) purgePending(from int) {
+	for i := len(tc.pendingKeys) - 1; i >= from; i-- {
+		pending := tc.pendingKeys[i]
+		if !pending.hinted {
+			delete(tc.descriptors, pending.key)
+			continue
+		}
+		variants := tc.hintedDescriptors[pending.key]
+		if len(variants) <= 1 {
+			delete(tc.hintedDescriptors, pending.key)
+		} else {
+			tc.hintedDescriptors[pending.key] = variants[:len(variants)-1]
+		}
+	}
+	tc.pendingKeys = tc.pendingKeys[:from]
+}
+
+// derefType strips pointers from t.
+func derefType(t reflect.Type) reflect.Type {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return t
+}
+
+// cycleWith returns a named type with a build in flight that the structure
+// below t (its SSZ-visible struct fields and collection elements, through
+// pointers) reaches, or nil. References back to t itself do not count: a
+// cycle that stays within t is the business of t's own methods. Unnamed
+// collections are the path between named types, not members of a cycle.
+func (tc *TypeCache) cycleWith(t reflect.Type) reflect.Type {
+	seen := map[reflect.Type]bool{derefType(t): true}
+	var walk func(t reflect.Type) reflect.Type
+	walk = func(t reflect.Type) reflect.Type {
+		t = derefType(t)
+		if seen[t] {
+			return nil
+		}
+		if t.Name() != "" && tc.buildingTypes[t] > 0 {
+			return t
+		}
+		seen[t] = true
+		return tc.cycleBelow(t, walk)
+	}
+	return tc.cycleBelow(derefType(t), walk)
+}
+
+// cycleBelow applies walk to the SSZ-visible fields or element of t and
+// returns the first type it reports.
+func (tc *TypeCache) cycleBelow(t reflect.Type, walk func(reflect.Type) reflect.Type) reflect.Type {
+	switch t.Kind() {
+	case reflect.Struct:
+		for i := 0; i < t.NumField(); i++ {
+			f := t.Field(i)
+			if !f.IsExported() || IsSszExcluded(f.Tag) {
+				continue
+			}
+			if hit := walk(f.Type); hit != nil {
+				return hit
+			}
+		}
+		return nil
+	case reflect.Slice, reflect.Array:
+		return walk(t.Elem())
+	default:
+		return nil
+	}
+}
+
 // getTypeDescriptor returns a cached type descriptor for a (runtime, schema) pair.
 // When runtimeType == schemaType, this is the standard descriptor building.
 // When they differ, it handles view descriptors where schema defines SSZ layout.
@@ -289,6 +385,8 @@ func (tc *TypeCache) getTypeDescriptor(runtimeType, schemaType reflect.Type, siz
 	// reference through a variable-length collection can back-patch to it.
 	desc := &TypeDescriptor{Type: runtimeType, SchemaType: schemaType}
 	tc.building[key] = append(tc.building[key], &buildEntry{desc: desc, depth: tc.dynDepth, hintSet: hintSet{sizeHints: sizeHints, maxSizeHints: maxSizeHints, typeHints: typeHints}})
+	structType := derefType(runtimeType)
+	tc.buildingTypes[structType]++
 	defer func() {
 		// Builds nest strictly, so this build's entry is the last one pushed.
 		entries := tc.building[key]
@@ -297,29 +395,20 @@ func (tc *TypeCache) getTypeDescriptor(runtimeType, schemaType reflect.Type, siz
 		} else {
 			tc.building[key] = entries[:len(entries)-1]
 		}
+		tc.buildingTypes[structType]--
+		if tc.buildingTypes[structType] == 0 {
+			delete(tc.buildingTypes, structType)
+		}
 	}()
 
-	if _, err := tc.buildTypeDescriptor(desc, runtimeType, schemaType, sizeHints, maxSizeHints, typeHints); err != nil {
+	err := tc.buildTypeDescriptor(desc, runtimeType, schemaType, sizeHints, maxSizeHints, typeHints)
+	if err != nil {
 		// A cycle member completes and is cached before the cycle head finishes.
 		// If the head's build fails afterwards, those members were built against
 		// an abandoned graph and never flag-fixed; purge them so a later build
-		// cannot read a poisoned cache entry. Entries appended to a hinted
-		// variant list during this build sit at its tail, so reverse order pops
-		// them correctly even with multiple appends per key.
+		// cannot read a poisoned cache entry.
 		if topLevel && tc.recursion {
-			for i := len(tc.pendingKeys) - 1; i >= 0; i-- {
-				pending := tc.pendingKeys[i]
-				if !pending.hinted {
-					delete(tc.descriptors, pending.key)
-					continue
-				}
-				variants := tc.hintedDescriptors[pending.key]
-				if len(variants) <= 1 {
-					delete(tc.hintedDescriptors, pending.key)
-				} else {
-					tc.hintedDescriptors[pending.key] = variants[:len(variants)-1]
-				}
-			}
+			tc.purgePending(0)
 		}
 		return nil, err
 	}
@@ -394,11 +483,11 @@ func (tc *TypeCache) getCompatFlag(runtimeType, schemaType reflect.Type) SszComp
 // pointer.
 //
 //nolint:gocyclo // SSZ type descriptor builder is inherently complex
-func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, schemaType reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
+func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, schemaType reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) error {
 	// Verify runtime and schema types have compatible base kinds
 	if runtimeType != schemaType {
 		if runtimeType.Kind() != schemaType.Kind() {
-			return nil, sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "incompatible types: runtime kind %v != schema kind %v", runtimeType.Kind(), schemaType.Kind())
+			return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "incompatible types: runtime kind %v != schema kind %v", runtimeType.Kind(), schemaType.Kind())
 		}
 
 		var view any
@@ -418,7 +507,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		runtimeType = runtimeType.Elem()
 
 		if runtimeType != schemaType && runtimeType.Kind() != schemaType.Kind() {
-			return nil, sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "incompatible pointer types: runtime kind %v != schema kind %v", runtimeType.Kind(), schemaType.Kind())
+			return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "incompatible pointer types: runtime kind %v != schema kind %v", runtimeType.Kind(), schemaType.Kind())
 		}
 	}
 
@@ -435,88 +524,114 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 	// for fully-delegated types below.
 	var staticAnnotation *bool
 
+	annotationTag, hasAnnotation := sszutils.LookupAnnotation(t)
+
+	// ssz-static is declared by the type, for the type: it states how the type
+	// frames itself, which a reference to it neither supplies nor replaces. It
+	// is read from the type's own annotation whichever hints the reference
+	// brings, including the ones a struct field carries from this very
+	// annotation.
+	if hasAnnotation {
+		if staticStr, hasStatic := reflect.StructTag(annotationTag).Lookup("ssz-static"); hasStatic {
+			switch staticStr {
+			case "true":
+				v := true
+				staticAnnotation = &v
+			case "false":
+				v := false
+				staticAnnotation = &v
+			default:
+				return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "invalid ssz-static value %q for type %v (must be \"true\" or \"false\")", staticStr, t)
+			}
+		}
+	}
+
 	// Check annotation registry for type-level metadata when no external hints provided
-	if len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0 {
-		if tag, ok := sszutils.LookupAnnotation(t); ok {
-			var parseErr error
+	if hasAnnotation && len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0 {
+		var parseErr error
 
-			typeHints, sizeHints, maxSizeHints, parseErr = ParseTags(tag)
-			if parseErr != nil {
-				return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "failed to parse annotation for type %v: %v", t, parseErr)
-			}
+		typeHints, sizeHints, maxSizeHints, parseErr = ParseTags(annotationTag)
+		if parseErr != nil {
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "failed to parse annotation for type %v: %v", t, parseErr)
+		}
 
-			if staticStr, hasStatic := reflect.StructTag(tag).Lookup("ssz-static"); hasStatic {
-				switch staticStr {
-				case "true":
-					v := true
-					staticAnnotation = &v
-				case "false":
-					v := false
-					staticAnnotation = &v
-				default:
-					return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "invalid ssz-static value %q for type %v (must be \"true\" or \"false\")", staticStr, t)
+		// ParseTags can't resolve dynamic expressions (no DynamicSpecs).
+		// Resolve them now, unless the descriptor is being built to generate
+		// code -- then the expression is what the output needs, not a value.
+		if !tc.noSpecResolution {
+			// A dimension keeps its static value when the expression gives
+			// nothing usable -- resolved to zero, undefined, or unresolvable.
+			// A zero static value is the "0" placeholder rather than a
+			// fallback, so there is nothing left to fall back to and the
+			// annotation names a size or limit nothing supplies. The
+			// generated code reports the same dead end at runtime, where its
+			// expressions resolve (ResolveSpecValueWithDefault).
+			for i := range sizeHints {
+				if sizeHints[i].Expr == "" {
+					continue
+				}
+
+				ok, val, resolveErr := tc.specs.ResolveSpecValue(sizeHints[i].Expr)
+				if resolveErr != nil {
+					return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing dynssz-size expression %q for type %v: %v", sizeHints[i].Expr, t, resolveErr)
+				}
+				if ok && val > 0 {
+					// A spec value spans the full uint64 range; the size
+					// domain is signed, so the value is narrowed only after
+					// the comparison that shows it fits.
+					if val > math.MaxInt64 {
+						return sszutils.ErrPlatformOverflowFn("ssz-size annotation value", val)
+					}
+					if exceedsSizeLimit(val, sizeHints[i].Bits) {
+						return sszutils.ErrPlatformOverflowFn("ssz-size annotation value", val)
+					}
+
+					sizeHints[i].Size = int64(val)
+					sizeHints[i].Custom = true
+
+					continue
+				}
+				// A bit size on a Go array falls back to the array's own
+				// length in bits; the vector builder applies that, as it
+				// does for field tags. A slice has no length to fall back
+				// to and is rejected there.
+				if sizeHints[i].Size == 0 && (!sizeHints[i].Bits || dimensionKind(t, i) != reflect.Array) {
+					return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-size expression %q %s", sizeHints[i].Expr, unresolvedReason(ok))
 				}
 			}
 
-			// ParseTags can't resolve dynamic expressions (no DynamicSpecs).
-			// Resolve them now, unless the descriptor is being built to generate
-			// code -- then the expression is what the output needs, not a value.
-			if !tc.noSpecResolution {
-				// A dimension keeps its static value when the expression gives
-				// nothing usable -- resolved to zero, undefined, or unresolvable.
-				// A zero static value is the "0" placeholder rather than a
-				// fallback, so there is nothing left to fall back to and the
-				// annotation names a size or limit nothing supplies. The
-				// generated code reports the same dead end at runtime, where its
-				// expressions resolve (ResolveSpecValueWithDefault).
-				for i := range sizeHints {
-					if sizeHints[i].Expr == "" {
-						continue
-					}
-
-					ok, val, resolveErr := tc.specs.ResolveSpecValue(sizeHints[i].Expr)
-					if resolveErr != nil {
-						return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing dynssz-size expression %q for type %v: %v", sizeHints[i].Expr, t, resolveErr)
-					}
-					if ok && val > 0 {
-						// The range check guards the conversion directly rather
-						// than standing as a separate condition, so that what
-						// makes the narrowing safe is visible at the narrowing.
-						if val > math.MaxInt {
-							return nil, sszutils.ErrPlatformOverflowFn("ssz-size annotation value", val)
-						}
-
-						sizeHints[i].Size = int64(val)
-						sizeHints[i].Custom = true
-
-						continue
-					}
-					if sizeHints[i].Size == 0 {
-						return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-size expression %q %s", sizeHints[i].Expr, unresolvedReason(ok))
-					}
+			for i := range maxSizeHints {
+				if maxSizeHints[i].Expr == "" {
+					continue
 				}
 
-				for i := range maxSizeHints {
-					if maxSizeHints[i].Expr == "" {
-						continue
-					}
+				ok, val, resolveErr := tc.specs.ResolveSpecValue(maxSizeHints[i].Expr)
+				if resolveErr != nil {
+					return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing dynssz-max expression %q for type %v: %v", maxSizeHints[i].Expr, t, resolveErr)
+				}
+				if ok && val > 0 {
+					maxSizeHints[i].Size = val
+					maxSizeHints[i].Custom = true
 
-					ok, val, resolveErr := tc.specs.ResolveSpecValue(maxSizeHints[i].Expr)
-					if resolveErr != nil {
-						return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing dynssz-max expression %q for type %v: %v", maxSizeHints[i].Expr, t, resolveErr)
-					}
-					if ok && val > 0 {
-						maxSizeHints[i].Size = val
-						maxSizeHints[i].Custom = true
-
-						continue
-					}
-					if maxSizeHints[i].Size == 0 {
-						return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-max expression %q %s", maxSizeHints[i].Expr, unresolvedReason(ok))
-					}
+					continue
+				}
+				if maxSizeHints[i].Size == 0 {
+					return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-max expression %q %s", maxSizeHints[i].Expr, unresolvedReason(ok))
 				}
 			}
 		}
+	}
+
+	// A reference that declares an SSZ type the type's own annotation does not
+	// overrides the type, so it is described inline rather than shallow, as a
+	// size or limit the reference supplies is. The field tag is joined in front
+	// of the annotation, so an annotation-declared type arrives here unchanged.
+	if staticAnnotation != nil && !hasExternalHints && len(typeHints) > 0 {
+		annTypeHints, _, _, parseErr := ParseTags(annotationTag)
+		if parseErr != nil {
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "failed to parse annotation for type %v: %v", t, parseErr)
+		}
+		hasExternalHints = !SameSszTypes(typeHints, annTypeHints)
 	}
 
 	desc.Kind = t.Kind()
@@ -552,7 +667,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		if maxSizeHints[0].Expr != "" {
 			// A limit no value was supplied for is the same dead end as a length.
 			if desc.Limit == 0 && !tc.noSpecResolution {
-				return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-max %q is not defined and has no positive static fallback", maxSizeHints[0].Expr)
+				return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-max %q is not defined and has no positive static fallback", maxSizeHints[0].Expr)
 			}
 
 			desc.MaxExpression = &maxSizeHints[0].Expr
@@ -581,7 +696,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		// A time value is read and written through its methods, so a view
 		// over it needs the same runtime type.
 		if runtimeType != t {
-			return nil, sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "incompatible types: schema %v needs the same runtime type, got %v", t, runtimeType)
+			return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "incompatible types: schema %v needs the same runtime type, got %v", t, runtimeType)
 		}
 		desc.GoTypeFlags |= GoTypeFlagIsTime
 	}
@@ -643,19 +758,19 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 
 		// unsupported types
 		case reflect.Int, reflect.Uint:
-			return nil, sszutils.NewSszError(sszutils.ErrUnsupportedType, "signed or unsigned integers with unspecified size are not supported in SSZ")
+			return sszutils.NewSszError(sszutils.ErrUnsupportedType, "signed or unsigned integers with unspecified size are not supported in SSZ")
 		case reflect.Complex64, reflect.Complex128:
-			return nil, sszutils.NewSszError(sszutils.ErrUnsupportedType, "complex numbers are not supported in SSZ (use unsigned integers instead)")
+			return sszutils.NewSszError(sszutils.ErrUnsupportedType, "complex numbers are not supported in SSZ (use unsigned integers instead)")
 		case reflect.Map:
-			return nil, sszutils.NewSszError(sszutils.ErrUnsupportedType, "maps are not supported in SSZ (use structs or arrays instead)")
+			return sszutils.NewSszError(sszutils.ErrUnsupportedType, "maps are not supported in SSZ (use structs or arrays instead)")
 		case reflect.Chan:
-			return nil, sszutils.NewSszError(sszutils.ErrUnsupportedType, "channels are not supported in SSZ")
+			return sszutils.NewSszError(sszutils.ErrUnsupportedType, "channels are not supported in SSZ")
 		case reflect.Func:
-			return nil, sszutils.NewSszError(sszutils.ErrUnsupportedType, "functions are not supported in SSZ")
+			return sszutils.NewSszError(sszutils.ErrUnsupportedType, "functions are not supported in SSZ")
 		case reflect.Interface:
-			return nil, sszutils.NewSszError(sszutils.ErrUnsupportedType, "interfaces are not supported in SSZ (use concrete types)")
+			return sszutils.NewSszError(sszutils.ErrUnsupportedType, "interfaces are not supported in SSZ (use concrete types)")
 		case reflect.UnsafePointer:
-			return nil, sszutils.NewSszError(sszutils.ErrUnsupportedType, "unsafe pointers are not supported in SSZ")
+			return sszutils.NewSszError(sszutils.ErrUnsupportedType, "unsafe pointers are not supported in SSZ")
 		default:
 			break
 		}
@@ -679,16 +794,23 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 	// descriptors qualify when they delegate through the dynamic view interface set.
 	if staticAnnotation != nil && !hasExternalHints && !tc.NoDelegation {
 		var fullyDelegated bool
+		promoted := tc.PromotedDelegationMethods(runtimeType)
 		if desc.GoTypeFlags&GoTypeFlagIsView != 0 {
-			fullyDelegated = fullyDelegatesSSZView(runtimeType)
+			fullyDelegated = fullyDelegatesSSZView(runtimeType, promoted)
 		} else {
-			fullyDelegated = fullyDelegatesSSZ(runtimeType)
+			fullyDelegated = fullyDelegatesSSZ(runtimeType, promoted)
 		}
+		// A delegated type is not traversed, so a cycle through it and a type
+		// described here would go unmarked and uncounted: the members of a
+		// cycle are described together, by one generator run.
 		if fullyDelegated {
+			if partner := tc.cycleWith(runtimeType); partner != nil {
+				return sszutils.NewSszErrorf(sszutils.ErrUnsupportedType, "%v delegates to its own SSZ methods but forms a recursive cycle with %v, which is described here: the members of a cycle must be generated in one run", runtimeType, partner)
+			}
 			if *staticAnnotation {
 				size, err := tc.delegatedStaticSize(desc, runtimeType)
 				if err != nil {
-					return nil, err
+					return err
 				}
 				desc.Size = size
 			} else {
@@ -707,7 +829,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			// knows its size, a dynamic one states no floor.
 			desc.SetMinSize()
 
-			return desc, nil
+			return nil
 		}
 	}
 
@@ -715,81 +837,81 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 	switch sszType {
 	case SszUnspecifiedType:
 		if t.Kind() == reflect.Pointer {
-			return nil, sszutils.NewSszError(sszutils.ErrUnsupportedType, "unsupported multi-level pointer type: only a single level of indirection is supported")
+			return sszutils.NewSszError(sszutils.ErrUnsupportedType, "unsupported multi-level pointer type: only a single level of indirection is supported")
 		}
-		return nil, sszutils.NewSszErrorf(sszutils.ErrUnsupportedType, "unsupported type kind: %v", t.Kind())
+		return sszutils.NewSszErrorf(sszutils.ErrUnsupportedType, "unsupported type kind: %v", t.Kind())
 
 	// basic types
 	case SszBoolType:
 		if desc.Kind != reflect.Bool {
-			return nil, sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "bool ssz type can only be represented by bool types, got %v", desc.Kind)
+			return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "bool ssz type can only be represented by bool types, got %v", desc.Kind)
 		}
 		if len(sizeHints) > 0 && sizeHints[0].Bits {
-			return nil, sszutils.NewSszError(sszutils.ErrInvalidConstraint, "bool ssz type cannot be limited by bits, use regular size tag instead")
+			return sszutils.NewSszError(sszutils.ErrInvalidConstraint, "bool ssz type cannot be limited by bits, use regular size tag instead")
 		}
 		if len(sizeHints) > 0 && sizeHints[0].Size != 1 {
-			return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "bool ssz type must be ssz-size:1, got %v", sizeHints[0].Size)
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "bool ssz type must be ssz-size:1, got %v", sizeHints[0].Size)
 		}
 		desc.Size = 1
 	case SszUint8Type:
 		if desc.Kind != reflect.Uint8 {
-			return nil, sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "uint8 ssz type can only be represented by uint8 types, got %v", desc.Kind)
+			return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "uint8 ssz type can only be represented by uint8 types, got %v", desc.Kind)
 		}
 		if len(sizeHints) > 0 && sizeHints[0].Bits {
-			return nil, sszutils.NewSszError(sszutils.ErrInvalidConstraint, "uint8 ssz type cannot be limited by bits, use regular size tag instead")
+			return sszutils.NewSszError(sszutils.ErrInvalidConstraint, "uint8 ssz type cannot be limited by bits, use regular size tag instead")
 		}
 		if len(sizeHints) > 0 && sizeHints[0].Size != 1 {
-			return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "uint8 ssz type must be ssz-size:1, got %v", sizeHints[0].Size)
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "uint8 ssz type must be ssz-size:1, got %v", sizeHints[0].Size)
 		}
 		desc.Size = 1
 	case SszUint16Type:
 		if desc.Kind != reflect.Uint16 {
-			return nil, sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "uint16 ssz type can only be represented by uint16 types, got %v", desc.Kind)
+			return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "uint16 ssz type can only be represented by uint16 types, got %v", desc.Kind)
 		}
 		if len(sizeHints) > 0 && sizeHints[0].Bits {
-			return nil, sszutils.NewSszError(sszutils.ErrInvalidConstraint, "uint16 ssz type cannot be limited by bits, use regular size tag instead")
+			return sszutils.NewSszError(sszutils.ErrInvalidConstraint, "uint16 ssz type cannot be limited by bits, use regular size tag instead")
 		}
 		if len(sizeHints) > 0 && sizeHints[0].Size != 2 {
-			return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "uint16 ssz type must be ssz-size:2, got %v", sizeHints[0].Size)
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "uint16 ssz type must be ssz-size:2, got %v", sizeHints[0].Size)
 		}
 		desc.Size = 2
 	case SszUint32Type:
 		if desc.Kind != reflect.Uint32 {
-			return nil, sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "uint32 ssz type can only be represented by uint32 types, got %v", desc.Kind)
+			return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "uint32 ssz type can only be represented by uint32 types, got %v", desc.Kind)
 		}
 		if len(sizeHints) > 0 && sizeHints[0].Bits {
-			return nil, sszutils.NewSszError(sszutils.ErrInvalidConstraint, "uint32 ssz type cannot be limited by bits, use regular size tag instead")
+			return sszutils.NewSszError(sszutils.ErrInvalidConstraint, "uint32 ssz type cannot be limited by bits, use regular size tag instead")
 		}
 		if len(sizeHints) > 0 && sizeHints[0].Size != 4 {
-			return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "uint32 ssz type must be ssz-size:4, got %v", sizeHints[0].Size)
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "uint32 ssz type must be ssz-size:4, got %v", sizeHints[0].Size)
 		}
 		desc.Size = 4
 	case SszUint64Type:
 		if desc.Kind != reflect.Uint64 && desc.GoTypeFlags&GoTypeFlagIsTime == 0 {
-			return nil, sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "uint64 ssz type can only be represented by uint64 or time.Time types, got %v", desc.Kind)
+			return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "uint64 ssz type can only be represented by uint64 or time.Time types, got %v", desc.Kind)
 		}
 		if len(sizeHints) > 0 && sizeHints[0].Bits {
-			return nil, sszutils.NewSszError(sszutils.ErrInvalidConstraint, "uint64 ssz type cannot be limited by bits, use regular size tag instead")
+			return sszutils.NewSszError(sszutils.ErrInvalidConstraint, "uint64 ssz type cannot be limited by bits, use regular size tag instead")
 		}
 		if len(sizeHints) > 0 && sizeHints[0].Size != 8 {
-			return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "uint64 ssz type must be ssz-size:8, got %v", sizeHints[0].Size)
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "uint64 ssz type must be ssz-size:8, got %v", sizeHints[0].Size)
 		}
 		desc.Size = 8
 	case SszUint128Type:
 		if len(sizeHints) > 0 && sizeHints[0].Bits {
-			return nil, sszutils.NewSszError(sszutils.ErrInvalidConstraint, "uint128 ssz type cannot be limited by bits, use regular size tag instead")
+			return sszutils.NewSszError(sszutils.ErrInvalidConstraint, "uint128 ssz type cannot be limited by bits, use regular size tag instead")
 		}
 		err := tc.buildUintDescriptor(desc, runtimeType, t, 16, "uint128") // handle as [16]uint8 or [2]uint64
 		if err != nil {
-			return nil, err
+			return err
 		}
 	case SszUint256Type:
 		if len(sizeHints) > 0 && sizeHints[0].Bits {
-			return nil, sszutils.NewSszError(sszutils.ErrInvalidConstraint, "uint256 ssz type cannot be limited by bits, use regular size tag instead")
+			return sszutils.NewSszError(sszutils.ErrInvalidConstraint, "uint256 ssz type cannot be limited by bits, use regular size tag instead")
 		}
 		err := tc.buildUintDescriptor(desc, runtimeType, t, 32, "uint256") // handle as [32]uint8 or [4]uint64
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 	// complex types
@@ -797,36 +919,36 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		// A wrapper's constraints live in its descriptor struct; a size or
 		// limit on the field holding the wrapper would silently lose to them.
 		if len(sizeHints) > 0 || len(maxSizeHints) > 0 {
-			return nil, sszutils.NewSszError(sszutils.ErrInvalidTag, "ssz-size/ssz-max on a TypeWrapper field are not applied: declare the constraint in the wrapper's descriptor struct")
+			return sszutils.NewSszError(sszutils.ErrInvalidTag, "ssz-size/ssz-max on a TypeWrapper field are not applied: declare the constraint in the wrapper's descriptor struct")
 		}
 		err := tc.buildTypeWrapperDescriptor(desc, runtimeType, schemaType)
 		if err != nil {
-			return nil, err
+			return err
 		}
 	case SszContainerType, SszProgressiveContainerType:
 		err := tc.buildContainerDescriptor(desc, runtimeType, schemaType)
 		if err != nil {
-			return nil, err
+			return err
 		}
 	case SszVectorType, SszBitvectorType:
 		err := tc.buildVectorDescriptor(desc, runtimeType, schemaType, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
-			return nil, err
+			return err
 		}
 	case SszListType, SszBitlistType, SszProgressiveListType, SszProgressiveBitlistType:
 		err := tc.buildListDescriptor(desc, runtimeType, schemaType, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
-			return nil, err
+			return err
 		}
 	case SszCompatibleUnionType:
 		err := tc.buildCompatibleUnionDescriptor(desc, runtimeType, schemaType)
 		if err != nil {
-			return nil, err
+			return err
 		}
 	case SszUnionType:
 		err := tc.buildUnionDescriptor(desc, runtimeType, schemaType)
 		if err != nil {
-			return nil, err
+			return err
 		}
 	case SszCustomType:
 		// A custom type serializes entirely through its own methods, so its Go
@@ -840,7 +962,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		case staticAnnotation != nil && *staticAnnotation:
 			size, err := tc.delegatedStaticSize(desc, runtimeType)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			desc.Size = size
 		default:
@@ -851,78 +973,78 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 	// extended types (not supported by SSZ spec)
 	case SszInt8Type:
 		if !tc.ExtendedTypes {
-			return nil, sszutils.NewSszError(sszutils.ErrExtendedTypeDisabled, "signed integers are not supported in SSZ (use unsigned integers instead)")
+			return sszutils.NewSszError(sszutils.ErrExtendedTypeDisabled, "signed integers are not supported in SSZ (use unsigned integers instead)")
 		}
 		if desc.Kind != reflect.Int8 {
-			return nil, sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "int8 ssz type can only be represented by int8 types, got %v", desc.Kind)
+			return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "int8 ssz type can only be represented by int8 types, got %v", desc.Kind)
 		}
 		desc.Size = 1
 	case SszInt16Type:
 		if !tc.ExtendedTypes {
-			return nil, sszutils.NewSszError(sszutils.ErrExtendedTypeDisabled, "signed integers are not supported in SSZ (use unsigned integers instead)")
+			return sszutils.NewSszError(sszutils.ErrExtendedTypeDisabled, "signed integers are not supported in SSZ (use unsigned integers instead)")
 		}
 		if desc.Kind != reflect.Int16 {
-			return nil, sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "int16 ssz type can only be represented by int16 types, got %v", desc.Kind)
+			return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "int16 ssz type can only be represented by int16 types, got %v", desc.Kind)
 		}
 		desc.Size = 2
 	case SszInt32Type:
 		if !tc.ExtendedTypes {
-			return nil, sszutils.NewSszError(sszutils.ErrExtendedTypeDisabled, "signed integers are not supported in SSZ (use unsigned integers instead)")
+			return sszutils.NewSszError(sszutils.ErrExtendedTypeDisabled, "signed integers are not supported in SSZ (use unsigned integers instead)")
 		}
 		if desc.Kind != reflect.Int32 {
-			return nil, sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "int32 ssz type can only be represented by int32 types, got %v", desc.Kind)
+			return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "int32 ssz type can only be represented by int32 types, got %v", desc.Kind)
 		}
 		desc.Size = 4
 	case SszInt64Type:
 		if !tc.ExtendedTypes {
-			return nil, sszutils.NewSszError(sszutils.ErrExtendedTypeDisabled, "signed integers are not supported in SSZ (use unsigned integers instead)")
+			return sszutils.NewSszError(sszutils.ErrExtendedTypeDisabled, "signed integers are not supported in SSZ (use unsigned integers instead)")
 		}
 		if desc.Kind != reflect.Int64 {
-			return nil, sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "int64 ssz type can only be represented by int64 types, got %v", desc.Kind)
+			return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "int64 ssz type can only be represented by int64 types, got %v", desc.Kind)
 		}
 		desc.Size = 8
 	case SszFloat32Type:
 		if !tc.ExtendedTypes {
-			return nil, sszutils.NewSszError(sszutils.ErrExtendedTypeDisabled, "floating-point numbers are not supported in SSZ (use unsigned integers instead)")
+			return sszutils.NewSszError(sszutils.ErrExtendedTypeDisabled, "floating-point numbers are not supported in SSZ (use unsigned integers instead)")
 		}
 		if desc.Kind != reflect.Float32 {
-			return nil, sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "float32 ssz type can only be represented by float32 types, got %v", desc.Kind)
+			return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "float32 ssz type can only be represented by float32 types, got %v", desc.Kind)
 		}
 		desc.Size = 4
 	case SszFloat64Type:
 		if !tc.ExtendedTypes {
-			return nil, sszutils.NewSszError(sszutils.ErrExtendedTypeDisabled, "floating-point numbers are not supported in SSZ (use unsigned integers instead)")
+			return sszutils.NewSszError(sszutils.ErrExtendedTypeDisabled, "floating-point numbers are not supported in SSZ (use unsigned integers instead)")
 		}
 		if desc.Kind != reflect.Float64 {
-			return nil, sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "float64 ssz type can only be represented by float64 types, got %v", desc.Kind)
+			return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "float64 ssz type can only be represented by float64 types, got %v", desc.Kind)
 		}
 		desc.Size = 8
 	case SszOptionalType:
 		if !tc.ExtendedTypes {
-			return nil, sszutils.NewSszError(sszutils.ErrExtendedTypeDisabled, "optional types are not supported in SSZ (use extended types option to enable it)")
+			return sszutils.NewSszError(sszutils.ErrExtendedTypeDisabled, "optional types are not supported in SSZ (use extended types option to enable it)")
 		}
 		err := tc.buildOptionalDescriptor(desc, runtimeType, schemaType, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
-			return nil, err
+			return err
 		}
 	case SszOptionalListType:
 		// optional-list expresses a pointer as a canonical List[T, 1]; allowed without ExtendedTypes
 		err := tc.buildOptionalListDescriptor(desc, runtimeType, schemaType, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
-			return nil, err
+			return err
 		}
 	case SszBigIntType:
 		if !tc.ExtendedTypes {
-			return nil, sszutils.NewSszError(sszutils.ErrExtendedTypeDisabled, "big integers are not supported in SSZ (use extended types option to enable it)")
+			return sszutils.NewSszError(sszutils.ErrExtendedTypeDisabled, "big integers are not supported in SSZ (use extended types option to enable it)")
 		}
 		err := tc.buildBigIntDescriptor(desc, runtimeType)
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
 
 	if desc.SszTypeFlags&SszTypeFlagHasBitSize != 0 && desc.SszType != SszBitvectorType && desc.SszType != SszBitlistType {
-		return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "bit size tag is only allowed for bitvector or bitlist types, got %v", desc.SszType)
+		return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "bit size tag is only allowed for bitvector or bitlist types, got %v", desc.SszType)
 	}
 
 	tc.detectCompatFlags(desc, runtimeType, schemaType)
@@ -954,6 +1076,24 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			}
 			if promoted["UnmarshalSSZDecoder"] {
 				desc.SszCompatFlags &^= SszCompatFlagDynamicDecoder
+			}
+			if promoted["MarshalSSZDynView"] {
+				desc.SszCompatFlags &^= SszCompatFlagDynamicViewMarshaler
+			}
+			if promoted["UnmarshalSSZDynView"] {
+				desc.SszCompatFlags &^= SszCompatFlagDynamicViewUnmarshaler
+			}
+			if promoted["SizeSSZDynView"] {
+				desc.SszCompatFlags &^= SszCompatFlagDynamicViewSizer
+			}
+			if promoted["HashTreeRootWithDynView"] {
+				desc.SszCompatFlags &^= SszCompatFlagDynamicViewHashRoot
+			}
+			if promoted["MarshalSSZEncoderView"] {
+				desc.SszCompatFlags &^= SszCompatFlagDynamicViewEncoder
+			}
+			if promoted["UnmarshalSSZDecoderView"] {
+				desc.SszCompatFlags &^= SszCompatFlagDynamicViewDecoder
 			}
 			// The fastssz convert surface spans marshal and unmarshal; a
 			// promoted piece anywhere poisons the whole pair.
@@ -1008,7 +1148,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 	// container layout, so a zero-field struct shell is legitimate for them.
 	if desc.SszType == SszContainerType || desc.SszType == SszProgressiveContainerType {
 		if desc.SszCompatFlags == 0 && desc.ContainerDesc != nil && len(desc.ContainerDesc.Fields) == 0 {
-			return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "container type %v has no SSZ fields, which is invalid per the SSZ spec", schemaType)
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "container type %v has no SSZ fields, which is invalid per the SSZ spec", schemaType)
 		}
 	}
 
@@ -1033,13 +1173,13 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			missing = append(missing, "hasher")
 		}
 		if len(missing) > 0 {
-			return nil, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "custom ssz type %v is missing a fastssz or dynssz %s implementation", schemaType, strings.Join(missing, ", "))
+			return sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "custom ssz type %v is missing a fastssz or dynssz %s implementation", schemaType, strings.Join(missing, ", "))
 		}
 	}
 
 	desc.SetMinSize()
 
-	return desc, nil
+	return nil
 }
 
 // unresolvedReason says why an expression produced no usable value, so the
@@ -1065,12 +1205,11 @@ func unresolvedReason(resolved bool) string {
 // are read from their own cached value, so a recursive type resolves without
 // walking back into itself: a cycle's back edge simply contributes nothing.
 //
-// Only this cache fills it in, where every size is already resolved against the
-// active spec. Descriptors built by the code generator's go/types parser keep 0:
-// at generation time only the static tag values are known, and freezing those
-// into a bound would refuse valid input under a preset that resolves them
-// smaller. The generator emits the same minimum as a runtime expression instead
-// (see minSizeExpr).
+// Both front ends record it, so the descriptor hashes agree. The reflection
+// cache resolves every size against the active spec; the code generator's
+// go/types parser records the static tag values and emits the bound as a
+// runtime expression instead (see minSizeExpr), since a preset may resolve
+// them smaller than the static defaults.
 func (td *TypeDescriptor) SetMinSize() {
 	// A static type serializes to exactly its size.
 	if td.SszTypeFlags&SszTypeFlagIsDynamic == 0 {
@@ -1168,28 +1307,34 @@ func (tc *TypeCache) detectCompatFlags(desc *TypeDescriptor, runtimeType, schema
 	desc.SszCompatFlags |= tc.getCompatFlag(runtimeType, schemaType)
 }
 
-// fullyDelegatesSSZ reports whether the type implements the complete set of
+// fullyDelegatesSSZ reports whether the type declares the complete set of
 // dynamic SSZ operation interfaces (marshal, unmarshal, size, hash-tree-root).
 // When it does, every SSZ operation is handled by the type's own generated code
 // and the descriptor subtree below it is never consulted, so it does not need to
 // be built or validated — provided the type also declares its size via an
-// annotation (see the shallow-build path in buildTypeDescriptor).
-func fullyDelegatesSSZ(runtimeType reflect.Type) bool {
-	return (getDynamicMarshalerCompatibility(runtimeType) || getDynamicEncoderCompatibility(runtimeType)) &&
-		(getDynamicUnmarshalerCompatibility(runtimeType) || getDynamicDecoderCompatibility(runtimeType)) &&
-		getDynamicSizerCompatibility(runtimeType) &&
-		getDynamicHashRootCompatibility(runtimeType)
+// annotation (see the shallow-build path in buildTypeDescriptor). A method only
+// promoted from an embedded field (see PromotedDelegationMethods) serializes
+// that field alone and does not count.
+func fullyDelegatesSSZ(runtimeType reflect.Type, promoted map[string]bool) bool {
+	return ((getDynamicMarshalerCompatibility(runtimeType) && !promoted["MarshalSSZDyn"]) ||
+		(getDynamicEncoderCompatibility(runtimeType) && !promoted["MarshalSSZEncoder"])) &&
+		((getDynamicUnmarshalerCompatibility(runtimeType) && !promoted["UnmarshalSSZDyn"]) ||
+			(getDynamicDecoderCompatibility(runtimeType) && !promoted["UnmarshalSSZDecoder"])) &&
+		getDynamicSizerCompatibility(runtimeType) && !promoted["SizeSSZDyn"] &&
+		getDynamicHashRootCompatibility(runtimeType) && !promoted["HashTreeRootWithDyn"]
 }
 
 // fullyDelegatesSSZView is the view-descriptor counterpart of fullyDelegatesSSZ:
-// it reports whether the type implements the complete set of dynamic view SSZ
+// it reports whether the type declares the complete set of dynamic view SSZ
 // operation interfaces, in which case a view descriptor also delegates every
 // operation to the type's own code and its subtree need not be built.
-func fullyDelegatesSSZView(runtimeType reflect.Type) bool {
-	return (getDynamicViewMarshalerCompatibility(runtimeType) || getDynamicViewEncoderCompatibility(runtimeType)) &&
-		(getDynamicViewUnmarshalerCompatibility(runtimeType) || getDynamicViewDecoderCompatibility(runtimeType)) &&
-		getDynamicViewSizerCompatibility(runtimeType) &&
-		getDynamicViewHashRootCompatibility(runtimeType)
+func fullyDelegatesSSZView(runtimeType reflect.Type, promoted map[string]bool) bool {
+	return ((getDynamicViewMarshalerCompatibility(runtimeType) && !promoted["MarshalSSZDynView"]) ||
+		(getDynamicViewEncoderCompatibility(runtimeType) && !promoted["MarshalSSZEncoderView"])) &&
+		((getDynamicViewUnmarshalerCompatibility(runtimeType) && !promoted["UnmarshalSSZDynView"]) ||
+			(getDynamicViewDecoderCompatibility(runtimeType) && !promoted["UnmarshalSSZDecoderView"])) &&
+		getDynamicViewSizerCompatibility(runtimeType) && !promoted["SizeSSZDynView"] &&
+		getDynamicViewHashRootCompatibility(runtimeType) && !promoted["HashTreeRootWithDynView"]
 }
 
 // delegatedStaticSize returns the fixed SSZ byte size of a fully-delegated static
@@ -1201,10 +1346,10 @@ func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType refle
 	specs := tc.specs // never nil: NewTypeCache substitutes emptySpecs{}
 	zero := reflect.New(runtimeType).Interface()
 
-	// A sizer returns int; a negative value would corrupt downstream
-	// sizing/offset math, so validate the range.
+	// A sizer returns int; its result enters the size domain here, so it is
+	// bounded to the SSZ size range like every other size.
 	validate := func(n int) (int64, error) {
-		if n < 0 {
+		if n < 0 || n > sszutils.MaxSszSize {
 			return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer for static type %v returned out-of-range size %d", runtimeType, n)
 		}
 		return int64(n), nil
@@ -1317,7 +1462,7 @@ func (tc *TypeCache) buildTypeWrapperDescriptor(desc *TypeDescriptor, runtimeTyp
 			wrappedFieldIndex = schemaWrapperInfo.FieldIndex
 		}
 	}
-	desc.WrapperFieldIndex = uint8(wrappedFieldIndex)
+	desc.WrapperFieldIndex = uint32(wrappedFieldIndex)
 
 	// The wrapper's actual value field must be shape-compatible with the type the
 	// descriptor expects. Otherwise the reflection-driven encode/decode would call
@@ -1524,7 +1669,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 		}
 
 		// Store the runtime field index for direct field access during encode/decode/hash
-		fieldDesc.FieldIndex = uint16(runtimeFieldIndex)
+		fieldDesc.FieldIndex = uint32(runtimeFieldIndex)
 		runtimeFieldType := runtimeType.Field(runtimeFieldIndex).Type
 
 		// Get ssz-index tag from schema field (for progressive containers)
@@ -1587,16 +1732,15 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 			desc.ContainerDesc.DynFields = append(desc.ContainerDesc.DynFields, DynFieldDescriptor{
 				Field:        &desc.ContainerDesc.Fields[fi],
 				HeaderOffset: totalSize,
-				Index:        int16(runtimeFieldIndex), // Use runtime field index for data access
+				Index:        int32(runtimeFieldIndex), // Use runtime field index for data access
 			})
 		}
 
 		desc.SszTypeFlags |= fieldDesc.Type.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
-		// A wrapped sum would defeat the fixed-section length checks that are
-		// derived from it, so bound the static size to the platform integer
-		// range like every other size.
-		if totalSize > math.MaxInt-sszSize {
-			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "container byte size exceeds the platform integer range")
+		// A fixed section is addressed by 32-bit offsets, so it is bounded to
+		// the SSZ size limit like every other size.
+		if totalSize > sszutils.MaxSszSize-sszSize {
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "container byte size exceeds the SSZ size limit")
 		}
 		totalSize += sszSize
 		desc.ContainerDesc.Fields[fi] = fieldDesc
@@ -1712,6 +1856,8 @@ func (tc *TypeCache) buildCompatibleUnionDescriptor(desc *TypeDescriptor, runtim
 		}
 
 		desc.UnionVariants[variantIndex] = variantDesc
+		// The flags say whether any nested value depends on a spec value.
+		desc.SszTypeFlags |= variantDesc.SszTypeFlags & childDerivedFlags
 	}
 
 	return nil
@@ -1776,6 +1922,8 @@ func (tc *TypeCache) buildUnionDescriptor(desc *TypeDescriptor, runtimeType, sch
 		}
 
 		desc.UnionVariants[variantIndex] = variantDesc
+		// The flags say whether any nested value depends on a spec value.
+		desc.SszTypeFlags |= variantDesc.SszTypeFlags & childDerivedFlags
 	}
 
 	return nil
@@ -1870,6 +2018,13 @@ func (tc *TypeCache) buildOptionalListDescriptor(desc *TypeDescriptor, runtimeTy
 	desc.ElemDesc = elemDesc
 	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
 
+	// A present element of zero size leaves the region as empty as an absent
+	// one, so presence could never be decoded. Only reachable through custom
+	// types whose sizer reports 0.
+	if elemDesc.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagHasSizeExpr) == 0 && elemDesc.Size == 0 {
+		return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "optional-list element type %v has a static SSZ size of 0", schemaType)
+	}
+
 	return nil
 }
 
@@ -1922,14 +2077,14 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 			return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "view schema array length (%d) exceeds the backing array length (%d)", t.Len(), runtimeType.Len())
 		}
 		desc.Len = int64(t.Len())
-		// A dynamic placeholder hint — e.g. dynssz-size:"?" on an outer dimension
-		// whose Go type is a fixed array — carries Size 0 (and no Bits) and must
-		// not zero the array's intrinsic length: a Go array cannot be relaxed to
-		// a variable-length list, so it keeps its intrinsic length (matching the
-		// codegen path). A concrete hint (Size > 0) or an explicit bit-size hint
-		// (Bits set, incl. ssz-bitsize:"0", which must still be rejected as a
-		// zero-length bitvector) is applied.
-		if len(sizeHints) > 0 && (sizeHints[0].Size > 0 || sizeHints[0].Bits) {
+		// A hint without a size leaves the array's intrinsic length in place:
+		// a dynamic placeholder (dynssz-size:"?") cannot relax a Go array to a
+		// list, and a bit size named by an expression nothing supplied a value
+		// for falls back to the array's own length in bits, as the code
+		// generator does. A concrete hint (Size > 0) or a literal bit size
+		// (incl. ssz-bitsize:"0", which is still rejected as a zero-length
+		// bitvector) is applied.
+		if len(sizeHints) > 0 && (sizeHints[0].Size > 0 || (sizeHints[0].Bits && sizeHints[0].Expr == "")) {
 			byteLen := sizeHints[0].Size
 			if sizeHints[0].Bits {
 				desc.BitSize = sizeHints[0].Size
@@ -2021,20 +2176,31 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 	desc.ElemDesc = elemDesc
 	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
 
+	// A bitvector is a sequence of bits stored in bytes; a string holds text.
+	if desc.SszType == SszBitvectorType && desc.GoTypeFlags&GoTypeFlagIsString != 0 {
+		return sszutils.NewSszError(sszutils.ErrTypeMismatch, "bitvector ssz type can only be represented by byte slices or arrays, got string")
+	}
 	if desc.SszType == SszBitvectorType && desc.ElemDesc.Kind != reflect.Uint8 {
 		return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "bitvector ssz type can only be represented by byte slices or arrays, got %v", desc.ElemDesc.Kind.String())
 	}
 
+	// A vector's length is a size itself; a vector of variable-size elements
+	// also leads with one 4-byte offset per element inside its fixed section.
+	if desc.Len > sszutils.MaxSszSize {
+		return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "vector length %d exceeds the SSZ size limit", desc.Len)
+	}
 	if elemDesc.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
+		if desc.Len > sszutils.MaxSszSize/4 {
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "vector length %d exceeds the SSZ offset table limit", desc.Len)
+		}
 		desc.Size = 0
 		desc.SszTypeFlags |= SszTypeFlagIsDynamic
 	} else {
-		// An unchecked product would wrap silently and downstream length
-		// checks would then divide by or allocate from a bogus size, so bound
-		// it to the platform integer range like every other size. The bound is
-		// checked by division so the product itself cannot wrap first.
-		if desc.Len > 0 && elemDesc.Size > math.MaxInt/desc.Len {
-			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "vector byte size %d*%d exceeds the platform integer range", elemDesc.Size, desc.Len)
+		// A vector's byte size is bounded to the SSZ size limit like every
+		// other size. The bound is checked by division so the product itself
+		// cannot wrap first.
+		if desc.Len > 0 && elemDesc.Size > sszutils.MaxSszSize/desc.Len {
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "vector byte size %d*%d exceeds the SSZ size limit", elemDesc.Size, desc.Len)
 		}
 		desc.Size = elemDesc.Size * desc.Len
 	}

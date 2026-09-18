@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"os/signal"
 	"runtime"
@@ -19,6 +20,7 @@ import (
 	dynssz "github.com/pk910/dynamic-ssz"
 	"github.com/pk910/dynamic-ssz/tests/fuzz/corpus"
 	"github.com/pk910/dynamic-ssz/tests/fuzz/engine"
+	"github.com/pk910/dynamic-ssz/tests/fuzz/walker"
 )
 
 func main() {
@@ -127,6 +129,33 @@ func main() {
 			}
 		}()
 	}
+
+	// One worker drives the two hash walkers over generated call sequences,
+	// comparing the tree they build. It is the same grammar the walker package
+	// runs deterministically in its own test, continued here for as long as the
+	// campaign lasts.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		rng := rand.New(rand.NewSource(*seed ^ 0x5eed))
+		for {
+			select {
+			case <-stopCh:
+				return
+			default:
+				prog := walker.Generate(rng)
+				stats.WalkerPrograms.Add(1)
+				if err := walker.Compare(prog); err != nil {
+					stats.WalkerMismatches.Add(1)
+					reporter.Report(&engine.Issue{
+						Type:     engine.IssueHTRMismatch,
+						TypeName: "hash-walker-parity",
+						Details:  fmt.Sprintf("%v\nprogram:\n%s", err, walker.String(prog)),
+					})
+				}
+			}
+		}
+	}()
 
 	log.Println("Fuzzing...")
 

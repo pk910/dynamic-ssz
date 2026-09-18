@@ -234,6 +234,33 @@ func TestUnmarshalDynamicVectorLenOverflow(t *testing.T) {
 	}
 }
 
+// The offset table of a dynamic vector holds four bytes per element, so a
+// length whose table would not fit the platform int is refused on every
+// width, before the table is sized.
+func TestUnmarshalDynamicVectorTableOverflow(t *testing.T) {
+	ctx := newCtx()
+	elemDesc := &ssztypes.TypeDescriptor{
+		Kind:         reflect.Slice,
+		SszType:      ssztypes.SszListType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+		Type:         reflect.TypeOf([]byte{}),
+	}
+	td := &ssztypes.TypeDescriptor{
+		SszType:  ssztypes.SszVectorType,
+		Kind:     reflect.Slice,
+		Len:      math.MaxInt/4 + 1,
+		Type:     reflect.TypeOf([][]byte{}),
+		ElemDesc: elemDesc,
+	}
+	dec := sszutils.NewBufferDecoder(make([]byte, 1000))
+	val := reflect.New(td.Type).Elem()
+
+	err := ctx.unmarshalType(td, val, dec, reflectionDepth{})
+	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
+		t.Fatalf("expected overflow error for the offset table, got: %v", err)
+	}
+}
+
 // --- unmarshalFixedElements overflow test ---
 
 func TestUnmarshalFixedElementsSizeOverflow(t *testing.T) {

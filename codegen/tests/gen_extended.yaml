@@ -10,10 +10,16 @@ types:
   - UnboundedList
   - UnboundedBitlist
   - ExtendedTypes1
+  - ExtScalarHolder
   - ExtendedBigIntMax
   - OptU32
+  - WideOptional
   - CoverageTypes2
   - CoverageTypes3
   - CoverageTypes4
   - CoverageTypes5
   - CoverageTypes6
+  - OptSpecInner
+  - OptSpecBytes
+  - OptSpecHolder
+  - ZeroSizeShellOptional

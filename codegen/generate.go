@@ -23,7 +23,7 @@ import (
 // twice, whether the duplicate is in one file or spread across two files of
 // the package), and a legacy fastssz surface with pieces switched off (the
 // interface is all-or-nothing; a partial set misleads interface checks).
-func validateTypeEntry(seenTypes map[string]string, typePkgPath, typeName, fileName string, opts *CodeGeneratorOptions) error {
+func validateTypeEntry(seenTypes map[string]string, typePkgPath, typeName, fileName string, viewOnly bool, opts *CodeGeneratorOptions) error {
 	seenKey := typePkgPath + "." + typeName
 	if firstFile, seen := seenTypes[seenKey]; seen {
 		if firstFile == fileName {
@@ -35,6 +35,13 @@ func validateTypeEntry(seenTypes map[string]string, typePkgPath, typeName, fileN
 
 	if opts.CreateLegacyFn && (opts.NoMarshalSSZ || opts.NoUnmarshalSSZ || opts.NoSizeSSZ || opts.NoHashTreeRoot) {
 		return fmt.Errorf("type %s combines WithCreateLegacyFn with a WithNo* option: the legacy fastssz interface needs the full method set", typeName)
+	}
+
+	// View methods resolve spec expressions at runtime, so they are never
+	// emitted without dynamic expressions; a view-only type would then emit
+	// nothing at all.
+	if viewOnly && opts.WithoutDynamicExpressions {
+		return fmt.Errorf("type %s is view-only and cannot be generated without dynamic expressions: view methods resolve spec expressions at runtime", typeName)
 	}
 
 	return nil
@@ -70,15 +77,6 @@ func validateTypeEntry(seenTypes map[string]string, typePkgPath, typeName, fileN
 // This method must be called before any code generation attempts, as it populates
 // the essential type metadata that drives the entire generation process.
 func (cg *CodeGenerator) analyzeTypes() error {
-	var parser *Parser
-
-	// Descriptors built here describe code, not this process: a spec expression
-	// is emitted for the generated code to resolve against whatever specs it
-	// runs under. Resolving it now would bake the generator's own values in as
-	// the compile-time fallback, and would decide list-versus-vector by which
-	// values a generating machine happened to have loaded.
-	cg.typeCache.DisableSpecResolution()
-
 	getTypeName := func(t *CodeGeneratorTypeOptions) (string, string, string) {
 		var typeName, typePkgPath, typePkgName string
 		if t.ReflectType != nil {
@@ -171,8 +169,6 @@ func (cg *CodeGenerator) analyzeTypes() error {
 		}
 	}
 
-	cg.typeCache.CompatFlags = cg.compatFlags
-
 	// analyze all types to build complete dependency graph
 	seenTypes := map[string]string{}
 	for _, file := range cg.files {
@@ -186,7 +182,7 @@ func (cg *CodeGenerator) analyzeTypes() error {
 				return fmt.Errorf("type %s has no package path", typeName)
 			}
 
-			if err := validateTypeEntry(seenTypes, typePkgPath, typeName, file.FileName, &t.Options); err != nil {
+			if err := validateTypeEntry(seenTypes, typePkgPath, typeName, file.FileName, t.IsViewOnly, &t.Options); err != nil {
 				return err
 			}
 			if pkgPath == "" {
@@ -203,50 +199,18 @@ func (cg *CodeGenerator) analyzeTypes() error {
 			var desc *ssztypes.TypeDescriptor
 			var err error
 
-			// Without dynamic expressions the generated code must never call a
-			// delegated *Dyn method, so a fully-delegated ssz-static type cannot be
-			// reached through its dynamic methods and must instead be inlined from
-			// its traversed structure. Disable the shallow-build shortcut so the
-			// subtree is available. The flag is never lowered (mirroring
-			// ExtendedTypes): a shared cache/parser stays in the stricter mode.
-			if t.Options.WithoutDynamicExpressions {
-				cg.typeCache.NoDelegation = true
-			}
-
 			if t.ReflectType != nil {
 				// Always wrap in pointer so generated methods use pointer receivers
 				// (needed for unmarshal to write back modified values).
 				if t.ReflectType.Kind() != reflect.Pointer {
 					t.ReflectType = reflect.PointerTo(t.ReflectType)
 				}
-				// The reflect path builds descriptors through the shared TypeCache,
-				// which carries its own extended-types switch; propagate the option
-				// so it is honored on this path like it is on the go/types path.
-				// The cache flag is never lowered: it may have been enabled by the
-				// DynSsz instance the cache was taken from.
-				if t.Options.ExtendedTypes {
-					cg.typeCache.ExtendedTypes = true
-				}
-				desc, err = cg.typeCache.GetTypeDescriptor(t.ReflectType, t.Options.SizeHints, t.Options.MaxSizeHints, t.Options.TypeHints)
+				desc, err = cg.typeCacheFor(&t.Options).GetTypeDescriptor(t.ReflectType, t.Options.SizeHints, t.Options.MaxSizeHints, t.Options.TypeHints)
 			} else {
-				if parser == nil {
-					parser = NewParser()
-					parser.CompatFlags = cg.compatFlags
-					parser.AnnotationResolver = cg.annotationResolver
-				}
-				// The extended-types switch is never lowered (mirroring the
-				// type cache): a shared parser stays in the wider mode once
-				// any type in the run enables it.
-				if t.Options.ExtendedTypes {
-					parser.ExtendedTypes = true
-				}
-				if t.Options.WithoutDynamicExpressions {
-					parser.NoDelegation = true
-				}
 				if _, ok := t.GoTypesType.(*types.Pointer); !ok {
 					t.GoTypesType = types.NewPointer(t.GoTypesType)
 				}
-				desc, err = parser.GetTypeDescriptor(t.GoTypesType, t.Options.TypeHints, t.Options.SizeHints, t.Options.MaxSizeHints)
+				desc, err = cg.parserFor(&t.Options).GetTypeDescriptor(t.GoTypesType, t.Options.TypeHints, t.Options.SizeHints, t.Options.MaxSizeHints)
 			}
 
 			if err != nil {
@@ -315,7 +279,7 @@ func (cg *CodeGenerator) analyzeTypes() error {
 						return fmt.Errorf("view type %s is listed more than once for %s; remove the duplicate entry", viewType.String(), typeName)
 					}
 					seenViews[viewType.String()] = true
-					viewDesc, err := cg.typeCache.GetTypeDescriptorWithSchema(t.ReflectType, viewType, t.Options.SizeHints, t.Options.MaxSizeHints, t.Options.TypeHints)
+					viewDesc, err := cg.typeCacheFor(&t.Options).GetTypeDescriptorWithSchema(t.ReflectType, viewType, t.Options.SizeHints, t.Options.MaxSizeHints, t.Options.TypeHints)
 					if err != nil {
 						return fmt.Errorf("failed to analyze view type %s: %w", viewType.String(), err)
 					}
@@ -323,11 +287,6 @@ func (cg *CodeGenerator) analyzeTypes() error {
 					cg.collectWarnings(typeName+" view "+getReflectTypeName(viewType), viewDesc)
 				}
 				for _, viewType := range t.ViewGoTypesTypes {
-					if parser == nil {
-						parser = NewParser()
-						parser.CompatFlags = cg.compatFlags
-						parser.AnnotationResolver = cg.annotationResolver
-					}
 					if _, ok := viewType.(*types.Pointer); !ok {
 						viewType = types.NewPointer(viewType)
 					}
@@ -338,7 +297,7 @@ func (cg *CodeGenerator) analyzeTypes() error {
 						return fmt.Errorf("view type %s is listed more than once for %s; remove the duplicate entry", viewType.String(), typeName)
 					}
 					seenViews[viewType.String()] = true
-					viewDesc, err := parser.GetTypeDescriptorWithSchema(t.GoTypesType, viewType, t.Options.TypeHints, t.Options.SizeHints, t.Options.MaxSizeHints)
+					viewDesc, err := cg.parserFor(&t.Options).GetTypeDescriptorWithSchema(t.GoTypesType, viewType, t.Options.TypeHints, t.Options.SizeHints, t.Options.MaxSizeHints)
 					if err != nil {
 						return fmt.Errorf("failed to analyze view type %s: %w", viewType.String(), err)
 					}
@@ -379,6 +338,12 @@ func (cg *CodeGenerator) analyzeTypes() error {
 // and can receive methods, so it is only the generic instantiation that has to
 // be rejected here, not the SSZ type it maps to.
 func validateTopLevelType(t *CodeGeneratorTypeOptions, desc *ssztypes.TypeDescriptor, typeName string) error {
+	// A custom type supplies every SSZ method itself; generated ones would
+	// redeclare them and hash through the type's own root.
+	if desc.SszType == ssztypes.SszCustomType {
+		return fmt.Errorf("cannot generate SSZ methods for custom type %s: it provides its own SSZ methods; use it as a field instead", typeName)
+	}
+
 	isAliasOnlyShape := desc.SszType == ssztypes.SszUnionType ||
 		desc.SszType == ssztypes.SszCompatibleUnionType ||
 		desc.SszType == ssztypes.SszTypeWrapperType
@@ -558,29 +523,6 @@ func dataCompatFlags(opts *CodeGeneratorOptions) ssztypes.SszCompatFlag {
 	return flags
 }
 
-// generateFile creates the complete Go source code for a single file.
-//
-// This internal method handles the generation of one complete Go source file,
-// including package declaration, imports, and all requested SSZ methods for
-// the specified types. It manages import organization, code formatting,
-// and ensures the generated code is valid Go.
-//
-// Parameters:
-//   - fileName: The target file name (used for metadata in generated code)
-//   - packagePath: The Go package path for the generated file
-//   - opts: Complete file generation options with resolved type configurations
-//
-// Returns:
-//   - string: The complete generated Go source code
-//   - error: An error if generation fails due to code generation issues
-//
-// The generated file includes:
-//   - File header with generation metadata and version information
-//   - Package declaration
-//   - Organized import statements
-//   - Variable declarations for error handling
-//   - Generated SSZ methods for all specified types
-//
 // staticAnnotationFor returns the ssz-static annotation declaring whether a
 // generated type is fixed-size (static) or variable-size (dynamic). The
 // reflection typecache uses it to shallow-build the fully-delegated type without
@@ -612,6 +554,28 @@ func packageScopeNames(t types.Type) []string {
 	return named.Obj().Pkg().Scope().Names()
 }
 
+// generateFile creates the complete Go source code for a single file.
+//
+// This internal method handles the generation of one complete Go source file,
+// including package declaration, imports, and all requested SSZ methods for
+// the specified types. It manages import organization, code formatting,
+// and ensures the generated code is valid Go.
+//
+// Parameters:
+//   - fileName: The target file name (used for metadata in generated code)
+//   - packagePath: The Go package path for the generated file
+//   - opts: Complete file generation options with resolved type configurations
+//
+// Returns:
+//   - string: The complete generated Go source code
+//   - error: An error if generation fails due to code generation issues
+//
+// The generated file includes:
+//   - File header with generation metadata and version information
+//   - Package declaration
+//   - Organized import statements
+//   - Variable declarations for error handling
+//   - Generated SSZ methods for all specified types
 func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFileOptions) (string, error) {
 	if len(opts.Types) == 0 {
 		return "", fmt.Errorf("no types requested for generation")
@@ -668,6 +632,8 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 				return "", fmt.Errorf("cannot generate code for view of %s: %w", t.TypeName, err)
 			}
 		}
+
+		t.Options.generated = cg.compatFlags
 
 		if !t.IsViewOnly {
 			hash := t.Descriptor.GetTypeHash()
@@ -756,6 +722,11 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 	header = strings.ReplaceAll(header, "{version}", "v"+Version)
 	mainCodeBuilder.WriteString(header)
 	if !strings.HasSuffix(header, "\n") {
+		mainCodeBuilder.WriteString("\n")
+	}
+	// A blank line keeps the header from becoming the package's doc comment;
+	// a template that already ends in one is left as it is.
+	if !strings.HasSuffix(mainCodeBuilder.String(), "\n\n") {
 		mainCodeBuilder.WriteString("\n")
 	}
 	fmt.Fprintf(&mainCodeBuilder, "package %s\n\n", opts.PackageName)
@@ -931,11 +902,12 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 	// mirrors how the non-view methods are paired, and keeps the exported view
 	// interfaces unchanged.
 	buildViewDispatcher := func(fnPrefix string, mainFn func() string, sig viewFnSignature, depthExpr string) {
-		wrap := func(target string) string {
-			// Only a plain method reference can be redirected to a twin; the
-			// fastssz fallback is emitted as a literal closure and has no twin
-			// to name.
-			if depthExpr == "" || strings.ContainsAny(target, "(") {
+		// A target is redirected to its twin only when its own methods carry
+		// a depth: a view that leaves the recursive field out has plain
+		// methods even when the data type is on a cycle. The fastssz fallback
+		// is emitted as a literal closure and has no twin to name.
+		wrap := func(target string, targetDesc *ssztypes.TypeDescriptor) string {
+			if depthExpr == "" || !recursion.threads(targetDesc) || strings.ContainsAny(target, "(") {
 				return target
 			}
 			return fmt.Sprintf("func(%s) %s {\n\t\treturn %s(%s, %s)\n\t}", sig.params, sig.results, depthMethodName(target), sig.args, depthExpr)
@@ -947,7 +919,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			mainFnName := mainFn()
 			if mainFnName != "" {
 				appendCode(codeBuilder, 1, "case nil, %s:\n", typePrinter.TypeString(dataType))
-				appendCode(codeBuilder, 2, "return %s\n", wrap(mainFnName))
+				appendCode(codeBuilder, 2, "return %s\n", wrap(mainFnName, dataType))
 			}
 		}
 
@@ -955,17 +927,20 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			typeName := typePrinter.ViewTypeString(view, true)
 			viewFnName := getViewFnName(view)
 			appendCode(codeBuilder, 1, "case %s:\n", typeName)
-			appendCode(codeBuilder, 2, "return %s\n", wrap(fmt.Sprintf("t.%s_%s", fnPrefix, viewFnName)))
+			appendCode(codeBuilder, 2, "return %s\n", wrap(fmt.Sprintf("t.%s_%s", fnPrefix, viewFnName), view))
 		}
 		appendCode(codeBuilder, 1, "}\n")
 	}
 
-	// emitViewDispatcher writes the public dispatcher and, for a type on a
-	// recursive cycle, the unexported twin a cyclic parent calls to keep the
-	// depth advancing across the view boundary.
+	// emitViewDispatcher writes the public dispatcher and, when any target's
+	// methods carry a depth, the unexported twin a cyclic parent calls to keep
+	// the depth advancing across the view boundary.
 	emitViewDispatcher := func(publicName, fnPrefix string, sig viewFnSignature, mainFn func() string) {
 		typeName := typePrinter.TypeString(dataType)
 		cyclic := recursion.threads(dataType)
+		for _, view := range views {
+			cyclic = cyclic || recursion.threads(view)
+		}
 
 		depthExpr := ""
 		if cyclic {

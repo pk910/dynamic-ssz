@@ -50,6 +50,12 @@ func TestGetZeroHash(t *testing.T) {
 		t.Error("GetZeroHash(0) should return zero bytes")
 	}
 
+	// The caller owns the returned slice; the shared table stays intact.
+	hash0[0] = 1
+	if !bytes.Equal(GetZeroHash(0), make([]byte, 32)) {
+		t.Error("editing a returned zero hash changed the shared table")
+	}
+
 	// Test that each level is hash of previous level
 	for i := 1; i < 5; i++ {
 		prevHash := GetZeroHash(i - 1)
@@ -334,18 +340,19 @@ func TestHasherAppendBytes32(t *testing.T) {
 		t.Error("padding should be zeros")
 	}
 
-	// A buffer that is not chunk-aligned before the call is padded to whole-
-	// buffer alignment, not by len(b)%32.
+	// The value is padded to a whole number of chunks counted from where it
+	// begins, so a buffer that was not chunk-aligned before the call stays
+	// that way and the value still occupies one chunk of its own.
 	h.Reset()
 	h.Append([]byte{1, 2, 3})
 	h.AppendBytes32([]byte{4, 5})
-	if len(h.buf) != 32 {
-		t.Errorf("buffer should be aligned to 32 bytes, got %d", len(h.buf))
+	if len(h.buf) != 35 {
+		t.Errorf("buffer length = %d, want the three pending bytes plus one chunk", len(h.buf))
 	}
 	if !bytes.Equal(h.buf[:5], []byte{1, 2, 3, 4, 5}) {
 		t.Error("data should be at the beginning of buffer")
 	}
-	if !bytes.Equal(h.buf[5:], make([]byte, 27)) {
+	if !bytes.Equal(h.buf[5:], make([]byte, 30)) {
 		t.Error("padding should be zeros")
 	}
 }
@@ -696,6 +703,8 @@ func TestHasherPutBytes(t *testing.T) {
 	}
 }
 
+// A scope opens on a chunk boundary: pending bytes are padded first, so the
+// checkpoint separates them from the scope, as treeproof.Wrapper does.
 func TestHasherIndex(t *testing.T) {
 	h := NewHasher()
 
@@ -705,8 +714,10 @@ func TestHasherIndex(t *testing.T) {
 
 	h.buf = append(h.buf, []byte{1, 2, 3}...)
 
-	if h.Index() != 3 {
-		t.Error("Index should be 3 after adding 3 bytes")
+	// A scope opens where the buffer stands; its own chunks are counted from
+	// there, so nothing is padded here.
+	if idx := h.Index(); idx != 3 {
+		t.Errorf("Index = %d after three pending bytes, want the current position", idx)
 	}
 }
 
@@ -2219,5 +2230,93 @@ func TestMerkleizeCollapsedPadsPartialChunk(t *testing.T) {
 				t.Fatalf("collapsed root %x != plain root %x", got, want)
 			}
 		})
+	}
+}
+
+// Inside a packed scope the Put* forms append the packed bytes of their value;
+// outside one they stay whole chunks, and a scope opened inside a packed one
+// is a normal scope again.
+func TestPackedScopePut(t *testing.T) {
+	packed := NewHasher()
+	defer packed.Reset()
+	idx := packed.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+	packed.PutUint64(1)
+	packed.PutUint32(2)
+	packed.PutUint16(3)
+	packed.PutUint8(4)
+	packed.PutBool(true)
+	packed.PutBytes([]byte{5, 6})
+	if got := packed.CurrentIndex() - idx; got != 8+4+2+1+1+2 {
+		t.Fatalf("packed scope holds %d bytes, want 18", got)
+	}
+	packed.FillUpTo32()
+	packed.Merkleize(idx)
+	packedRoot := packed.Hash()
+
+	appended := NewHasher()
+	defer appended.Reset()
+	idx = appended.StartTree(sszutils.TreeTypeBinary)
+	appended.AppendUint64(1)
+	appended.AppendUint32(2)
+	appended.AppendUint16(3)
+	appended.AppendUint8(4)
+	appended.AppendBool(true)
+	appended.Append([]byte{5, 6})
+	appended.FillUpTo32()
+	appended.Merkleize(idx)
+	if !bytes.Equal(packedRoot, appended.Hash()) {
+		t.Fatalf("packed puts %x != appends %x", packedRoot, appended.Hash())
+	}
+
+	chunks := NewHasher()
+	defer chunks.Reset()
+	idx = chunks.StartTree(sszutils.TreeTypeBinary)
+	chunks.PutUint64(1)
+	chunks.PutUint64(2)
+	if got := chunks.CurrentIndex() - idx; got != 64 {
+		t.Fatalf("plain scope holds %d bytes, want 64", got)
+	}
+
+	nested := NewHasher()
+	defer nested.Reset()
+	outer := nested.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+	inner := nested.StartTree(sszutils.TreeTypeNone)
+	nested.PutUint64(1)
+	if got := nested.CurrentIndex() - inner; got != 32 {
+		t.Fatalf("scope inside a packed scope holds %d bytes, want 32", got)
+	}
+	nested.Merkleize(inner)
+	nested.PutUint64(2)
+	if got := nested.CurrentIndex() - outer; got != 40 {
+		t.Fatalf("packed scope after a nested scope holds %d bytes, want 40", got)
+	}
+}
+
+// A collapse hint asks for part of a scope to be reduced early. It is a hint:
+// for a value that fits its type's capacity the root is the same with and
+// without it, across the batch threshold that makes the hint fire.
+func TestHasherCollapseDoesNotMoveRoot(t *testing.T) {
+	root := func(collapse bool, chunks int, limit uint64) [32]byte {
+		t.Helper()
+		h := NewHasher()
+		idx := h.StartTree(sszutils.TreeTypeBinary)
+		for i := 0; i < chunks; i++ {
+			h.PutUint64(uint64(i + 1))
+			if collapse {
+				h.Collapse()
+			}
+		}
+		h.MerkleizeWithMixin(idx, uint64(chunks), limit)
+		res, err := h.HashRoot()
+		if err != nil {
+			t.Fatalf("chunks=%d collapse=%v: %v", chunks, collapse, err)
+		}
+		return res
+	}
+	for _, chunks := range []int{1, 255, 256, 257, 600, 1025} {
+		limit := uint64(2048)
+		if plain, collapsed := root(false, chunks, limit), root(true, chunks, limit); plain != collapsed {
+			t.Errorf("chunks=%d: plain %x, collapsed %x", chunks, plain, collapsed)
+		}
 	}
 }

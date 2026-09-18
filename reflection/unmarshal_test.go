@@ -2614,6 +2614,11 @@ type depthCycleOptionalList struct {
 	Next *depthCycleOptionalList `ssz-type:"optional-list"`
 }
 
+// defaultMaxNestingDepthProbe nests a non-recursive type past the default
+// bound, deep enough to prove the bound does not fire yet shallow enough to
+// keep descriptor building cheap.
+const defaultMaxNestingDepthProbe = 1200
+
 // TestNestingDepthBound pins that a value nesting past the bound fails with an
 // ordinary error rather than exhausting the goroutine stack.
 //
@@ -2621,11 +2626,6 @@ type depthCycleOptionalList struct {
 // cannot contain it, so a server could not isolate the failure to the request
 // that caused it. Only a recursive type can nest to a depth the input chooses,
 // and each level costs a handful of wire bytes.
-// defaultMaxNestingDepthProbe nests a non-recursive type past the default
-// bound, deep enough to prove the bound does not fire yet shallow enough to
-// keep descriptor building cheap.
-const defaultMaxNestingDepthProbe = 1200
-
 func TestNestingDepthBound(t *testing.T) {
 	// Deeper than the 1024 default, but far too shallow to overflow a real
 	// stack -- the test must prove the bound fires, not that the process dies.
