@@ -5294,6 +5294,62 @@ func TestReaderSegmentationMatchesBuffer(t *testing.T) {
 	}
 }
 
+// hugeSizer reports a size no encoding can refer to while writing eight bytes.
+type hugeSizer struct{ A uint64 }
+
+func (n *hugeSizer) SizeSSZDyn(sszutils.DynamicSpecs) int { return math.MaxInt }
+func (n *hugeSizer) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, 0, 0, 0, 0, 0, 0, 0, 0), nil
+}
+
+// A sizer that reports more than any encoding can refer to is refused where
+// its report enters the size domain, instead of a size the output contradicts.
+func TestDelegatedSizePastLimit(t *testing.T) {
+	if sszutils.MaxSszSize == math.MaxInt {
+		t.Skip("the limit is the platform int here, so no reported size can pass it")
+	}
+	ds := NewDynSsz(nil)
+	if _, err := ds.SizeSSZ(&hugeSizer{}); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("SizeSSZ err = %v, want ErrInvalidValueRange", err)
+	}
+	if _, err := ds.MarshalSSZ(&hugeSizer{}); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("MarshalSSZ err = %v, want ErrInvalidValueRange", err)
+	}
+	// MarshalSSZTo hands a delegating value to its own marshaller without
+	// asking for a size, so there is nothing to refuse there; what it writes
+	// is the delegate's own output.
+	if out, err := ds.MarshalSSZTo(&hugeSizer{}, []byte{1}); err != nil || len(out) != 9 {
+		t.Fatalf("MarshalSSZTo = %d bytes, %v, want the delegate's own output", len(out), err)
+	}
+}
+
+// The spec map a caller passes stays the caller's: the library reads its own
+// copy, so a caller that keeps writing to its map cannot race the library.
+func TestSpecValuesAreCopied(t *testing.T) {
+	specs := map[string]any{"SIZE": uint64(4)}
+	ds := NewDynSsz(specs)
+	type payload struct {
+		Data []byte `ssz-size:"1" dynssz-size:"SIZE"`
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 2000; i++ {
+			specs["SIZE"] = uint64(i%8 + 1)
+		}
+	}()
+	for i := 0; i < 2000; i++ {
+		if _, err := ds.SizeSSZ(&payload{Data: make([]byte, 4)}); err != nil {
+			t.Fatalf("size: %v", err)
+		}
+	}
+	<-done
+	size, err := ds.SizeSSZ(&payload{Data: make([]byte, 4)})
+	if err != nil || size != 4 {
+		t.Fatalf("size = %d, %v, want the size the constructor was given", size, err)
+	}
+}
+
 // negSizer reports a negative size through its own sizer.
 type negSizer struct{ A uint64 }
 

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"reflect"
 	"sync"
 
@@ -120,8 +121,14 @@ func NewDynSsz(specs map[string]any, options ...DynSszOption) *DynSsz {
 		opts.MaxStreamSize = sszutils.DefaultMaxStreamSize
 	}
 
+	// The caller keeps its map and may go on writing to it; a concurrent read
+	// of a map being written is fatal in Go, and this type is safe to use from
+	// several goroutines, so the library reads a copy nobody else holds.
+	ownSpecs := make(map[string]any, len(specs))
+	maps.Copy(ownSpecs, specs)
+
 	dynssz := &DynSsz{
-		specValues:     specs,
+		specValues:     ownSpecs,
 		specValueCache: map[string]*cachedSpecValue{},
 		options:        opts,
 	}
@@ -251,8 +258,8 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 			var buf []byte
 			if sizer, ok := source.(sszutils.DynamicSizer); ok && d.delegable(source, "SizeSSZDyn") {
 				size := sizer.SizeSSZDyn(d)
-				if size < 0 {
-					return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer of %T returned negative size %d", source, size)
+				if err := checkDelegatedSize(source, size); err != nil {
+					return nil, err
 				}
 				buf = make([]byte, 0, size)
 			} else {
@@ -274,8 +281,8 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 				sizeFn := sizer.SizeSSZDynView(cfg.viewDescriptor)
 				if sizeFn != nil {
 					size := sizeFn(d)
-					if size < 0 {
-						return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer of %T returned negative size %d", source, size)
+					if err := checkDelegatedSize(source, size); err != nil {
+						return nil, err
 					}
 					buf = make([]byte, 0, size)
 				} else {
@@ -321,6 +328,19 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 	}
 
 	return newBuf, nil
+}
+
+// checkDelegatedSize validates a size a value reported through its own sizer:
+// negative would drive the offset table below its own start, and past the SSZ
+// size limit is a size no encoding can refer to.
+func checkDelegatedSize(source any, size int) error {
+	if size < 0 {
+		return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer of %T returned negative size %d", source, size)
+	}
+	if size > sszutils.MaxSszSize {
+		return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer of %T returned size %d, past the SSZ size limit", source, size)
+	}
+	return nil
 }
 
 // MarshalSSZTo serializes the given source into its SSZ (Simple Serialize) representation and writes the output to the provided buffer.
@@ -627,8 +647,8 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
 	if cfg == nil || cfg.viewDescriptor == nil {
 		if sizer, ok := source.(sszutils.DynamicSizer); ok && !d.options.NoDelegation && d.delegable(source, "SizeSSZDyn") {
 			size := sizer.SizeSSZDyn(d)
-			if size < 0 {
-				return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer of %T returned negative size %d", source, size)
+			if err := checkDelegatedSize(source, size); err != nil {
+				return 0, err
 			}
 			return size, nil
 		}
@@ -636,8 +656,8 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
 		sizeFn := viewSizer.SizeSSZDynView(cfg.viewDescriptor)
 		if sizeFn != nil {
 			size := sizeFn(d)
-			if size < 0 {
-				return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer of %T returned negative size %d", source, size)
+			if err := checkDelegatedSize(source, size); err != nil {
+				return 0, err
 			}
 			return size, nil
 		}

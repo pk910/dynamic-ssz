@@ -14,10 +14,15 @@ import (
 )
 
 // delegatedSize validates a size reported by a type's own sizer. A negative
-// size would drive the offset table below its own start.
+// size would drive the offset table below its own start, and a size past the
+// SSZ size limit is one no encoding can refer to: both are refused here, where
+// the reported size enters the size domain.
 func delegatedSize(desc *ssztypes.TypeDescriptor, size int) (int64, error) {
 	if size < 0 {
 		return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer of %v returned negative size %d", desc.Type, size)
+	}
+	if size > sszutils.MaxSszSize {
+		return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer of %v returned size %d, past the SSZ size limit", desc.Type, size)
 	}
 	return int64(size), nil
 }
