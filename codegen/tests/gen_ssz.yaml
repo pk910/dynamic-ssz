@@ -262,6 +262,8 @@ types:
     output: gen_edgecases.go
   - name: WideWrapperHolder
     output: gen_edgecases.go
+  - name: CustomPairList
+    output: gen_edgecases.go
   - name: DeclaredU64Holder
     output: gen_edgecases.go
   - name: PlainExtHolder

@@ -45,8 +45,14 @@ func TestShallowDescriptorParity(t *testing.T) {
 			}
 			if named, ok := types.Unalias(t).(*types.Named); ok {
 				switch named.Obj().Name() {
-				case "shallowBasic", "edgeOpaque", "fixedOctets":
+				case "shallowBasic", "edgeOpaque", "fixedOctets", "plainExtScalar", "extScalar":
 					return staticTrueAnnotation
+				case "amount":
+					return `ssz-type:"uint128" ssz-static:"true"`
+				case "declaredU64":
+					return `ssz-type:"uint64" ssz-static:"true"`
+				case "customPair":
+					return `ssz-type:"custom" ssz-size:"2" ssz-static:"true"`
 				}
 			}
 			return ""
@@ -55,6 +61,9 @@ func TestShallowDescriptorParity(t *testing.T) {
 	}
 	reflectDesc := func(v any) (*ssztypes.TypeDescriptor, error) {
 		return ssztypes.NewTypeCache(nil).GetTypeDescriptor(reflect.TypeOf(v), nil, nil, nil)
+	}
+	reflectElem := func(slice any) (*ssztypes.TypeDescriptor, error) {
+		return ssztypes.NewTypeCache(nil).GetTypeDescriptor(reflect.TypeOf(slice).Elem(), nil, nil, nil)
 	}
 	// What the emitters consume from a delegated descriptor: whether it is a
 	// basic value and how wide, whether it packs, whether it is dynamic, and
@@ -73,16 +82,30 @@ func TestShallowDescriptorParity(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		value any
+		elem  any
 		want  string
 	}{
-		{"shallowBasic", tests.ShallowBasicHolder{}.A, "basic=true width=2 packed=2 dynamic=false shallow=true"},
-		{"fixedOctets", tests.OctetParent{}.Data, "basic=false width=0 packed=0 dynamic=false shallow=true"},
+		{name: "shallowBasic", value: tests.ShallowBasicHolder{}.A, want: "basic=true width=2 packed=2 dynamic=false shallow=true"},
+		{name: "fixedOctets", value: tests.OctetParent{}.Data, want: "basic=false width=0 packed=0 dynamic=false shallow=true"},
+		// A width no Go kind states, declared by annotation.
+		{name: "amount", elem: tests.AmountList{}.L, want: "basic=true width=16 packed=16 dynamic=false shallow=true"},
+		// A width the annotation states over a Go kind that states another.
+		{name: "declaredU64", elem: tests.DeclaredU64Holder{}.L, want: "basic=true width=8 packed=8 dynamic=false shallow=true"},
+		// A custom type packs like the basic type its width matches.
+		{name: "customPair", elem: tests.CustomPairList{}.L, want: "basic=false width=0 packed=2 dynamic=false shallow=true"},
+		// A signed basic, which is basic only where extended types are on.
+		{name: "plainExtScalar", elem: tests.PlainExtHolder{}.L, want: "basic=true width=4 packed=4 dynamic=false shallow=true"},
 	} {
 		parsedRoot, err := parse(tc.name)
 		if err != nil {
 			t.Fatalf("parse %s: %v", tc.name, err)
 		}
-		reflectedRoot, err := reflectDesc(tc.value)
+		var reflectedRoot *ssztypes.TypeDescriptor
+		if tc.elem != nil {
+			reflectedRoot, err = reflectElem(tc.elem)
+		} else {
+			reflectedRoot, err = reflectDesc(tc.value)
+		}
 		if err != nil {
 			t.Fatalf("type cache %s: %v", tc.name, err)
 		}

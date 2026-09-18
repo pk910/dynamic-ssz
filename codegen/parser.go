@@ -404,20 +404,26 @@ func goKind(t types.Type) reflect.Kind {
 // shape only says how a scope packs and pads it.
 func (p *Parser) delegateShape(annotation string, t types.Type) (reflect.Kind, ssztypes.SszType, int64) {
 	kind, sszType, size := basicShape(t, true)
-	typeHints, _, _, err := ssztypes.ParseTags(annotation)
+	typeHints, sizeHints, _, err := ssztypes.ParseTags(annotation)
 	if err != nil || len(typeHints) == 0 || typeHints[0].Type == ssztypes.SszUnspecifiedType {
 		return kind, sszType, size
-	}
-	declared := typeHints[0].Type
-	width := sszBasicWidth(declared, true)
-	if width == 0 {
-		// A declared non-basic type (a custom type, say) has no width here.
-		return reflect.Invalid, ssztypes.SszUnspecifiedType, 0
 	}
 	if kind == reflect.Invalid {
 		kind = goKind(t)
 	}
-	return kind, declared, width
+	declared := typeHints[0].Type
+	if width := sszBasicWidth(declared, true); width > 0 {
+		return kind, declared, width
+	}
+	// Any other declared type keeps its identity: a custom type packs like the
+	// basic type its width matches, which the emitters decide from that width.
+	// The reflection type cache reads the width from an ssz-size annotation
+	// when there is one and from the type's own sizer otherwise; only the
+	// annotation is available here.
+	if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
+		return kind, declared, sizeHints[0].Size
+	}
+	return kind, declared, 0
 }
 
 // derefGoType strips aliases and pointers from t.
@@ -880,11 +886,20 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 				// resolves its exact size at runtime via its own sizer, so
 				// sizing and offsets are driven at runtime rather than from a
 				// (here unknown) compile-time constant.
-				if kind, sszType, size := p.delegateShape(annotation, innerDataType); size > 0 {
-					desc.Kind = kind
+				kind, sszType, size := p.delegateShape(annotation, innerDataType)
+				desc.Kind = kind
+				if sszType != ssztypes.SszUnspecifiedType {
 					desc.SszType = sszType
+				}
+				switch {
+				case size > 0:
 					desc.Size = size
-				} else {
+				case sszType == ssztypes.SszCustomType:
+					// Without a width the emitters cannot tell whether such a
+					// type packs with its neighbours, and would frame it as a
+					// composite where the reflection engine packs it.
+					return nil, fmt.Errorf("%v declares ssz-type:\"custom\" with ssz-static:\"true\" but no ssz-size: the generator cannot know its width, so declare it", originalType)
+				default:
 					desc.SszTypeFlags |= ssztypes.SszTypeFlagHasSizeExpr
 				}
 			case "false":

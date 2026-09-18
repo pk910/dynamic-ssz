@@ -4888,6 +4888,36 @@ func TestCodegenDelegatedShapeParity(t *testing.T) {
 	}
 }
 
+// A custom delegate of a basic width packs with its neighbours in both
+// engines, and the tree walker agrees with the hasher.
+func TestCodegenCustomDelegatePacks(t *testing.T) {
+	if _, generated := any(&CustomPairList{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	values := []customPair{{1, 2}, {3, 4}, {5, 6}}
+	// Three two-byte elements pack into one chunk of a one-chunk list
+	// (8*2/32 rounded up), mixed with the length.
+	var packed [32]byte
+	for i, v := range values {
+		copy(packed[i*2:], v[:])
+	}
+	var length [32]byte
+	length[0] = 3
+	listRoot := merkleRoot([][32]byte{packed}, 1)
+	want := sha256.Sum256(append(listRoot[:], length[:]...))
+	for _, v := range []any{&CustomPairList{L: values}, &CustomPairListRefl{L: values}} {
+		root, err := ds.HashTreeRoot(v)
+		if err != nil || root != want {
+			t.Fatalf("%T root = %x, %v, want %x", v, root, err, want)
+		}
+		tree, err := ds.GetTree(v)
+		if err != nil || !bytes.Equal(tree.Hash(), want[:]) {
+			t.Fatalf("%T tree = %x, %v, want %x", v, tree.Hash(), err, want)
+		}
+	}
+}
+
 // A delegate whose basic shape is declared by annotation rather than by its
 // Go kind keeps that shape in both engines: a list of it packs by the declared
 // width and both engines match an independently computed root.

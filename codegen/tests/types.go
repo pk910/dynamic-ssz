@@ -2724,6 +2724,37 @@ type ExtScalarHolderRefl struct {
 	L []extScalar `ssz-max:"8"`
 }
 
+// customPair is a two-byte custom type: reflection packs it in list scope, so
+// the generator has to reach the same shape from its annotation.
+type customPair [2]byte
+
+var _ = sszutils.Annotate[customPair](`ssz-type:"custom" ssz-size:"2" ssz-static:"true"`)
+
+func (*customPair) SizeSSZDyn(sszutils.DynamicSpecs) int { return 2 }
+func (v *customPair) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return append(b, v[:]...), nil
+}
+func (v *customPair) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) error {
+	if len(b) != 2 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	copy(v[:], b)
+	return nil
+}
+func (v *customPair) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, h sszutils.HashWalker) error {
+	h.Append(v[:])
+	return nil
+}
+
+type CustomPairList struct {
+	L []customPair `ssz-max:"8"`
+}
+
+// CustomPairListRefl is the same shape without generated methods.
+type CustomPairListRefl struct {
+	L []customPair `ssz-max:"8"`
+}
+
 // declaredU64 is a Go array declaring a uint64 shape, a width its Go kind
 // does not state; the emitters must keep picking their element paths by the
 // Go kind.
