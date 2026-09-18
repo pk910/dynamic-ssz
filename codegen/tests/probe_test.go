@@ -7,7 +7,9 @@ package tests
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"go/types"
+	"io"
 	"reflect"
 	"testing"
 
@@ -128,20 +130,27 @@ func TestFastsszProbePathsPerMethod(t *testing.T) {
 		marshalSSZ, marshalSSZTo, sizeSSZ, unmarshalSSZ int64
 	}
 
+	ds := dynssz.NewDynSsz(nil)
+	walked := &ProbeWalkHolder{
+		A: holder.A, B: holder.B, C: holder.C, D: holder.D,
+		E: holder.E, F: holder.F, G: holder.G,
+	}
+
 	for _, engine := range []struct {
-		name string
-		ds   *dynssz.DynSsz
+		name  string
+		value any
 	}{
-		// The first reaches ProbeHolder's generated methods, the second walks
-		// the holder and meets each probe as a field.
-		{"generated", dynssz.NewDynSsz(nil)},
-		{"reflection", dynssz.NewDynSsz(nil, dynssz.WithNoDelegation())},
+		// The first reaches ProbeHolder's generated methods. The second holds
+		// the same values in a type with no methods of its own, so reflection
+		// walks it and meets each probe as a field.
+		{"generated", holder},
+		{"walked", walked},
 	} {
 		t.Run(engine.name, func(t *testing.T) {
 			var got counts
 
 			ResetProbeCounts()
-			data, err := engine.ds.MarshalSSZ(holder)
+			data, err := ds.MarshalSSZ(engine.value)
 			if err != nil {
 				t.Fatalf("marshal: %v", err)
 			}
@@ -152,19 +161,19 @@ func TestFastsszProbePathsPerMethod(t *testing.T) {
 			got.marshalSSZTo = ProbeMarshalSSZToCalls.Load()
 
 			ResetProbeCounts()
-			size, err := engine.ds.SizeSSZ(holder)
+			size, err := ds.SizeSSZ(engine.value)
 			if err != nil || size != len(want) {
 				t.Fatalf("size = %d, %v, want %d", size, err, len(want))
 			}
 			got.sizeSSZ = ProbeSizeSSZCalls.Load()
 
 			ResetProbeCounts()
-			decoded := &ProbeHolder{}
-			if err := engine.ds.UnmarshalSSZ(decoded, data); err != nil {
+			decoded := reflect.New(reflect.TypeOf(engine.value).Elem()).Interface()
+			if err := ds.UnmarshalSSZ(decoded, data); err != nil {
 				t.Fatalf("unmarshal: %v", err)
 			}
-			if !reflect.DeepEqual(decoded, holder) {
-				t.Fatalf("round trip = %+v, want %+v", decoded, holder)
+			if !reflect.DeepEqual(decoded, engine.value) {
+				t.Fatalf("round trip = %+v, want %+v", decoded, engine.value)
 			}
 			got.unmarshalSSZ = ProbeUnmarshalSSZCalls.Load()
 
@@ -175,6 +184,36 @@ func TestFastsszProbePathsPerMethod(t *testing.T) {
 			want := counts{marshalSSZ: 1, marshalSSZTo: 5, sizeSSZ: 1, unmarshalSSZ: 5}
 			if got != want {
 				t.Errorf("delegate calls = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+// The error a delegate reports travels back to the caller through either
+// engine, with the field that produced it named.
+func TestFastsszProbeFallbackError(t *testing.T) {
+	t.Parallel()
+
+	ds := dynssz.NewDynSsz(nil)
+
+	for _, tc := range []struct {
+		name  string
+		value any
+	}{
+		{"generated", &ProbeFailHolder{}},
+		{"walked", &ProbeFailWalkHolder{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := ds.MarshalSSZ(tc.value)
+			if !errors.Is(err, ErrProbeMarshal) {
+				t.Fatalf("marshal err = %v, want the delegate's error", err)
+			}
+			// The streaming form reaches the same fallback and must report the
+			// same error.
+			if err := ds.MarshalSSZWriter(tc.value, io.Discard); !errors.Is(err, ErrProbeMarshal) {
+				t.Fatalf("stream marshal err = %v, want the delegate's error", err)
 			}
 		})
 	}

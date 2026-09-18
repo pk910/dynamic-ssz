@@ -2,6 +2,7 @@ package tests
 
 import (
 	"encoding/binary"
+	"errors"
 	"math/big"
 	"sync/atomic"
 	"time"
@@ -5564,6 +5565,43 @@ func (t *ProbeDynamicSizer) UnmarshalSSZ(buf []byte) error {
 	}
 	t.V = append([]byte(nil), buf[4:]...)
 	return nil
+}
+
+// ErrProbeMarshal is what ProbeMarshalFails reports.
+var ErrProbeMarshal = errors.New("probe marshal failed")
+
+// ProbeMarshalFails fails in the only marshalling method it has, so the error
+// travels back through the buffer-returning fallback.
+type ProbeMarshalFails struct {
+	V uint64
+}
+
+func (t *ProbeMarshalFails) MarshalSSZ() ([]byte, error) {
+	ProbeMarshalSSZCalls.Add(1)
+	return nil, ErrProbeMarshal
+}
+
+// ProbeFailHolder reaches the failing probe through generated code.
+type ProbeFailHolder struct {
+	A ProbeMarshalFails
+}
+
+// ProbeFailWalkHolder reaches it through the reflection walk.
+type ProbeFailWalkHolder struct {
+	A ProbeMarshalFails
+}
+
+// ProbeWalkHolder holds the same shapes as ProbeHolder and stays out of the
+// generation set, so it has no methods of its own for either engine to reach:
+// it is always walked, and each probe is met as a field.
+type ProbeWalkHolder struct {
+	A ProbeMarshalOnly
+	B ProbeStaticSurface
+	C ProbeNoSizer
+	D ProbeFullFastssz
+	E ProbePromoted
+	F []byte `ssz-max:"32"`
+	G ProbeDynamicSizer
 }
 
 // ProbeHolder places each probe shape where an engine has to choose a path. The

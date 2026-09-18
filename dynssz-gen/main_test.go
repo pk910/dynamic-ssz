@@ -1944,3 +1944,169 @@ func TestFindAnnotateCall_RepeatedRegistrations(t *testing.T) {
 		}
 	}
 }
+
+// An output file that already exists is replaced, and the copy kept while the
+// replacement was installed is removed once it is.
+func TestWriteOutputFilesReplacesExistingFiles(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "gen_a.go")
+	second := filepath.Join(dir, "gen_b.go")
+	for _, f := range []string{first, second} {
+		if err := os.WriteFile(f, []byte("package x // old\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := writeOutputFiles(map[string]string{
+		first:  "package x // new\n",
+		second: "package x // new\n",
+	}, false); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	for _, f := range []string{first, second} {
+		content, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("%s: %v", filepath.Base(f), err)
+		}
+		if string(content) != "package x // new\n" {
+			t.Errorf("%s holds %q, want the new content", filepath.Base(f), content)
+		}
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		t.Errorf("directory holds %v, want only the two outputs", names)
+	}
+}
+
+// A target that did not exist before is removed again when a later one cannot
+// be installed: the package is left as it was found.
+func TestWriteOutputFilesRemovesNewFilesOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "gen_a.go")
+	second := filepath.Join(dir, "gen_b.go")
+
+	installs := 0
+	renameFile = func(src, dst string) error {
+		if strings.Contains(src, ".tmp") {
+			installs++
+			if installs == 2 {
+				return errors.New("rename failed")
+			}
+		}
+		return os.Rename(src, dst)
+	}
+	t.Cleanup(func() { renameFile = os.Rename })
+
+	_, err := writeOutputFiles(map[string]string{
+		first:  "package x // new\n",
+		second: "package x // new\n",
+	}, false)
+	if err == nil {
+		t.Fatal("expected the failing rename to be reported")
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		t.Errorf("directory holds %v, want nothing", names)
+	}
+}
+
+// The copy of an existing target is made before the target is touched, so a
+// failure to make it leaves the file alone.
+func TestWriteOutputFilesReportsBackupFailure(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "gen_a.go")
+	if err := os.WriteFile(target, []byte("package x // old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The generated content is written to a temp file first; the creation after
+	// that is the copy this test refuses.
+	creations := 0
+	createTempFile = func(dir, pattern string) (*os.File, error) {
+		creations++
+		if creations > 1 {
+			return nil, errors.New("no temp file")
+		}
+		return os.CreateTemp(dir, pattern)
+	}
+	t.Cleanup(func() { createTempFile = os.CreateTemp })
+
+	_, err := writeOutputFiles(map[string]string{target: "package x // new\n"}, false)
+	if err == nil {
+		t.Fatal("expected the failing copy to be reported")
+	}
+
+	content, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatalf("read: %v", readErr)
+	}
+	if string(content) != "package x // old\n" {
+		t.Errorf("target holds %q, want what it held before", content)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("directory holds %d entries, want only the target", len(entries))
+	}
+}
+
+// Moving the target aside is what makes room for the replacement, so a failure
+// there leaves both the file and the directory as they were.
+func TestWriteOutputFilesReportsBackupRenameFailure(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "gen_a.go")
+	if err := os.WriteFile(target, []byte("package x // old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	renameFile = func(src, dst string) error {
+		if src == target {
+			return errors.New("rename failed")
+		}
+		return os.Rename(src, dst)
+	}
+	t.Cleanup(func() { renameFile = os.Rename })
+
+	_, err := writeOutputFiles(map[string]string{target: "package x // new\n"}, false)
+	if err == nil {
+		t.Fatal("expected the failing rename to be reported")
+	}
+
+	content, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatalf("read: %v", readErr)
+	}
+	if string(content) != "package x // old\n" {
+		t.Errorf("target holds %q, want what it held before", content)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		t.Errorf("directory holds %v, want only the target", names)
+	}
+}
