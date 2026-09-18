@@ -11,11 +11,31 @@
 // with fastssz and dynamic SSZ implementations.
 package sszutils
 
-// FastsszMarshaler is the interface implemented by types that can marshal themselves into valid SZZ using fastssz.
-type FastsszMarshaler interface {
-	MarshalSSZTo(dst []byte) ([]byte, error)
+// FastsszValueMarshaler is the interface implemented by types that marshal
+// themselves into a buffer of their own.
+type FastsszValueMarshaler interface {
 	MarshalSSZ() ([]byte, error)
+}
+
+// FastsszBufferMarshaler is the interface implemented by types that marshal
+// themselves by appending to the caller's buffer.
+type FastsszBufferMarshaler interface {
+	MarshalSSZTo(dst []byte) ([]byte, error)
+}
+
+// FastsszSizer is the interface implemented by types that report their own SSZ
+// encoded size.
+type FastsszSizer interface {
 	SizeSSZ() int
+}
+
+// FastsszMarshaler is the interface implemented by types that can marshal themselves into valid SZZ using fastssz.
+// Each of its methods is also an interface of its own, since a type may provide
+// any of them alone and is delegated to for what it provides.
+type FastsszMarshaler interface {
+	FastsszBufferMarshaler
+	FastsszValueMarshaler
+	FastsszSizer
 }
 
 // FastsszUnmarshaler is the interface implemented by types that can unmarshal a SSZ description of themselves
@@ -27,6 +47,15 @@ type FastsszUnmarshaler interface {
 // SSZ hash tree root using fastssz.
 type FastsszHashRoot interface {
 	HashTreeRoot() ([32]byte, error)
+}
+
+// FastsszHashRootWith is the interface implemented by types that hash themselves
+// into a walker the caller supplies. A type whose method takes an equivalent
+// walker interface from another package (fastssz's ssz.HashWalker, say) is
+// called the same way, so the library probes the method's signature rather than
+// this interface; it names the canonical form.
+type FastsszHashRootWith interface {
+	HashTreeRootWith(hw HashWalker) error
 }
 
 // DynamicMarshaler is the interface implemented by types that can marshal themselves using dynamic SSZ

@@ -238,8 +238,8 @@ func (ctx *hashTreeRootContext) getPtrPrefix(desc *ssztypes.TypeDescriptor, pref
 // inlined. Under WithoutDynamicExpressions the static method is used even when
 // fastssz delegation is otherwise disabled, because the dynamic path is forbidden.
 func (ctx *hashTreeRootContext) hashUsesFastSsz(desc *ssztypes.TypeDescriptor, isRoot bool) bool {
-	isFastsszHasher := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
-	isFastsszHashWith := desc.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0
+	isFastsszHasher := desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszHashRoot != 0
+	isFastsszHashWith := desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszHashRootWith != 0
 	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
 	hasDynamicMax := desc.SszTypeFlags&ssztypes.SszTypeFlagHasMaxExpr != 0 && !ctx.options.WithoutDynamicExpressions
 
@@ -283,7 +283,7 @@ func (ctx *hashTreeRootContext) hashDelegated(desc *ssztypes.TypeDescriptor, var
 		}
 	}
 
-	isFastsszHashWith := desc.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0
+	isFastsszHashWith := desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszHashRootWith != 0
 	useFastSsz := ctx.hashUsesFastSsz(desc, isRoot)
 
 	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 && !isRoot && !isView {
@@ -933,7 +933,7 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 
 		// Bulk uint64 list hashing; an element with a hash method of its own is
 		// walked one by one so the method is called.
-		hashMethods := ssztypes.SszCompatFlagDynamicHashRoot | ssztypes.SszCompatFlagDynamicViewHashRoot | ssztypes.SszCompatFlagFastSSZHasher | ssztypes.SszCompatFlagHashTreeRootWith
+		hashMethods := ssztypes.SszCompatFlagDynamicHashRoot | ssztypes.SszCompatFlagDynamicViewHashRoot | ssztypes.SszCompatFlagFastsszHashRoot | ssztypes.SszCompatFlagFastsszHashRootWith
 		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.Kind == reflect.Uint64 && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0 && desc.ElemDesc.SszCompatFlags&hashMethods == 0 {
 			ctx.appendCode(indent, "sszutils.HashUint64Slice(hh, %s)\n", getValueVar(true, ""))
 		} else {

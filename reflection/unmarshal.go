@@ -38,7 +38,7 @@ import (
 //
 // The function handles:
 //   - Automatic nil pointer initialization
-//   - FastSSZ delegation for compatible types without dynamic sizing
+//   - Delegation to a type's own UnmarshalSSZ, unless its size depends on the spec
 //   - Primitive type decoding (bool, uint8, uint16, uint32, uint64)
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
 //   - Validation that consumed bytes match expected sizes
@@ -109,7 +109,7 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 	} else if targetType.SszCompatFlags != 0 || targetType.SszType == ssztypes.SszCustomType {
 		// Fast path: skip compat interface checks for types that don't implement any
 		hasDynamicSize := targetType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
-		isFastsszUnmarshaler := targetType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+		isFastsszUnmarshaler := targetType.SszCompatFlags&ssztypes.SszCompatFlagFastsszUnmarshaler != 0
 		useDynamicUnmarshal := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0
 		useDynamicDecoder := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0
 		useFastSsz := !ctx.noFastSsz && isFastsszUnmarshaler && !hasDynamicSize

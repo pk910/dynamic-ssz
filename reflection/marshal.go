@@ -56,7 +56,8 @@ func encodeOffsetAtChecked(encoder sszutils.Encoder, pos int, offset int64) erro
 //
 // The function handles:
 //   - Automatic nil pointer dereferencing
-//   - FastSSZ delegation for compatible types without dynamic sizing
+//   - Delegation to a type's own MarshalSSZTo, or MarshalSSZ where that is all
+//     it has, unless its size depends on the spec
 //   - Primitive type encoding (bool, uint8, uint16, uint32, uint64)
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
 func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth reflectionDepth) error {
@@ -215,7 +216,7 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 // delegate unless ctx.noDelegation is set.
 func (ctx *ReflectionCtx) tryMarshalCompat(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder) (bool, error) {
 	hasDynamicSize := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
-	isFastsszMarshaler := sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+	isFastsszMarshaler := sourceType.SszCompatFlags&(ssztypes.SszCompatFlagFastsszBufferMarshaler|ssztypes.SszCompatFlagFastsszValueMarshaler) != 0
 	useDynamicMarshal := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0
 	useDynamicEncoder := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicEncoder != 0
 	useFastSsz := !ctx.noFastSsz && isFastsszMarshaler && !hasDynamicSize
@@ -233,12 +234,23 @@ func (ctx *ReflectionCtx) tryMarshalCompat(sourceType *ssztypes.TypeDescriptor, 
 	}
 
 	if useFastSsz {
-		if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.FastsszMarshaler); ok {
+		if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.FastsszBufferMarshaler); ok {
 			newBuf, err := marshaller.MarshalSSZTo(encoder.GetBuffer())
 			if err != nil {
 				return true, err
 			}
 			encoder.SetBuffer(newBuf)
+			return true, nil
+		}
+		// A type that only marshals into a buffer of its own is appended to the
+		// encoder's, which costs an allocation and a copy. Reached only where
+		// neither MarshalSSZTo nor a spec-aware method exists.
+		if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.FastsszValueMarshaler); ok {
+			data, err := marshaller.MarshalSSZ()
+			if err != nil {
+				return true, err
+			}
+			encoder.SetBuffer(append(encoder.GetBuffer(), data...))
 			return true, nil
 		}
 	}

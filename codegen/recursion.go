@@ -61,7 +61,7 @@ func validateEmittableGraph(root *ssztypes.TypeDescriptor, staticDelegation, dyn
 			if dynamicDelegation && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 {
 				return nil
 			}
-			if staticDelegation && desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0 {
+			if staticDelegation && staticSurfaceComplete(desc.SszCompatFlags) {
 				return nil
 			}
 		}
@@ -247,6 +247,15 @@ func (b *recursionBound) threads(desc *ssztypes.TypeDescriptor) bool {
 	return found
 }
 
+// staticSurfaceComplete reports whether every SSZ operation reaches one of the
+// type's own fastssz-style methods. A cycle terminates only then: an operation
+// with no method to call is emitted inline, and an inlined cycle has no end.
+func staticSurfaceComplete(flags ssztypes.SszCompatFlag) bool {
+	return flags&(ssztypes.SszCompatFlagFastsszBufferMarshaler|ssztypes.SszCompatFlagFastsszValueMarshaler) != 0 &&
+		flags&ssztypes.SszCompatFlagFastsszSizer != 0 &&
+		flags&ssztypes.SszCompatFlagFastsszUnmarshaler != 0
+}
+
 // depthMethodFlags maps each delegate method to the compat flag whose presence
 // in the generation set means the method, and with it its depth twin, is
 // emitted in this run.
@@ -257,10 +266,10 @@ var depthMethodFlags = map[string]ssztypes.SszCompatFlag{
 	"HashTreeRootWithDyn":     ssztypes.SszCompatFlagDynamicHashRoot,
 	"MarshalSSZEncoder":       ssztypes.SszCompatFlagDynamicEncoder,
 	"UnmarshalSSZDecoder":     ssztypes.SszCompatFlagDynamicDecoder,
-	"MarshalSSZTo":            ssztypes.SszCompatFlagFastSSZMarshaler,
-	"UnmarshalSSZ":            ssztypes.SszCompatFlagFastSSZMarshaler,
-	"SizeSSZ":                 ssztypes.SszCompatFlagFastSSZMarshaler,
-	"HashTreeRootWith":        ssztypes.SszCompatFlagHashTreeRootWith,
+	"MarshalSSZTo":            ssztypes.SszCompatFlagFastsszBufferMarshaler,
+	"UnmarshalSSZ":            ssztypes.SszCompatFlagFastsszUnmarshaler,
+	"SizeSSZ":                 ssztypes.SszCompatFlagFastsszSizer,
+	"HashTreeRootWith":        ssztypes.SszCompatFlagFastsszHashRootWith,
 	"MarshalSSZDynView":       ssztypes.SszCompatFlagDynamicViewMarshaler,
 	"UnmarshalSSZDynView":     ssztypes.SszCompatFlagDynamicViewUnmarshaler,
 	"SizeSSZDynView":          ssztypes.SszCompatFlagDynamicViewSizer,

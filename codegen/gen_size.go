@@ -263,7 +263,7 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 		// and must never call a *Dyn method. A child exposing a static SizeSSZ
 		// (every dynssz-generated child in this mode, plus external fastssz types)
 		// is reached through it even when fastssz delegation is otherwise disabled.
-		isFastsszSizer := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+		isFastsszSizer := desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszSizer != 0
 		useFastSsz := isFastsszSizer && !hasDynamicSize && (!ctx.options.NoFastSsz || staticBuild)
 		if desc.SszType == ssztypes.SszCustomType {
 			// A custom type has no structure to inline: it is reached through its

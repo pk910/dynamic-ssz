@@ -232,7 +232,7 @@ func (ctx *marshalContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 
 	// Handle types that have generated methods we can call
 	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
-	isFastsszMarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+	isFastsszMarshaler := desc.SszCompatFlags&(ssztypes.SszCompatFlagFastsszBufferMarshaler|ssztypes.SszCompatFlagFastsszValueMarshaler) != 0
 	// Under WithoutDynamicExpressions the generated buffer code must be fully
 	// static and must never call a *Dyn method. A child exposing a static
 	// MarshalSSZTo (every dynssz-generated child in this mode, plus external
@@ -271,6 +271,14 @@ func (ctx *marshalContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 	}
 
 	if useFastSsz && !isRoot && !isView {
+		if desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszBufferMarshaler == 0 {
+			// A type that only marshals into a buffer of its own is appended to
+			// the destination, which costs an allocation and a copy.
+			ctx.appendCode(indent, "if data, err := %s.MarshalSSZ(); err != nil {\n", varName)
+			ctx.appendCode(indent+1, "return nil, %s\n", typePath.getErrorWith("err"))
+			ctx.appendCode(indent, "} else {\n\tdst = append(dst, data...)\n}\n")
+			return nil
+		}
 		fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "MarshalSSZTo")
 		ctx.appendCode(indent, "if dst, err = %s.%s(dst%s); err != nil {\n", varName, fn, arg)
 		ctx.appendCode(indent+1, "return nil, %s\n", typePath.getErrorWith("err"))

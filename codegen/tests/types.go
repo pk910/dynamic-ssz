@@ -3,6 +3,7 @@ package tests
 import (
 	"encoding/binary"
 	"math/big"
+	"sync/atomic"
 	"time"
 
 	dynssz "github.com/pk910/dynamic-ssz"
@@ -5396,4 +5397,184 @@ type DynVecDeclared struct {
 // BigIntLimit carries a bigint limit past the 32-bit int range.
 type BigIntLimit struct {
 	B *big.Int `ssz-type:"bigint" ssz-max:"4294967296"`
+}
+
+// The probe fixtures carry different subsets of the fastssz-style methods, so a
+// test can tell which method each engine reaches for. Every method encodes what
+// walking the type would encode, so delegation is invisible in the output and
+// only the counters below distinguish the paths.
+var (
+	ProbeMarshalSSZCalls   atomic.Int64
+	ProbeMarshalSSZToCalls atomic.Int64
+	ProbeSizeSSZCalls      atomic.Int64
+	ProbeUnmarshalSSZCalls atomic.Int64
+)
+
+// ResetProbeCounts clears the probe call counters.
+func ResetProbeCounts() {
+	ProbeMarshalSSZCalls.Store(0)
+	ProbeMarshalSSZToCalls.Store(0)
+	ProbeSizeSSZCalls.Store(0)
+	ProbeUnmarshalSSZCalls.Store(0)
+}
+
+// ProbeMarshalOnly carries MarshalSSZ and nothing else, so marshalling reaches
+// it only through the buffer-returning fallback.
+type ProbeMarshalOnly struct {
+	V uint64
+}
+
+func (t *ProbeMarshalOnly) MarshalSSZ() ([]byte, error) {
+	ProbeMarshalSSZCalls.Add(1)
+	return binary.LittleEndian.AppendUint64(nil, t.V), nil
+}
+
+// ProbeStaticSurface carries the three methods generated code calls, without
+// MarshalSSZ.
+type ProbeStaticSurface struct {
+	V uint64
+}
+
+func (t *ProbeStaticSurface) MarshalSSZTo(dst []byte) ([]byte, error) {
+	ProbeMarshalSSZToCalls.Add(1)
+	return binary.LittleEndian.AppendUint64(dst, t.V), nil
+}
+
+func (t *ProbeStaticSurface) SizeSSZ() int {
+	ProbeSizeSSZCalls.Add(1)
+	return 8
+}
+
+func (t *ProbeStaticSurface) UnmarshalSSZ(buf []byte) error {
+	ProbeUnmarshalSSZCalls.Add(1)
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	t.V = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+
+// ProbeNoSizer marshals and unmarshals through its own methods and leaves
+// sizing to the walk.
+type ProbeNoSizer struct {
+	V uint64
+}
+
+func (t *ProbeNoSizer) MarshalSSZTo(dst []byte) ([]byte, error) {
+	ProbeMarshalSSZToCalls.Add(1)
+	return binary.LittleEndian.AppendUint64(dst, t.V), nil
+}
+
+func (t *ProbeNoSizer) UnmarshalSSZ(buf []byte) error {
+	ProbeUnmarshalSSZCalls.Add(1)
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	t.V = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+
+// ProbeFullFastssz carries the whole fastssz surface, as a fastssz-generated
+// type does.
+type ProbeFullFastssz struct {
+	V uint64
+}
+
+func (t *ProbeFullFastssz) MarshalSSZ() ([]byte, error) {
+	ProbeMarshalSSZCalls.Add(1)
+	return binary.LittleEndian.AppendUint64(nil, t.V), nil
+}
+
+func (t *ProbeFullFastssz) MarshalSSZTo(dst []byte) ([]byte, error) {
+	ProbeMarshalSSZToCalls.Add(1)
+	return binary.LittleEndian.AppendUint64(dst, t.V), nil
+}
+
+func (t *ProbeFullFastssz) SizeSSZ() int {
+	ProbeSizeSSZCalls.Add(1)
+	return 8
+}
+
+func (t *ProbeFullFastssz) UnmarshalSSZ(buf []byte) error {
+	ProbeUnmarshalSSZCalls.Add(1)
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	t.V = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+
+func (t *ProbeFullFastssz) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:8], t.V)
+	return root, nil
+}
+
+// ProbePromotedInner provides the static surface to whatever embeds it.
+type ProbePromotedInner struct {
+	V uint64
+}
+
+func (t *ProbePromotedInner) MarshalSSZTo(dst []byte) ([]byte, error) {
+	ProbeMarshalSSZToCalls.Add(1)
+	return binary.LittleEndian.AppendUint64(dst, t.V), nil
+}
+
+func (t *ProbePromotedInner) SizeSSZ() int {
+	ProbeSizeSSZCalls.Add(1)
+	return 8
+}
+
+func (t *ProbePromotedInner) UnmarshalSSZ(buf []byte) error {
+	ProbeUnmarshalSSZCalls.Add(1)
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	t.V = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+
+// ProbePromoted reaches the inner type's methods by promotion, so they answer
+// for the embedded value and not for this one.
+type ProbePromoted struct {
+	ProbePromotedInner
+	W uint64
+}
+
+// ProbeDynamicSizer is variable-size, so its width is known only by asking it.
+type ProbeDynamicSizer struct {
+	V []byte `ssz-max:"32"`
+}
+
+func (t *ProbeDynamicSizer) MarshalSSZTo(dst []byte) ([]byte, error) {
+	ProbeMarshalSSZToCalls.Add(1)
+	dst = binary.LittleEndian.AppendUint32(dst, 4)
+	return append(dst, t.V...), nil
+}
+
+func (t *ProbeDynamicSizer) SizeSSZ() int {
+	ProbeSizeSSZCalls.Add(1)
+	return 4 + len(t.V)
+}
+
+func (t *ProbeDynamicSizer) UnmarshalSSZ(buf []byte) error {
+	ProbeUnmarshalSSZCalls.Add(1)
+	if len(buf) < 4 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	t.V = append([]byte(nil), buf[4:]...)
+	return nil
+}
+
+// ProbeHolder places each probe shape where an engine has to choose a path. The
+// trailing list makes the container variable-size, so sizing walks its fields
+// instead of reading one static width.
+type ProbeHolder struct {
+	A ProbeMarshalOnly
+	B ProbeStaticSurface
+	C ProbeNoSizer
+	D ProbeFullFastssz
+	E ProbePromoted
+	F []byte `ssz-max:"32"`
+	G ProbeDynamicSizer
 }

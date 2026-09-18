@@ -32,13 +32,18 @@ const (
 	SszTypeFlagRecursionMember                         // Whether the type lies on a recursive cycle and counts as a level against the nesting bound
 )
 
-// SszCompatFlag is a flag indicating whether a type implements a specific SSZ compatibility interface
-type SszCompatFlag uint16
+// SszCompatFlag is a flag indicating whether a type implements a specific SSZ compatibility
+// interface. Each flag names one method, so a caller asks for the method it is about to
+// call rather than for a family the two type front ends could read differently.
+type SszCompatFlag uint32
 
 const (
-	SszCompatFlagFastSSZMarshaler       SszCompatFlag = 1 << iota // Whether the type implements fastssz.Marshaler
-	SszCompatFlagFastSSZHasher                                    // Whether the type implements fastssz.HashRoot
-	SszCompatFlagHashTreeRootWith                                 // Whether the type implements HashTreeRootWith
+	SszCompatFlagFastsszValueMarshaler  SszCompatFlag = 1 << iota // Whether the type implements FastsszValueMarshaler
+	SszCompatFlagFastsszBufferMarshaler                           // Whether the type implements FastsszBufferMarshaler
+	SszCompatFlagFastsszSizer                                     // Whether the type implements FastsszSizer
+	SszCompatFlagFastsszUnmarshaler                               // Whether the type implements FastsszUnmarshaler
+	SszCompatFlagFastsszHashRoot                                  // Whether the type implements FastsszHashRoot
+	SszCompatFlagFastsszHashRootWith                              // Whether the type implements FastsszHashRootWith, or its equivalent over another walker interface
 	SszCompatFlagDynamicMarshaler                                 // Whether the type implements DynamicMarshaler
 	SszCompatFlagDynamicUnmarshaler                               // Whether the type implements DynamicUnmarshaler
 	SszCompatFlagDynamicSizer                                     // Whether the type implements DynamicSizer
@@ -52,6 +57,12 @@ const (
 	SszCompatFlagDynamicViewEncoder                               // Whether the type implements DynamicViewEncoder
 	SszCompatFlagDynamicViewDecoder                               // Whether the type implements DynamicViewDecoder
 )
+
+// SszCompatFlagFastsszSurface is every fastssz-style method that answers for a whole
+// value. A type serving every SSZ operation without its spec-aware methods provides
+// all of them; the marshal half is satisfied by either marshal method.
+const SszCompatFlagFastsszSurface = SszCompatFlagFastsszValueMarshaler | SszCompatFlagFastsszBufferMarshaler |
+	SszCompatFlagFastsszSizer | SszCompatFlagFastsszUnmarshaler
 
 // GoTypeFlag is a bitmask indicating Go-specific type properties that affect
 // SSZ encoding behavior.
@@ -83,9 +94,9 @@ type TypeDescriptor struct {
 	BitSize                int64                     `json:"bit_size,omitempty"`      // Bit size for bit vector types (ssz-bitsize tag)
 	MinSize                int64                     `json:"min_size,omitempty"`      // Smallest serialization of this type; 0 when it has no floor (see SetMinSize)
 	WrapperFieldIndex      uint32                    `json:"wrapper_field,omitempty"` // Index of the wrapped value field in a wrapper struct (excluded fields may precede it)
-	SszType                SszType                   `json:"type"`                    // SSZ type of the type
+	SszCompatFlags         SszCompatFlag             `json:"compat"`                  // SSZ compatibility flags, one per delegate method
 	SszTypeFlags           SszTypeFlag               `json:"flags"`                   // SSZ type flags
-	SszCompatFlags         SszCompatFlag             `json:"compat"`                  // SSZ compatibility flags
+	SszType                SszType                   `json:"type"`                    // SSZ type of the type
 	GoTypeFlags            GoTypeFlag                `json:"go_flags"`                // Additional go type flags
 }
 

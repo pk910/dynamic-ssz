@@ -36,8 +36,8 @@ func delegatedSize(desc *ssztypes.TypeDescriptor, size int) (int64, error) {
 //   - Arrays multiply element size by length
 //   - Slices account for actual length and any padding from size hints
 //
-// The function optimizes performance by delegating to fastssz's SizeSSZ method when:
-//   - The type implements the fastssz Marshaler interface
+// The function optimizes performance by delegating to the type's own SizeSSZ when:
+//   - The type implements sszutils.FastsszSizer
 //   - The type and all nested types have static sizes (no dynamic spec values)
 //
 // Parameters:
@@ -99,7 +99,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		}
 	} else if targetType.SszCompatFlags != 0 || targetType.SszType == ssztypes.SszCustomType {
 		// Fast path: skip compat interface checks for types that don't implement any
-		useFastSsz := !ctx.noFastSsz && targetType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+		useFastSsz := !ctx.noFastSsz && targetType.SszCompatFlags&ssztypes.SszCompatFlagFastsszSizer != 0
 		if !useFastSsz && targetType.SszType == ssztypes.SszCustomType {
 			useFastSsz = true
 		}
@@ -109,8 +109,8 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		}
 
 		if useFastSsz {
-			if marshaller, ok := getPtr(targetValue).Interface().(sszutils.FastsszMarshaler); ok {
-				return delegatedSize(targetType, marshaller.SizeSSZ())
+			if sizer, ok := getPtr(targetValue).Interface().(sszutils.FastsszSizer); ok {
+				return delegatedSize(targetType, sizer.SizeSSZ())
 			}
 		}
 

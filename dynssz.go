@@ -232,7 +232,7 @@ func (d *DynSsz) delegable(v any, method string) bool {
 //   - Arrays and slices of supported types
 //   - Structs with appropriate SSZ tags
 //   - Pointers to supported types
-//   - Types implementing fastssz.Marshaler interface
+//   - Types implementing any of the fastssz marshalling interfaces
 //
 // Example:
 //

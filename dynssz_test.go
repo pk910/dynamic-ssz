@@ -2394,7 +2394,7 @@ func TestRecursionSuppressesFastsszDelegation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("descriptor: %v", err)
 	}
-	if descC.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0 {
+	if descC.SszCompatFlags&ssztypes.SszCompatFlagFastsszHashRoot != 0 {
 		t.Error("fastssz hasher flag should be suppressed for a spec-dependent subtree")
 	}
 }

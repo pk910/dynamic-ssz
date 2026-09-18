@@ -400,3 +400,5 @@ types:
     output: gen_edgecases.go
   - name: GenCovCustomHolder2
     output: gen_edgecases.go
+  - name: ProbeHolder
+    output: gen_edgecases.go

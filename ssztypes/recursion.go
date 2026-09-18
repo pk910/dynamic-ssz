@@ -119,10 +119,10 @@ func FixupRecursiveFlags(root *TypeDescriptor) {
 			changed = true
 
 			if raised&SszTypeFlagHasDynamicSize != 0 {
-				desc.SszCompatFlags &^= SszCompatFlagFastSSZMarshaler
+				desc.SszCompatFlags &^= SszCompatFlagFastsszSurface
 			}
 			if raised&SszTypeFlagHasDynamicMax != 0 {
-				desc.SszCompatFlags &^= SszCompatFlagFastSSZHasher | SszCompatFlagHashTreeRootWith
+				desc.SszCompatFlags &^= SszCompatFlagFastsszHashRoot | SszCompatFlagFastsszHashRootWith
 				desc.HashTreeRootWithMethod = nil
 			}
 		}

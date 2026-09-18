@@ -148,7 +148,7 @@ func TestUnmarshalTypeFastsszSizeOverflow(t *testing.T) {
 		SszType:        ssztypes.SszCustomType,
 		Kind:           reflect.Struct,
 		Size:           overflowLen,
-		SszCompatFlags: ssztypes.SszCompatFlagFastSSZMarshaler,
+		SszCompatFlags: ssztypes.SszCompatFlagFastsszSurface,
 		Type:           reflect.TypeOf(stubFastsszUnmarshaler{}),
 	}
 	val := reflect.New(td.Type).Elem()
