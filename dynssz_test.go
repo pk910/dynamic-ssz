@@ -3705,6 +3705,34 @@ func (b *inconsistentSizeCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ 
 	return nil
 }
 
+// The library reads a spec map nobody else holds: the map itself is copied,
+// and so is the one accepted value that is a pointer the caller can still
+// write through, so a write that lands before the library first resolves the
+// name does not change what it resolves.
+func TestSpecValuesAreOwned(t *testing.T) {
+	type holder struct {
+		L []uint64 `ssz-max:"2" dynssz-max:"LIMIT"`
+	}
+	v := &holder{L: []uint64{1, 2, 3}}
+
+	limit := big.NewInt(4)
+	ds := NewDynSsz(map[string]any{"LIMIT": limit})
+	// The caller goes on using the value it handed over.
+	limit.SetInt64(64)
+	got, err := ds.HashTreeRoot(v)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+
+	want, err := NewDynSsz(map[string]any{"LIMIT": big.NewInt(4)}).HashTreeRoot(v)
+	if err != nil {
+		t.Fatalf("hash with an untouched value: %v", err)
+	}
+	if got != want {
+		t.Fatalf("root = %x, want the root of the specs handed over, %x", got, want)
+	}
+}
+
 // widestCustom occupies no Go memory and declares the widest size SSZ can
 // express, so a list of it can hold more elements than that size without
 // costing anything to build.

@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"math"
+	"math/big"
 	"reflect"
 	"sync"
 
@@ -124,9 +124,17 @@ func NewDynSsz(specs map[string]any, options ...DynSszOption) *DynSsz {
 
 	// The caller keeps its map and may go on writing to it; a concurrent read
 	// of a map being written is fatal in Go, and this type is safe to use from
-	// several goroutines, so the library reads a copy nobody else holds.
+	// several goroutines, so the library reads a copy nobody else holds. A
+	// big.Int is the one spec value that is a pointer to something the caller
+	// can still change, so it is copied too: every other accepted value is
+	// immutable once handed over.
 	ownSpecs := make(map[string]any, len(specs))
-	maps.Copy(ownSpecs, specs)
+	for name, value := range specs {
+		if n, ok := value.(*big.Int); ok && n != nil {
+			value = new(big.Int).Set(n)
+		}
+		ownSpecs[name] = value
+	}
 
 	dynssz := &DynSsz{
 		specValues:     ownSpecs,
