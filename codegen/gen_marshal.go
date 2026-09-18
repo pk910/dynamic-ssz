@@ -495,12 +495,19 @@ func (ctx *marshalContext) marshalBigInt(desc *ssztypes.TypeDescriptor, varName 
 // marshalContainer generates marshal code for SSZ container (struct) types.
 func (ctx *marshalContext) marshalContainer(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	hasDynamic := false
+	staticSize := 0
 	for _, field := range desc.ContainerDesc.Fields {
 		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 			hasDynamic = true
-			break
+			staticSize += 4
+		} else if field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr == 0 || ctx.options.WithoutDynamicExpressions {
+			staticSize += int(field.Type.Size)
 		}
 	}
+
+	// The fixed section holds the offset positions written below, so a section
+	// the target's int cannot address is refused before any of them is formed.
+	platformGuard(ctx.appendCode, indent, ctx.typePrinter, uint64(staticSize), false, "return nil, "+typePath.getErrorWith(fmt.Sprintf("sszutils.ErrPlatformOverflowFn(\"container size\", uint64(%d))", staticSize)))
 
 	if hasDynamic {
 		ctx.appendCode(indent, "dstlen := len(dst)\n")

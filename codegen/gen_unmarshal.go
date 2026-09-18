@@ -598,8 +598,12 @@ func (ctx *unmarshalContext) unmarshalOptional(desc *ssztypes.TypeDescriptor, va
 			trailErr := typePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(uint64(len(buf)) - 1 - %s)", sizeVar))
 			ctx.appendExactLenCheck(indent+1, "1+"+sizeVar, "uint64(len(buf))", eofErr, trailErr)
 		} else {
-			trailErr := typePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %s)", posLit(int(1+desc.ElemDesc.Size))))
-			ctx.appendExactLenCheck(indent+1, posLit(int(1+desc.ElemDesc.Size)), "len(buf)", eofErr, trailErr)
+			// The comparison takes the declared size as it is, against a
+			// widened length, so a size past the target's int range narrows
+			// neither the check nor the figure the error carries.
+			sizeExpr := fmt.Sprintf("%d", 1+desc.ElemDesc.Size)
+			trailErr := typePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(%s)", lenMinusExpr("len(buf)", sizeExpr)))
+			ctx.appendExactLenCheck(indent+1, sizeExpr, "len(buf)", eofErr, trailErr)
 		}
 	}
 
@@ -1338,8 +1342,8 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 			}
 			errCode = fmt.Sprintf("sszutils.ErrListRegionTooSmallFn(itemCount, %s, len(buf)-startOffset)", uintLitArg(minElemSize))
 			regionCmp := fmt.Sprintf("uint64(itemCount) > uint64(len(buf)-startOffset)/(%s)", minElemSize)
-			if _, lerr := strconv.ParseUint(minElemSize, 10, 64); lerr == nil {
-				regionCmp = fmt.Sprintf("itemCount > (len(buf)-startOffset)/(%s)", intLitStr(minElemSize))
+			if _, lerr := strconv.ParseUint(minElemSize, 10, 64); lerr == nil && !bigLiteral(minElemSize) {
+				regionCmp = fmt.Sprintf("itemCount > (len(buf)-startOffset)/(%s)", minElemSize)
 			}
 			ctx.appendCode(indent, "if %s%s {\n\treturn %s\n}\n", guard, regionCmp, typePath.getErrorWith(errCode))
 		}
@@ -1471,23 +1475,25 @@ func (ctx *unmarshalContext) unmarshalUnion(desc *ssztypes.TypeDescriptor, varNa
 			// static default: doing so under-/over-reads the union region for any
 			// preset whose resolved size differs from the static fallback. Compute
 			// the runtime size the same way the size/marshal paths do.
-			// sizeExpr is compared against a widened length; sizeArg is the
-			// same size where an int is wanted, capped so a declaration past
-			// the target's int range still compiles there.
-			var sizeExpr, sizeArg string
+			// The size is compared against a widened length, and reported in
+			// the same domain, so a declaration past the target's int range
+			// neither narrows the check nor the figure the error carries.
+			var sizeExpr string
 			if variantDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
 				sizeVar, serr := ctx.staticSizeVars.getStaticSizeVar(variantDesc)
 				if serr != nil {
 					return serr
 				}
 				sizeExpr = fmt.Sprintf("1 + int(%s)", sizeVar)
-				sizeArg = sizeExpr
 			} else {
 				sizeExpr = fmt.Sprintf("%d", 1+elemSize)
-				sizeArg = posLit(int(1 + elemSize))
 			}
-			eofErr := childTypePath.getErrorWith(fmt.Sprintf("sszutils.ErrUnionVariantEOFFn(len(buf), %s)", sizeArg))
-			trailErr := childTypePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - (%s))", sizeArg))
+			trailExpr := fmt.Sprintf("len(buf) - (%s)", sizeExpr)
+			if bigLiteral(sizeExpr) {
+				trailExpr = lenMinusExpr("len(buf)", sizeExpr)
+			}
+			eofErr := childTypePath.getErrorWith(fmt.Sprintf("sszutils.ErrUnionVariantEOFFn(len(buf), %s)", uintLitArg(sizeExpr)))
+			trailErr := childTypePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(%s)", trailExpr))
 			ctx.appendExactLenCheck(indent+1, sizeExpr, "len(buf)", eofErr, trailErr)
 		}
 

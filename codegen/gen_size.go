@@ -739,6 +739,12 @@ func (ctx *sizeContext) sizeUnion(desc *ssztypes.TypeDescriptor, varName, sizeVa
 			ctx.appendCode(indent, "\tif _, ok := %s.Data.(%s); !ok {\n", varName, variantType)
 			ctx.appendCode(indent, "\t\treturn 0\n")
 			ctx.appendCode(indent, "\t}\n")
+			// A declared size the target cannot hold is refused before it is
+			// added, so the capped literal below is never the figure a target
+			// with a narrower int reports.
+			platformGuard(func(guardIndent int, code string, args ...any) {
+				ctx.appendCode(guardIndent, "\t"+code, args...)
+			}, indent, ctx.typePrinter, uint64(variantDesc.Size), false, "return 0")
 			ctx.appendCode(indent, "\t%s += %s\n", sizeVar, posLit(int(variantDesc.Size)))
 		}
 	}
