@@ -6650,3 +6650,43 @@ func TestParseTagsFastsszTag(t *testing.T) {
 		t.Fatal("both tags accepted")
 	}
 }
+
+// A reference that declares a different SSZ type than the annotation is an
+// override, per dimension.
+func TestSameSszTypes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		a, b []SszTypeHint
+		want bool
+	}{
+		{"both empty", nil, nil, true},
+		{"same", []SszTypeHint{{Type: SszUint64Type}}, []SszTypeHint{{Type: SszUint64Type}}, true},
+		{"different length", []SszTypeHint{{Type: SszUint64Type}}, nil, false},
+		{"different type", []SszTypeHint{{Type: SszUint64Type}}, []SszTypeHint{{Type: SszUint32Type}}, false},
+		{"different in the second dimension",
+			[]SszTypeHint{{Type: SszListType}, {Type: SszUint64Type}},
+			[]SszTypeHint{{Type: SszListType}, {Type: SszUint32Type}}, false},
+	} {
+		if got := SameSszTypes(tc.a, tc.b); got != tc.want {
+			t.Errorf("%s: SameSszTypes = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// badAnnotatedType carries an annotation that states a valid ssz-static and an
+// SSZ type the tag parser rejects.
+type badAnnotatedType struct{ A uint64 }
+
+var _ = sszutils.Annotate[badAnnotatedType](`ssz-static:"true" ssz-type:"bogus"`)
+
+// Deciding whether a reference overrides the type's own annotation reads that
+// annotation, so an unparsable one is refused there too.
+func TestTypeCache_OverrideCheckRefusesBadAnnotation(t *testing.T) {
+	type holder struct {
+		F badAnnotatedType `ssz-type:"container"`
+	}
+	_, err := NewTypeCache(nil).GetTypeDescriptor(reflect.TypeOf(holder{}), nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "bogus") {
+		t.Fatalf("err = %v, want the annotation refused", err)
+	}
+}

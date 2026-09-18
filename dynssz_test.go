@@ -3562,6 +3562,28 @@ func TestBigIntMaxEnforced(t *testing.T) {
 	}
 }
 
+// A limit no platform int can hold gives the decoder no read cap to apply, so
+// it decodes without one and the value is checked afterwards as before.
+func TestBigIntMaxPastThePlatformRange(t *testing.T) {
+	type T struct {
+		N big.Int `ssz-max:"9223372036854775808"`
+	}
+	ds := NewDynSsz(nil, WithExtendedTypes())
+
+	v := &T{N: *big.NewInt(0x1122334455)}
+	encoded, err := ds.MarshalSSZ(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back T
+	if err := ds.UnmarshalSSZ(&back, encoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.N.Cmp(&v.N) != 0 {
+		t.Fatalf("round trip = %v, want %v", back.N.String(), v.N.String())
+	}
+}
+
 // The decoder enforces the same static ssz-max as the encoder; without the
 // check it would accept a payload whose decoded value can be neither
 // re-encoded nor hashed.
@@ -3680,6 +3702,66 @@ func (b *inconsistentSizeCustom) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, _ 
 
 func (b *inconsistentSizeCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
 	return nil
+}
+
+// pastLimitCustom reports a size past the SSZ size limit without writing it.
+type pastLimitCustom struct{}
+
+func (h *pastLimitCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
+	// One past the widest size SSZ can express. Where int is no wider than
+	// that size, the step wraps negative, which is refused just the same.
+	top := int(sszutils.MaxSszSize)
+	return top + 1
+}
+
+func (h *pastLimitCustom) MarshalSSZEncoder(_ sszutils.DynamicSpecs, _ sszutils.Encoder) error {
+	return nil
+}
+
+func (h *pastLimitCustom) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, _ sszutils.Decoder) error {
+	return nil
+}
+
+func (h *pastLimitCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+// limitSizeCustom reports the widest size SSZ can express without writing it.
+type limitSizeCustom struct{}
+
+func (h *limitSizeCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return int(sszutils.MaxSszSize) }
+func (h *limitSizeCustom) MarshalSSZEncoder(_ sszutils.DynamicSpecs, _ sszutils.Encoder) error {
+	return nil
+}
+
+func (h *limitSizeCustom) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, _ sszutils.Decoder) error {
+	return nil
+}
+
+func (h *limitSizeCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+// A size a delegate reports is refused where it enters the size domain, and
+// the sum of sizes is refused where the terms are added: one delegate at the
+// limit plus any other field leaves the range. Nothing is allocated for either
+// figure, since the size is refused before it is used.
+func TestSizeSSZRefusesDelegatedSizePastTheLimit(t *testing.T) {
+	ds := NewDynSsz(nil)
+	type overHolder struct {
+		C pastLimitCustom `ssz-type:"custom"`
+	}
+	if _, err := ds.SizeSSZ(&overHolder{}); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Errorf("a delegate past the limit: err = %v, want ErrInvalidValueRange", err)
+	}
+
+	type sumHolder struct {
+		A uint64
+		C limitSizeCustom `ssz-type:"custom" ssz-static:"true"`
+	}
+	if _, err := ds.SizeSSZ(&sumHolder{}); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Errorf("a sum past the limit: err = %v, want ErrInvalidValueRange", err)
+	}
 }
 
 // zeroSizeCustom is a custom static type whose sizer reports zero bytes. As a
@@ -7144,6 +7226,52 @@ func TestMarshalWriterOffsetOverflow(t *testing.T) {
 		}
 		ctx := reflection.NewReflectionCtx(ds, nil, false, true, false, 0)
 		expectOffsetErr(t, ctx.MarshalSSZ(desc, reflect.ValueOf(v), sszutils.NewStreamEncoder(io.Discard, 0)))
+	})
+
+	// The walk that precedes a public marshal refuses a claimed total past the
+	// SSZ size limit, so the offset writes below are reached by driving the
+	// reflection context directly, on a value whose total is refused but whose
+	// individual offsets are what the writer forms first.
+	directDesc := func(t *testing.T, v any, sizeHints []ssztypes.SszSizeHint, maxHints []ssztypes.SszMaxSizeHint) *ssztypes.TypeDescriptor {
+		t.Helper()
+		desc, err := ds.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(v), sizeHints, maxHints, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return desc
+	}
+	marshalDirect := func(t *testing.T, v any, desc *ssztypes.TypeDescriptor) error {
+		t.Helper()
+		ctx := reflection.NewReflectionCtx(ds, nil, false, true, false, 0)
+		return ctx.MarshalSSZ(desc, reflect.ValueOf(v), sszutils.NewStreamEncoder(io.Discard, 0))
+	}
+
+	t.Run("list element offsets accumulate", func(t *testing.T) {
+		v := make([]hugeSizeCustom, 3)
+		desc := directDesc(t, v, nil, []ssztypes.SszMaxSizeHint{{Size: 16}})
+		expectOffsetErr(t, marshalDirect(t, v, desc))
+	})
+
+	t.Run("vector element offsets accumulate", func(t *testing.T) {
+		v := make([]hugeSizeCustom, 3)
+		desc := directDesc(t, v, []ssztypes.SszSizeHint{{Size: 3}}, nil)
+		expectOffsetErr(t, marshalDirect(t, v, desc))
+	})
+
+	t.Run("vector zero-fill element offsets accumulate", func(t *testing.T) {
+		v := make([]hugeSizeCustom, 1)
+		desc := directDesc(t, v, []ssztypes.SszSizeHint{{Size: 4}}, nil)
+		expectOffsetErr(t, marshalDirect(t, v, desc))
+	})
+
+	t.Run("container field offsets past the range", func(t *testing.T) {
+		type C struct {
+			A hugeSizeCustom `ssz-type:"custom"`
+			B hugeSizeCustom `ssz-type:"custom"`
+			C hugeSizeCustom `ssz-type:"custom"`
+		}
+		v := C{}
+		expectOffsetErr(t, marshalDirect(t, v, directDesc(t, v, nil, nil)))
 	})
 
 	t.Run("list offsets accumulate", func(t *testing.T) {

@@ -532,6 +532,38 @@ func TestWrapperAddMethods(t *testing.T) {
 		}
 	})
 
+	t.Run("AddSmallUints", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			add  func(w *Wrapper)
+			want []byte
+		}{
+			{"AddUint32", func(w *Wrapper) { w.AddUint32(0x11223344) }, []byte{0x44, 0x33, 0x22, 0x11}},
+			{"AddUint16", func(w *Wrapper) { w.AddUint16(0x1122) }, []byte{0x22, 0x11}},
+			{"AddUint8", func(w *Wrapper) { w.AddUint8(0x11) }, []byte{0x11}},
+		} {
+			w := NewWrapper()
+			tc.add(w)
+			if nodeCount(w) != 1 {
+				t.Fatalf("%s added %d chunks, want 1", tc.name, nodeCount(w))
+			}
+			want := make([]byte, 32)
+			copy(want, tc.want)
+			if got := nodeAt(w, 0).value[:]; !bytes.Equal(got, want) {
+				t.Errorf("%s value = %x, want %x", tc.name, got, want)
+			}
+		}
+	})
+
+	t.Run("AddBytesEmpty", func(t *testing.T) {
+		// An empty value contributes nothing, as in hasher.Hasher.
+		w := NewWrapper()
+		w.AddBytes(nil)
+		if nodeCount(w) != 0 || len(w.buf) != 0 {
+			t.Errorf("empty AddBytes left %d chunks and %d bytes, want none", nodeCount(w), len(w.buf))
+		}
+	})
+
 	t.Run("AddNode", func(t *testing.T) {
 		w := NewWrapper()
 		node := NewNodeWithValue(bytes.Repeat([]byte{42}, 32))
@@ -863,6 +895,30 @@ func TestWrapperCommitProgressiveWithActiveFields(t *testing.T) {
 // Bytes become leaves when a region is reduced: the region is padded to whole
 // chunks counted from its start, and each chunk is one leaf. An empty value
 // contributes nothing, matching hasher.Hasher.
+// The terminal methods report what is missing: an open scope, or a buffer that
+// is not one chunk. Hash reports the last chunk of a longer buffer, and
+// Collapse is a hint this walker has no use for.
+func TestWrapperTerminalStates(t *testing.T) {
+	w := NewWrapper()
+	idx := w.StartTree(sszutils.TreeTypeBinary)
+	w.PutUint64(1)
+	w.Collapse()
+	if _, err := w.Root(); err == nil || !strings.Contains(err.Error(), "unfinished hashing scopes") {
+		t.Fatalf("Root with an open scope: err = %v", err)
+	}
+	w.Merkleize(idx)
+
+	w.PutUint64(2)
+	if _, err := w.HashRoot(); err == nil || !strings.Contains(err.Error(), "want 32") {
+		t.Fatalf("HashRoot with two chunks: err = %v", err)
+	}
+	// Hash reports the last chunk, not the whole buffer.
+	tail := w.Hash()
+	if len(tail) != 32 || !bytes.Equal(tail, w.buf[32:]) {
+		t.Fatalf("Hash() = %x, want the last chunk %x", tail, w.buf[32:])
+	}
+}
+
 // A node added through the legacy Add* API keeps its identity as a leaf of the
 // enclosing scope, even when bytes were appended before it: it takes a chunk
 // of its own rather than being smeared across two.

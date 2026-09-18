@@ -164,6 +164,17 @@ func TestOutputPathAliases(t *testing.T) {
 		t.Fatalf("err = %v, want the collision refusal", err)
 	}
 
+	// A type with no output file of its own is grouped by the run's default
+	// output, so it names nothing here.
+	if err := checkOutputCollisions([]typeSpec{{TypeName: "A"}, {TypeName: "B"}}); err != nil {
+		t.Fatalf("specs without an output were refused: %v", err)
+	}
+
+	// The run refuses a colliding set before it generates anything.
+	if err := run(&Config{TypeSpecs: mixed, PackagePath: "."}); err == nil || !strings.Contains(err.Error(), "name the same file") {
+		t.Fatalf("run: err = %v, want the collision refusal", err)
+	}
+
 	// A linked directory is another spelling of the directory it points at, so
 	// the two paths name one file.
 	dir := t.TempDir()
