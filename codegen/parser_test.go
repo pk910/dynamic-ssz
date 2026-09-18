@@ -18,6 +18,7 @@ import (
 
 	"github.com/pk910/dynamic-ssz/codegen/tests"
 	"github.com/pk910/dynamic-ssz/ssztypes"
+	"github.com/pk910/dynamic-ssz/sszutils"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -203,6 +204,11 @@ func TestParserDescribesUnannotatedDelegateCycle(t *testing.T) {
 	}
 }
 
+// badAnnotated carries an annotation the tag parser rejects.
+type badAnnotated struct{ A uint64 }
+
+var _ = sszutils.Annotate[badAnnotated](`ssz-static:"true" ssz-type:"bogus"`)
+
 // TestParserShallowGate exercises the parser's shallow-build gate for an external,
 // fully-delegated type. NestedDelegatedContainer (loaded with its generated
 // methods) fully delegates and is not registered in the parser's CompatFlags, so
@@ -222,6 +228,25 @@ func TestParserShallowGate(t *testing.T) {
 		_, err := p.GetTypeDescriptor(ptrType, nil, nil, nil)
 		if err == nil || !strings.Contains(err.Error(), "invalid ssz-static value") {
 			t.Fatalf("expected invalid ssz-static error, got %v", err)
+		}
+	})
+
+	// An annotation the tag parser rejects is refused here, as the reflection
+	// type cache refuses it.
+	t.Run("InvalidAnnotation", func(t *testing.T) {
+		const annotation = `ssz-static:"true" ssz-type:"bogus"`
+		p := NewParser()
+		p.AnnotationResolver = func(types.Type) string { return annotation }
+		if !p.fullyDelegatesSSZ(ptrType) {
+			t.Skip("generated code not present; NestedDelegatedContainer does not fully delegate")
+		}
+		_, err := p.GetTypeDescriptor(ptrType, nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "bogus") {
+			t.Fatalf("parser: err = %v, want the annotation refused", err)
+		}
+		_, cacheErr := ssztypes.NewTypeCache(nil).GetTypeDescriptor(reflect.TypeOf(badAnnotated{}), nil, nil, nil)
+		if cacheErr == nil || !strings.Contains(cacheErr.Error(), "bogus") {
+			t.Fatalf("type cache: err = %v, want the annotation refused", cacheErr)
 		}
 	})
 

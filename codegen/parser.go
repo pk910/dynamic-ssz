@@ -402,18 +402,21 @@ func goKind(t types.Type) reflect.Kind {
 // front end, so neither applies the representability and extended-type rules
 // that a traversed type passes; its own methods own its encoding, and the
 // shape only says how a scope packs and pads it.
-func (p *Parser) delegateShape(annotation string, t types.Type) (reflect.Kind, ssztypes.SszType, int64) {
+func (p *Parser) delegateShape(annotation string, t types.Type) (reflect.Kind, ssztypes.SszType, int64, error) {
 	kind, sszType, size := basicShape(t, true)
 	typeHints, sizeHints, _, err := ssztypes.ParseTags(annotation)
-	if err != nil || len(typeHints) == 0 || typeHints[0].Type == ssztypes.SszUnspecifiedType {
-		return kind, sszType, size
+	if err != nil {
+		return kind, sszType, size, err
+	}
+	if len(typeHints) == 0 || typeHints[0].Type == ssztypes.SszUnspecifiedType {
+		return kind, sszType, size, nil
 	}
 	if kind == reflect.Invalid {
 		kind = goKind(t)
 	}
 	declared := typeHints[0].Type
 	if width := sszBasicWidth(declared, true); width > 0 {
-		return kind, declared, width
+		return kind, declared, width, nil
 	}
 	// Any other declared type keeps its identity: a custom type packs like the
 	// basic type its width matches, which the emitters decide from that width.
@@ -421,9 +424,9 @@ func (p *Parser) delegateShape(annotation string, t types.Type) (reflect.Kind, s
 	// when there is one and from the type's own sizer otherwise; only the
 	// annotation is available here.
 	if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
-		return kind, declared, sizeHints[0].Size
+		return kind, declared, sizeHints[0].Size, nil
 	}
-	return kind, declared, 0
+	return kind, declared, 0, nil
 }
 
 // derefGoType strips aliases and pointers from t.
@@ -899,7 +902,10 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 				// resolves its exact size at runtime via its own sizer, so
 				// sizing and offsets are driven at runtime rather than from a
 				// (here unknown) compile-time constant.
-				kind, sszType, size := p.delegateShape(annotation, innerDataType)
+				kind, sszType, size, shapeErr := p.delegateShape(annotation, innerDataType)
+				if shapeErr != nil {
+					return nil, fmt.Errorf("failed to parse annotation for type %v: %v", originalType, shapeErr)
+				}
 				desc.Kind = kind
 				if sszType != ssztypes.SszUnspecifiedType {
 					desc.SszType = sszType
