@@ -2291,3 +2291,32 @@ func TestPackedScopePut(t *testing.T) {
 		t.Fatalf("packed scope after a nested scope holds %d bytes, want 40", got)
 	}
 }
+
+// A collapse hint asks for part of a scope to be reduced early. It is a hint:
+// for a value that fits its type's capacity the root is the same with and
+// without it, across the batch threshold that makes the hint fire.
+func TestHasherCollapseDoesNotMoveRoot(t *testing.T) {
+	root := func(collapse bool, chunks int, limit uint64) [32]byte {
+		t.Helper()
+		h := NewHasher()
+		idx := h.StartTree(sszutils.TreeTypeBinary)
+		for i := 0; i < chunks; i++ {
+			h.PutUint64(uint64(i + 1))
+			if collapse {
+				h.Collapse()
+			}
+		}
+		h.MerkleizeWithMixin(idx, uint64(chunks), limit)
+		res, err := h.HashRoot()
+		if err != nil {
+			t.Fatalf("chunks=%d collapse=%v: %v", chunks, collapse, err)
+		}
+		return res
+	}
+	for _, chunks := range []int{1, 255, 256, 257, 600, 1025} {
+		limit := uint64(2048)
+		if plain, collapsed := root(false, chunks, limit), root(true, chunks, limit); plain != collapsed {
+			t.Errorf("chunks=%d: plain %x, collapsed %x", chunks, plain, collapsed)
+		}
+	}
+}
