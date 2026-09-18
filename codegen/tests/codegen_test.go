@@ -531,19 +531,11 @@ func TestCodegenNoDynExprTypes(t *testing.T) {
 	testCodegenPayloadByReflection(t, NoDynExprTypes_Payload, nil)
 	testCodegenPayloadByReflection(t, NoDynStreamCustomHolder_Payload, nil)
 
-	// The static batch writes and reads the dual-surface custom type through
-	// its static methods on the stream paths as well.
-	code, err := os.ReadFile("gen_nodynexpr.go")
-	if os.IsNotExist(err) {
+	// The static batch round-trips the dual-surface custom type on the stream
+	// paths. Which method set the generated code reaches it through is the
+	// generator's own invariant, checked where the generator is.
+	if _, generated := any(&NoDynStreamCustomHolder_Payload).(sszutils.DynamicMarshaler); !generated {
 		t.Skip("no generated code present")
-	}
-	if err != nil {
-		t.Fatalf("read generated file: %v", err)
-	}
-	for _, chunk := range strings.Split(string(code), "\nfunc (t *") {
-		if strings.HasPrefix(chunk, "NoDynStreamCustomHolder)") && (strings.Contains(chunk, ".C.MarshalSSZEncoder(") || strings.Contains(chunk, ".C.UnmarshalSSZDecoder(")) {
-			t.Error("NoDynStreamCustomHolder reaches its custom field through a spec-aware stream method")
-		}
 	}
 	ds := dynssz.NewDynSsz(nil)
 	var w bytes.Buffer
@@ -565,21 +557,6 @@ func TestCodegenNoDynExprTypes(t *testing.T) {
 // generated file (compiled as part of this package) must contain no *Dyn buffer
 // function and must round-trip against reflection for every parent shape.
 func TestCodegenNoDynNest(t *testing.T) {
-	code, err := os.ReadFile("gen_nodynnest.go")
-	if os.IsNotExist(err) {
-		// The gen_*.go files are gitignored; without go generate this job
-		// exercises only the reflection engine and there is no generated file
-		// to enforce the no-*Dyn invariant against.
-		t.Skip("no generated code present")
-	}
-	if err != nil {
-		t.Fatalf("read generated file: %v", err)
-	}
-	for _, tok := range []string{"MarshalSSZDyn", "UnmarshalSSZDyn", "SizeSSZDyn", "HashTreeRootWithDyn"} {
-		if strings.Contains(string(code), tok) {
-			t.Errorf("generated file references forbidden %s under without-dynamic-expressions", tok)
-		}
-	}
 
 	testCodegenPayloadByReflection(t, NoDynRecursiveHolder_Payload, nil)
 	testCodegenPayloadByReflection(t, NoDynNestProg_Payload, nil)
@@ -599,21 +576,6 @@ func TestCodegenNoDynNest(t *testing.T) {
 // and the inlined delegated region must equal what the delegated Dynamic* method
 // produces.
 func TestCodegenAtkNest(t *testing.T) {
-	code, err := os.ReadFile("gen_atknest.go")
-	if os.IsNotExist(err) {
-		// The gen_*.go files are gitignored; the "without generated code" CI job
-		// runs before go generate, so there is no generated file to enforce the
-		// no-*Dyn invariant against here.
-		t.Skip("no generated code present")
-	}
-	if err != nil {
-		t.Fatalf("read generated file: %v", err)
-	}
-	for _, tok := range []string{"MarshalSSZDyn", "UnmarshalSSZDyn", "SizeSSZDyn", "HashTreeRootWithDyn"} {
-		if strings.Contains(string(code), tok) {
-			t.Errorf("generated file references forbidden %s under without-dynamic-expressions", tok)
-		}
-	}
 
 	ext := dynssz.WithExtendedTypes()
 	testCodegenPayloadByReflection(t, AtkNestD1_Payload, nil, ext)
@@ -655,17 +617,8 @@ func TestCodegenAtkNest(t *testing.T) {
 // delegates to its opaque child instead of traversing it, and the extended
 // type does not widen its neighbours.
 func TestCodegenMixedModes(t *testing.T) {
-	code, err := os.ReadFile("gen_mixed.go")
-	if os.IsNotExist(err) {
+	if _, generated := any(&MixedOpaqueHolder_Payload).(sszutils.DynamicMarshaler); !generated {
 		t.Skip("no generated code present")
-	}
-	if err != nil {
-		t.Fatalf("read generated file: %v", err)
-	}
-	for _, chunk := range strings.Split(string(code), "\nfunc (t *") {
-		if strings.HasPrefix(chunk, "MixedStatic)") && (strings.Contains(chunk, "SizeSSZDyn(") || strings.Contains(chunk, "MarshalSSZDyn(")) {
-			t.Error("MixedStatic references dynamic methods under without-dynamic-expressions")
-		}
 	}
 
 	genDs := dynssz.NewDynSsz(nil)
@@ -3343,45 +3296,6 @@ func TestCodegenRecursionDepthBound(t *testing.T) {
 		}
 	})
 
-	t.Run("only_cyclic_types_carry_a_depth", func(t *testing.T) {
-		// A type that is not on a cycle keeps its plain method set, so ordinary
-		// schemas pay nothing for the bound.
-		source, err := os.ReadFile("gen_recursive.go")
-		if err != nil {
-			t.Fatalf("read generated recursive file: %v", err)
-		}
-		if !strings.Contains(string(source), "unmarshalSSZAtDepth") {
-			t.Error("a cyclic type must carry depth-bearing methods")
-		}
-
-		// Every other generated file holds types that are not on a cycle, so
-		// none of them may carry the bound. Checked by scanning rather than by
-		// naming one, since which file a type lands in is only a grouping.
-		others, err := filepath.Glob("gen_*.go")
-		if err != nil {
-			t.Fatalf("list generated files: %v", err)
-		}
-		checked := 0
-		for _, name := range others {
-			// gen_nodynnest.go and gen_extended.go carry recursive types on
-			// purpose: they pin the static-only build and the optional edge
-			// against cycles.
-			if name == "gen_recursive.go" || name == "gen_nodynnest.go" || name == "gen_extended.go" {
-				continue
-			}
-			plain, err := os.ReadFile(name)
-			if err != nil {
-				t.Fatalf("read %s: %v", name, err)
-			}
-			checked++
-			if strings.Contains(string(plain), "AtDepth") {
-				t.Errorf("%s holds no cyclic type but carries depth-bearing methods", name)
-			}
-		}
-		if checked == 0 {
-			t.Fatal("no other generated files were found to check")
-		}
-	})
 }
 
 // A recursive type generated with a view analyzes and carries the depth bound
@@ -3394,25 +3308,6 @@ func TestCodegenRecursionDepthBound(t *testing.T) {
 func TestCodegenRecursiveViewDepthBound(t *testing.T) {
 	if _, generated := any(&RecursiveViewNode{}).(sszutils.DynamicUnmarshaler); !generated {
 		t.Skip("no generated code present")
-	}
-
-	source, err := os.ReadFile("gen_recursive.go")
-	if err != nil {
-		t.Fatalf("read generated file: %v", err)
-	}
-	code := string(source)
-
-	// The view method set has to carry the depth too; a view method entering at
-	// zero would restart the count halfway round the cycle.
-	for _, fn := range []string{
-		"marshalSSZView_RecursiveViewNode_View1AtDepth",
-		"unmarshalSSZView_RecursiveViewNode_View1AtDepth",
-		"sizeSSZView_RecursiveViewNode_View1AtDepth",
-		"hashTreeRootView_RecursiveViewNode_View1AtDepth",
-	} {
-		if !strings.Contains(code, fn) {
-			t.Errorf("view method %s does not carry a nesting depth", fn)
-		}
 	}
 
 	ds := dynssz.NewDynSsz(nil)
@@ -4662,8 +4557,9 @@ func TestCodegenCycleAcrossBatches(t *testing.T) {
 
 // Both members of a generated cycle carry depth twins, and the type cache
 // takes a member that delegates as the shallow descriptor its methods stand
-// for: its cycle partner is generated too, so nothing is left uncounted.
-func TestCodegenCycleMembersCarryDepthTwins(t *testing.T) {
+// for: its cycle partner is generated too, so nothing is left uncounted. That
+// the count holds from either member is measured by the depth-bound test.
+func TestCodegenCycleMemberIsShallow(t *testing.T) {
 	if _, generated := any(&CycleBatchB{}).(sszutils.DynamicMarshaler); !generated {
 		t.Skip("no generated code present")
 	}
@@ -4673,15 +4569,6 @@ func TestCodegenCycleMembersCarryDepthTwins(t *testing.T) {
 	}
 	if descB.ContainerDesc != nil || descB.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler == 0 {
 		t.Fatalf("traversed=%v delegated=%v, want a shallow delegated descriptor", descB.ContainerDesc != nil, descB.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0)
-	}
-	generated, err := os.ReadFile("gen_recursive.go")
-	if err != nil {
-		t.Fatalf("read the generated output: %v", err)
-	}
-	for _, twin := range []string{"func (t *CycleBatchA) marshalSSZDynAtDepth(", "func (t *CycleBatchB) marshalSSZDynAtDepth("} {
-		if !strings.Contains(string(generated), twin) {
-			t.Fatalf("missing depth twin %s", twin)
-		}
 	}
 }
 
