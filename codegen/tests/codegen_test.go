@@ -4940,6 +4940,60 @@ func TestReflectionSizerCustomFieldIsInline(t *testing.T) {
 	}
 }
 
+// A custom element whose width a spec value supplies takes a leaf of its own
+// rather than packing with its neighbours, and its width is read from its own
+// sizer. Both engines agree on the root, the bytes and the size, at the
+// fallback width and at a spec width that differs from it.
+func TestCodegenSpecWidthCustomElement(t *testing.T) {
+	if _, generated := any(&DynWidthList{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	items := []dynWidthCustom{{1, 2, 3, 4}, {5, 6, 7, 8}}
+	for _, specs := range []map[string]any{nil, {"WIDTH": uint64(4)}} {
+		ds := dynssz.NewDynSsz(specs)
+		gen := &DynWidthList{L: items}
+		refl := &DynWidthListRefl{L: items}
+
+		genBytes, err := ds.MarshalSSZ(gen)
+		if err != nil {
+			t.Fatalf("specs %v: generated marshal: %v", specs, err)
+		}
+		reflBytes, err := ds.MarshalSSZ(refl)
+		if err != nil {
+			t.Fatalf("specs %v: reflection marshal: %v", specs, err)
+		}
+		if !bytes.Equal(genBytes, reflBytes) {
+			t.Fatalf("specs %v: generated %x, reflection %x", specs, genBytes, reflBytes)
+		}
+
+		size, err := ds.SizeSSZ(gen)
+		if err != nil || size != len(genBytes) {
+			t.Fatalf("specs %v: size = %d, %v, want %d", specs, size, err, len(genBytes))
+		}
+
+		var back DynWidthList
+		if err = ds.UnmarshalSSZ(&back, genBytes); err != nil {
+			t.Fatalf("specs %v: generated unmarshal: %v", specs, err)
+		}
+		if len(back.L) != len(items) {
+			t.Fatalf("specs %v: round trip gave %d elements, want %d", specs, len(back.L), len(items))
+		}
+
+		genRoot, err := ds.HashTreeRoot(gen)
+		if err != nil {
+			t.Fatalf("specs %v: generated root: %v", specs, err)
+		}
+		reflRoot, err := ds.HashTreeRoot(refl)
+		if err != nil || reflRoot != genRoot {
+			t.Fatalf("specs %v: reflection root = %x, %v, want %x", specs, reflRoot, err, genRoot)
+		}
+		tree, err := ds.GetTree(gen)
+		if err != nil || !bytes.Equal(tree.Hash(), genRoot[:]) {
+			t.Fatalf("specs %v: tree = %x, %v, want %x", specs, tree.Hash(), err, genRoot)
+		}
+	}
+}
+
 func TestCodegenCustomDelegatePacks(t *testing.T) {
 	if _, generated := any(&CustomPairList{}).(sszutils.DynamicHashRoot); !generated {
 		t.Skip("no generated code present")

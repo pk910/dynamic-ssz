@@ -54,6 +54,8 @@ func TestShallowDescriptorParity(t *testing.T) {
 					return `ssz-type:"uint64" ssz-static:"true"`
 				case "customPair":
 					return `ssz-type:"custom" ssz-size:"2" ssz-static:"true"`
+				case "dynWidthCustom":
+					return `ssz-type:"custom" ssz-static:"true" ssz-size:"2" dynssz-size:"WIDTH"`
 				}
 			}
 			return ""
@@ -94,6 +96,9 @@ func TestShallowDescriptorParity(t *testing.T) {
 		{name: "declaredU64", elem: tests.DeclaredU64Holder{}.L, want: "basic=true width=8 packed=8 dynamic=false shallow=true"},
 		// A custom type packs like the basic type its width matches.
 		{name: "customPair", elem: tests.CustomPairList{}.L, want: "basic=false width=0 packed=2 dynamic=false shallow=true"},
+		// A width a spec supplies is not a literal, so the value takes a leaf
+		// of its own instead of packing.
+		{name: "dynWidthCustom", elem: tests.DynWidthList{}.L, want: "basic=false width=0 packed=0 dynamic=false shallow=true"},
 		// A signed basic, which is basic only where extended types are on.
 		{name: "plainExtScalar", elem: tests.PlainExtHolder{}.L, want: "basic=true width=4 packed=4 dynamic=false shallow=true"},
 	} {

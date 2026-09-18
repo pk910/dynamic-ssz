@@ -402,31 +402,45 @@ func goKind(t types.Type) reflect.Kind {
 // front end, so neither applies the representability and extended-type rules
 // that a traversed type passes; its own methods own its encoding, and the
 // shape only says how a scope packs and pads it.
-func (p *Parser) delegateShape(annotation string, t types.Type) (reflect.Kind, ssztypes.SszType, int64, error) {
+func (p *Parser) delegateShape(annotation string, t types.Type) (shallowShape, error) {
 	kind, sszType, size := basicShape(t, true)
+	shape := shallowShape{kind: kind, sszType: sszType, size: size}
 	typeHints, sizeHints, _, err := ssztypes.ParseTags(annotation)
 	if err != nil {
-		return kind, sszType, size, err
+		return shape, err
 	}
+	shape.sizeExpr = len(sizeHints) > 0 && sizeHints[0].Expr != ""
 	if len(typeHints) == 0 || typeHints[0].Type == ssztypes.SszUnspecifiedType {
-		return kind, sszType, size, nil
+		return shape, nil
 	}
-	if kind == reflect.Invalid {
-		kind = goKind(t)
+	if shape.kind == reflect.Invalid {
+		shape.kind = goKind(t)
 	}
-	declared := typeHints[0].Type
-	if width := sszBasicWidth(declared, true); width > 0 {
-		return kind, declared, width, nil
+	shape.sszType = typeHints[0].Type
+	if width := sszBasicWidth(shape.sszType, true); width > 0 {
+		shape.size = width
+		return shape, nil
 	}
 	// Any other declared type keeps its identity: a custom type packs like the
 	// basic type its width matches, which the emitters decide from that width.
 	// The reflection type cache reads the width from an ssz-size annotation
 	// when there is one and from the type's own sizer otherwise; only the
 	// annotation is available here.
+	shape.size = 0
 	if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
-		return kind, declared, sizeHints[0].Size, nil
+		shape.size = sizeHints[0].Size
 	}
-	return kind, declared, 0, nil
+	return shape, nil
+}
+
+// shallowShape is what a delegated type's annotation says about the value:
+// its Go kind, the SSZ type it declares, the width it declares, and whether
+// that width comes from a spec expression rather than a literal.
+type shallowShape struct {
+	kind     reflect.Kind
+	sszType  ssztypes.SszType
+	size     int64
+	sizeExpr bool
 }
 
 // derefGoType strips aliases and pointers from t.
@@ -902,18 +916,24 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 				// resolves its exact size at runtime via its own sizer, so
 				// sizing and offsets are driven at runtime rather than from a
 				// (here unknown) compile-time constant.
-				kind, sszType, size, shapeErr := p.delegateShape(annotation, innerDataType)
+				shape, shapeErr := p.delegateShape(annotation, innerDataType)
 				if shapeErr != nil {
 					return nil, fmt.Errorf("failed to parse annotation for type %v: %v", originalType, shapeErr)
 				}
-				desc.Kind = kind
-				if sszType != ssztypes.SszUnspecifiedType {
-					desc.SszType = sszType
+				desc.Kind = shape.kind
+				if shape.sszType != ssztypes.SszUnspecifiedType {
+					desc.SszType = shape.sszType
 				}
 				switch {
-				case size > 0:
-					desc.Size = size
-				case sszType == ssztypes.SszCustomType:
+				case shape.sizeExpr && !shape.sszType.IsBasic():
+					// A width a spec supplies is read at run time from the
+					// type's own sizer. Both engines decide packing from the
+					// absence of a size expression, so the value takes a leaf
+					// of its own rather than packing with its neighbours.
+					desc.SszTypeFlags |= ssztypes.SszTypeFlagHasSizeExpr
+				case shape.size > 0:
+					desc.Size = shape.size
+				case shape.sszType == ssztypes.SszCustomType:
 					// Without a width the emitters cannot tell whether such a
 					// type packs with its neighbours, and would frame it as a
 					// composite where the reflection engine packs it.

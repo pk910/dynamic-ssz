@@ -212,7 +212,14 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 	// the type's sizer on a zero value at runtime. The gate only admits types that
 	// implement DynamicSizer (fullyDelegatesSSZ requires it), so that is the only
 	// case to handle here.
-	if desc.SszType == ssztypes.SszUnspecifiedType && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 {
+	// A custom type whose declared width comes from a spec expression is the
+	// same case: its width is fixed for one spec but unknown here, so it is
+	// read from the sizer too.
+	widthFromSizer := desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 &&
+		(desc.SszType == ssztypes.SszUnspecifiedType ||
+			(desc.SszType == ssztypes.SszCustomType && desc.Size == 0 &&
+				desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0))
+	if widthFromSizer {
 		// The sizer speaks int; a negative result is an error, as it is at
 		// the entry points and in the reflection engine. The size path has no
 		// error channel and reports 0.

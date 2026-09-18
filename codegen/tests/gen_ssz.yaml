@@ -270,6 +270,8 @@ types:
     output: gen_edgecases.go
   - name: CustomPairList
     output: gen_edgecases.go
+  - name: DynWidthList
+    output: gen_edgecases.go
   - name: CustomPairField
     output: gen_edgecases.go
   - name: DeclaredU64Holder

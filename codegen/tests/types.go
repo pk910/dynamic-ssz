@@ -2769,6 +2769,65 @@ type CustomPairListRefl struct {
 	L []customPair `ssz-max:"8"`
 }
 
+// dynWidthCustom is a delegated custom type whose width one spec value
+// supplies: two bytes by default, whatever WIDTH says otherwise. A width that
+// is not a literal makes the value composite, so it takes a leaf of its own
+// rather than packing with its neighbours.
+type dynWidthCustom [4]byte
+
+var _ = sszutils.Annotate[dynWidthCustom](`ssz-type:"custom" ssz-static:"true" ssz-size:"2" dynssz-size:"WIDTH"`)
+
+func dynWidthOf(ds sszutils.DynamicSpecs) (int, error) {
+	w, err := sszutils.ResolveSpecValueWithDefault(ds, "WIDTH", 2)
+	return int(w), err
+}
+
+func (*dynWidthCustom) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
+	w, err := dynWidthOf(ds)
+	if err != nil {
+		return 0
+	}
+	return w
+}
+
+func (v *dynWidthCustom) MarshalSSZDyn(ds sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	w, err := dynWidthOf(ds)
+	if err != nil {
+		return nil, err
+	}
+	return append(b, v[:w]...), nil
+}
+
+func (v *dynWidthCustom) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, b []byte) error {
+	w, err := dynWidthOf(ds)
+	if err != nil {
+		return err
+	}
+	if len(b) != w {
+		return sszutils.ErrUnexpectedEOF
+	}
+	copy(v[:], b)
+	return nil
+}
+
+func (v *dynWidthCustom) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, h sszutils.HashWalker) error {
+	w, err := dynWidthOf(ds)
+	if err != nil {
+		return err
+	}
+	h.Append(v[:w])
+	return nil
+}
+
+type DynWidthList struct {
+	L []dynWidthCustom `ssz-max:"17"`
+}
+
+// DynWidthListRefl is the same shape without generated methods.
+type DynWidthListRefl struct {
+	L []dynWidthCustom `ssz-max:"17"`
+}
+
 // declaredU64 is a Go array declaring a uint64 shape, a width its Go kind
 // does not state; the emitters must keep picking their element paths by the
 // Go kind.
