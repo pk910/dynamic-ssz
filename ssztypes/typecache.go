@@ -576,14 +576,13 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 					return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing dynssz-size expression %q for type %v: %v", sizeHints[i].Expr, t, resolveErr)
 				}
 				if ok && val > 0 {
-					// The limit stands at the narrowing, in the unit the
-					// dimension is declared in, so what makes the conversion
-					// safe is the comparison right above it.
-					if sizeHints[i].Bits {
-						if val > uint64(sszutils.MaxSszSize)*8 {
-							return sszutils.ErrPlatformOverflowFn("ssz-bitsize annotation value", val)
-						}
-					} else if val > sszutils.MaxSszSize {
+					// A spec value spans the full uint64 range; the size
+					// domain is signed, so the value is narrowed only after
+					// the comparison that shows it fits.
+					if val > math.MaxInt64 {
+						return sszutils.ErrPlatformOverflowFn("ssz-size annotation value", val)
+					}
+					if exceedsSizeLimit(val, sizeHints[i].Bits) {
 						return sszutils.ErrPlatformOverflowFn("ssz-size annotation value", val)
 					}
 
