@@ -2,24 +2,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of the dynamic-ssz library.
 
-package treeproof
+// Package walker drives both sszutils.HashWalker implementations over the same
+// generated call sequence and compares what they build. hasher.Hasher carries
+// one byte buffer and cuts chunks when a region is reduced; treeproof.Wrapper
+// builds the tree. They must agree for any sequence, including one a delegate
+// leaves on a partial chunk.
+package walker
 
 import (
 	"bytes"
 	"fmt"
 	"math/rand"
 	"strings"
-	"testing"
 
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
+	"github.com/pk910/dynamic-ssz/treeproof"
 )
-
-// The two HashWalker implementations must build the same tree from any call
-// sequence, including one a delegate leaves on a partial chunk. hasher.Hasher
-// carries a single byte buffer and cuts chunks when a scope is reduced;
-// treeproof.Wrapper keeps nodes. This harness drives both with one generated
-// program and compares what they say after every step.
 
 type opKind int
 
@@ -54,14 +53,14 @@ const (
 
 // walkerOp is one call. n carries a length, a count or a value, and treeType
 // the shape of a scope.
-type walkerOp struct {
+type Op struct {
 	kind     opKind
 	n        int
 	num      uint64
 	treeType sszutils.TreeType
 }
 
-func (o walkerOp) String() string {
+func (o Op) String() string {
 	names := map[opKind]string{
 		opAppend: "Append", opAppendBytes32: "AppendBytes32", opAppendBool: "AppendBool",
 		opAppendUint8: "AppendUint8", opAppendUint16: "AppendUint16", opAppendUint32: "AppendUint32",
@@ -89,7 +88,7 @@ func opBytes(n int) []byte {
 // the two walkers number their scopes in their own way, and every reduction
 // closes the innermost scope the program opened. When check is non-nil it runs
 // after every op with that op's index.
-func runProgram(hh sszutils.HashWalker, prog []walkerOp, check func(int)) (root [32]byte, err error) {
+func Run(hh sszutils.HashWalker, prog []Op, check func(int)) (root [32]byte, err error) {
 	var open []int
 
 	defer func() {
@@ -193,7 +192,7 @@ func bitlistOf(n int) []byte {
 	return b
 }
 
-func programString(prog []walkerOp) string {
+func String(prog []Op) string {
 	var sb strings.Builder
 	for i, op := range prog {
 		fmt.Fprintf(&sb, "  %2d %s\n", i, op)
@@ -206,16 +205,16 @@ func programString(prog []walkerOp) string {
 // then the closing reductions. The body deliberately includes the sequences a
 // delegate that breaks its contract produces: raw appends that leave a partial
 // chunk before a scope opens or a value is written.
-func generateProgram(rng *rand.Rand) []walkerOp {
-	prog, _ := generateProgramWithScopes(rng)
+func Generate(rng *rand.Rand) []Op {
+	prog, _ := GenerateWithScopes(rng)
 	return prog
 }
 
 // generateProgramWithScopes also reports, for every prefix of the program, the
 // scopes still open after it, so a prefix can be closed and compared on its
 // own.
-func generateProgramWithScopes(rng *rand.Rand) ([]walkerOp, [][]sszutils.TreeType) {
-	prog := []walkerOp{{kind: opStartTree, treeType: sszutils.TreeTypeBinary}}
+func GenerateWithScopes(rng *rand.Rand) ([]Op, [][]sszutils.TreeType) {
+	prog := []Op{{kind: opStartTree, treeType: sszutils.TreeTypeBinary}}
 	// open holds the shape of every scope that is still open, so a reduction
 	// closes a scope the way its shape asks for. A progressive scope closed by
 	// a binary reduce is not a sequence any emitter produces, and the hasher
@@ -227,7 +226,7 @@ func generateProgramWithScopes(rng *rand.Rand) ([]walkerOp, [][]sszutils.TreeTyp
 
 	for i, n := 0, 4+rng.Intn(20); i < n; i++ {
 		kind := opKind(rng.Intn(int(opKindCount)))
-		op := walkerOp{kind: kind, num: rng.Uint64() % 64}
+		op := Op{kind: kind, num: rng.Uint64() % 64}
 
 		switch kind {
 		case opAppend:
@@ -281,7 +280,7 @@ func generateProgramWithScopes(rng *rand.Rand) ([]walkerOp, [][]sszutils.TreeTyp
 	}
 
 	for i := len(open) - 1; i >= 0; i-- {
-		prog = append(prog, walkerOp{kind: reduceFor(open[i], rng), n: 1})
+		prog = append(prog, Op{kind: reduceFor(open[i], rng), n: 1})
 		openAfter = append(openAfter, append([]sszutils.TreeType(nil), open[:i]...))
 	}
 	return prog, openAfter
@@ -289,14 +288,14 @@ func generateProgramWithScopes(rng *rand.Rand) ([]walkerOp, [][]sszutils.TreeTyp
 
 // closeScopes returns the reductions that close the given open scopes,
 // innermost first, so a prefix of a program can be finished and compared.
-func closeScopes(open []sszutils.TreeType) []walkerOp {
-	ops := make([]walkerOp, 0, len(open))
+func CloseScopes(open []sszutils.TreeType) []Op {
+	ops := make([]Op, 0, len(open))
 	for i := len(open) - 1; i >= 0; i-- {
 		kind := opMerkleize
 		if open[i]&^sszutils.TreeTypePacked == sszutils.TreeTypeProgressive {
 			kind = opMerkleizeProgressive
 		}
-		ops = append(ops, walkerOp{kind: kind, n: 1})
+		ops = append(ops, Op{kind: kind, n: 1})
 	}
 	return ops
 }
@@ -313,85 +312,19 @@ func reduceFor(shape sszutils.TreeType, rng *rand.Rand) opKind {
 	return []opKind{opMerkleize, opMerkleizeWithMixin}[rng.Intn(2)]
 }
 
-// Both walkers build the same tree from the same program. The comparison runs
-// after every call, so a divergence names the call that caused it rather than
-// only the root at the end.
-func TestWalkerParity(t *testing.T) {
-	for seed := int64(0); seed < 2000; seed++ {
-		prog, openAfter := generateProgramWithScopes(rand.New(rand.NewSource(seed)))
-		// Every prefix is compared as a program of its own, closed off, so a
-		// difference names the call that introduced it rather than the root at
-		// the end. The whole program is the last prefix.
-		for k := 1; k <= len(prog); k++ {
-			full := append(append([]walkerOp(nil), prog[:k]...), closeScopes(openAfter[k-1])...)
-			if err := compareWalkers(full); err != nil {
-				t.Fatalf("seed %d, after step %d (%s): %v\nprogram:\n%s",
-					seed, k-1, prog[k-1], err, programString(full))
-			}
-		}
-	}
-}
-
-// The tree the walker builds is not only the right root: every leaf of it
-// proves against that root. A program whose tree cannot be finalized is one
-// the hasher also refuses, which compareWalkers already pins.
-func TestWalkerParityProofs(t *testing.T) {
-	for seed := int64(0); seed < 200; seed++ {
-		prog := generateProgram(rand.New(rand.NewSource(seed)))
-		w := NewWrapper()
-		if _, err := runProgram(w, prog, nil); err != nil {
-			continue
-		}
-		root, err := w.Root()
-		if err != nil {
-			continue
-		}
-		if err := root.Finalize(); err != nil {
-			t.Fatalf("seed %d: finalize: %v\nprogram:\n%s", seed, err, programString(prog))
-		}
-		hash := root.Hash()
-		for _, gindex := range leafIndices(root, 1, 0) {
-			proof, err := root.Prove(gindex)
-			if err != nil {
-				t.Fatalf("seed %d: prove %d: %v", seed, gindex, err)
-			}
-			ok, err := VerifyProof(hash, proof)
-			if err != nil || !ok {
-				t.Fatalf("seed %d: proof for %d verified = %v, %v\nprogram:\n%s", seed, gindex, ok, err, programString(prog))
-			}
-		}
-	}
-}
-
-// leafIndices collects the generalized index of every leaf, bounded so a wide
-// tree does not turn one program into thousands of proofs.
-func leafIndices(n *Node, gindex, depth int) []int {
-	if n == nil || depth > 12 {
-		return nil
-	}
-	if n.left == nil && n.right == nil {
-		return []int{gindex}
-	}
-	idx := leafIndices(n.left, gindex*2, depth+1)
-	if len(idx) < 64 {
-		idx = append(idx, leafIndices(n.right, gindex*2+1, depth+1)...)
-	}
-	return idx
-}
-
 // compareWalkers runs one program through both walkers twice: once comparing
 // the tail after every call, which forces the hasher to flush its deferred
 // reductions, and once without, which leaves the deferral path as callers see
 // it. Both runs must agree on the root, and a panic must happen in both or in
 // neither.
-func compareWalkers(prog []walkerOp) error {
+func Compare(prog []Op) error {
 	// The hasher may hold several completed scopes as raw chunks, batching
 	// their reduction, so the two buffers are not the same length at every
 	// step; the tail each walker reports is what both must agree on.
 	var tails [][2]string
 	var lens [][2]int
-	hasherRoot, hasherErr := runProgram(hasher.NewHasher(), prog, nil)
-	wrapperRoot, wrapperErr := runProgram(NewWrapper(), prog, nil)
+	hasherRoot, hasherErr := Run(hasher.NewHasher(), prog, nil)
+	wrapperRoot, wrapperErr := Run(treeproof.NewWrapper(), prog, nil)
 
 	// A collapse hint tells the hasher to reduce part of a scope early, so from
 	// the first one the two walkers hold different intermediate shapes of the
@@ -405,9 +338,9 @@ func compareWalkers(prog []walkerOp) error {
 		}
 	}
 
-	h, w := hasher.NewHasher(), NewWrapper()
+	h, w := hasher.NewHasher(), treeproof.NewWrapper()
 	var stepErr error
-	_, _ = runProgram(h, prog, func(i int) {
+	_, _ = Run(h, prog, func(i int) {
 		if stepErr != nil {
 			return
 		}
@@ -415,7 +348,7 @@ func compareWalkers(prog []walkerOp) error {
 		tails = append(tails, [2]string{fmt.Sprintf("%x", h.Hash()), ""})
 		_ = i
 	})
-	_, _ = runProgram(w, prog, func(i int) {
+	_, _ = Run(w, prog, func(i int) {
 		if i < len(tails) {
 			lens[i][1] = w.CurrentIndex()
 			tails[i][1] = fmt.Sprintf("%x", w.Hash())
@@ -426,8 +359,8 @@ func compareWalkers(prog []walkerOp) error {
 			break
 		}
 		if pair[0] != pair[1] {
-			return fmt.Errorf("step %d (%s): hasher tail %s (%d bytes), wrapper tail %s (%d bytes)\n  hasher wrote %d bytes, wrapper buf %x",
-				i, prog[i], pair[0], lens[i][0], pair[1], lens[i][1], h.CurrentIndex(), w.buffer())
+			return fmt.Errorf("step %d (%s): hasher tail %s (%d bytes), wrapper tail %s (%d bytes)\n  hasher wrote %d bytes, wrapper wrote %d",
+				i, prog[i], pair[0], lens[i][0], pair[1], lens[i][1], h.CurrentIndex(), w.CurrentIndex())
 		}
 	}
 	if stepErr != nil {
@@ -436,13 +369,13 @@ func compareWalkers(prog []walkerOp) error {
 
 	// A collapse hint is a hint: the root must not depend on it.
 	if tailSteps < len(prog) {
-		plain := make([]walkerOp, 0, len(prog))
+		plain := make([]Op, 0, len(prog))
 		for _, op := range prog {
 			if op.kind != opCollapse {
 				plain = append(plain, op)
 			}
 		}
-		plainRoot, plainErr := runProgram(hasher.NewHasher(), plain, nil)
+		plainRoot, plainErr := Run(hasher.NewHasher(), plain, nil)
 		if (plainErr == nil) != (hasherErr == nil) || (hasherErr == nil && plainRoot != hasherRoot) {
 			return fmt.Errorf("collapse hints moved the hasher root: %x (%v) with, %x (%v) without",
 				hasherRoot, hasherErr, plainRoot, plainErr)
@@ -458,17 +391,4 @@ func compareWalkers(prog []walkerOp) error {
 		return fmt.Errorf("root: hasher %x, wrapper %x", hasherRoot, wrapperRoot)
 	}
 	return nil
-}
-
-// FuzzWalkerParity drives the same comparison from fuzzer bytes.
-func FuzzWalkerParity(f *testing.F) {
-	for seed := int64(0); seed < 8; seed++ {
-		f.Add(seed)
-	}
-	f.Fuzz(func(t *testing.T, seed int64) {
-		prog := generateProgram(rand.New(rand.NewSource(seed)))
-		if err := compareWalkers(prog); err != nil {
-			t.Fatalf("seed %d: %v\nprogram:\n%s", seed, err, programString(prog))
-		}
-	})
 }

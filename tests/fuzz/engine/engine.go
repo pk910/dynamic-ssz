@@ -31,6 +31,8 @@ type Stats struct {
 	HTRMismatches     atomic.Uint64
 	StreamMismatches  atomic.Uint64
 	UnmarshalDiffs    atomic.Uint64
+	WalkerPrograms    atomic.Uint64
+	WalkerMismatches  atomic.Uint64
 	Successes         atomic.Uint64
 }
 
@@ -976,7 +978,7 @@ func PrintStats(stats *Stats, elapsed time.Duration) {
 
 	fmt.Printf(
 		"\r[%s] iters: %d (%.0f/s) | valid: %d mutated: %d random: %d | "+
-			"ok: %d panic: %d marshal: %d htr: %d stream: %d unmarshal: %d | "+
+			"ok: %d panic: %d marshal: %d htr: %d stream: %d unmarshal: %d walker: %d/%d | "+
 			"mem: %s alloc, %s sys, %d gc",
 		elapsed.Truncate(time.Second),
 		iters, rate,
@@ -989,6 +991,8 @@ func PrintStats(stats *Stats, elapsed time.Duration) {
 		stats.HTRMismatches.Load(),
 		stats.StreamMismatches.Load(),
 		stats.UnmarshalDiffs.Load(),
+		stats.WalkerMismatches.Load(),
+		stats.WalkerPrograms.Load(),
 		formatBytes(mem.Alloc),
 		formatBytes(mem.Sys),
 		mem.NumGC,

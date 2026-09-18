@@ -629,15 +629,6 @@ func (w *Wrapper) HashRoot() ([32]byte, error) {
 	return [32]byte(n.Hash()), nil
 }
 
-// buffer returns the byte stream the walker has built so far, with every
-// subtree root written into the chunk it occupies. It is what the parity
-// harness compares against hasher.Hasher, and it finalizes the subtrees it
-// writes, so it is not part of the walker's API.
-func (w *Wrapper) buffer() []byte {
-	w.materialize(0, len(w.buf))
-	return w.buf
-}
-
 // Hash returns the last chunk of the walker's state -- the latest reduction
 // result, or the bytes appended since -- as hasher.Hasher.Hash does. The
 // returned slice is only valid until the next walker operation.
