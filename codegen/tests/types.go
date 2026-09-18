@@ -2798,7 +2798,15 @@ var _ = sszutils.Annotate[dynWidthCustom](`ssz-type:"custom" ssz-static:"true" s
 
 func dynWidthOf(ds sszutils.DynamicSpecs) (int, error) {
 	w, err := sszutils.ResolveSpecValueWithDefault(ds, "WIDTH", 2)
-	return int(w), err
+	if err != nil {
+		return 0, err
+	}
+	// The width has to fit the four bytes this type holds, which is also what
+	// makes the narrowing below safe.
+	if w > 4 {
+		return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "WIDTH %d exceeds the four bytes of this type", w)
+	}
+	return int(w), nil
 }
 
 func (*dynWidthCustom) SizeSSZDyn(ds sszutils.DynamicSpecs) int {

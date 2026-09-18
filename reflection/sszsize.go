@@ -217,6 +217,15 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		fieldType := targetType.ElemDesc
 		sliceLen := targetValue.Len()
 
+		// Every element occupies at least one byte, so a list of more than
+		// MaxSszSize elements has no encoding whatever its element width. The
+		// count is runtime data rather than a declaration, so it is bounded
+		// here, where it enters: every size product below then stays inside
+		// the unsigned range, since both terms are bounded by the limit.
+		if uint64(sliceLen) > sszutils.MaxSszSize {
+			return 0, sszutils.ErrListLengthFn(sliceLen, sszutils.MaxSszSize)
+		}
+
 		// Enforce ssz-max like marshalList: a list longer than its limit cannot be
 		// serialized, so return the same error instead of a size for an
 		// un-encodable value. Bitlists count bits, not elements, and are limited on

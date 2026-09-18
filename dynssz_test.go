@@ -3705,6 +3705,44 @@ func (b *inconsistentSizeCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ 
 	return nil
 }
 
+// widestCustom occupies no Go memory and declares the widest size SSZ can
+// express, so a list of it can hold more elements than that size without
+// costing anything to build.
+type widestCustom struct{}
+
+var _ = sszutils.Annotate[widestCustom](`ssz-type:"custom" ssz-static:"true"`)
+
+func (w *widestCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return int(sszutils.MaxSszSize) }
+func (w *widestCustom) MarshalSSZEncoder(_ sszutils.DynamicSpecs, _ sszutils.Encoder) error {
+	return nil
+}
+
+func (w *widestCustom) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, _ sszutils.Decoder) error {
+	return nil
+}
+
+func (w *widestCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+// A list of more elements than the SSZ size limit has no encoding whatever its
+// element width, and the count is refused where it enters rather than after it
+// has been multiplied by that width, where the product would wrap into a
+// plausible size. Nothing is allocated for the claimed image.
+func TestSizeSSZRefusesMoreElementsThanTheLimit(t *testing.T) {
+	if uint64(math.MaxInt) <= sszutils.MaxSszSize {
+		t.Skip("a count past the SSZ size limit is not representable on this platform")
+	}
+	ds := NewDynSsz(nil)
+	// Formed through a variable: the sum is not a constant this file can hold
+	// on a 32-bit target, where the skip above already applies.
+	limit := int(sszutils.MaxSszSize)
+	items := make([]widestCustom, limit+3)
+	if _, err := ds.SizeSSZ(&items); !errors.Is(err, sszutils.ErrListTooBig) {
+		t.Fatalf("err = %v, want the list refused", err)
+	}
+}
+
 // pastLimitCustom reports a size past the SSZ size limit without writing it.
 type pastLimitCustom struct{}
 
