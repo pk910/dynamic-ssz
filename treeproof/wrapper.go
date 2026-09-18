@@ -525,11 +525,12 @@ func (w *Wrapper) AddUint8(i uint8) {
 }
 
 // AddBytes adds a byte slice as a leaf node (<=32 bytes) or as a subtree of
-// its chunks. An empty value contributes nothing, as in hasher.Hasher.
+// its chunks. An empty value is a leaf of zeros, the meaning this method has
+// carried since v1: it builds a tree from values, so every value it is given
+// takes a place in the leaf order. PutBytes, the walker operation, is the one
+// that contributes nothing for an empty value, because there the value writes
+// bytes into a region.
 func (w *Wrapper) AddBytes(b []byte) {
-	if len(b) == 0 {
-		return
-	}
 	if len(b) <= 32 {
 		w.AddNode(LeafFromBytes(b))
 		return
