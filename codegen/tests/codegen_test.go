@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"testing"
@@ -22,7 +23,6 @@ import (
 	"github.com/pk910/dynamic-ssz/codegen"
 	"github.com/pk910/dynamic-ssz/codegen/tests/views"
 	"github.com/pk910/dynamic-ssz/hasher"
-	"github.com/pk910/dynamic-ssz/internal/racetest"
 	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
 
@@ -5318,8 +5318,24 @@ func TestCodegenHashTreeRootWithOnlyDelegated(t *testing.T) {
 
 // A bitlist of exactly 2^31 bits is within its limit on every platform: the
 // generated buffer and stream paths accept it and agree with reflection.
+// raceDetectorEnabled reports whether this binary was built with the race
+// detector. A test that walks hundreds of megabytes through a single
+// goroutine costs it minutes and gives it nothing to find.
+func raceDetectorEnabled() bool {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return false
+	}
+	for _, setting := range info.Settings {
+		if setting.Key == "-race" {
+			return setting.Value == "true"
+		}
+	}
+	return false
+}
+
 func TestCodegenBitlistBitCountBeyondInt32(t *testing.T) {
-	if racetest.Enabled() {
+	if raceDetectorEnabled() {
 		// A quarter-gigabyte bitlist through one goroutine: the race detector
 		// multiplies the cost by sixty and has no concurrency to inspect. The
 		// builds without it run this in full.

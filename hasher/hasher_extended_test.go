@@ -9,9 +9,9 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	buildinfo "runtime/debug"
 	"testing"
 
-	"github.com/pk910/dynamic-ssz/internal/racetest"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
@@ -1537,8 +1537,24 @@ func hugeBitlistRoot() [32]byte {
 
 // A bitlist longer than the 32-bit int range in bits keeps its exact bit
 // count through the parser and the length mixin.
+// raceDetectorEnabled reports whether this binary was built with the race
+// detector. A test that walks hundreds of megabytes through a single
+// goroutine costs it minutes and gives it nothing to find.
+func raceDetectorEnabled() bool {
+	info, ok := buildinfo.ReadBuildInfo()
+	if !ok {
+		return false
+	}
+	for _, setting := range info.Settings {
+		if setting.Key == "-race" {
+			return setting.Value == "true"
+		}
+	}
+	return false
+}
+
 func TestBitlistBitCountBeyondInt32(t *testing.T) {
-	if racetest.Enabled() {
+	if raceDetectorEnabled() {
 		// A quarter-gigabyte bitlist through one goroutine: the race detector
 		// multiplies the cost by sixty and has no concurrency to inspect. The
 		// builds without it run this in full.
