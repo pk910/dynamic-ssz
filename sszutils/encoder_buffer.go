@@ -129,8 +129,8 @@ func (e *BufferEncoder) EncodeOffset(v uint32) {
 // position comes from the caller's own GetPosition, so one outside the written
 // buffer is an invariant violation and panics rather than dropping the write.
 func (e *BufferEncoder) EncodeOffsetAt(pos int, v uint32) {
-	if pos < 0 || pos+4 > len(e.buffer) {
-		panic(fmt.Sprintf("sszutils: offset write at %d outside the %d-byte buffer", pos, len(e.buffer)))
+	if pos < 0 || e.pos < 4 || pos > e.pos-4 {
+		panic(fmt.Sprintf("sszutils: offset write at %d outside the %d bytes written", pos, e.pos))
 	}
 	binary.LittleEndian.PutUint32(e.buffer[pos:pos+4], v)
 }

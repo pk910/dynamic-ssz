@@ -777,6 +777,17 @@ func TestBufferEncoder_OutOfRange(t *testing.T) {
 			NewBufferEncoder(make([]byte, 16)).EncodeOffsetAt(pos, 42)
 		}()
 	}
+	// Spare capacity is not written buffer: a slot that was never reserved
+	// lies outside the bytes GetBuffer returns.
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("offset write into unwritten capacity did not panic")
+			}
+		}()
+		NewBufferEncoder(make([]byte, 0, 64)).EncodeOffsetAt(0, 42)
+	}()
+
 	enc := NewBufferEncoder(make([]byte, 16))
 	enc.EncodeOffsetAt(12, 42)
 	enc.EncodeZeroPadding(-1)
