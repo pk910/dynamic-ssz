@@ -573,19 +573,20 @@ A custom type's hash method is called wherever the value sits. As a field or
 root the engine pads the walker to the next chunk after it returns, so the
 method may leave a complete leaf or append only the packed bytes of its value.
 A generated or fastssz composite type is not padded: its method leaves exactly
-one root. Both walkers verify that it left whole chunks; a method that leaves
-a partial chunk fails with `sszutils.ErrCompositeDelegate`.
+one root. Neither walker verifies this: a delegate owns its own output. The
+two walkers lay bytes out identically, so a method that leaves anything else
+produces the same wrong root through `HashTreeRoot` and through `GetTree`.
 Inside a list or vector, a custom type whose declared `ssz-size` is one a basic
 type could have (1, 2, 4, 8 or 16 bytes, without a size expression) is packed
 like that basic type: the scope is a packed walker scope, in which `Put*`
-appends the packed bytes, and the method must leave exactly those bytes; a
-method that merkleizes a leaf of its own there fails with
-`sszutils.ErrPackedDelegate`. A `HashTreeRoot()`-only type contributes the
+appends the packed bytes, and the method must leave exactly those bytes. This
+is not verified: a method that merkleizes a leaf of its own there shifts the
+elements that follow, in both walkers alike. A `HashTreeRoot()`-only type
+contributes the
 packed prefix of its root, so its root has to be the padded value. Custom
 types of any other size occupy one leaf per element: a `HashTreeRootWith*`
 method there must leave exactly one root on the walker, as it would for
-fastssz. The walker verifies only that whole chunks were left; a method that
-leaves several leaves
+fastssz. The walker does not verify this; a method that leaves several leaves
 shifts the following elements and can push chunks past the list limit, and a
 scope pushed past its limit has no defined root: the value then depends on
 the collapse hints the walker received.

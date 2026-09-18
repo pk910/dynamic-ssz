@@ -9,6 +9,7 @@
 package treeproof
 
 import (
+	"encoding/binary"
 	"fmt"
 
 	"github.com/pk910/dynamic-ssz/hasher"
@@ -135,6 +136,18 @@ func (w *Wrapper) AppendBytes32(b []byte) {
 	w.FillUpTo32()
 }
 
+// putChunk writes one 32-byte chunk of a field's value into the buffer: it
+// appends the chunk at the buffer's current end and hands write the room for
+// the value's own bytes. Writing through the buffer rather than adding a leaf
+// keeps the wrapper's byte layout identical to hasher.Hasher's, so the two
+// walkers build the same tree from any call sequence, including one a
+// misbehaving delegate leaves unaligned.
+func (w *Wrapper) putChunk(size int, write func(chunk []byte)) {
+	n := len(w.buf)
+	w.buf = sszutils.AppendZeroPadding(w.buf, 32)
+	write(w.buf[n : n+size])
+}
+
 // FillUpTo32 pads the internal buffer with zero bytes so its length is a
 // multiple of 32. This ensures proper 32-byte chunk alignment for leaf nodes.
 func (w *Wrapper) FillUpTo32() {
@@ -256,7 +269,11 @@ func (w *Wrapper) PutBool(b bool) {
 		w.AppendBool(b)
 		return
 	}
-	w.AddNode(LeafFromBool(b))
+	w.putChunk(1, func(chunk []byte) {
+		if b {
+			chunk[0] = 1
+		}
+	})
 }
 
 // PutBytes adds a byte slice as one or more 32-byte leaf nodes, or buffers up
@@ -265,6 +282,15 @@ func (w *Wrapper) PutBool(b bool) {
 func (w *Wrapper) PutBytes(b []byte) {
 	if len(b) <= 32 && w.inPackedScope() {
 		w.Append(b)
+		return
+	}
+	if blen := len(b); blen <= 32 {
+		if blen == 32 {
+			w.buf = append(w.buf, b...)
+			return
+		}
+		// Pads to the next boundary, so an empty value contributes nothing.
+		w.AppendBytes32(b)
 		return
 	}
 	w.AddBytes(b)
@@ -277,7 +303,7 @@ func (w *Wrapper) PutUint16(i uint16) {
 		w.AppendUint16(i)
 		return
 	}
-	w.AddUint16(i)
+	w.putChunk(2, func(chunk []byte) { binary.LittleEndian.PutUint16(chunk, i) })
 }
 
 // PutUint64 adds a uint64 value as a single 32-byte leaf node, or buffers its
@@ -287,7 +313,7 @@ func (w *Wrapper) PutUint64(i uint64) {
 		w.AppendUint64(i)
 		return
 	}
-	w.AddUint64(i)
+	w.putChunk(8, func(chunk []byte) { binary.LittleEndian.PutUint64(chunk, i) })
 }
 
 // PutUint8 adds a uint8 value as a single 32-byte leaf node, or buffers its
@@ -297,7 +323,7 @@ func (w *Wrapper) PutUint8(i uint8) {
 		w.AppendUint8(i)
 		return
 	}
-	w.AddUint8(i)
+	w.putChunk(1, func(chunk []byte) { chunk[0] = i })
 }
 
 // PutUint32 adds a uint32 value as a single 32-byte leaf node, or buffers its
@@ -307,7 +333,7 @@ func (w *Wrapper) PutUint32(i uint32) {
 		w.AppendUint32(i)
 		return
 	}
-	w.AddUint32(i)
+	w.putChunk(4, func(chunk []byte) { binary.LittleEndian.PutUint32(chunk, i) })
 }
 
 // PutUint64Array appends all uint64 values as buffered bytes, pads to 32-byte

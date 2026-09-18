@@ -7758,16 +7758,22 @@ func TestPackedWrappedElementsAreNotDelegated(t *testing.T) {
 }
 
 // A custom element of a basic size whose walker method merkleizes a leaf of
-// its own is rejected; one with only a root method hashes like the basic type
+// its own breaks the packed contract: it is not refused, and both walkers give
+// the same root for it. One with only a root method hashes like the basic type
 // it stands in for.
 func TestPackedCustomDelegates(t *testing.T) {
 	ds := NewDynSsz(nil)
 	leaf := &leafCustomHolder{L: []leafCustom{{1}, {2}, {3}}}
-	if _, err := ds.HashTreeRoot(leaf); !errors.Is(err, sszutils.ErrPackedDelegate) {
-		t.Fatalf("leaf delegate err = %v, want ErrPackedDelegate", err)
+	leafRoot, err := ds.HashTreeRoot(leaf)
+	if err != nil {
+		t.Fatalf("leaf delegate: %v", err)
 	}
-	if _, err := ds.GetTree(leaf); !errors.Is(err, sszutils.ErrPackedDelegate) {
-		t.Fatalf("leaf delegate tree err = %v, want ErrPackedDelegate", err)
+	leafTree, err := ds.GetTree(leaf)
+	if err != nil {
+		t.Fatalf("leaf delegate tree: %v", err)
+	}
+	if !bytes.Equal(leafTree.Hash(), leafRoot[:]) {
+		t.Fatalf("leaf delegate tree %x != hasher %x", leafTree.Hash(), leafRoot)
 	}
 
 	holder := &rootOnlyCustomHolder{R: []rootOnlyCustom{{1}, {2}, {3}}, RV: [4]rootOnlyCustom{{4}, {5}, {6}, {7}}}
@@ -7896,13 +7902,21 @@ func TestPackedBasicViewElements(t *testing.T) {
 		}
 	}
 
+	// A view method that merkleizes a leaf of its own inside a packed scope
+	// breaks the contract; it is not refused, and both walkers agree on the
+	// root it produces.
 	ds := NewDynSsz(nil)
 	leafView := WithViewDescriptor((*leafViewSchema)(nil))
-	if _, err := ds.HashTreeRoot(&leafViewHolder{L: []leafViewNum{1, 2, 3}}, leafView); !errors.Is(err, sszutils.ErrPackedDelegate) {
-		t.Fatalf("leaf view err = %v, want ErrPackedDelegate", err)
+	viewRoot, err := ds.HashTreeRoot(&leafViewHolder{L: []leafViewNum{1, 2, 3}}, leafView)
+	if err != nil {
+		t.Fatalf("leaf view: %v", err)
 	}
-	if _, err := ds.GetTree(&leafViewHolder{L: []leafViewNum{1, 2, 3}}, leafView); !errors.Is(err, sszutils.ErrPackedDelegate) {
-		t.Fatalf("leaf view tree err = %v, want ErrPackedDelegate", err)
+	viewTree, err := ds.GetTree(&leafViewHolder{L: []leafViewNum{1, 2, 3}}, leafView)
+	if err != nil {
+		t.Fatalf("leaf view tree: %v", err)
+	}
+	if !bytes.Equal(viewTree.Hash(), viewRoot[:]) {
+		t.Fatalf("leaf view tree %x != hasher %x", viewTree.Hash(), viewRoot)
 	}
 }
 

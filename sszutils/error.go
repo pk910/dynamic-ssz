@@ -43,14 +43,6 @@ var (
 	// type or feature it does not support.
 	ErrNotImplemented = fmt.Errorf("not implemented")
 
-	// ErrPackedDelegate is returned when the hash method of a packed element
-	// leaves anything but the element's packed bytes on the walker.
-	ErrPackedDelegate = fmt.Errorf("packed element hash method did not append its packed value")
-
-	// ErrCompositeDelegate is returned when the hash method of a composite
-	// value leaves a partial chunk on the walker instead of whole chunks.
-	ErrCompositeDelegate = fmt.Errorf("composite hash method left a partial chunk")
-
 	// ErrStreamTooLarge is returned when decoding a stream of unknown length
 	// would consume more bytes than the decoder's configured maximum. Unknown-
 	// length decoding is always bounded; see WithMaxStreamSize.
@@ -453,28 +445,6 @@ func ErrOffsetOverflowFn(offset any) error {
 	return &sszError{
 		err:     ErrOffset,
 		message: fmt.Sprintf("offset %v exceeds the 4-byte SSZ offset range", offset),
-	}
-}
-
-// --- ErrPackedDelegate constructors ---
-
-// ErrPackedDelegateFn reports a packed element's hash method that left got
-// bytes on the walker instead of want.
-func ErrPackedDelegateFn(got int, want int64) error {
-	return &sszError{
-		err:     ErrPackedDelegate,
-		message: fmt.Sprintf("packed element hash method left %d bytes, expected its %d packed bytes", got, want),
-	}
-}
-
-// --- ErrCompositeDelegate constructors ---
-
-// ErrCompositeDelegateFn reports a composite value's hash method that left
-// got bytes on the walker, which is not a whole number of chunks.
-func ErrCompositeDelegateFn(got int) error {
-	return &sszError{
-		err:     ErrCompositeDelegate,
-		message: fmt.Sprintf("composite hash method left %d bytes, not whole chunks", got),
 	}
 }
 

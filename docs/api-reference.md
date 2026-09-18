@@ -318,9 +318,10 @@ Hash methods are called wherever the value sits. A list or vector of basic
 values opens a packed walker scope (`StartTree` with `sszutils.TreeTypePacked`
 set on the shape), in which the walker's `Put*` methods append the packed bytes
 of a value instead of a padded chunk; the same method therefore packs its value
-as a list element and leaves a chunk as a field. The engines verify that a
-method called inside a packed scope left exactly the element's packed bytes and
-return `sszutils.ErrPackedDelegate` otherwise.
+as a list element and leaves a chunk as a field. A method owns what it leaves
+on the walker: the engines do not verify it, and both walkers lay bytes out
+identically, so a method that leaves something else produces the same root
+through `HashTreeRoot` and through `GetTree`.
 
 ### Dynamic Interfaces (spec-aware)
 

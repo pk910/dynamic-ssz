@@ -586,9 +586,9 @@ value's packed bytes instead of a padded chunk, so a method declared on such an
 element type (`type Slot uint64` with generated methods, or a hand-written
 `hh.PutUint64(...)`) packs the value with its neighbours as the SSZ
 specification requires, and the same method leaves a whole chunk as a field or
-root. After the method returns the engines check that exactly the element's
-packed bytes were added; a method that merkleizes a leaf of its own inside a
-packed scope fails with `sszutils.ErrPackedDelegate`. A method that only
+root. A method that merkleizes a leaf of its own inside a packed scope shifts
+the elements that follow; the engines do not check this, and both walkers
+produce the same shifted root. A method that only
 returns a root (`HashTreeRoot()`) contributes the packed prefix of that root,
 which for a basic value is the value itself.
 

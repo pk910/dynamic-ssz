@@ -4478,26 +4478,33 @@ func TestCodegenBasicSizedCustomElements(t *testing.T) {
 }
 
 // A custom element of a basic size whose walker method merkleizes a leaf of
-// its own is rejected by the generated method and the reflection walk.
-func TestCodegenPackedLeafDelegateRejected(t *testing.T) {
-	generated, ok := any(&LeafCustomHolder_Payload).(sszutils.DynamicHashRoot)
-	if !ok {
+// its own breaks the packed contract. Neither engine refuses it, and the
+// generated code, the reflection walk and the tree walker agree on the root it
+// produces.
+func TestCodegenPackedLeafDelegateConsistent(t *testing.T) {
+	if _, ok := any(&LeafCustomHolder_Payload).(sszutils.DynamicHashRoot); !ok {
 		t.Skip("no generated code present")
 	}
 
 	ds := dynssz.NewDynSsz(nil)
-	hh := hasher.NewHasher()
-	defer hh.Reset()
-	if err := generated.HashTreeRootWithDyn(ds, hh); !errors.Is(err, sszutils.ErrPackedDelegate) {
-		t.Fatalf("generated hash err = %v, want ErrPackedDelegate", err)
+	genRoot, err := ds.HashTreeRoot(&LeafCustomHolder_Payload)
+	if err != nil {
+		t.Fatalf("generated hash: %v", err)
 	}
-
 	refl := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
-	if _, err := refl.HashTreeRoot(&LeafCustomHolder_Payload); !errors.Is(err, sszutils.ErrPackedDelegate) {
-		t.Fatalf("reflection hash err = %v, want ErrPackedDelegate", err)
+	reflRoot, err := refl.HashTreeRoot(&LeafCustomHolder_Payload)
+	if err != nil {
+		t.Fatalf("reflection hash: %v", err)
 	}
-	if _, err := ds.GetTree(&LeafCustomHolder_Payload); !errors.Is(err, sszutils.ErrPackedDelegate) {
-		t.Fatalf("tree err = %v, want ErrPackedDelegate", err)
+	if genRoot != reflRoot {
+		t.Fatalf("generated %x, reflection %x", genRoot, reflRoot)
+	}
+	tree, err := ds.GetTree(&LeafCustomHolder_Payload)
+	if err != nil {
+		t.Fatalf("tree: %v", err)
+	}
+	if !bytes.Equal(tree.Hash(), genRoot[:]) {
+		t.Fatalf("tree %x != hasher %x", tree.Hash(), genRoot)
 	}
 }
 
@@ -4556,13 +4563,21 @@ func TestCodegenPackedBasicViewElements(t *testing.T) {
 		})
 	}
 
+	// A view method that merkleizes a leaf of its own inside a packed scope
+	// breaks the contract; it is not refused, and both walkers agree on the
+	// root it produces.
 	leafView := dynssz.WithViewDescriptor((*ViewLeafTypes_View1)(nil))
 	ds := dynssz.NewDynSsz(nil)
-	if _, err := ds.HashTreeRoot(&ViewLeafTypes_Payload, leafView); !errors.Is(err, sszutils.ErrPackedDelegate) {
-		t.Fatalf("generated leaf view err = %v, want ErrPackedDelegate", err)
+	viewRoot, err := ds.HashTreeRoot(&ViewLeafTypes_Payload, leafView)
+	if err != nil {
+		t.Fatalf("generated leaf view: %v", err)
 	}
-	if _, err := ds.GetTree(&ViewLeafTypes_Payload, leafView); !errors.Is(err, sszutils.ErrPackedDelegate) {
-		t.Fatalf("generated leaf view tree err = %v, want ErrPackedDelegate", err)
+	viewTree, err := ds.GetTree(&ViewLeafTypes_Payload, leafView)
+	if err != nil {
+		t.Fatalf("generated leaf view tree: %v", err)
+	}
+	if !bytes.Equal(viewTree.Hash(), viewRoot[:]) {
+		t.Fatalf("generated leaf view tree %x != hasher %x", viewTree.Hash(), viewRoot)
 	}
 }
 
@@ -5081,28 +5096,28 @@ func TestCodegenDelegatedShallowFraming(t *testing.T) {
 	}
 }
 
-// A composite delegate leaves whole chunks. One that leaves a partial chunk
-// is refused by the hasher and by the tree wrapper, in both engines; one that
-// honours the contract hashes the same everywhere.
+// A delegate owns what it leaves on the walker. One that breaks the contract
+// is not refused; both walkers lay its bytes out the same way, so the wrong
+// root it produces is the same through HashTreeRoot and through GetTree, in
+// both engines. One that honours the contract hashes the same everywhere.
 func TestCompositeDelegateContract(t *testing.T) {
 	if _, generated := any(&PartialHolder{}).(sszutils.DynamicHashRoot); !generated {
 		t.Skip("no generated code present")
 	}
 	ds := dynssz.NewDynSsz(nil)
-	for _, v := range []any{&PartialHolder{N: 1, M: 2}, &PartialHolderRefl{N: 1, M: 2}} {
-		if _, err := ds.HashTreeRoot(v); !errors.Is(err, sszutils.ErrCompositeDelegate) {
-			t.Fatalf("%T HashTreeRoot err = %v, want ErrCompositeDelegate", v, err)
+	// A delegate that leaves a partial chunk, and one that leaves a partial
+	// chunk and then writes a field, which flushes it.
+	for _, v := range []any{&PartialHolder{N: 1, M: 2}, &PartialHolderRefl{N: 1, M: 2}, &FlushedHolder{N: 1, M: 2}, &FlushedHolderRefl{N: 1, M: 2}} {
+		root, err := ds.HashTreeRoot(v)
+		if err != nil {
+			t.Fatalf("%T HashTreeRoot: %v", v, err)
 		}
-		if _, err := ds.GetTree(v); !errors.Is(err, sszutils.ErrCompositeDelegate) {
-			t.Fatalf("%T GetTree err = %v, want ErrCompositeDelegate", v, err)
+		tree, err := ds.GetTree(v)
+		if err != nil {
+			t.Fatalf("%T GetTree: %v", v, err)
 		}
-	}
-	// A delegate that adds a leaf after its partial bytes has them flushed
-	// into a padded leaf of their own. The hasher still sees the partial
-	// chunk; the tree walker, whose position is the pending buffer, does not.
-	for _, v := range []any{&FlushedHolder{N: 1, M: 2}, &FlushedHolderRefl{N: 1, M: 2}} {
-		if _, err := ds.HashTreeRoot(v); !errors.Is(err, sszutils.ErrCompositeDelegate) {
-			t.Fatalf("%T HashTreeRoot err = %v, want ErrCompositeDelegate", v, err)
+		if !bytes.Equal(tree.Hash(), root[:]) {
+			t.Fatalf("%T: tree %x, hasher %x", v, tree.Hash(), root)
 		}
 	}
 
@@ -5412,12 +5427,19 @@ func TestCodegenWrappedUint256ElementsPack(t *testing.T) {
 			t.Fatalf("%T tree root %x != root %x", v, treeRoot, plainRoot)
 		}
 	}
+	// A wrapper narrower than the element it stands in for breaks the packed
+	// contract; it is not refused, and both walkers agree on its root.
 	for _, v := range []any{&NarrowWrappedU256Holder_Payload, &NarrowWrappedU256Reflection_Payload} {
-		if _, err := ds.HashTreeRoot(v); !errors.Is(err, sszutils.ErrPackedDelegate) {
-			t.Fatalf("%T root err = %v, want ErrPackedDelegate", v, err)
+		root, err := ds.HashTreeRoot(v)
+		if err != nil {
+			t.Fatalf("hash %T: %v", v, err)
 		}
-		if _, err := ds.GetTree(v); !errors.Is(err, sszutils.ErrPackedDelegate) {
-			t.Fatalf("%T tree err = %v, want ErrPackedDelegate", v, err)
+		tree, err := ds.GetTree(v)
+		if err != nil {
+			t.Fatalf("tree %T: %v", v, err)
+		}
+		if !bytes.Equal(tree.Hash(), root[:]) {
+			t.Fatalf("%T tree %x != hasher %x", v, tree.Hash(), root)
 		}
 	}
 }

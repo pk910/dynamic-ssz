@@ -385,10 +385,13 @@ func TestWrapperPutProgressiveBitlist(t *testing.T) {
 	}
 }
 
+// A field write buffers its chunk, as hasher.Hasher does; the leaf appears
+// when the buffer is flushed, at the next scope boundary or node addition.
 func TestWrapperPutMethods(t *testing.T) {
 	t.Run("PutBool", func(t *testing.T) {
 		w := NewWrapper()
 		w.PutBool(true)
+		w.flushBuffer()
 
 		if len(w.nodes) != 1 {
 			t.Error("PutBool should add one node")
@@ -406,6 +409,7 @@ func TestWrapperPutMethods(t *testing.T) {
 		w := NewWrapper()
 		smallBytes := []byte{1, 2, 3, 4}
 		w.PutBytes(smallBytes)
+		w.flushBuffer()
 
 		if len(w.nodes) != 1 {
 			t.Error("PutBytes (small) should add one node")
@@ -415,47 +419,32 @@ func TestWrapperPutMethods(t *testing.T) {
 		w2 := NewWrapper()
 		largeBytes := bytes.Repeat([]byte{0xFF}, 64)
 		w2.PutBytes(largeBytes)
+		w2.flushBuffer()
 
 		if len(w2.nodes) != 1 {
 			t.Error("PutBytes (large) should create merkleized node")
 		}
 	})
 
-	t.Run("PutUint64", func(t *testing.T) {
-		w := NewWrapper()
-		w.PutUint64(12345)
+	for _, tc := range []struct {
+		name string
+		put  func(w *Wrapper)
+	}{
+		{"PutUint64", func(w *Wrapper) { w.PutUint64(12345) }},
+		{"PutUint32", func(w *Wrapper) { w.PutUint32(12345) }},
+		{"PutUint16", func(w *Wrapper) { w.PutUint16(12345) }},
+		{"PutUint8", func(w *Wrapper) { w.PutUint8(123) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := NewWrapper()
+			tc.put(w)
+			w.flushBuffer()
 
-		if len(w.nodes) != 1 {
-			t.Error("PutUint64 should add one node")
-		}
-	})
-
-	t.Run("PutUint32", func(t *testing.T) {
-		w := NewWrapper()
-		w.PutUint32(12345)
-
-		if len(w.nodes) != 1 {
-			t.Error("PutUint32 should add one node")
-		}
-	})
-
-	t.Run("PutUint16", func(t *testing.T) {
-		w := NewWrapper()
-		w.PutUint16(12345)
-
-		if len(w.nodes) != 1 {
-			t.Error("PutUint16 should add one node")
-		}
-	})
-
-	t.Run("PutUint8", func(t *testing.T) {
-		w := NewWrapper()
-		w.PutUint8(123)
-
-		if len(w.nodes) != 1 {
-			t.Error("PutUint8 should add one node")
-		}
-	})
+			if len(w.nodes) != 1 {
+				t.Errorf("%s should add one node", tc.name)
+			}
+		})
+	}
 }
 
 func TestWrapperPutUint64Array(t *testing.T) {
@@ -1657,10 +1646,15 @@ func TestWrapperPackedScope(t *testing.T) {
 	outer := w.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
 	inner := w.StartTree(sszutils.TreeTypeNone)
 	w.PutUint64(1)
-	if len(w.nodes) != 1 || len(w.buf) != 0 {
-		t.Fatalf("scope inside a packed scope added %d leaves and %d buffered bytes, want 1 leaf", len(w.nodes), len(w.buf))
+	// A scope inside a packed scope is not packed: the value buffers a whole
+	// chunk, which becomes its leaf when the scope closes.
+	if len(w.nodes) != 0 || len(w.buf) != 32 {
+		t.Fatalf("scope inside a packed scope added %d leaves and %d buffered bytes, want one buffered chunk", len(w.nodes), len(w.buf))
 	}
 	w.Merkleize(inner)
+	if len(w.nodes) != 1 || len(w.buf) != 0 {
+		t.Fatalf("closing the inner scope left %d leaves and %d buffered bytes, want 1 leaf", len(w.nodes), len(w.buf))
+	}
 	w.PutUint64(2)
 	if len(w.buf) != 8 {
 		t.Fatalf("packed scope after a nested scope buffered %d bytes, want 8", len(w.buf))
@@ -1668,7 +1662,9 @@ func TestWrapperPackedScope(t *testing.T) {
 	w.FillUpTo32()
 	w.Merkleize(outer)
 	w.PutUint64(3)
-	if len(w.buf) != 0 {
-		t.Fatalf("closed packed scope still buffers puts: %d bytes", len(w.buf))
+	// Outside a packed scope the value takes a whole chunk, not its 8 packed
+	// bytes, so the closed scope no longer packs.
+	if len(w.buf) != 32 {
+		t.Fatalf("closed packed scope buffered %d bytes, want a whole chunk", len(w.buf))
 	}
 }
