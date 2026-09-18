@@ -702,6 +702,8 @@ func TestHasherPutBytes(t *testing.T) {
 	}
 }
 
+// A scope opens on a chunk boundary: pending bytes are padded first, so the
+// checkpoint separates them from the scope, as treeproof.Wrapper does.
 func TestHasherIndex(t *testing.T) {
 	h := NewHasher()
 
@@ -711,8 +713,8 @@ func TestHasherIndex(t *testing.T) {
 
 	h.buf = append(h.buf, []byte{1, 2, 3}...)
 
-	if h.Index() != 3 {
-		t.Error("Index should be 3 after adding 3 bytes")
+	if idx := h.Index(); idx != 32 {
+		t.Errorf("Index = %d after three pending bytes, want the next chunk boundary", idx)
 	}
 }
 

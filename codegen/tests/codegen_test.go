@@ -557,7 +557,6 @@ func TestCodegenNoDynExprTypes(t *testing.T) {
 // generated file (compiled as part of this package) must contain no *Dyn buffer
 // function and must round-trip against reflection for every parent shape.
 func TestCodegenNoDynNest(t *testing.T) {
-
 	testCodegenPayloadByReflection(t, NoDynRecursiveHolder_Payload, nil)
 	testCodegenPayloadByReflection(t, NoDynNestProg_Payload, nil)
 	testCodegenPayloadByReflection(t, NoDynNestList_Payload, nil)
@@ -576,7 +575,6 @@ func TestCodegenNoDynNest(t *testing.T) {
 // and the inlined delegated region must equal what the delegated Dynamic* method
 // produces.
 func TestCodegenAtkNest(t *testing.T) {
-
 	ext := dynssz.WithExtendedTypes()
 	testCodegenPayloadByReflection(t, AtkNestD1_Payload, nil, ext)
 	testCodegenPayloadByReflection(t, AtkNestUnion_Payload, nil, ext)
@@ -3295,7 +3293,6 @@ func TestCodegenRecursionDepthBound(t *testing.T) {
 			t.Fatalf("root mismatch: generated %x, reflection %x", cgRoot, reflRoot)
 		}
 	})
-
 }
 
 // A recursive type generated with a view analyzes and carries the depth bound

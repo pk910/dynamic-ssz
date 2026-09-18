@@ -518,7 +518,14 @@ func (h *Hasher) flushPending(layer *treeLayer, allowAsync bool) {
 // StartTree opens a new SSZ object scope and returns the buffer index.
 // TreeTypeBinary/Progressive: pushes an incremental layer (supports Collapse).
 // TreeTypeNone: pushes a non-incremental layer (Collapse is a no-op on this scope).
+//
+// A scope begins on a chunk boundary: pending bytes are padded first, so the
+// scope's own content starts a chunk of its own. Conforming callers close a
+// value before opening a scope and are unaffected; the padding only shows for
+// a caller that opens one mid-value, where it keeps this walker's layout equal
+// to treeproof.Wrapper's, which forms its pending bytes into a leaf there.
 func (h *Hasher) StartTree(treeType sszutils.TreeType) int {
+	h.FillUpTo32()
 	packed := treeType&sszutils.TreeTypePacked != 0
 	treeType &^= sszutils.TreeTypePacked
 
@@ -555,7 +562,10 @@ func (h *Hasher) inPackedScope() bool {
 // itself once it reaches the job cap. Unlike StartTree, no pending flush is
 // forced on the enclosing scope — a scope opened via Index may itself end
 // up deferred into its parent.
+//
+// As in StartTree, the scope begins on a chunk boundary.
 func (h *Hasher) Index() int {
+	h.FillUpTo32()
 	idx := len(h.buf)
 	layer := h.pushLayer()
 	layer.bufIdx = idx
