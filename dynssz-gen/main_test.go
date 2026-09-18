@@ -163,6 +163,25 @@ func TestOutputPathAliases(t *testing.T) {
 	if err := checkOutputCollisions(mixed); err == nil || !strings.Contains(err.Error(), "name the same file") {
 		t.Fatalf("err = %v, want the collision refusal", err)
 	}
+
+	// A linked directory is another spelling of the directory it points at, so
+	// the two paths name one file.
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real")
+	if err := os.Mkdir(target, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "alias")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	linked := []typeSpec{
+		{TypeName: "A", OutputFile: filepath.Join(target, "gen.go")},
+		{TypeName: "B", OutputFile: filepath.Join(link, "gen.go")},
+	}
+	if err := checkOutputCollisions(linked); err == nil || !strings.Contains(err.Error(), "name the same file") {
+		t.Fatalf("err = %v, want the collision refusal", err)
+	}
 }
 
 // A stash left behind by an interrupted run is never overwritten: the run is

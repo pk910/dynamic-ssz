@@ -332,8 +332,9 @@ func run(config *Config) error {
 // checkOutputCollisions refuses two output paths that name one file. Every
 // path is cleaned when it is parsed, so equal spellings already group
 // together; two spellings of the same file that survive cleaning (a relative
-// and an absolute one) would otherwise be generated separately and then
-// written onto each other, keeping only the last.
+// and an absolute one, or two directories linked to each other) would
+// otherwise be generated separately and then written onto each other, keeping
+// only the last.
 func checkOutputCollisions(typeSpecs []typeSpec) error {
 	seen := map[string]string{}
 	for _, spec := range typeSpecs {
@@ -343,6 +344,13 @@ func checkOutputCollisions(typeSpecs []typeSpec) error {
 		abs, err := filepath.Abs(spec.OutputFile)
 		if err != nil {
 			return fmt.Errorf("resolve output %s: %w", spec.OutputFile, err)
+		}
+		// A link in the path names the same file under another spelling, which
+		// only the filesystem can resolve. The output file itself is created by
+		// this run, so only its directory can be resolved; a directory that
+		// does not exist yet is created here and holds no links.
+		if dir, linkErr := filepath.EvalSymlinks(filepath.Dir(abs)); linkErr == nil {
+			abs = filepath.Join(dir, filepath.Base(abs))
 		}
 		if first, ok := seen[abs]; ok && first != spec.OutputFile {
 			return fmt.Errorf("output files %s and %s name the same file: spell the target the same way in every type", first, spec.OutputFile)
