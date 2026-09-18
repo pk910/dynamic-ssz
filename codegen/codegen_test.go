@@ -2916,6 +2916,7 @@ func nsCombos() []struct {
 // code must be valid Go and must never reference a *Dyn buffer function — in the
 // buffer methods or in the streaming encoder/decoder.
 func TestStaticNoDynNested(t *testing.T) {
+	t.Parallel()
 	types := []reflect.Type{
 		reflect.TypeFor[nsLeaf](), reflect.TypeFor[nsD5](), reflect.TypeFor[nsD4](),
 		reflect.TypeFor[nsD3](), reflect.TypeFor[nsD2](), reflect.TypeFor[nsD1](),
@@ -2925,6 +2926,8 @@ func TestStaticNoDynNested(t *testing.T) {
 	}
 	for _, combo := range nsCombos() {
 		t.Run(combo.name, func(t *testing.T) {
+			// The combinations share nothing: each builds its own generator.
+			t.Parallel()
 			typeOpts := append([]CodeGeneratorOption{WithoutDynamicExpressions(), WithExtendedTypes()}, combo.opts...)
 			cg := NewCodeGenerator(nil)
 			buildOpts := make([]CodeGeneratorOption, 0, len(types))
@@ -2944,8 +2947,11 @@ func TestStaticNoDynNested(t *testing.T) {
 // TestStaticNoDynRecursion checks self-referential and mutually-recursive types
 // terminate (no infinite generator loop) and stay *Dyn-free across combos.
 func TestStaticNoDynRecursion(t *testing.T) {
+	t.Parallel()
 	for _, combo := range nsCombos() {
 		t.Run(combo.name, func(t *testing.T) {
+			// The combinations share nothing: each builds its own generator.
+			t.Parallel()
 			typeOpts := append([]CodeGeneratorOption{WithoutDynamicExpressions()}, combo.opts...)
 			cg := NewCodeGenerator(nil)
 			cg.BuildFile("gen.go",

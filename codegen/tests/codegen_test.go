@@ -22,6 +22,7 @@ import (
 	"github.com/pk910/dynamic-ssz/codegen"
 	"github.com/pk910/dynamic-ssz/codegen/tests/views"
 	"github.com/pk910/dynamic-ssz/hasher"
+	"github.com/pk910/dynamic-ssz/internal/racetest"
 	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
 
@@ -5318,6 +5319,12 @@ func TestCodegenHashTreeRootWithOnlyDelegated(t *testing.T) {
 // A bitlist of exactly 2^31 bits is within its limit on every platform: the
 // generated buffer and stream paths accept it and agree with reflection.
 func TestCodegenBitlistBitCountBeyondInt32(t *testing.T) {
+	if racetest.Enabled() {
+		// A quarter-gigabyte bitlist through one goroutine: the race detector
+		// multiplies the cost by sixty and has no concurrency to inspect. The
+		// builds without it run this in full.
+		t.Skip("skipped under the race detector")
+	}
 	if _, generated := any(&HugeBitlistHolder{}).(sszutils.DynamicMarshaler); !generated {
 		t.Skip("no generated code present")
 	}

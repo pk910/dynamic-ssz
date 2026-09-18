@@ -5,6 +5,7 @@
 package walker
 
 import (
+	"fmt"
 	"math/rand"
 	"testing"
 
@@ -15,7 +16,21 @@ import (
 // after every call, so a divergence names the call that caused it rather than
 // only the root at the end.
 func TestWalkerParity(t *testing.T) {
-	for seed := int64(0); seed < 2000; seed++ {
+	t.Parallel()
+	// The seeds are independent, so they run in groups across the available
+	// cores rather than one after another.
+	const seeds, groups = 2000, 8
+	for g := range groups {
+		t.Run(fmt.Sprintf("group%d", g), func(t *testing.T) {
+			t.Parallel()
+			runSeeds(t, int64(g)*seeds/groups, int64(g+1)*seeds/groups)
+		})
+	}
+}
+
+func runSeeds(t *testing.T, from, to int64) {
+	t.Helper()
+	for seed := from; seed < to; seed++ {
 		prog, openAfter := GenerateWithScopes(rand.New(rand.NewSource(seed)))
 		// Every prefix is compared as a program of its own, closed off, so a
 		// difference names the call that introduced it rather than the root at

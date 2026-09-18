@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/pk910/dynamic-ssz/internal/racetest"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
@@ -1537,6 +1538,12 @@ func hugeBitlistRoot() [32]byte {
 // A bitlist longer than the 32-bit int range in bits keeps its exact bit
 // count through the parser and the length mixin.
 func TestBitlistBitCountBeyondInt32(t *testing.T) {
+	if racetest.Enabled() {
+		// A quarter-gigabyte bitlist through one goroutine: the race detector
+		// multiplies the cost by sixty and has no concurrency to inspect. The
+		// builds without it run this in full.
+		t.Skip("skipped under the race detector")
+	}
 	data := hugeBitlist()
 	_, count := ParseBitlist(data[:0:len(data)], data)
 	if count != 1<<31 {

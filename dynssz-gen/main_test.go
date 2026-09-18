@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/pk910/dynamic-ssz/codegen"
@@ -959,50 +960,57 @@ func TestParseAnnotateTag_Multiple(t *testing.T) {
 
 // findAnnotateCall tests
 
-func TestFindAnnotateCall_Found(t *testing.T) {
-	cfg := &packages.Config{
-		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName | packages.NeedDeps,
-	}
+// One go/packages load is cached per target: loading a fixture package
+// type-checks it and its dependencies, which costs seconds, and the tests
+// below only read the result, so one load serves them all.
+var (
+	loadedPackagesMu sync.Mutex
+	loadedPackages   = map[string]*packages.Package{}
+)
 
-	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
-	if err != nil {
-		t.Fatalf("failed to load package: %v", err)
+func loadTestPackage(t *testing.T, target string) *packages.Package {
+	t.Helper()
+	loadedPackagesMu.Lock()
+	defer loadedPackagesMu.Unlock()
+	if pkg, ok := loadedPackages[target]; ok {
+		return pkg
 	}
+	cfg := &packages.Config{Mode: packages.NeedName | packages.NeedTypes | packages.NeedTypesInfo |
+		packages.NeedSyntax | packages.NeedImports | packages.NeedDeps}
+	pkgs, err := packages.Load(cfg, target)
+	if err != nil {
+		t.Fatalf("failed to load package %s: %v", target, err)
+	}
+	if len(pkgs) == 0 {
+		t.Fatalf("no packages loaded for %s", target)
+	}
+	loadedPackages[target] = pkgs[0]
+	return pkgs[0]
+}
+
+func TestFindAnnotateCall_Found(t *testing.T) {
+	pkg := loadTestPackage(t, "github.com/pk910/dynamic-ssz/codegen/tests")
 
 	// The merged tag also carries the generated ssz-static declaration.
-	tag := findAnnotateCall(pkgs[0], lookupNamed(pkgs[0], "AnnotatedList"))
+	tag := findAnnotateCall(pkg, lookupNamed(pkg, "AnnotatedList"))
 	if !strings.Contains(tag, `ssz-max:"20"`) {
 		t.Fatalf("expected tag to contain ssz-max:\"20\", got: %q", tag)
 	}
 }
 
 func TestFindAnnotateCall_Found2(t *testing.T) {
-	cfg := &packages.Config{
-		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName | packages.NeedDeps,
-	}
+	pkg := loadTestPackage(t, "github.com/pk910/dynamic-ssz/codegen/tests")
 
-	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
-	if err != nil {
-		t.Fatalf("failed to load package: %v", err)
-	}
-
-	tag := findAnnotateCall(pkgs[0], lookupNamed(pkgs[0], "AnnotatedList2"))
+	tag := findAnnotateCall(pkg, lookupNamed(pkg, "AnnotatedList2"))
 	if !strings.Contains(tag, `ssz-max:"10"`) {
 		t.Fatalf("expected tag to contain ssz-max:\"10\", got: %q", tag)
 	}
 }
 
 func TestFindAnnotateCall_NotFound(t *testing.T) {
-	cfg := &packages.Config{
-		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName | packages.NeedDeps,
-	}
+	pkg := loadTestPackage(t, "github.com/pk910/dynamic-ssz/codegen/tests")
 
-	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
-	if err != nil {
-		t.Fatalf("failed to load package: %v", err)
-	}
-
-	tag := findAnnotateCall(pkgs[0], lookupNamed(pkgs[0], "NonExistentType"))
+	tag := findAnnotateCall(pkg, lookupNamed(pkg, "NonExistentType"))
 	if tag != "" {
 		t.Fatalf("expected empty tag for non-existent type, got: %q", tag)
 	}
@@ -1060,16 +1068,9 @@ func TestRun_AnnotatedTypeVerbose(t *testing.T) {
 
 func TestFindAnnotateCall_InitFunction(t *testing.T) {
 	// Covers main.go:373-380 (init() function body scanning)
-	cfg := &packages.Config{
-		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName | packages.NeedDeps,
-	}
+	pkg := loadTestPackage(t, "github.com/pk910/dynamic-ssz/codegen/tests")
 
-	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
-	if err != nil {
-		t.Fatalf("failed to load package: %v", err)
-	}
-
-	tag := findAnnotateCall(pkgs[0], lookupNamed(pkgs[0], "InitAnnotatedList"))
+	tag := findAnnotateCall(pkg, lookupNamed(pkg, "InitAnnotatedList"))
 	if tag != `ssz-max:"8"` {
 		t.Fatalf("expected tag from init(), got: %q", tag)
 	}
@@ -1077,16 +1078,9 @@ func TestFindAnnotateCall_InitFunction(t *testing.T) {
 
 func TestFindAnnotateCall_InterpretedString(t *testing.T) {
 	// Covers main.go:432-437 (interpreted string literal path)
-	cfg := &packages.Config{
-		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName | packages.NeedDeps,
-	}
+	pkg := loadTestPackage(t, "github.com/pk910/dynamic-ssz/codegen/tests")
 
-	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
-	if err != nil {
-		t.Fatalf("failed to load package: %v", err)
-	}
-
-	tag := findAnnotateCall(pkgs[0], lookupNamed(pkgs[0], "InterpretedAnnotatedList"))
+	tag := findAnnotateCall(pkg, lookupNamed(pkg, "InterpretedAnnotatedList"))
 	if tag != `ssz-max:"12"` {
 		t.Fatalf("expected tag from interpreted string, got: %q", tag)
 	}
@@ -1442,14 +1436,8 @@ func TestRun_BadAnnotateTagInSource(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestFindAnnotateCall_AliasedImport(t *testing.T) {
-	cfg := &packages.Config{
-		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName | packages.NeedDeps,
-	}
-	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg")
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	tag := findAnnotateCall(pkgs[0], lookupNamed(pkgs[0], "AliasedAnnotated"))
+	pkg := loadTestPackage(t, "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg")
+	tag := findAnnotateCall(pkg, lookupNamed(pkg, "AliasedAnnotated"))
 	if tag != `ssz-max:"16"` {
 		t.Fatalf("expected aliased tag, got %q", tag)
 	}
@@ -1459,25 +1447,19 @@ func TestFindAnnotateCall_AliasedImport(t *testing.T) {
 // alongside an AssignStmt — covers the non-ExprStmt continue branch in
 // findAnnotateCallInDecl.
 func TestFindAnnotateCall_InitMixedStmts(t *testing.T) {
-	cfg := &packages.Config{
-		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName | packages.NeedDeps,
-	}
-	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg")
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
+	pkg := loadTestPackage(t, "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg")
 	// This type's Annotate is registered via an AssignStmt in init() — the
 	// scanner only finds Annotate in ExprStmts, so it must NOT match.
 	// But the loop must still iterate past the assign stmt without crashing
 	// and past the unrelated-call ExprStmt.
-	tag := findAnnotateCall(pkgs[0], lookupNamed(pkgs[0], "NonExprInitMarker"))
+	tag := findAnnotateCall(pkg, lookupNamed(pkg, "NonExprInitMarker"))
 	if tag != "" {
 		t.Fatalf("expected empty tag (Annotate was in AssignStmt not ExprStmt), got %q", tag)
 	}
 
 	// Meanwhile InvalidAnnotated still resolves correctly, proving the
 	// scanner didn't get confused by the mixed init() body.
-	tag = findAnnotateCall(pkgs[0], lookupNamed(pkgs[0], "InvalidAnnotated"))
+	tag = findAnnotateCall(pkg, lookupNamed(pkg, "InvalidAnnotated"))
 	if tag == "" {
 		t.Fatal("expected InvalidAnnotated tag to still be found")
 	}
@@ -1879,13 +1861,7 @@ func TestWriteTempFileFailure(t *testing.T) {
 // registration in the generator as in the runtime registry: the last one in
 // the package's initialization order.
 func TestFindAnnotateCall_RepeatedRegistrations(t *testing.T) {
-	cfg := &packages.Config{
-		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName | packages.NeedDeps,
-	}
-	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg")
-	if err != nil {
-		t.Fatalf("failed to load package: %v", err)
-	}
+	pkg := loadTestPackage(t, "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg")
 
 	for _, tc := range []struct {
 		name string
@@ -1897,7 +1873,7 @@ func TestFindAnnotateCall_RepeatedRegistrations(t *testing.T) {
 		{"RepeatedBlock", reflect.TypeOf(testpkg.RepeatedBlock(nil)), "ssz-max", "8"},
 		{"RepeatedSame", reflect.TypeOf(testpkg.RepeatedSame(nil)), "ssz-max", "4"},
 	} {
-		generated := findAnnotateCall(pkgs[0], lookupNamed(pkgs[0], tc.name))
+		generated := findAnnotateCall(pkg, lookupNamed(pkg, tc.name))
 		runtime, ok := sszutils.LookupAnnotation(tc.typ)
 		if !ok {
 			t.Fatalf("%s: no runtime annotation", tc.name)

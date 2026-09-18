@@ -5,6 +5,7 @@ package hasher
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"math/rand"
 	"sync/atomic"
@@ -35,14 +36,26 @@ func (s asyncSequence) String() string {
 		s.progressive, s.activeFields, s.rawPrefix, s.elemChunks, s.n, s.cadence, s.limit)
 }
 
-// runAsyncSequence drives hh through the sequence and returns the root. The
-// hasher is gated into async hashing; whether reductions actually run in the
-// background is controlled by the process-wide Enable/Disable toggle.
-func runAsyncSequence(t *testing.T, hh *Hasher, s asyncSequence, seed int64) [32]byte {
+// seqFiller returns a deterministic chunk filler for a sequence seed. The
+// content only has to be reproducible and distinct per chunk; drawing it from
+// math/rand cost a third of the async comparison's run time.
+func seqFiller(seed int64, chunk []byte) func() {
+	counter := uint64(seed) << 40
+	return func() {
+		counter++
+		binary.LittleEndian.PutUint64(chunk, counter)
+		binary.LittleEndian.PutUint64(chunk[24:], ^counter)
+	}
+}
+
+// runAsyncSequence drives hh through the sequence and returns the root. async
+// gates this hasher into background reduction; whether reductions actually run
+// there also depends on the process-wide Enable/Disable toggle.
+func runAsyncSequence(t *testing.T, hh *Hasher, s asyncSequence, seed int64, async bool) [32]byte {
 	t.Helper()
-	hh.SetAsyncHashing(true)
-	rng := rand.New(rand.NewSource(seed))
+	hh.SetAsyncHashing(async)
 	chunk := make([]byte, 32)
+	fill := seqFiller(seed, chunk)
 
 	treeType := sszutils.TreeTypeBinary
 	if s.progressive || s.activeFields {
@@ -51,7 +64,7 @@ func runAsyncSequence(t *testing.T, hh *Hasher, s asyncSequence, seed int64) [32
 	idx := hh.StartTree(treeType)
 
 	for i := 0; i < s.rawPrefix; i++ {
-		rng.Read(chunk)
+		fill()
 		hh.Append(chunk)
 		if s.cadence > 0 && (i+1)%s.cadence == 0 {
 			hh.Collapse()
@@ -59,12 +72,12 @@ func runAsyncSequence(t *testing.T, hh *Hasher, s asyncSequence, seed int64) [32
 	}
 	for i := 0; i < s.n; i++ {
 		if s.elemChunks == 0 {
-			rng.Read(chunk)
+			fill()
 			hh.Append(chunk)
 		} else {
 			ci := hh.StartTree(sszutils.TreeTypeNone)
 			for c := 0; c < s.elemChunks; c++ {
-				rng.Read(chunk)
+				fill()
 				hh.Append(chunk)
 			}
 			hh.Merkleize(ci)
@@ -94,8 +107,10 @@ func runAsyncSequence(t *testing.T, hh *Hasher, s asyncSequence, seed int64) [32
 // TestAsyncMatchesSync verifies that background reduction produces exactly
 // the roots the synchronous path produces, across list kinds, element
 // widths, batch and progressive-group boundaries, and collapse cadences.
-func TestAsyncMatchesSync(t *testing.T) {
-	defer DisableAsyncHashing()
+func TestAsyncMatchesSync(t *testing.T) { //nolint:tparallel // async hashing is a process-wide switch; a test running beside this one could flip it
+	// Cleanup, not defer: the cases below run in parallel, so they start after
+	// this function returns and must still find async hashing enabled.
+	t.Cleanup(DisableAsyncHashing)
 
 	cases := make([]asyncSequence, 0, 170)
 	for _, prog := range []bool{false, true} {
@@ -159,19 +174,26 @@ func TestAsyncMatchesSync(t *testing.T) {
 		asyncSequence{rawPrefix: 33024, elemChunks: 8, n: 4200, cadence: 256, limit: 1 << 40},
 	)
 
+	// Async hashing is a process-wide switch, so it is turned on once and each
+	// hasher decides for itself. That keeps the two runs of a case independent
+	// of every other case, which lets the cases run concurrently: each builds
+	// its own hasher over its own sequence.
+	EnableAsyncHashing(4)
+
 	for i, s := range cases {
 		seed := int64(i + 1)
-
-		DisableAsyncHashing()
-		hh := NewHasherWithHashFn(hashtree.HashByteSlice)
-		want := runAsyncSequence(t, hh, s, seed)
-
-		EnableAsyncHashing(4)
-		got := runAsyncSequence(t, hh, s, seed)
-
-		if got != want {
-			t.Errorf("%s: async root %x != sync root %x", s, got, want)
-		}
+		t.Run(s.String(), func(t *testing.T) {
+			t.Parallel()
+			hh := NewHasherWithHashFn(hashtree.HashByteSlice)
+			want := runAsyncSequence(t, hh, s, seed, false)
+			got := runAsyncSequence(t, hh, s, seed, true)
+			if asyncState.Load() == nil {
+				t.Fatal("async hashing was disabled while the cases ran")
+			}
+			if got != want {
+				t.Errorf("%s: async root %x != sync root %x", s, got, want)
+			}
+		})
 	}
 }
 
@@ -247,10 +269,10 @@ func TestAsyncResetInFlight(t *testing.T) {
 	}
 
 	s := asyncSequence{elemChunks: 8, n: 8192, cadence: 256, limit: 1 << 40}
-	got := runAsyncSequence(t, hh, s, 42)
+	got := runAsyncSequence(t, hh, s, 42, true)
 
 	DisableAsyncHashing()
-	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 42)
+	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 42, false)
 	if got != want {
 		t.Errorf("root after in-flight Reset %x != sync root %x", got, want)
 	}
@@ -278,7 +300,7 @@ func TestAsyncPanicReachesCaller(t *testing.T) {
 	result := make(chan any, 1)
 	go func() {
 		defer func() { result <- recover() }()
-		runAsyncSequence(t, hh, asyncSequence{elemChunks: 8, n: 8192, cadence: 256, limit: 1 << 40}, 42)
+		runAsyncSequence(t, hh, asyncSequence{elemChunks: 8, n: 8192, cadence: 256, limit: 1 << 40}, 42, true)
 		result <- nil
 	}()
 	select {
@@ -335,10 +357,10 @@ func TestAsyncGate(t *testing.T) {
 	// An ungated hasher hashes synchronously while async is enabled, with
 	// identical roots.
 	s := asyncSequence{elemChunks: 8, n: 5000, cadence: 256, limit: 1 << 40}
-	got := runAsyncSequence(t, hh, s, 9)
+	got := runAsyncSequence(t, hh, s, 9, false)
 
 	DisableAsyncHashing()
-	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 9)
+	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 9, false)
 	if got != want {
 		t.Errorf("root %x != reference root %x", got, want)
 	}
@@ -408,10 +430,11 @@ func TestAsyncEnableDisable(t *testing.T) {
 func TestAsyncCollapseSubCapRemainder(t *testing.T) {
 	defer DisableAsyncHashing()
 
-	registerRun := func(hh *Hasher, rng *rand.Rand, idx, elemChunks, n int) {
+	registerRun := func(hh *Hasher, seed int64, idx, elemChunks, n int) {
 		chunk := make([]byte, 32)
+		fill := seqFiller(seed, chunk)
 		for i := 0; i < n*elemChunks; i++ {
-			rng.Read(chunk)
+			fill()
 			hh.Append(chunk)
 		}
 		layer := &hh.layers[hh.layerCount]
@@ -424,13 +447,13 @@ func TestAsyncCollapseSubCapRemainder(t *testing.T) {
 		const n = 4100 // one cap-sized job of 4096 elements plus a remainder of 4
 		s := asyncSequence{elemChunks: 8, n: n, limit: 1 << 40}
 		DisableAsyncHashing()
-		want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 83)
+		want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 83, false)
 
 		EnableAsyncHashing(4)
 		hh := NewHasherWithHashFn(hashtree.HashByteSlice)
 		hh.SetAsyncHashing(true)
 		idx := hh.StartTree(sszutils.TreeTypeBinary)
-		registerRun(hh, rand.New(rand.NewSource(83)), idx, 8, n)
+		registerRun(hh, 83, idx, 8, n)
 		hh.Collapse()
 		if pend := hh.layers[hh.layerCount].pendCount; pend != 4 {
 			t.Fatalf("remainder not kept pending after Collapse: %d != 4", pend)
@@ -454,13 +477,13 @@ func TestAsyncCollapseSubCapRemainder(t *testing.T) {
 		const n = 8*16384 + 4
 		s := asyncSequence{progressive: true, elemChunks: 2, n: n}
 		DisableAsyncHashing()
-		want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 89)
+		want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 89, false)
 
 		EnableAsyncHashing(4)
 		hh := NewHasherWithHashFn(hashtree.HashByteSlice)
 		hh.SetAsyncHashing(true)
 		idx := hh.StartTree(sszutils.TreeTypeProgressive)
-		registerRun(hh, rand.New(rand.NewSource(89)), idx, 2, n)
+		registerRun(hh, 89, idx, 2, n)
 		hh.Collapse()
 		if pend := hh.layers[hh.layerCount].pendCount; pend != 0 {
 			t.Fatalf("remainder not reduced before finalization: %d != 0", pend)
@@ -484,11 +507,11 @@ func TestAsyncRingFull(t *testing.T) {
 	s := asyncSequence{elemChunks: 8, n: 40960, cadence: 256, limit: 1 << 40}
 
 	DisableAsyncHashing()
-	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 21)
+	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 21, false)
 
 	EnableAsyncHashing(1)
 	hh := NewHasherWithHashFn(hashtree.HashByteSlice)
-	got := runAsyncSequence(t, hh, s, 21)
+	got := runAsyncSequence(t, hh, s, 21, true)
 	if got != want {
 		t.Errorf("ring-full async root %x != sync root %x", got, want)
 	}
@@ -503,15 +526,15 @@ func TestAsyncReconfigure(t *testing.T) {
 	s := asyncSequence{elemChunks: 8, n: 40960, cadence: 256, limit: 1 << 40}
 
 	DisableAsyncHashing()
-	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 33)
+	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 33, false)
 
 	EnableAsyncHashing(8)
 	hh := NewHasherWithHashFn(hashtree.HashByteSlice)
-	if got := runAsyncSequence(t, hh, s, 33); got != want {
+	if got := runAsyncSequence(t, hh, s, 33, true); got != want {
 		t.Errorf("root with 8 workers %x != sync root %x", got, want)
 	}
 	EnableAsyncHashing(1)
-	if got := runAsyncSequence(t, hh, s, 33); got != want {
+	if got := runAsyncSequence(t, hh, s, 33, true); got != want {
 		t.Errorf("root after shrink to 1 worker %x != sync root %x", got, want)
 	}
 }
@@ -586,14 +609,14 @@ func TestAsyncLargeWorkerCount(t *testing.T) {
 	s := asyncSequence{elemChunks: 8, n: 40960, cadence: 256, limit: 1 << 40}
 
 	DisableAsyncHashing()
-	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 61)
+	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 61, false)
 
 	EnableAsyncHashing(9) // ring size 18 > asyncRingInline
 	hh := NewHasherWithHashFn(hashtree.HashByteSlice)
 	if len(hh.jobRingBuf) >= 18 {
 		t.Fatal("test requires ring larger than the inline backing")
 	}
-	got := runAsyncSequence(t, hh, s, 61)
+	got := runAsyncSequence(t, hh, s, 61, true)
 	if got != want {
 		t.Errorf("large-worker async root %x != sync root %x", got, want)
 	}
@@ -728,14 +751,14 @@ func TestAsyncLegacyIndexDriven(t *testing.T) {
 	legacy := func() [32]byte {
 		hh := NewHasherWithHashFn(hashtree.HashByteSlice)
 		hh.SetAsyncHashing(true)
-		rng := rand.New(rand.NewSource(29))
 		chunk := make([]byte, 32)
+		fill := seqFiller(29, chunk)
 
 		idx := hh.Index()
 		for i := 0; i < n; i++ {
 			ci := hh.Index()
 			for c := 0; c < 8; c++ {
-				rng.Read(chunk)
+				fill()
 				hh.Append(chunk)
 			}
 			hh.Merkleize(ci)
@@ -751,7 +774,7 @@ func TestAsyncLegacyIndexDriven(t *testing.T) {
 	DisableAsyncHashing()
 	want := legacy()
 	s := asyncSequence{elemChunks: 8, n: n, cadence: 256, limit: 1 << 40}
-	if ref := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 29); ref != want {
+	if ref := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 29, false); ref != want {
 		t.Errorf("legacy sync root %x != StartTree-driven root %x", want, ref)
 	}
 
@@ -770,16 +793,16 @@ func TestAsyncNativeFactory(t *testing.T) {
 	s := asyncSequence{elemChunks: 8, n: 12288, cadence: 256, limit: 1 << 40}
 
 	DisableAsyncHashing()
-	want := runAsyncSequence(t, NewHasher(), s, 13)
+	want := runAsyncSequence(t, NewHasher(), s, 13, false)
 
 	EnableAsyncHashing(4)
-	got := runAsyncSequence(t, NewHasher(), s, 13)
+	got := runAsyncSequence(t, NewHasher(), s, 13, false)
 	if got != want {
 		t.Errorf("native async root %x != sync root %x", got, want)
 	}
 
 	DisableAsyncHashing()
-	if ref := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 13); ref != want {
+	if ref := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 13, false); ref != want {
 		t.Errorf("native root %x != fast root %x", want, ref)
 	}
 }
@@ -836,7 +859,7 @@ func TestAsyncConcurrentHashers(t *testing.T) {
 	s := asyncSequence{progressive: true, elemChunks: 8, n: 21845, cadence: 256}
 
 	DisableAsyncHashing()
-	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 5)
+	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 5, false)
 	EnableAsyncHashing(4)
 
 	done := make(chan [32]byte, 8)
@@ -844,7 +867,7 @@ func TestAsyncConcurrentHashers(t *testing.T) {
 		go func() {
 			hh := FastHasherPool.Get()
 			defer FastHasherPool.Put(hh)
-			done <- runAsyncSequence(t, hh, s, 5)
+			done <- runAsyncSequence(t, hh, s, 5, true)
 		}()
 	}
 	for i := 0; i < 8; i++ {
