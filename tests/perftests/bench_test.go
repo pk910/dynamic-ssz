@@ -318,6 +318,26 @@ func runStateBenchmarks(b *testing.B, ds *ssz.DynSsz, data []byte, expectedHTR [
 			b.Fatalf("HTR mismatch: got %x, want %x", htr, expectedHTR)
 		}
 	})
+
+	b.Run("GetTree", func(b *testing.B) {
+		state := new(BeaconState)
+		if err := ds.UnmarshalSSZ(state, data); err != nil {
+			b.Fatal(err)
+		}
+		var root []byte
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			tree, err := ds.GetTree(state)
+			if err != nil {
+				b.Fatal(err)
+			}
+			root = tree.Hash()
+		}
+		b.StopTimer()
+		if !bytes.Equal(root, expectedHTR[:]) {
+			b.Fatalf("tree root mismatch: got %x, want %x", root, expectedHTR)
+		}
+	})
 }
 
 func verifyBlockHTR(b *testing.B, ds *ssz.DynSsz, block *SignedBeaconBlock, expected [32]byte) {
