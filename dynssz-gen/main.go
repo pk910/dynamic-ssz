@@ -932,9 +932,10 @@ func parseAnnotateTag(tag string) ([]codegen.CodeGeneratorOption, error) {
 }
 
 // writeOutputFiles writes the generated file set atomically: every file lands
-// next to its target as a temp file first, and the renames happen only after
-// all writes succeeded, so a failure leaves no partial mix of old and new
-// output. Files are written in stable order; the total byte count is returned.
+// next to its target as a temp file first, the renames happen only after all
+// writes succeeded, and a rename that fails part-way through puts back what it
+// replaced, so a failure leaves no partial mix of old and new output. Files are
+// written in stable order; the total byte count is returned.
 func writeOutputFiles(codeMap map[string]string, verbose bool) (int, error) {
 	outFiles := make([]string, 0, len(codeMap))
 	for outFile := range codeMap {
@@ -968,12 +969,55 @@ func writeOutputFiles(codeMap map[string]string, verbose bool) (int, error) {
 		}
 		tempFiles[outFile] = tempFile
 	}
+	// The renames commit one after another, so a failure part-way through
+	// would leave some targets new and some old. Each target that exists is
+	// moved aside first and put back if a later rename fails, so the set is
+	// either wholly new or wholly what it was.
+	installed := make([]string, 0, len(outFiles))
+	replaced := map[string]string{}
+	restore := func() {
+		for i := len(installed) - 1; i >= 0; i-- {
+			outFile := installed[i]
+			if backup, ok := replaced[outFile]; ok {
+				_ = renameFile(backup, outFile)
+				continue
+			}
+			_ = os.Remove(outFile)
+		}
+		for outFile, backup := range replaced {
+			if _, err := os.Stat(backup); err == nil {
+				_ = renameFile(backup, outFile)
+			}
+		}
+	}
+
 	for _, outFile := range outFiles {
+		if _, err := os.Stat(outFile); err == nil {
+			backup, err := writeTempFile(outFile, nil)
+			if err != nil {
+				restore()
+				cleanup()
+				return 0, fmt.Errorf("failed to write output file %s: %v", outFile, err)
+			}
+			if err := renameFile(outFile, backup); err != nil {
+				_ = os.Remove(backup)
+				restore()
+				cleanup()
+				return 0, fmt.Errorf("failed to write output file %s: %v", outFile, err)
+			}
+			replaced[outFile] = backup
+		}
 		if err := renameFile(tempFiles[outFile], outFile); err != nil {
+			restore()
 			cleanup()
 			return 0, fmt.Errorf("failed to write output file %s: %v", outFile, err)
 		}
+		installed = append(installed, outFile)
 		delete(tempFiles, outFile)
+	}
+
+	for _, backup := range replaced {
+		_ = os.Remove(backup)
 	}
 
 	return codeSize, nil

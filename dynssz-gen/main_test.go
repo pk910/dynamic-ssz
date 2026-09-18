@@ -220,6 +220,61 @@ func TestOutputPathResolveFailure(t *testing.T) {
 	}
 }
 
+// A rename that fails part-way through a multi-file write puts back what it
+// replaced, so the output set is either wholly new or wholly what it was.
+func TestWriteOutputFilesRestoresOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "gen_a.go")
+	second := filepath.Join(dir, "gen_b.go")
+	for _, f := range []string{first, second} {
+		if err := os.WriteFile(f, []byte("package x // old\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Fail the install of the second target once, after the first is already
+	// in; the restore that follows uses the same seam and must succeed.
+	failed := false
+	renameFile = func(src, dst string) error {
+		if !failed && dst == second && strings.Contains(src, ".tmp") {
+			failed = true
+			return errors.New("rename failed")
+		}
+		return os.Rename(src, dst)
+	}
+	t.Cleanup(func() { renameFile = os.Rename })
+
+	_, err := writeOutputFiles(map[string]string{
+		first:  "package x // new\n",
+		second: "package x // new\n",
+	}, false)
+	if err == nil {
+		t.Fatal("expected the failing rename to be reported")
+	}
+
+	for _, f := range []string{first, second} {
+		content, readErr := os.ReadFile(f)
+		if readErr != nil {
+			t.Fatalf("%s: %v", filepath.Base(f), readErr)
+		}
+		if string(content) != "package x // old\n" {
+			t.Errorf("%s holds %q, want what it held before", filepath.Base(f), content)
+		}
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("directory holds %v, want only the two targets", names)
+	}
+}
+
 // A stash left behind by an interrupted run is never overwritten: the run is
 // refused and nothing else is moved.
 func TestStashOutputs_RefusesExistingStash(t *testing.T) {
