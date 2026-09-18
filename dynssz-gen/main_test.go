@@ -195,6 +195,30 @@ func TestOutputPathAliases(t *testing.T) {
 	}
 }
 
+// Resolving an output path fails only when the process has no working
+// directory to resolve against, which is what a deleted one leaves behind.
+func TestOutputPathResolveFailure(t *testing.T) {
+	gone := filepath.Join(t.TempDir(), "gone")
+	if err := os.Mkdir(gone, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(orig) }()
+	if err := os.Chdir(gone); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := checkOutputCollisions([]typeSpec{{TypeName: "A", OutputFile: "gen.go"}}); err == nil || !strings.Contains(err.Error(), "resolve output") {
+		t.Fatalf("err = %v, want the resolve failure", err)
+	}
+}
+
 // A stash left behind by an interrupted run is never overwritten: the run is
 // refused and nothing else is moved.
 func TestStashOutputs_RefusesExistingStash(t *testing.T) {
