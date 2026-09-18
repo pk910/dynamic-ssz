@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"math"
 	"reflect"
 	"sync"
 
@@ -418,8 +419,12 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 	if err != nil {
 		return nil, err
 	}
-	// Every declared size is bounded to the SSZ size limit and every other
-	// size to the memory that holds the value, so the sum fits an int.
+	// Every size is bounded to the SSZ size limit, which on a host whose int
+	// is no wider is the whole int range: the bytes already in buf then take
+	// the sum past it.
+	if size > int64(math.MaxInt)-int64(len(buf)) {
+		return nil, sszutils.ErrPlatformOverflowFn("SSZ size", size)
+	}
 	needed := len(buf) + int(size)
 	if cap(buf) < needed {
 		grown := make([]byte, len(buf), needed)

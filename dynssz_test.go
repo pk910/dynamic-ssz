@@ -4821,14 +4821,13 @@ func TestSizeSSZValueOverflowRejected(t *testing.T) {
 	if err != nil || sz != 4+268435456 {
 		t.Fatalf("n=1: size=%d err=%v", sz, err)
 	}
-	// 17 elements put the total past the former uint32 bound; sizes are valid
-	// up to the platform integer range, past which SizeSSZ reports the
-	// platform bound instead of wrapping.
+	// 17 elements put the total past the SSZ size limit, which the size walk
+	// refuses rather than reporting a size no encoding can refer to.
 	const total = int64(4) + 17*268435456
 	sz, err = ds.SizeSSZ(&OuterList{Items: make([]InnerHuge, 17)})
-	if total > math.MaxInt {
+	if total > sszutils.MaxSszSize {
 		if err == nil {
-			t.Errorf("n=17: expected platform overflow error, got size %d", sz)
+			t.Errorf("n=17: expected the size limit refusal, got size %d", sz)
 		}
 	} else if err != nil || int64(sz) != total {
 		t.Errorf("n=17: size=%d err=%v", sz, err)
@@ -5320,6 +5319,27 @@ func TestDelegatedSizePastLimit(t *testing.T) {
 	// only where a path actually uses it.
 	if out, err := ds.MarshalSSZTo(&hugeSizer{}, []byte{1}); err != nil || len(out) != 9 {
 		t.Fatalf("MarshalSSZTo = %d bytes, %v, want the delegate's own output", len(out), err)
+	}
+}
+
+// A value whose own size is the largest one allowed still has to fit next to
+// the bytes already in the caller's buffer.
+func TestMarshalSSZToPrefixPlusSize(t *testing.T) {
+	type wide struct {
+		Data []byte `ssz-size:"1" dynssz-size:"WIDTH"`
+	}
+	ds := NewDynSsz(map[string]any{"WIDTH": uint64(sszutils.MaxSszSize)}, WithNoDelegation(), WithNoFastSsz())
+	size, err := ds.SizeSSZ(&wide{})
+	if err != nil || size != sszutils.MaxSszSize {
+		t.Fatalf("size = %d, %v, want the SSZ size limit", size, err)
+	}
+	if math.MaxInt > sszutils.MaxSszSize {
+		// Marshalling would allocate the whole declared extent here, which the
+		// check under test is not about.
+		return
+	}
+	if _, err := ds.MarshalSSZTo(&wide{}, []byte{0}); !errors.Is(err, sszutils.ErrPlatformOverflow) {
+		t.Fatalf("one-byte prefix err = %v, want ErrPlatformOverflow", err)
 	}
 }
 
@@ -7101,17 +7121,15 @@ func TestMarshalWriterOffsetOverflow(t *testing.T) {
 
 	expectOffsetErr := func(t *testing.T, err error) {
 		t.Helper()
-		// On 32-bit platforms the size walk rejects the claimed totals with
-		// the platform range error before any offset write runs; both verdicts
-		// reject the value.
-		if math.MaxInt <= math.MaxInt32 {
-			if err == nil {
-				t.Error("expected an error for the oversized claims")
-			}
+		// A claimed total past the SSZ size limit is refused by the size walk
+		// before any offset write runs; a value the walk accepts is refused at
+		// the first offset that cannot be represented. Both verdicts reject.
+		if err == nil {
+			t.Error("expected an error for the oversized claims")
 			return
 		}
-		if err == nil || !errors.Is(err, sszutils.ErrOffset) {
-			t.Errorf("expected offset range error, got: %v", err)
+		if !errors.Is(err, sszutils.ErrOffset) && !errors.Is(err, sszutils.ErrInvalidValueRange) {
+			t.Errorf("expected an offset or size error, got: %v", err)
 		}
 	}
 

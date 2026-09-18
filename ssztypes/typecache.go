@@ -571,7 +571,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 						// The range check guards the conversion directly rather
 						// than standing as a separate condition, so that what
 						// makes the narrowing safe is visible at the narrowing.
-						if val > sszutils.MaxSszSize {
+						if exceedsSizeLimit(val, sizeHints[i].Bits) {
 							return sszutils.ErrPlatformOverflowFn("ssz-size annotation value", val)
 						}
 

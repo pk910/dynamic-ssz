@@ -376,8 +376,11 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		return 0, sszutils.ErrUnknownTypeFn(targetType.Kind)
 	}
 
-	if staticSize > uint64(math.MaxInt) {
-		return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "SSZ size %d exceeds the platform integer range", staticSize)
+	// The accumulated size is a size like any other: a value whose encoding no
+	// 32-bit offset can address is refused here, where the terms are summed,
+	// and not only at each delegate that reported one.
+	if staticSize > sszutils.MaxSszSize {
+		return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "SSZ size %d exceeds the SSZ size limit", staticSize)
 	}
 
 	return int64(staticSize), nil
