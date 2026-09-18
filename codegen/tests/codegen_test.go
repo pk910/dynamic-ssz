@@ -5063,6 +5063,41 @@ func TestCodegenDelegatedShallowFraming(t *testing.T) {
 // is not refused; both walkers lay its bytes out the same way, so the wrong
 // root it produces is the same through HashTreeRoot and through GetTree, in
 // both engines. One that honours the contract hashes the same everywhere.
+// A delegate that leaves a partial chunk is followed by each shape that opens
+// a region on it. Neither walker is asked to make sense of what the delegate
+// left; they are asked to lay it out the same way, so HashTreeRoot and GetTree
+// agree in both engines.
+func TestPartialChunkDelegateFraming(t *testing.T) {
+	if _, generated := any(&PartialVecHolder{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	for _, pair := range [][2]any{
+		{&PartialVecHolder{V: [48]byte{1, 2, 3}}, &PartialVecHolderRefl{V: [48]byte{1, 2, 3}}},
+		{&PartialBitlistHolder{B: []byte{0x0f}}, &PartialBitlistHolderRefl{B: []byte{0x0f}}},
+		{&PartialScopeHolder{C: plainPair{A: 1, B: 2}}, &PartialScopeHolderRefl{C: plainPair{A: 1, B: 2}}},
+	} {
+		var roots [2][32]byte
+		for i, v := range pair {
+			root, err := ds.HashTreeRoot(v)
+			if err != nil {
+				t.Fatalf("%T HashTreeRoot: %v", v, err)
+			}
+			tree, err := ds.GetTree(v)
+			if err != nil {
+				t.Fatalf("%T GetTree: %v", v, err)
+			}
+			if !bytes.Equal(tree.Hash(), root[:]) {
+				t.Fatalf("%T: tree %x, hasher %x", v, tree.Hash(), root)
+			}
+			roots[i] = root
+		}
+		if roots[0] != roots[1] {
+			t.Fatalf("%T: generated %x, reflection %x", pair[0], roots[0], roots[1])
+		}
+	}
+}
+
 func TestCompositeDelegateContract(t *testing.T) {
 	if _, generated := any(&PartialHolder{}).(sszutils.DynamicHashRoot); !generated {
 		t.Skip("no generated code present")

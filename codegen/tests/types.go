@@ -3078,6 +3078,46 @@ type FlushedHolderRefl struct {
 	M uint64
 }
 
+// A delegate that leaves a partial chunk is followed here by each shape that
+// opens a region right on it: a byte vector, a bitlist and a container. Both
+// walkers have to lay those out the same way, whatever the delegate left.
+type PartialVecHolder struct {
+	P partialComposite
+	V [48]byte
+}
+
+// PartialVecHolderRefl is the same shape without generated methods.
+type PartialVecHolderRefl struct {
+	P partialComposite
+	V [48]byte
+}
+
+type PartialBitlistHolder struct {
+	P partialComposite
+	B []byte `ssz-type:"bitlist" ssz-max:"64"`
+}
+
+// PartialBitlistHolderRefl is the same shape without generated methods.
+type PartialBitlistHolderRefl struct {
+	P partialComposite
+	B []byte `ssz-type:"bitlist" ssz-max:"64"`
+}
+
+// plainPair is an ordinary container, so the field after the delegate opens a
+// scope rather than writing a value.
+type plainPair struct{ A, B uint64 }
+
+type PartialScopeHolder struct {
+	P partialComposite
+	C plainPair
+}
+
+// PartialScopeHolderRefl is the same shape without generated methods.
+type PartialScopeHolderRefl struct {
+	P partialComposite
+	C plainPair
+}
+
 type goodComposite struct{ A, B uint64 }
 
 func (g *goodComposite) HashTreeRootWith(hh sszutils.HashWalker) error {

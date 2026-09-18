@@ -340,18 +340,19 @@ func TestHasherAppendBytes32(t *testing.T) {
 		t.Error("padding should be zeros")
 	}
 
-	// A buffer that is not chunk-aligned before the call is padded to whole-
-	// buffer alignment, not by len(b)%32.
+	// The value is padded to a whole number of chunks counted from where it
+	// begins, so a buffer that was not chunk-aligned before the call stays
+	// that way and the value still occupies one chunk of its own.
 	h.Reset()
 	h.Append([]byte{1, 2, 3})
 	h.AppendBytes32([]byte{4, 5})
-	if len(h.buf) != 32 {
-		t.Errorf("buffer should be aligned to 32 bytes, got %d", len(h.buf))
+	if len(h.buf) != 35 {
+		t.Errorf("buffer length = %d, want the three pending bytes plus one chunk", len(h.buf))
 	}
 	if !bytes.Equal(h.buf[:5], []byte{1, 2, 3, 4, 5}) {
 		t.Error("data should be at the beginning of buffer")
 	}
-	if !bytes.Equal(h.buf[5:], make([]byte, 27)) {
+	if !bytes.Equal(h.buf[5:], make([]byte, 30)) {
 		t.Error("padding should be zeros")
 	}
 }
@@ -713,8 +714,10 @@ func TestHasherIndex(t *testing.T) {
 
 	h.buf = append(h.buf, []byte{1, 2, 3}...)
 
-	if idx := h.Index(); idx != 32 {
-		t.Errorf("Index = %d after three pending bytes, want the next chunk boundary", idx)
+	// A scope opens where the buffer stands; its own chunks are counted from
+	// there, so nothing is padded here.
+	if idx := h.Index(); idx != 3 {
+		t.Errorf("Index = %d after three pending bytes, want the current position", idx)
 	}
 }
 
