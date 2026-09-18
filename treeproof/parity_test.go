@@ -108,7 +108,7 @@ func runProgram(hh sszutils.HashWalker, prog []walkerOp, check func(int)) (root 
 	}
 
 	for i, op := range prog {
-		switch op.kind {
+		switch op.kind { //nolint:exhaustive // opKindCount is a bound, not a call
 		case opAppend:
 			hh.Append(opBytes(op.n))
 		case opAppendBytes32:
@@ -252,7 +252,7 @@ func generateProgramWithScopes(rng *rand.Rand) ([]walkerOp, [][]sszutils.TreeTyp
 			op.n = rng.Intn(70)
 		}
 
-		switch kind {
+		switch kind { //nolint:exhaustive // only the scope ops change the stack
 		case opStartTree, opIndex:
 			if len(open) >= 6 {
 				continue
@@ -318,7 +318,7 @@ func reduceFor(shape sszutils.TreeType, rng *rand.Rand) opKind {
 // only the root at the end.
 func TestWalkerParity(t *testing.T) {
 	for seed := int64(0); seed < 2000; seed++ {
-		prog, openAfter := generateProgramWithScopes(rand.New(rand.NewSource(seed))) //nolint:gosec // deterministic test input
+		prog, openAfter := generateProgramWithScopes(rand.New(rand.NewSource(seed)))
 		// Every prefix is compared as a program of its own, closed off, so a
 		// difference names the call that introduced it rather than the root at
 		// the end. The whole program is the last prefix.
@@ -337,7 +337,7 @@ func TestWalkerParity(t *testing.T) {
 // the hasher also refuses, which compareWalkers already pins.
 func TestWalkerParityProofs(t *testing.T) {
 	for seed := int64(0); seed < 200; seed++ {
-		prog := generateProgram(rand.New(rand.NewSource(seed))) //nolint:gosec // deterministic test input
+		prog := generateProgram(rand.New(rand.NewSource(seed)))
 		w := NewWrapper()
 		if _, err := runProgram(w, prog, nil); err != nil {
 			continue
@@ -466,7 +466,7 @@ func FuzzWalkerParity(f *testing.F) {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, seed int64) {
-		prog := generateProgram(rand.New(rand.NewSource(seed))) //nolint:gosec // deterministic test input
+		prog := generateProgram(rand.New(rand.NewSource(seed)))
 		if err := compareWalkers(prog); err != nil {
 			t.Fatalf("seed %d: %v\nprogram:\n%s", seed, err, programString(prog))
 		}
