@@ -13,6 +13,7 @@ types:
   - ExtScalarHolder
   - ExtendedBigIntMax
   - OptU32
+  - WideOptional
   - CoverageTypes2
   - CoverageTypes3
   - CoverageTypes4

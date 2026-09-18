@@ -1213,10 +1213,10 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 			if positiveGuard != "" {
 				guard = fmt.Sprintf("%s > 0 && ", positiveGuard)
 			}
-			errCode = fmt.Sprintf("sszutils.ErrListRegionTooSmallFn(itemCount, %s, sszLen-int(startOffset))", minElemSize)
+			errCode = fmt.Sprintf("sszutils.ErrListRegionTooSmallFn(itemCount, %s, sszLen-int(startOffset))", uintLitArg(minElemSize))
 			regionCmp := fmt.Sprintf("uint64(itemCount) > uint64(sszLen-int(startOffset))/(%s)", minElemSize)
 			if _, lerr := strconv.ParseUint(minElemSize, 10, 64); lerr == nil {
-				regionCmp = fmt.Sprintf("itemCount > (sszLen-int(startOffset))/(%s)", minElemSize)
+				regionCmp = fmt.Sprintf("itemCount > (sszLen-int(startOffset))/(%s)", intLitStr(minElemSize))
 			}
 			ctx.appendCode(indent, "if dec.LengthKnown() && %s%s {\n\treturn %s\n}\n", guard, regionCmp, typePath.getErrorWith(errCode))
 		}

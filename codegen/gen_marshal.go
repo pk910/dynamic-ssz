@@ -535,7 +535,7 @@ func (ctx *marshalContext) marshalContainer(desc *ssztypes.TypeDescriptor, varNa
 			if offsetGroup != -1 {
 				offsetGroupBytes += 4
 				if offsetGroupDiff > 0 {
-					offsetExprs[idx] = fmt.Sprintf("%s+%d", offsetExprs[offsetGroup], offsetGroupDiff)
+					offsetExprs[idx] = fmt.Sprintf("%s+%s", offsetExprs[offsetGroup], posLit(offsetGroupDiff))
 				} else {
 					offsetExprs[idx] = offsetExprs[offsetGroup]
 				}

@@ -248,6 +248,12 @@ types:
     output: gen_edgecases.go
   - name: NegShellHolder
     output: gen_edgecases.go
+  - name: WideBesideDyn
+    output: gen_edgecases.go
+  - name: WideDynList
+    output: gen_edgecases.go
+  - name: WideSplitStatics
+    output: gen_edgecases.go
   - name: WideListHolder
     output: gen_edgecases.go
   - name: WideAggregate

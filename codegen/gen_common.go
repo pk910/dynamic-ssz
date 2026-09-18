@@ -605,6 +605,14 @@ func bigLiteral(expr string) bool {
 	return err == nil && v > math.MaxInt32
 }
 
+// posLit renders a byte position inside a container's fixed section for an
+// int context: a position past the portable int range is capped so the file
+// compiles on a 32-bit target, where the platform guard on the container's
+// own size refuses the value before any capped position is reached.
+func posLit(pos int) string {
+	return intLitStr(fmt.Sprintf("%d", pos))
+}
+
 // intLitStr renders a size or count expression for an int position: a literal
 // past every platform's int range is capped at run time so the file compiles
 // on a 32-bit target; anything else passes through untouched. A capped

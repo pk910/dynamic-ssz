@@ -5315,9 +5315,9 @@ func TestDelegatedSizePastLimit(t *testing.T) {
 	if _, err := ds.MarshalSSZ(&hugeSizer{}); !errors.Is(err, sszutils.ErrInvalidValueRange) {
 		t.Fatalf("MarshalSSZ err = %v, want ErrInvalidValueRange", err)
 	}
-	// MarshalSSZTo hands a delegating value to its own marshaller without
-	// asking for a size, so there is nothing to refuse there; what it writes
-	// is the delegate's own output.
+	// MarshalSSZTo appends what the value's own marshaller writes and never
+	// needs a size, so it does not ask for one: a reported size is bounded
+	// only where a path actually uses it.
 	if out, err := ds.MarshalSSZTo(&hugeSizer{}, []byte{1}); err != nil || len(out) != 9 {
 		t.Fatalf("MarshalSSZTo = %d bytes, %v, want the delegate's own output", len(out), err)
 	}

@@ -2588,6 +2588,44 @@ type WideAggregate struct {
 	C []byte `ssz-size:"1073741824"`
 }
 
+// The shapes below place a declared size no 32-bit target can hold in every
+// position the emitters form a byte offset for: beside a dynamic sibling, in
+// a list of variable-size elements, behind an optional, and split across the
+// static fields between two dynamic ones. Generated on any host, they must
+// compile for a 32-bit target.
+type WideBesideDynElem struct {
+	X []byte `ssz-size:"3000000000"`
+}
+
+type WideBesideDyn struct {
+	V []WideBesideDynElem `ssz-size:"1"`
+	D []byte              `ssz-max:"8"`
+}
+
+type WideDynElem struct {
+	X []byte `ssz-size:"3000000000"`
+	D []byte `ssz-max:"8"`
+}
+
+type WideDynList struct {
+	L []WideDynElem `ssz-max:"2"`
+}
+
+type WideOptionalInner struct {
+	X []byte `ssz-size:"3000000000"`
+}
+
+type WideOptional struct {
+	O *WideOptionalInner `ssz-type:"optional"`
+}
+
+type WideSplitStatics struct {
+	D1 []byte `ssz-max:"8"`
+	S1 []byte `ssz-size:"1500000000"`
+	S2 []byte `ssz-size:"1500000000"`
+	D2 []byte `ssz-max:"8"`
+}
+
 // WideListElem carries a declared size no 32-bit target can hold, held in a
 // list rather than a vector so the element count is divided by that size.
 type WideListElem struct {

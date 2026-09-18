@@ -598,8 +598,8 @@ func (ctx *unmarshalContext) unmarshalOptional(desc *ssztypes.TypeDescriptor, va
 			trailErr := typePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(uint64(len(buf)) - 1 - %s)", sizeVar))
 			ctx.appendExactLenCheck(indent+1, "1+"+sizeVar, "uint64(len(buf))", eofErr, trailErr)
 		} else {
-			trailErr := typePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %d)", 1+desc.ElemDesc.Size))
-			ctx.appendExactLenCheck(indent+1, fmt.Sprintf("%d", 1+desc.ElemDesc.Size), "len(buf)", eofErr, trailErr)
+			trailErr := typePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %s)", posLit(int(1+desc.ElemDesc.Size))))
+			ctx.appendExactLenCheck(indent+1, posLit(int(1+desc.ElemDesc.Size)), "len(buf)", eofErr, trailErr)
 		}
 	}
 
@@ -795,7 +795,7 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, v
 				fmtSpace = " "
 			}
 			binaryPkgName := ctx.typePrinter.AddImport("encoding/binary", "binary")
-			ctx.appendCode(indent, "offset%d := %s.LittleEndian.Uint32(buf[%s%d%s:%s%s%d])\n", idx, binaryPkgName, offsetPrefix, offset, fmtSpace, fmtSpace, offsetPrefix, offset+4)
+			ctx.appendCode(indent, "offset%d := %s.LittleEndian.Uint32(buf[%s%s%s:%s%s%s])\n", idx, binaryPkgName, offsetPrefix, posLit(offset), fmtSpace, fmtSpace, offsetPrefix, posLit(offset+4))
 			fieldOffsetPath := typePath.append(fmt.Sprintf("%s:o", field.Name))
 			if len(dynamicFields) > 0 {
 				errCode = fmt.Sprintf("sszutils.ErrOffsetOutOfRangeFn(offset%d, offset%d, buflen)", idx, dynamicFields[len(dynamicFields)-1])
@@ -1333,10 +1333,10 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 			if positiveGuard != "" {
 				guard = fmt.Sprintf("%s > 0 && ", positiveGuard)
 			}
-			errCode = fmt.Sprintf("sszutils.ErrListRegionTooSmallFn(itemCount, %s, len(buf)-startOffset)", minElemSize)
+			errCode = fmt.Sprintf("sszutils.ErrListRegionTooSmallFn(itemCount, %s, len(buf)-startOffset)", uintLitArg(minElemSize))
 			regionCmp := fmt.Sprintf("uint64(itemCount) > uint64(len(buf)-startOffset)/(%s)", minElemSize)
 			if _, lerr := strconv.ParseUint(minElemSize, 10, 64); lerr == nil {
-				regionCmp = fmt.Sprintf("itemCount > (len(buf)-startOffset)/(%s)", minElemSize)
+				regionCmp = fmt.Sprintf("itemCount > (len(buf)-startOffset)/(%s)", intLitStr(minElemSize))
 			}
 			ctx.appendCode(indent, "if %s%s {\n\treturn %s\n}\n", guard, regionCmp, typePath.getErrorWith(errCode))
 		}
