@@ -2619,6 +2619,25 @@ type WideOptional struct {
 	O *WideOptionalInner `ssz-type:"optional"`
 }
 
+// WideUnionVariants carries a declared size no 32-bit target can hold inside a
+// union variant, where the variant's length check and its size are formed from
+// that declaration.
+type WideUnionVariants struct {
+	A WideOptionalInner
+	B uint64
+}
+
+type WideUnionHolder struct {
+	U dynssz.CompatibleUnion[WideUnionVariants] `ssz-type:"compatible-union"`
+}
+
+// WideExprAfterStatic puts a spec-sized field behind a wide static one, so the
+// fixed section's byte positions are formed from that declaration.
+type WideExprAfterStatic struct {
+	S []byte `ssz-size:"3000000000"`
+	E []byte `ssz-size:"32" dynssz-size:"SPEC"`
+}
+
 type WideSplitStatics struct {
 	D1 []byte `ssz-max:"8"`
 	S1 []byte `ssz-size:"1500000000"`

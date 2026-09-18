@@ -739,7 +739,7 @@ func (ctx *sizeContext) sizeUnion(desc *ssztypes.TypeDescriptor, varName, sizeVa
 			ctx.appendCode(indent, "\tif _, ok := %s.Data.(%s); !ok {\n", varName, variantType)
 			ctx.appendCode(indent, "\t\treturn 0\n")
 			ctx.appendCode(indent, "\t}\n")
-			ctx.appendCode(indent, "\t%s += %d\n", sizeVar, variantDesc.Size)
+			ctx.appendCode(indent, "\t%s += %s\n", sizeVar, posLit(int(variantDesc.Size)))
 		}
 	}
 

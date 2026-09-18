@@ -818,7 +818,10 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, v
 				if err != nil {
 					return err
 				}
-				ctx.appendCode(indent, "\tbuf := buf[%s%d : %s%s+%d]\n", offsetPrefix, offset, offsetPrefix, fieldSizeVar, offset)
+				// The low bound is an int position, so a literal past the
+				// target's int range is capped; the high bound is formed in
+				// the size variable's own unsigned type.
+				ctx.appendCode(indent, "\tbuf := buf[%s%s : %s%s+%d]\n", offsetPrefix, posLit(offset), offsetPrefix, fieldSizeVar, offset)
 				ctx.appendCode(indent, "\texproffset += %s\n", fieldSizeVar)
 				offsetPrefix = "exproffset+"
 			} else {
@@ -1468,18 +1471,23 @@ func (ctx *unmarshalContext) unmarshalUnion(desc *ssztypes.TypeDescriptor, varNa
 			// static default: doing so under-/over-reads the union region for any
 			// preset whose resolved size differs from the static fallback. Compute
 			// the runtime size the same way the size/marshal paths do.
-			var sizeExpr string
+			// sizeExpr is compared against a widened length; sizeArg is the
+			// same size where an int is wanted, capped so a declaration past
+			// the target's int range still compiles there.
+			var sizeExpr, sizeArg string
 			if variantDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
 				sizeVar, serr := ctx.staticSizeVars.getStaticSizeVar(variantDesc)
 				if serr != nil {
 					return serr
 				}
 				sizeExpr = fmt.Sprintf("1 + int(%s)", sizeVar)
+				sizeArg = sizeExpr
 			} else {
 				sizeExpr = fmt.Sprintf("%d", 1+elemSize)
+				sizeArg = posLit(int(1 + elemSize))
 			}
-			eofErr := childTypePath.getErrorWith(fmt.Sprintf("sszutils.ErrUnionVariantEOFFn(len(buf), %s)", sizeExpr))
-			trailErr := childTypePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - (%s))", sizeExpr))
+			eofErr := childTypePath.getErrorWith(fmt.Sprintf("sszutils.ErrUnionVariantEOFFn(len(buf), %s)", sizeArg))
+			trailErr := childTypePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - (%s))", sizeArg))
 			ctx.appendExactLenCheck(indent+1, sizeExpr, "len(buf)", eofErr, trailErr)
 		}
 

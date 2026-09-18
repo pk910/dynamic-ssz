@@ -252,6 +252,10 @@ types:
     output: gen_edgecases.go
   - name: WideDynList
     output: gen_edgecases.go
+  - name: WideUnionHolder
+    output: gen_edgecases.go
+  - name: WideExprAfterStatic
+    output: gen_edgecases.go
   - name: WideSplitStatics
     output: gen_edgecases.go
   - name: WideListHolder
