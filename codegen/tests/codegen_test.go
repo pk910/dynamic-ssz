@@ -4890,6 +4890,55 @@ func TestCodegenDelegatedShapeParity(t *testing.T) {
 
 // A custom delegate of a basic width packs with its neighbours in both
 // engines, and the tree walker agrees with the hasher.
+// A delegated type used as a plain struct field keeps the framing its own
+// annotation declares: both fields sit inline in the fixed section, and both
+// engines agree on the bytes.
+func TestCodegenDelegateFieldKeepsDeclaredFraming(t *testing.T) {
+	if _, generated := any(&CustomPairField{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	for _, tc := range []struct {
+		gen  any
+		refl any
+		want string
+	}{
+		{gen: &CustomPairField{A: 1, C: customPair{2, 3}}, refl: &CustomPairFieldRefl{A: 1, C: customPair{2, 3}}, want: "01000000000000000203"},
+		{gen: &DeclaredU64Field{A: 1, C: declaredU64{4}}, refl: &DeclaredU64FieldRefl{A: 1, C: declaredU64{4}}, want: "01000000000000000400000000000000"},
+	} {
+		for _, v := range []any{tc.gen, tc.refl} {
+			encoded, err := ds.MarshalSSZ(v)
+			if err != nil || hex.EncodeToString(encoded) != tc.want {
+				t.Fatalf("%T encoded = %x, %v, want %s", v, encoded, err, tc.want)
+			}
+		}
+		genRoot, err := ds.HashTreeRoot(tc.gen)
+		if err != nil {
+			t.Fatalf("%T root: %v", tc.gen, err)
+		}
+		reflRoot, err := ds.HashTreeRoot(tc.refl)
+		if err != nil || reflRoot != genRoot {
+			t.Fatalf("%T root = %x, %v, want %x", tc.refl, reflRoot, err, genRoot)
+		}
+	}
+}
+
+// A delegated custom type that declares a fixed framing without a width is
+// framed inline by the reflection engine, which reads the width from the
+// type's own sizer.
+func TestReflectionSizerCustomFieldIsInline(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+	v := &SizerCustomField{A: 1, C: sizerCustom{X: 7}}
+	encoded, err := ds.MarshalSSZ(v)
+	if err != nil || hex.EncodeToString(encoded) != "0100000000000000070000" {
+		t.Fatalf("encoded = %x, %v, want 0100000000000000070000", encoded, err)
+	}
+	var back SizerCustomField
+	if err := ds.UnmarshalSSZ(&back, encoded); err != nil || back != *v {
+		t.Fatalf("round trip = %+v, %v, want %+v", back, err, *v)
+	}
+}
+
 func TestCodegenCustomDelegatePacks(t *testing.T) {
 	if _, generated := any(&CustomPairList{}).(sszutils.DynamicHashRoot); !generated {
 		t.Skip("no generated code present")

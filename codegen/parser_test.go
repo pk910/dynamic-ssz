@@ -128,6 +128,27 @@ func TestShallowDescriptorParity(t *testing.T) {
 	}
 }
 
+// A delegated custom type that declares a fixed framing without a width is
+// refused wherever it is described: the generator has no sizer to call, and a
+// field reference does not make the width knowable.
+func TestParserRefusesSizerCustomField(t *testing.T) {
+	obj := loadTestsPackage(t).Types.Scope().Lookup("SizerCustomField")
+	if obj == nil {
+		t.Fatal("SizerCustomField not found")
+	}
+	p := NewParser()
+	p.AnnotationResolver = func(t types.Type) string {
+		if named, ok := types.Unalias(t).(*types.Named); ok && named.Obj().Name() == "sizerCustom" {
+			return `ssz-type:"custom" ssz-static:"true"`
+		}
+		return ""
+	}
+	_, err := p.GetTypeDescriptor(types.NewPointer(obj.Type()), nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "no ssz-size") {
+		t.Fatalf("err = %v, want the declared-width refusal", err)
+	}
+}
+
 // Shapes the type cache refuses are refused by the parser as well.
 func TestParserRefusesDivergentShapes(t *testing.T) {
 	pkg := loadTestsPackage(t)

@@ -2750,6 +2750,20 @@ type CustomPairList struct {
 	L []customPair `ssz-max:"8"`
 }
 
+// CustomPairField holds the delegated custom type as a plain field. The field
+// reference constrains nothing, so the type keeps the fixed framing its own
+// annotation declares and sits inline rather than behind an offset.
+type CustomPairField struct {
+	A uint64
+	C customPair
+}
+
+// CustomPairFieldRefl is the same shape without generated methods.
+type CustomPairFieldRefl struct {
+	A uint64
+	C customPair
+}
+
 // CustomPairListRefl is the same shape without generated methods.
 type CustomPairListRefl struct {
 	L []customPair `ssz-max:"8"`
@@ -2785,6 +2799,50 @@ type DeclaredU64Holder struct {
 // DeclaredU64HolderRefl is the same shape without generated methods.
 type DeclaredU64HolderRefl struct {
 	L []declaredU64 `ssz-max:"8"`
+}
+
+// DeclaredU64Field holds the same delegate as a plain field: the declared
+// uint64 shape is the type's own, and the field reference neither states it
+// nor drops it.
+type DeclaredU64Field struct {
+	A uint64
+	C declaredU64
+}
+
+// DeclaredU64FieldRefl is the same shape without generated methods.
+type DeclaredU64FieldRefl struct {
+	A uint64
+	C declaredU64
+}
+
+// sizerCustom is a delegated custom type that declares a fixed framing but no
+// width: only its own sizer states the three bytes it writes.
+type sizerCustom struct{ X uint8 }
+
+var _ = sszutils.Annotate[sizerCustom](`ssz-type:"custom" ssz-static:"true"`)
+
+func (*sizerCustom) SizeSSZDyn(sszutils.DynamicSpecs) int { return 3 }
+func (v *sizerCustom) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return append(b, v.X, 0, 0), nil
+}
+func (v *sizerCustom) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) error {
+	if len(b) != 3 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	v.X = b[0]
+	return nil
+}
+func (v *sizerCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, h sszutils.HashWalker) error {
+	h.PutUint8(v.X)
+	return nil
+}
+
+// SizerCustomField holds it as a plain field. The reflection engine reads the
+// width from the sizer and frames the field inline; the generator has no
+// sizer to call and refuses the type instead of guessing.
+type SizerCustomField struct {
+	A uint64
+	C sizerCustom
 }
 
 // plainExtScalar is a delegated signed basic in the batch generated without

@@ -630,6 +630,20 @@ func rejectZeroSizeHint(sizeHints []SszSizeHint) error {
 	return nil
 }
 
+// SameSszTypes reports whether two type-hint lists declare the same SSZ type
+// per dimension.
+func SameSszTypes(a, b []SszTypeHint) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Type != b[i].Type {
+			return false
+		}
+	}
+	return true
+}
+
 // JoinFieldAnnotationTag returns the effective SSZ tag for a struct field whose
 // type carries a registered annotation: the field tag is joined in front of the
 // annotation tag, so a key present in both resolves to the field's value

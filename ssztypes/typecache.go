@@ -524,92 +524,111 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 	// for fully-delegated types below.
 	var staticAnnotation *bool
 
+	annotationTag, hasAnnotation := sszutils.LookupAnnotation(t)
+
+	// ssz-static is declared by the type, for the type: it states how the type
+	// frames itself, which a reference to it neither supplies nor replaces. It
+	// is read from the type's own annotation whichever hints the reference
+	// brings, including the ones a struct field carries from this very
+	// annotation.
+	if hasAnnotation {
+		if staticStr, hasStatic := reflect.StructTag(annotationTag).Lookup("ssz-static"); hasStatic {
+			switch staticStr {
+			case "true":
+				v := true
+				staticAnnotation = &v
+			case "false":
+				v := false
+				staticAnnotation = &v
+			default:
+				return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "invalid ssz-static value %q for type %v (must be \"true\" or \"false\")", staticStr, t)
+			}
+		}
+	}
+
 	// Check annotation registry for type-level metadata when no external hints provided
-	if len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0 {
-		if tag, ok := sszutils.LookupAnnotation(t); ok {
-			var parseErr error
+	if hasAnnotation && len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0 {
+		var parseErr error
 
-			typeHints, sizeHints, maxSizeHints, parseErr = ParseTags(tag)
-			if parseErr != nil {
-				return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "failed to parse annotation for type %v: %v", t, parseErr)
-			}
+		typeHints, sizeHints, maxSizeHints, parseErr = ParseTags(annotationTag)
+		if parseErr != nil {
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "failed to parse annotation for type %v: %v", t, parseErr)
+		}
 
-			if staticStr, hasStatic := reflect.StructTag(tag).Lookup("ssz-static"); hasStatic {
-				switch staticStr {
-				case "true":
-					v := true
-					staticAnnotation = &v
-				case "false":
-					v := false
-					staticAnnotation = &v
-				default:
-					return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "invalid ssz-static value %q for type %v (must be \"true\" or \"false\")", staticStr, t)
+		// ParseTags can't resolve dynamic expressions (no DynamicSpecs).
+		// Resolve them now, unless the descriptor is being built to generate
+		// code -- then the expression is what the output needs, not a value.
+		if !tc.noSpecResolution {
+			// A dimension keeps its static value when the expression gives
+			// nothing usable -- resolved to zero, undefined, or unresolvable.
+			// A zero static value is the "0" placeholder rather than a
+			// fallback, so there is nothing left to fall back to and the
+			// annotation names a size or limit nothing supplies. The
+			// generated code reports the same dead end at runtime, where its
+			// expressions resolve (ResolveSpecValueWithDefault).
+			for i := range sizeHints {
+				if sizeHints[i].Expr == "" {
+					continue
+				}
+
+				ok, val, resolveErr := tc.specs.ResolveSpecValue(sizeHints[i].Expr)
+				if resolveErr != nil {
+					return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing dynssz-size expression %q for type %v: %v", sizeHints[i].Expr, t, resolveErr)
+				}
+				if ok && val > 0 {
+					// The range check guards the conversion directly rather
+					// than standing as a separate condition, so that what
+					// makes the narrowing safe is visible at the narrowing.
+					if exceedsSizeLimit(val, sizeHints[i].Bits) {
+						return sszutils.ErrPlatformOverflowFn("ssz-size annotation value", val)
+					}
+
+					sizeHints[i].Size = int64(val)
+					sizeHints[i].Custom = true
+
+					continue
+				}
+				// A bit size on a Go array falls back to the array's own
+				// length in bits; the vector builder applies that, as it
+				// does for field tags. A slice has no length to fall back
+				// to and is rejected there.
+				if sizeHints[i].Size == 0 && (!sizeHints[i].Bits || dimensionKind(t, i) != reflect.Array) {
+					return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-size expression %q %s", sizeHints[i].Expr, unresolvedReason(ok))
 				}
 			}
 
-			// ParseTags can't resolve dynamic expressions (no DynamicSpecs).
-			// Resolve them now, unless the descriptor is being built to generate
-			// code -- then the expression is what the output needs, not a value.
-			if !tc.noSpecResolution {
-				// A dimension keeps its static value when the expression gives
-				// nothing usable -- resolved to zero, undefined, or unresolvable.
-				// A zero static value is the "0" placeholder rather than a
-				// fallback, so there is nothing left to fall back to and the
-				// annotation names a size or limit nothing supplies. The
-				// generated code reports the same dead end at runtime, where its
-				// expressions resolve (ResolveSpecValueWithDefault).
-				for i := range sizeHints {
-					if sizeHints[i].Expr == "" {
-						continue
-					}
-
-					ok, val, resolveErr := tc.specs.ResolveSpecValue(sizeHints[i].Expr)
-					if resolveErr != nil {
-						return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing dynssz-size expression %q for type %v: %v", sizeHints[i].Expr, t, resolveErr)
-					}
-					if ok && val > 0 {
-						// The range check guards the conversion directly rather
-						// than standing as a separate condition, so that what
-						// makes the narrowing safe is visible at the narrowing.
-						if exceedsSizeLimit(val, sizeHints[i].Bits) {
-							return sszutils.ErrPlatformOverflowFn("ssz-size annotation value", val)
-						}
-
-						sizeHints[i].Size = int64(val)
-						sizeHints[i].Custom = true
-
-						continue
-					}
-					// A bit size on a Go array falls back to the array's own
-					// length in bits; the vector builder applies that, as it
-					// does for field tags. A slice has no length to fall back
-					// to and is rejected there.
-					if sizeHints[i].Size == 0 && (!sizeHints[i].Bits || dimensionKind(t, i) != reflect.Array) {
-						return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-size expression %q %s", sizeHints[i].Expr, unresolvedReason(ok))
-					}
+			for i := range maxSizeHints {
+				if maxSizeHints[i].Expr == "" {
+					continue
 				}
 
-				for i := range maxSizeHints {
-					if maxSizeHints[i].Expr == "" {
-						continue
-					}
+				ok, val, resolveErr := tc.specs.ResolveSpecValue(maxSizeHints[i].Expr)
+				if resolveErr != nil {
+					return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing dynssz-max expression %q for type %v: %v", maxSizeHints[i].Expr, t, resolveErr)
+				}
+				if ok && val > 0 {
+					maxSizeHints[i].Size = val
+					maxSizeHints[i].Custom = true
 
-					ok, val, resolveErr := tc.specs.ResolveSpecValue(maxSizeHints[i].Expr)
-					if resolveErr != nil {
-						return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing dynssz-max expression %q for type %v: %v", maxSizeHints[i].Expr, t, resolveErr)
-					}
-					if ok && val > 0 {
-						maxSizeHints[i].Size = val
-						maxSizeHints[i].Custom = true
-
-						continue
-					}
-					if maxSizeHints[i].Size == 0 {
-						return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-max expression %q %s", maxSizeHints[i].Expr, unresolvedReason(ok))
-					}
+					continue
+				}
+				if maxSizeHints[i].Size == 0 {
+					return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-max expression %q %s", maxSizeHints[i].Expr, unresolvedReason(ok))
 				}
 			}
 		}
+	}
+
+	// A reference that declares an SSZ type the type's own annotation does not
+	// overrides the type, so it is described inline rather than shallow, as a
+	// size or limit the reference supplies is. The field tag is joined in front
+	// of the annotation, so an annotation-declared type arrives here unchanged.
+	if staticAnnotation != nil && !hasExternalHints && len(typeHints) > 0 {
+		annTypeHints, _, _, parseErr := ParseTags(annotationTag)
+		if parseErr != nil {
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "failed to parse annotation for type %v: %v", t, parseErr)
+		}
+		hasExternalHints = !SameSszTypes(typeHints, annTypeHints)
 	}
 
 	desc.Kind = t.Kind()

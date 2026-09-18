@@ -860,13 +860,26 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	// a field of another generated type. A generated type registers both its plain
 	// data key and any data|view pairings, so it is recognized when reached through
 	// either a plain or a view reference; external fully-delegated types are
-	// registered under neither. Field-level hints are already handled inline by the
-	// caller (it strips delegation flags).
+	// registered under neither. A size or limit the reference supplies opts out,
+	// as it does in the reflection type cache: it overrides the type's own
+	// annotation and requires inline processing.
 	beingGenerated := p.getCompatFlag(innerDataType, innerSchemaType) != 0 || p.getCompatFlag(innerDataType, innerDataType) != 0
-	shallowDelegate := p.AnnotationResolver != nil && !p.NoDelegation && len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0 && !beingGenerated && p.fullyDelegatesSSZ(originalType)
+	shallowDelegate := p.AnnotationResolver != nil && !p.NoDelegation && len(sizeHints) == 0 && len(maxSizeHints) == 0 && !beingGenerated && p.fullyDelegatesSSZ(originalType)
 	// A delegated type is not traversed, so a cycle through it and a type
 	// described here would go unmarked and uncounted: the members of a cycle
 	// are described together, by one generator run.
+	if shallowDelegate && len(typeHints) > 0 {
+		// A reference that declares an SSZ type the type's own annotation does
+		// not overrides the type, so it is described inline rather than
+		// shallow, as a size or limit the reference supplies is. The field tag
+		// is joined in front of the annotation, so an annotation-declared type
+		// arrives here unchanged.
+		annTypeHints, _, _, err := ssztypes.ParseTags(p.AnnotationResolver(types.Unalias(originalType)))
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse annotation for type %v: %v", originalType, err)
+		}
+		shallowDelegate = ssztypes.SameSszTypes(typeHints, annTypeHints)
+	}
 	if shallowDelegate {
 		annotation := p.AnnotationResolver(types.Unalias(originalType))
 		if staticStr, ok := reflect.StructTag(annotation).Lookup("ssz-static"); ok {
