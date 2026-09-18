@@ -215,22 +215,9 @@ jobs:
         name: coverage-unit-go1.25.11
 
     - name: Upload coverage to Codecov
-      # Every profile is named rather than discovered, so the variants that
-      # alone execute some lines are always part of the merge: the 32-bit run
-      # is the only one that reaches the platform guards, and the generic
-      # endianness run the only one that reaches the big-endian fallbacks.
       uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v5
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
-        disable_search: true
-        files: >-
-          coverage-codegen.txt,
-          coverage-unit.txt,
-          coverage-unit-nocgo.txt,
-          coverage-unit-386.txt,
-          coverage-unit-endianness.txt,
-          spec-coverage-artifacts/coverage-spec-go1.25.11-mainnet/spec-coverage.out,
-          spec-coverage-artifacts/coverage-spec-go1.25.11-minimal/spec-coverage.out
 
     - name: Upload coverage artifacts
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
