@@ -19,10 +19,10 @@ import (
 // the reported size enters the size domain.
 func delegatedSize(desc *ssztypes.TypeDescriptor, size int) (int64, error) {
 	if size < 0 {
-		return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer of %v returned negative size %d", desc.Type, size)
+		return 0, sszutils.NewSszErrorf(sszutils.ErrSszSizeExceeded, "sizer of %v returned %d: no size it can represent", desc.Type, size)
 	}
 	if size > sszutils.MaxSszSize {
-		return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer of %v returned size %d, past the SSZ size limit", desc.Type, size)
+		return 0, sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(uint64(size)), "sizer of %v returned size %d, past the SSZ size limit", desc.Type, size)
 	}
 	return int64(size), nil
 }
@@ -167,7 +167,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		case fieldType.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0:
 			// vector with dynamic size items, so we have to go through each item
 			if targetType.Len > math.MaxInt {
-				return 0, sszutils.ErrPlatformOverflowFn("vector length", targetType.Len)
+				return 0, sszutils.ErrPlatformOverflowFn("vector length", uint64(targetType.Len))
 			}
 			dataLen := targetValue.Len()
 			if targetType.Kind == reflect.Array && int64(dataLen) > targetType.Len {
@@ -389,7 +389,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 	// 32-bit offset can address is refused here, where the terms are summed,
 	// and not only at each delegate that reported one.
 	if staticSize > sszutils.MaxSszSize {
-		return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "SSZ size %d exceeds the SSZ size limit", staticSize)
+		return 0, sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(staticSize), "SSZ size %d exceeds the SSZ size limit", staticSize)
 	}
 
 	return int64(staticSize), nil

@@ -7,6 +7,7 @@ package sszutils
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -59,6 +60,11 @@ var (
 	// ErrPlatformOverflow is returned when a SSZ length or count exceeds
 	// the platform's integer range (>31-bit sizes on 32-bit platforms).
 	ErrPlatformOverflow = fmt.Errorf("value exceeds platform integer range")
+
+	// ErrSszSizeExceeded is returned when a size passes the largest size the
+	// 4-byte SSZ offset can express, which no target encodes. A size only this
+	// target cannot hold is ErrPlatformOverflow instead.
+	ErrSszSizeExceeded = fmt.Errorf("ssz size exceeds the maximum encodable size")
 
 	// ErrMaxDepthExceeded is returned when a value nests deeper than the
 	// configured maximum. Only recursive types can reach an input-controlled
@@ -459,6 +465,17 @@ func ErrOffsetOverflowFn(offset any) error {
 	}
 }
 
+// SizeLimitSentinel is the condition a size this target cannot use belongs to.
+// A size past the 4-byte SSZ offset is ErrSszSizeExceeded: no target encodes
+// it. A narrower one has only run out of int, which a target with a wider one
+// would not have, so it is ErrPlatformOverflow.
+func SizeLimitSentinel(size uint64) error {
+	if size > math.MaxUint32 {
+		return ErrSszSizeExceeded
+	}
+	return ErrPlatformOverflow
+}
+
 // --- ErrInvalidValueRange constructors ---
 
 // ErrBitvectorPaddingFn is returned when a bitvector's padding bits
@@ -532,6 +549,25 @@ func ErrLargeUintLengthFn(got, expected any) error {
 	}
 }
 
+// ErrSszSizeLimitFn is returned when a declared count of elemWidth-byte units
+// states a size past the SSZ size limit. The size is value*elemWidth, weighed
+// by dividing the limit instead of forming it, so a product wide enough to
+// pass the limit cannot wrap before it names the condition it belongs to.
+func ErrSszSizeLimitFn(description string, value, elemWidth uint64) error {
+	if elemWidth == 0 {
+		// A value with no width states itself.
+		elemWidth = 1
+	}
+	err := ErrPlatformOverflow
+	if value > math.MaxUint32/elemWidth {
+		err = ErrSszSizeExceeded
+	}
+	return &sszError{
+		err:     err,
+		message: fmt.Sprintf("%s %d exceeds the SSZ size limit of %d", description, value, uint64(MaxSszSize)/elemWidth),
+	}
+}
+
 // --- ErrListTooBig constructors ---
 
 // ErrListLengthFn is returned when a list's element count exceeds the
@@ -602,11 +638,13 @@ func ErrMaxDepthExceededFn(maxDepth any) error {
 
 // --- ErrPlatformOverflow constructors ---
 
-// ErrPlatformOverflowFn is returned when a SSZ size or count exceeds
-// the platform's integer range (e.g. >31 bits on 32-bit systems).
-func ErrPlatformOverflowFn(description string, value any) error {
+// ErrPlatformOverflowFn is returned when a SSZ size or count exceeds the
+// platform's integer range (e.g. >31 bits on 32-bit systems). A value past the
+// SSZ size limit is past every target's reach, not only this one's, so it is
+// reported as the size limit instead.
+func ErrPlatformOverflowFn(description string, value uint64) error {
 	return &sszError{
-		err:     ErrPlatformOverflow,
-		message: fmt.Sprintf("%s %v exceeds platform int max", description, value),
+		err:     SizeLimitSentinel(value),
+		message: fmt.Sprintf("%s %d exceeds platform int max", description, value),
 	}
 }

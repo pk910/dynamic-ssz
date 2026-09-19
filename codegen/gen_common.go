@@ -70,7 +70,7 @@ func (g *exprVarGenerator) getExprVar(expr string, defaultValue uint64) string {
 		return fmt.Sprintf("%v", defaultValue)
 	}
 
-	exprKey := sha256.Sum256([]byte(fmt.Sprintf("%s\n%v", expr, defaultValue)))
+	exprKey := sha256.Sum256(fmt.Appendf(nil, "%s\n%v", expr, defaultValue))
 	if exprVar, ok := g.varMap[exprKey]; ok {
 		return exprVar
 	}
@@ -116,24 +116,36 @@ func (g *exprVarGenerator) getVectorLenExprVar(expr string, defaultValue uint64,
 
 	exprVar := g.getExprVar(expr, defaultValue)
 
+	// countExpr and elemWidth restate the guarded value as a count of
+	// fixed-width units, which is what names the limits the size it states
+	// passed. A bit count is restated in bytes for that purpose; the guard
+	// itself stays in bits, where it needs no division.
 	bound := "sszutils.MaxSszSize"
+	countExpr, elemWidth := exprVar, "1"
 	switch {
 	case dynamicElems:
 		bound += "/4"
+		elemWidth = "4"
 	case bits:
 		// A bit count occupies more than the limit exactly when it passes
 		// eight times the limit, which states the rule without a division.
 		bound += "*8"
+		countExpr = fmt.Sprintf("(%s+7)/8", exprVar)
 	case elemLiteral != "" && elemLiteral != "0" && elemLiteral != "1":
 		bound += "/" + elemLiteral
+		elemWidth = elemLiteral
 	}
-	guardKey := sha256.Sum256([]byte(fmt.Sprintf("sizeguard\n%s\n%v\n%s\n%v", expr, defaultValue, bound, bits)))
+	guardKey := sha256.Sum256(fmt.Appendf(nil, "sizeguard\n%s\n%v\n%s\n%v", expr, defaultValue, bound, bits))
 	if _, ok := g.varMap[guardKey]; ok {
 		return exprVar
 	}
 
 	appendCode(g.codeBuf, 0, "if %s > %s {\n", exprVar, bound)
-	appendCode(g.codeBuf, 1, "err = sszutils.ErrPlatformOverflowFn(\"size expression %s\", %s)\n", expr, exprVar)
+	// Only a caller with an error to return can carry the reason; the size
+	// path refuses by return value instead.
+	if strings.Contains(g.retVars, "err") {
+		appendCode(g.codeBuf, 1, "err = sszutils.ErrSszSizeLimitFn(\"size expression %s\", uint64(%s), %s)\n", expr, countExpr, elemWidth)
+	}
 	appendCode(g.codeBuf, 1, "return %s\n", g.retVars)
 	appendCode(g.codeBuf, 0, "}\n")
 
@@ -210,7 +222,7 @@ func (g *staticSizeVarGenerator) appendVectorLenBound(lenVar, elemBytes, expr st
 		guard = elemBytes + " > 0 && "
 	}
 
-	guardKey := sha256.Sum256([]byte(fmt.Sprintf("vectorlenbound\n%s\n%s", lenVar, elemBytes)))
+	guardKey := sha256.Sum256(fmt.Appendf(nil, "vectorlenbound\n%s\n%s", lenVar, elemBytes))
 	if _, ok := g.varMap[guardKey]; ok {
 		return
 	}
@@ -220,7 +232,7 @@ func (g *staticSizeVarGenerator) appendVectorLenBound(lenVar, elemBytes, expr st
 	if retVars == "" {
 		retVars = g.exprVarGenerator.retVars
 	}
-	errExpr := fmt.Sprintf("sszutils.ErrPlatformOverflowFn(\"size expression %s\", %s)", expr, lenVar)
+	errExpr := fmt.Sprintf("sszutils.ErrSszSizeLimitFn(\"size expression %s\", uint64(%s), uint64(%s))", expr, lenVar, elemBytes)
 	appendCode(g.codeBuf, 0, "if %s%s > sszutils.MaxSszSize/%s {\n", guard, lenVar, elemBytes)
 	appendCode(g.codeBuf, 1, "return %s\n", strings.Replace(retVars, "err", errExpr, 1))
 	appendCode(g.codeBuf, 0, "}\n")
@@ -272,8 +284,8 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 		}
 		appendCode(g.codeBuf, 0, "%sSigned := new(%s).SizeSSZDyn(ds)\n", sizeVar, typeName)
 		appendCode(g.codeBuf, 0, "if %sSigned < 0 || %sSigned > sszutils.MaxSszSize {\n", sizeVar, sizeVar)
-		if retVars != "0" {
-			appendCode(g.codeBuf, 1, "err = sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, \"sizer of %s returned %%d, outside the SSZ size range\", %sSigned)\n", typeName, sizeVar)
+		if strings.Contains(retVars, "err") {
+			appendCode(g.codeBuf, 1, "err = sszutils.NewSszErrorf(sszutils.ErrSszSizeExceeded, \"sizer of %s returned %%d, outside the SSZ size range\", %sSigned)\n", typeName, sizeVar)
 		}
 		appendCode(g.codeBuf, 1, "return %s\n", retVars)
 		appendCode(g.codeBuf, 0, "}\n")
@@ -396,7 +408,7 @@ func (g *staticSizeVarGenerator) appendSizeLimitCheck(sizeVar, what string) {
 	if retVars == "" {
 		retVars = g.exprVarGenerator.retVars
 	}
-	errExpr := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, \"%s %%d exceeds the SSZ size limit\", %s)", what, sizeVar)
+	errExpr := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(uint64(%s)), \"%s %%d exceeds the SSZ size limit\", %s)", sizeVar, what, sizeVar)
 	appendCode(g.codeBuf, 0, "if %s > sszutils.MaxSszSize {\n", sizeVar)
 	appendCode(g.codeBuf, 1, "return %s\n", strings.Replace(retVars, "err", errExpr, 1))
 	appendCode(g.codeBuf, 0, "}\n")

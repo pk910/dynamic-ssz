@@ -972,7 +972,7 @@ func TestTypeCache_SizeHintExpressionExceedsSizeLimit(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for dynssz-size value exceeding the SSZ size limit")
 	}
-	if !errors.Is(err, sszutils.ErrPlatformOverflow) {
+	if !errors.Is(err, sszutils.SizeLimitSentinel(sszutils.MaxSszSize+1)) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -996,14 +996,14 @@ func TestTypeCache_AnnotationSizeHintExceedsSizeLimit(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for annotation dynssz-size value exceeding the SSZ size limit")
 	}
-	if !errors.Is(err, sszutils.ErrPlatformOverflow) {
+	if !errors.Is(err, sszutils.SizeLimitSentinel(sszutils.MaxSszSize+1)) {
 		t.Errorf("unexpected error: %v", err)
 	}
 
 	// A spec value spans the full uint64 range, so it can also stand past the
 	// signed size domain the hint is kept in.
 	cache = NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"HUGE_SIZE": math.MaxUint64}})
-	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(annotatedOverflowSize{}), nil, nil, nil); !errors.Is(err, sszutils.ErrPlatformOverflow) {
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(annotatedOverflowSize{}), nil, nil, nil); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
 		t.Errorf("a spec value past the signed size domain: err = %v", err)
 	}
 }

@@ -384,7 +384,7 @@ func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszS
 				if ok {
 					// dynamic value from spec
 					if specVal > math.MaxInt64 || exceedsSizeLimit(specVal, sszSize.Bits) {
-						return sszSizes, sszutils.ErrPlatformOverflowFn(fmt.Sprintf("dynssz-size value for field %q", field.Name), specVal)
+						return sszSizes, sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(specVal), "dynssz-size value for field %q resolves to %d, past the SSZ size limit", field.Name, specVal)
 					}
 					if specVal == 0 {
 						// A dynssz-size that resolves to 0 would form a zero-length

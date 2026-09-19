@@ -6,6 +6,7 @@ package sszutils
 
 import (
 	"errors"
+	"math"
 	"runtime"
 	"strings"
 	"testing"
@@ -391,5 +392,38 @@ func TestErrorWithPathLinear(t *testing.T) {
 	}
 	if !errors.Is(err, ErrUnexpectedEOF) {
 		t.Fatal("sentinel lost")
+	}
+}
+
+// A size no target can encode is the SSZ size limit; a size only this target
+// cannot hold, which one with a wider int would, is the platform's range. The
+// two are exclusive, so each case names one and denies the other.
+func TestSizeLimitSentinelSeparatesTheTwoLimits(t *testing.T) {
+	pastSsz := uint64(math.MaxUint32) + 1
+
+	for _, tt := range []struct {
+		name string
+		err  error
+		want error
+	}{
+		{"a size past the SSZ offset width", SizeLimitSentinel(pastSsz), ErrSszSizeExceeded},
+		{"a size a wider int would hold", SizeLimitSentinel(math.MaxUint32), ErrPlatformOverflow},
+		{"a value only this target cannot hold", ErrPlatformOverflowFn("count", 999999999), ErrPlatformOverflow},
+		{"a value past every target's reach", ErrPlatformOverflowFn("count", pastSsz), ErrSszSizeExceeded},
+		{"a count stating a size past the SSZ offset width", ErrSszSizeLimitFn("count", math.MaxUint32/4+1, 4), ErrSszSizeExceeded},
+		{"a count stating a size a wider int would hold", ErrSszSizeLimitFn("count", math.MaxUint32/4, 4), ErrPlatformOverflow},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			other := ErrPlatformOverflow
+			if tt.want == ErrPlatformOverflow {
+				other = ErrSszSizeExceeded
+			}
+			if !errors.Is(tt.err, tt.want) {
+				t.Errorf("err = %v, want %v", tt.err, tt.want)
+			}
+			if errors.Is(tt.err, other) {
+				t.Errorf("err = %v, must not also report %v", tt.err, other)
+			}
+		})
 	}
 }

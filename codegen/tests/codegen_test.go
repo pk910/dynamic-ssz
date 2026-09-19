@@ -662,25 +662,34 @@ func TestCodegenMixedModes(t *testing.T) {
 	testCodegenPayloadByReflection(t, MixedExt_Payload, nil, dynssz.WithExtendedTypes())
 	testCodegenPayloadByReflection(t, MixedDynCustomHolder_Payload, nil)
 
-	// A negative delegated size is an error wherever the size feeds an
-	// offset: the writer path on both engines, and every size-consuming path
-	// on reflection. The generated buffer marshal derives its offsets from the
-	// bytes written, and the generated size method sums what the delegates
-	// report; neither consults the sizer for an offset.
+	// A negative delegated size is a refusal, not a size. Both engines report
+	// it wherever a size is taken, and the generated sizer passes it on
+	// instead of summing it into a plausible total. The generated buffer
+	// marshal derives its offsets from the bytes written, so it never asks.
 	neg := &MixedNegSizeHolder{A: 1, L: make([]mixedNegSizeCustom, 2)}
 	genDs = dynssz.NewDynSsz(nil)
 	refDs := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
 	for name, ds := range map[string]*dynssz.DynSsz{"generated": genDs, "reflection": refDs} {
 		var w bytes.Buffer
-		if err := ds.MarshalSSZWriter(neg, &w); !errors.Is(err, sszutils.ErrInvalidValueRange) {
-			t.Errorf("%s writer: err = %v, want ErrInvalidValueRange", name, err)
+		if err := ds.MarshalSSZWriter(neg, &w); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+			t.Errorf("%s writer: err = %v, want the SSZ size limit reported", name, err)
 		}
 	}
-	if _, err := refDs.MarshalSSZ(neg); !errors.Is(err, sszutils.ErrInvalidValueRange) {
-		t.Errorf("reflection marshal: err = %v, want ErrInvalidValueRange", err)
+	if _, err := refDs.MarshalSSZ(neg); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+		t.Errorf("reflection marshal: err = %v, want the SSZ size limit reported", err)
 	}
-	if _, err := refDs.SizeSSZ(neg); !errors.Is(err, sszutils.ErrInvalidValueRange) {
-		t.Errorf("reflection size: err = %v, want ErrInvalidValueRange", err)
+	if _, err := refDs.SizeSSZ(neg); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+		t.Errorf("reflection size: err = %v, want the SSZ size limit reported", err)
+	}
+	if _, err := genDs.SizeSSZ(neg); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+		t.Errorf("generated size: err = %v, want the SSZ size limit reported", err)
+	}
+	if sizer, ok := any(neg).(interface {
+		SizeSSZDyn(sszutils.DynamicSpecs) int
+	}); ok {
+		if got := sizer.SizeSSZDyn(genDs); got != -1 {
+			t.Errorf("generated SizeSSZDyn = %d, want -1 for a delegate that refuses", got)
+		}
 	}
 }
 
@@ -4694,23 +4703,24 @@ func TestCodegenKnownSizeReaderAllocatesLikeBuffer(t *testing.T) {
 }
 
 // Two spec-resolved dimensions whose byte product passes 2^64 are refused by
-// every generated writer instead of wrapping to an empty encoding; the size
-// method, which has no error channel, reports 0. Reflection refuses the
-// schema at analysis.
+// every generated writer instead of wrapping to an empty encoding. The size
+// method has no error channel, so it refuses with -1, which its caller reports
+// as an error. Reflection refuses the schema at analysis. The bound passed is
+// the SSZ size limit, not the platform's integer range.
 func TestCodegenRuntimeSizeProductOverflow(t *testing.T) {
 	if _, generated := any(&RuntimeProduct{}).(sszutils.DynamicMarshaler); !generated {
 		t.Skip("no generated code present")
 	}
 	specs := map[string]any{"OUTER": uint64(1) << 32, "INNER": uint64(1) << 32}
 	gen := dynssz.NewDynSsz(specs)
-	if _, err := gen.MarshalSSZ(&RuntimeProduct{}); !errors.Is(err, sszutils.ErrPlatformOverflow) {
-		t.Fatalf("generated MarshalSSZ err = %v, want ErrPlatformOverflow", err)
+	if _, err := gen.MarshalSSZ(&RuntimeProduct{}); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+		t.Fatalf("generated MarshalSSZ err = %v, want the SSZ size limit reported", err)
 	}
-	if err := gen.MarshalSSZWriter(&RuntimeProduct{}, io.Discard); !errors.Is(err, sszutils.ErrPlatformOverflow) {
-		t.Fatalf("generated MarshalSSZWriter err = %v, want ErrPlatformOverflow", err)
+	if err := gen.MarshalSSZWriter(&RuntimeProduct{}, io.Discard); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+		t.Fatalf("generated MarshalSSZWriter err = %v, want the SSZ size limit reported", err)
 	}
-	if size, err := gen.SizeSSZ(&RuntimeProduct{}); err != nil || size != 0 {
-		t.Fatalf("generated SizeSSZ = %d, %v, want 0 for an overflowing product", size, err)
+	if _, err := gen.SizeSSZ(&RuntimeProduct{}); err == nil {
+		t.Fatal("generated SizeSSZ accepted an overflowing product as a size")
 	}
 	refl := dynssz.NewDynSsz(specs, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation())
 	if _, err := refl.MarshalSSZ(&RuntimeProduct{}); err == nil {
@@ -4748,8 +4758,12 @@ func TestCodegenRuntimeSizeProductOverLimit(t *testing.T) {
 				}
 			}()
 
-			if err := tc.call(); !errors.Is(err, sszutils.ErrPlatformOverflow) {
-				t.Errorf("err = %v, want the product refused", err)
+			err := tc.call()
+			if !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+				t.Errorf("err = %v, want the product refused as a size past the SSZ limit", err)
+			}
+			if errors.Is(err, sszutils.ErrPlatformOverflow) {
+				t.Errorf("err = %v, but the bound passed is the SSZ size limit, not the platform's integer range", err)
 			}
 		})
 	}
@@ -4769,11 +4783,11 @@ func TestCodegenNegativeDelegatedSize(t *testing.T) {
 	}
 	gen := dynssz.NewDynSsz(nil)
 	data := make([]byte, 8)
-	if err := gen.UnmarshalSSZ(&NegShellHolder{}, data); !errors.Is(err, sszutils.ErrInvalidValueRange) {
-		t.Fatalf("generated UnmarshalSSZ err = %v, want ErrInvalidValueRange", err)
+	if err := gen.UnmarshalSSZ(&NegShellHolder{}, data); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+		t.Fatalf("generated UnmarshalSSZ err = %v, want the SSZ size limit reported", err)
 	}
-	if err := gen.UnmarshalSSZReader(&NegShellHolder{}, bytes.NewReader(data), len(data)); !errors.Is(err, sszutils.ErrInvalidValueRange) {
-		t.Fatalf("generated UnmarshalSSZReader err = %v, want ErrInvalidValueRange", err)
+	if err := gen.UnmarshalSSZReader(&NegShellHolder{}, bytes.NewReader(data), len(data)); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+		t.Fatalf("generated UnmarshalSSZReader err = %v, want the SSZ size limit reported", err)
 	}
 }
 
@@ -4852,8 +4866,8 @@ func TestCodegenPlatformSizedDeclarations(t *testing.T) {
 	}
 	size := sizer.SizeSSZDyn(dynssz.NewDynSsz(nil))
 	if math.MaxInt == math.MaxInt32 {
-		if size != 0 {
-			t.Fatalf("32-bit size = %d, want 0", size)
+		if size != -1 {
+			t.Fatalf("32-bit size = %d, want -1", size)
 		}
 		return
 	}
@@ -5252,8 +5266,8 @@ func TestCodegenSizeInputsBounded(t *testing.T) {
 		if _, err := gen.MarshalSSZ(v); err == nil {
 			t.Fatalf("%T: generated MarshalSSZ accepted a size past the limit", v)
 		}
-		if size, err := gen.SizeSSZ(v); err != nil || size != 0 {
-			t.Fatalf("%T: generated SizeSSZ = %d, %v, want 0", v, size, err)
+		if _, err := gen.SizeSSZ(v); err == nil {
+			t.Fatalf("%T: generated SizeSSZ accepted a size past the limit", v)
 		}
 		refl := dynssz.NewDynSsz(huge, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
 		if _, err := refl.MarshalSSZ(v); err == nil {
@@ -5941,5 +5955,47 @@ func TestCodegenBigIntLimitFromSpec(t *testing.T) {
 				t.Errorf("round trip of the streamed bytes: %v", err)
 			}
 		})
+	}
+}
+
+// A size expression resolving past the SSZ size limit is refused by both
+// engines. Where the platform's int is the wider bound they name the same
+// condition; where it is the narrower one the generated engine takes the size
+// through a sizer, whose int return holds no room for which condition it
+// refused on, so it reports the size limit while reflection still separates
+// the two.
+func TestSizeExpressionPastTheLimitRefusedAlikeByBothEngines(t *testing.T) {
+	if _, generated := any(&SimpleTypesWithSpecs{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	// Four-byte elements, so a count above a quarter of the limit states a
+	// vector larger than any SSZ value.
+	specs := map[string]any{"VEC32_SIZE": uint64(sszutils.MaxSszSize/4) + 1}
+	value := &SimpleTypesWithSpecs{}
+
+	generated := dynssz.NewDynSsz(specs)
+	reflection := dynssz.NewDynSsz(specs, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation())
+
+	_, genErr := generated.SizeSSZ(value)
+	_, reflErr := reflection.SizeSSZ(value)
+
+	if genErr == nil || reflErr == nil {
+		t.Fatalf("a size past the limit was accepted: generated=%v reflection=%v", genErr, reflErr)
+	}
+	if !errors.Is(genErr, sszutils.ErrSszSizeExceeded) {
+		t.Errorf("generated: err = %v, want the size refused", genErr)
+	}
+	if sszutils.MaxSszSize == math.MaxInt {
+		if !errors.Is(reflErr, sszutils.ErrPlatformOverflow) {
+			t.Errorf("reflection: err = %v, want a size only a wider int would hold", reflErr)
+		}
+		return
+	}
+	if !errors.Is(reflErr, sszutils.ErrSszSizeExceeded) {
+		t.Errorf("reflection: err = %v, want the size refused", reflErr)
+	}
+	if errors.Is(genErr, sszutils.ErrPlatformOverflow) || errors.Is(reflErr, sszutils.ErrPlatformOverflow) {
+		t.Errorf("the size limit was reported as a platform overflow:\n  generated  %v\n  reflection %v", genErr, reflErr)
 	}
 }

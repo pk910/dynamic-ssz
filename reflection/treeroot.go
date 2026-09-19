@@ -655,7 +655,7 @@ func (ctx *ReflectionCtx) buildRootFromUnion(sourceType *ssztypes.TypeDescriptor
 func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, depth reflectionDepth) error {
 	vecLen := sourceType.Len
 	if vecLen > math.MaxInt {
-		return sszutils.ErrPlatformOverflowFn("vector length", sourceType.Len)
+		return sszutils.ErrPlatformOverflowFn("vector length", uint64(sourceType.Len))
 	}
 
 	packed := packedElemSize(sourceType.ElemDesc) > 0

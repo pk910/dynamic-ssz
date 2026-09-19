@@ -68,7 +68,7 @@ func newSizeContext(typePrinter *TypePrinter, options *CodeGeneratorOptions) *si
 		exprVars:     newExprVarGenerator("expr", typePrinter, options),
 		useTypeFnMap: make(map[*ssztypes.TypeDescriptor]*sizeFnPtr),
 	}
-	ctx.exprVars.retVars = "0"
+	ctx.exprVars.retVars = "-1"
 	ctx.staticSizeVars = newStaticSizeVarGenerator(typePrinter, options, ctx.exprVars)
 
 	return ctx
@@ -138,10 +138,10 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "SizeSSZ", "", "", "int", "0", false)
 			if rootTypeDesc.Size > 0 {
 				// A size past the target's int range cannot be produced there;
-				// the size path has no error channel, so it reports 0.
+				// the size path has no error channel, so it refuses with -1.
 				platformGuard(func(indent int, code string, args ...any) {
 					appendCode(codeBuilder, indent+1, code, args...)
-				}, 0, ctx.typePrinter, uint64(rootTypeDesc.Size), false, "return 0")
+				}, 0, ctx.typePrinter, uint64(rootTypeDesc.Size), false, "return -1")
 				appendCode(codeBuilder, 1, "return %s\n", intLitStr(fmt.Sprintf("%d", rootTypeDesc.Size)))
 			} else {
 				appendCode(codeBuilder, 1, "var %s int64\n", sizeAccumulator)
@@ -198,13 +198,14 @@ func (ctx *sizeContext) getIndexVar() string {
 // into. Sizes are summed as int64 so no product or sum formed along the way can
 // wrap, and the total is weighed against the size limit once, where it is
 // narrowed to the int the size interface returns. The path has no error
-// channel, so a total no size domain holds reports 0.
+// channel, so a total no size domain holds reports -1; zero is a size an empty
+// value legitimately has.
 const sizeAccumulator = "size"
 
 // emitSizeReturn closes a generated sizer: one bound, then the narrowing.
 func emitSizeReturn(typePrinter *TypePrinter) string {
 	sszutilsAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz/sszutils", "sszutils")
-	return fmt.Sprintf("if %s > %s.MaxSszSize {\n\treturn 0\n}\nreturn int(%s)\n", sizeAccumulator, sszutilsAlias, sizeAccumulator)
+	return fmt.Sprintf("if %s > %s.MaxSszSize {\n\treturn -1\n}\nreturn int(%s)\n", sizeAccumulator, sszutilsAlias, sizeAccumulator)
 }
 
 func (ctx *sizeContext) getSizeVar() string {
@@ -245,6 +246,16 @@ func (ctx *sizeContext) getValueVar(desc *ssztypes.TypeDescriptor, varName, targ
 	return varName
 }
 
+// appendDelegatedSize adds what a delegate reports. A sizer has no error
+// channel and refuses with a negative size, so a refusal is passed on instead
+// of summed into a plausible total.
+func (ctx *sizeContext) appendDelegatedSize(indent int, sizeVar, callExpr string) {
+	delegatedVar := ctx.getSizeVar()
+	ctx.appendCode(indent, "%s := int64(%s)\n", delegatedVar, callExpr)
+	ctx.appendCode(indent, "if %s < 0 {\n\treturn -1\n}\n", delegatedVar)
+	ctx.appendCode(indent, "%s += %s\n", sizeVar, delegatedVar)
+}
+
 // sizeType generates size calculation code for any SSZ type, delegating to specific sizers.
 func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar string, indent int, isRoot bool) error {
 	if indent > maxEmitNesting {
@@ -253,7 +264,7 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 
 	// Handle types that have generated methods we can call
 	if ptr, ok := ctx.useTypeFnMap[desc]; ok {
-		ctx.appendCode(indent, "%s += int64(%s)\n", sizeVar, ptr.getFnCall(varName))
+		ctx.appendDelegatedSize(indent, sizeVar, ptr.getFnCall(varName))
 		if ptr.needDynSpecs {
 			ctx.usedDynSpecs = true
 		}
@@ -265,7 +276,7 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewSizer != 0 {
 			viewFn, viewArg := descendCall(ctx.depthAware, ctx.recursion, desc, "SizeSSZDynView")
 			ctx.appendCode(indent, "if viewFn := %s.%s((%s)(nil)%s); viewFn != nil {\n", varName, viewFn, ctx.typePrinter.ViewTypeString(desc, true), viewArg)
-			ctx.appendCode(indent+1, "%s += int64(viewFn(ds))\n", sizeVar)
+			ctx.appendDelegatedSize(indent+1, sizeVar, "viewFn(ds)")
 			ctx.appendCode(indent, "}\n")
 			ctx.usedDynSpecs = true
 			return nil
@@ -291,7 +302,7 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 		if staticBuild {
 			if useFastSsz {
 				fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "SizeSSZ")
-				ctx.appendCode(indent, "%s += int64(%s.%s(%s))\n", sizeVar, varName, fn, strings.TrimPrefix(arg, ", "))
+				ctx.appendDelegatedSize(indent, sizeVar, fmt.Sprintf("%s.%s(%s)", varName, fn, strings.TrimPrefix(arg, ", ")))
 				return nil
 			}
 			// Never call a *Dyn method. A dynamic-only type is inlined by falling
@@ -305,14 +316,14 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 		} else {
 			if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 {
 				fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "SizeSSZDyn")
-				ctx.appendCode(indent, "%s += int64(%s.%s(ds%s))\n", sizeVar, varName, fn, arg)
+				ctx.appendDelegatedSize(indent, sizeVar, fmt.Sprintf("%s.%s(ds%s)", varName, fn, arg))
 				ctx.usedDynSpecs = true
 				return nil
 			}
 
 			if useFastSsz {
 				fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "SizeSSZ")
-				ctx.appendCode(indent, "%s += int64(%s.%s(%s))\n", sizeVar, varName, fn, strings.TrimPrefix(arg, ", "))
+				ctx.appendDelegatedSize(indent, sizeVar, fmt.Sprintf("%s.%s(%s)", varName, fn, strings.TrimPrefix(arg, ", ")))
 				return nil
 			}
 		}
@@ -466,8 +477,8 @@ func (ctx *sizeContext) sizeContainer(desc *ssztypes.TypeDescriptor, varName, si
 
 	if staticSize > 0 {
 		// A size past the target's int range cannot be produced there; the
-		// size path has no error channel, so it reports 0.
-		platformGuard(ctx.appendCode, indent, ctx.typePrinter, uint64(staticSize), false, "return 0")
+		// size path has no error channel, so it refuses with -1.
+		platformGuard(ctx.appendCode, indent, ctx.typePrinter, uint64(staticSize), false, "return -1")
 		ctx.appendCode(indent, "%s += %d\n", sizeVar, staticSize)
 	}
 
@@ -682,7 +693,7 @@ func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName, sizeVar
 				// target's int cannot hold.
 				if uint64(desc.ElemDesc.Size) > math.MaxInt32 {
 					ctx.appendCode(indent, "if len(%s) > 0 {\n", valueVar)
-					platformGuard(ctx.appendCode, indent+1, ctx.typePrinter, uint64(desc.ElemDesc.Size), false, "return 0")
+					platformGuard(ctx.appendCode, indent+1, ctx.typePrinter, uint64(desc.ElemDesc.Size), false, "return -1")
 					ctx.appendCode(indent, "}\n")
 				}
 				ctx.appendCode(indent, "%s += int64(len(%s)) * %d\n", sizeVar, valueVar, desc.ElemDesc.Size)
@@ -761,7 +772,7 @@ func (ctx *sizeContext) sizeUnion(desc *ssztypes.TypeDescriptor, varName, sizeVa
 			// with a narrower int reports.
 			platformGuard(func(guardIndent int, code string, args ...any) {
 				ctx.appendCode(guardIndent, "\t"+code, args...)
-			}, indent, ctx.typePrinter, uint64(variantDesc.Size), false, "return 0")
+			}, indent, ctx.typePrinter, uint64(variantDesc.Size), false, "return -1")
 			ctx.appendCode(indent, "\t%s += %d\n", sizeVar, variantDesc.Size)
 		}
 	}

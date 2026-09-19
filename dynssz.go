@@ -344,10 +344,10 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 // size limit is a size no encoding can refer to.
 func checkDelegatedSize(source any, size int) error {
 	if size < 0 {
-		return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer of %T returned negative size %d", source, size)
+		return sszutils.NewSszErrorf(sszutils.ErrSszSizeExceeded, "sizer of %T returned %d: no size it can represent", source, size)
 	}
 	if size > sszutils.MaxSszSize {
-		return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer of %T returned size %d, past the SSZ size limit", source, size)
+		return sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(uint64(size)), "sizer of %T returned size %d, past the SSZ size limit", source, size)
 	}
 	return nil
 }
@@ -431,7 +431,7 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 	// is no wider is the whole int range: the bytes already in buf then take
 	// the sum past it.
 	if size > int64(math.MaxInt)-int64(len(buf)) {
-		return nil, sszutils.ErrPlatformOverflowFn("SSZ size", size)
+		return nil, sszutils.ErrPlatformOverflowFn("SSZ size", uint64(size))
 	}
 	needed := len(buf) + int(size)
 	if cap(buf) < needed {

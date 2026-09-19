@@ -581,11 +581,8 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 					// A spec value spans the full uint64 range; the size
 					// domain is signed, so the value is narrowed only after
 					// the comparison that shows it fits.
-					if val > math.MaxInt64 {
-						return sszutils.ErrPlatformOverflowFn("ssz-size annotation value", val)
-					}
-					if exceedsSizeLimit(val, sizeHints[i].Bits) {
-						return sszutils.ErrPlatformOverflowFn("ssz-size annotation value", val)
+					if val > math.MaxInt64 || exceedsSizeLimit(val, sizeHints[i].Bits) {
+						return sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(val), "ssz-size annotation value %d exceeds the SSZ size limit", val)
 					}
 
 					sizeHints[i].Size = int64(val)
@@ -1363,7 +1360,7 @@ func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType refle
 	// bounded to the SSZ size range like every other size.
 	validate := func(n int) (int64, error) {
 		if n < 0 || n > sszutils.MaxSszSize {
-			return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer for static type %v returned out-of-range size %d", runtimeType, n)
+			return 0, sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(uint64(n)), "sizer for static type %v returned out-of-range size %d", runtimeType, n)
 		}
 		return int64(n), nil
 	}
@@ -1753,7 +1750,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 		// A fixed section is addressed by 32-bit offsets, so it is bounded to
 		// the SSZ size limit like every other size.
 		if totalSize > sszutils.MaxSszSize-sszSize {
-			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "container byte size exceeds the SSZ size limit")
+			return sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(uint64(totalSize)+uint64(sszSize)), "container byte size %d exceeds the SSZ size limit", uint64(totalSize)+uint64(sszSize))
 		}
 		totalSize += sszSize
 		desc.ContainerDesc.Fields[fi] = fieldDesc
@@ -2200,11 +2197,11 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 	// A vector's length is a size itself; a vector of variable-size elements
 	// also leads with one 4-byte offset per element inside its fixed section.
 	if desc.Len > sszutils.MaxSszSize {
-		return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "vector length %d exceeds the SSZ size limit", desc.Len)
+		return sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(uint64(desc.Len)), "vector length %d exceeds the SSZ size limit", desc.Len)
 	}
 	if elemDesc.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
 		if desc.Len > sszutils.MaxSszSize/4 {
-			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "vector length %d exceeds the SSZ offset table limit", desc.Len)
+			return sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(uint64(desc.Len)*4), "vector length %d exceeds the SSZ offset table limit", desc.Len)
 		}
 		desc.Size = 0
 		desc.SszTypeFlags |= SszTypeFlagIsDynamic
@@ -2213,7 +2210,7 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 		// other size. The bound is checked by division so the product itself
 		// cannot wrap first.
 		if desc.Len > 0 && elemDesc.Size > sszutils.MaxSszSize/desc.Len {
-			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "vector byte size %d*%d exceeds the SSZ size limit", elemDesc.Size, desc.Len)
+			return sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(uint64(elemDesc.Size)*uint64(desc.Len)), "vector byte size %d*%d exceeds the SSZ size limit", elemDesc.Size, desc.Len)
 		}
 		desc.Size = elemDesc.Size * desc.Len
 	}

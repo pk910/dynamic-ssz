@@ -329,7 +329,7 @@ func delegationBuffer(targetType *ssztypes.TypeDescriptor, decoder sszutils.Deco
 	if targetType.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 		typeSize := targetType.Size
 		if typeSize > math.MaxInt {
-			return nil, sszutils.ErrPlatformOverflowFn("type size", targetType.Size)
+			return nil, sszutils.ErrPlatformOverflowFn("type size", uint64(targetType.Size))
 		}
 		return decoder.DecodeBytesBuf(int(typeSize))
 	}
@@ -638,7 +638,7 @@ func expandSliceValue(target reflect.Value, sliceType reflect.Type, size int) re
 func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth reflectionDepth) error {
 	vecLen := targetType.Len
 	if vecLen > math.MaxInt {
-		return sszutils.ErrPlatformOverflowFn("vector length", targetType.Len)
+		return sszutils.ErrPlatformOverflowFn("vector length", uint64(targetType.Len))
 	}
 
 	fieldType := targetType.ElemDesc
@@ -758,7 +758,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 	// in int below, so the length is bounded by what that product can hold.
 	dynVecLen := targetType.Len
 	if dynVecLen > int64(math.MaxInt)/4 {
-		return sszutils.ErrPlatformOverflowFn("dynamic vector length", targetType.Len)
+		return sszutils.ErrPlatformOverflowFn("dynamic vector length", uint64(targetType.Len))
 	}
 
 	vectorLen := int(dynVecLen)
@@ -923,7 +923,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 func (ctx *ReflectionCtx) unmarshalFixedElements(fieldType *ssztypes.TypeDescriptor, newValue reflect.Value, count int, decoder sszutils.Decoder, depth reflectionDepth) error {
 	fieldSize := fieldType.Size
 	if fieldSize > math.MaxInt {
-		return sszutils.ErrPlatformOverflowFn("field size", fieldType.Size)
+		return sszutils.ErrPlatformOverflowFn("field size", uint64(fieldType.Size))
 	}
 
 	itemSize := int(fieldSize)
@@ -978,7 +978,7 @@ func (ctx *ReflectionCtx) unmarshalList(targetType *ssztypes.TypeDescriptor, tar
 
 	elemSize := fieldType.Size
 	if elemSize > math.MaxInt {
-		return sszutils.ErrPlatformOverflowFn("field size", fieldType.Size)
+		return sszutils.ErrPlatformOverflowFn("field size", uint64(fieldType.Size))
 	}
 	itemSize := int(elemSize)
 

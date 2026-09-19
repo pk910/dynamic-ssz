@@ -942,7 +942,7 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 		// One offset per element precedes the bodies, so the table alone can
 		// pass the size limit; bound the count before the product is formed.
 		appendListLenBound(ctx.appendCode, ctx.typePrinter, indent, "vlen", "4", literalListMax(desc, ctx.options),
-			"return nil, "+typePath.getErrorWith(`sszutils.ErrPlatformOverflowFn("list offset table for", vlen)`))
+			"return nil, "+typePath.getErrorWith(`sszutils.ErrSszSizeLimitFn("list offset table", uint64(vlen), 4)`))
 		ctx.appendCode(indent, "dst = sszutils.AppendZeroPadding(dst, vlen*4)\n")
 		ctx.appendCode(indent, "for %s := range vlen {\n", indexVar)
 		binaryPkgName := ctx.typePrinter.AddImport("encoding/binary", "binary")

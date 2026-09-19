@@ -46,10 +46,14 @@ func TestGeneratedPathsRefuseSizesPastThePlatformRange(t *testing.T) {
 	// Each case reports the error its method returned and whether the method is
 	// there at all, so the table holds no test helpers.
 	for _, tc := range []struct {
-		name string
-		call func() (error, bool)
+		name     string
+		viaSizer bool
+		call     func() (error, bool)
 	}{
-		{"MarshalSSZ", func() (error, bool) {
+		// MarshalSSZ takes the size from the generated sizer, whose int return
+		// holds no room for which of the two size conditions it refused on, so
+		// it reports the size limit for both.
+		{"MarshalSSZ", true, func() (error, bool) {
 			v, ok := value.(marshalSSZ)
 			if !ok {
 				return nil, false
@@ -58,7 +62,7 @@ func TestGeneratedPathsRefuseSizesPastThePlatformRange(t *testing.T) {
 
 			return err, true
 		}},
-		{"MarshalSSZTo", func() (error, bool) {
+		{"MarshalSSZTo", false, func() (error, bool) {
 			v, ok := value.(marshalSSZTo)
 			if !ok {
 				return nil, false
@@ -67,7 +71,7 @@ func TestGeneratedPathsRefuseSizesPastThePlatformRange(t *testing.T) {
 
 			return err, true
 		}},
-		{"MarshalSSZEncoder", func() (error, bool) {
+		{"MarshalSSZEncoder", false, func() (error, bool) {
 			v, ok := value.(marshalSSZEncoder)
 			if !ok {
 				return nil, false
@@ -75,7 +79,7 @@ func TestGeneratedPathsRefuseSizesPastThePlatformRange(t *testing.T) {
 
 			return v.MarshalSSZEncoder(dynssz.GetGlobalDynSsz(), sszutils.NewBufferEncoder(nil)), true
 		}},
-		{"UnmarshalSSZ", func() (error, bool) {
+		{"UnmarshalSSZ", false, func() (error, bool) {
 			v, ok := value.(unmarshalSSZ)
 			if !ok {
 				return nil, false
@@ -83,7 +87,7 @@ func TestGeneratedPathsRefuseSizesPastThePlatformRange(t *testing.T) {
 
 			return v.UnmarshalSSZ(nil), true
 		}},
-		{"HashTreeRoot", func() (error, bool) {
+		{"HashTreeRoot", false, func() (error, bool) {
 			v, ok := value.(hashTreeRoot)
 			if !ok {
 				return nil, false
@@ -105,6 +109,12 @@ func TestGeneratedPathsRefuseSizesPastThePlatformRange(t *testing.T) {
 			err, generated := tc.call()
 			if !generated {
 				t.Skip("generated methods are not present in this checkout")
+			}
+			if tc.viaSizer {
+				if !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+					t.Errorf("err = %v, want the size refused", err)
+				}
+				return
 			}
 			if !errors.Is(err, sszutils.ErrPlatformOverflow) {
 				t.Errorf("err = %v, want the platform range reported", err)
@@ -172,8 +182,10 @@ func TestGeneratedSizeOfAWideListRefusesAnUnrepresentableTotal(t *testing.T) {
 					got := sizer.SizeSSZ()
 
 					if want > int64(sszutils.MaxSszSize) {
-						if got != 0 {
-							t.Errorf("SizeSSZ = %d for a total of %d no size domain holds, want 0", got, want)
+						// The size path has no error channel and refuses with
+						// -1; zero is a size an empty value legitimately has.
+						if got != -1 {
+							t.Errorf("SizeSSZ = %d for a total of %d no size domain holds, want -1", got, want)
 						}
 						return
 					}

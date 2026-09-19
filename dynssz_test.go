@@ -3818,16 +3818,17 @@ func TestSizeSSZRefusesDelegatedSizePastTheLimit(t *testing.T) {
 	type overHolder struct {
 		C pastLimitCustom `ssz-type:"custom"`
 	}
-	if _, err := ds.SizeSSZ(&overHolder{}); !errors.Is(err, sszutils.ErrInvalidValueRange) {
-		t.Errorf("a delegate past the limit: err = %v, want ErrInvalidValueRange", err)
+	if _, err := ds.SizeSSZ(&overHolder{}); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+		t.Errorf("a delegate past the limit: err = %v, want the SSZ size limit reported", err)
 	}
 
 	type sumHolder struct {
 		A uint64
 		C limitSizeCustom `ssz-type:"custom" ssz-static:"true"`
 	}
-	if _, err := ds.SizeSSZ(&sumHolder{}); !errors.Is(err, sszutils.ErrInvalidValueRange) {
-		t.Errorf("a sum past the limit: err = %v, want ErrInvalidValueRange", err)
+	wantSum := sszutils.SizeLimitSentinel(uint64(sszutils.MaxSszSize) + 8 + 4)
+	if _, err := ds.SizeSSZ(&sumHolder{}); !errors.Is(err, wantSum) {
+		t.Errorf("a sum past the limit: err = %v, want %v", err, wantSum)
 	}
 }
 
@@ -5480,11 +5481,11 @@ func TestDelegatedSizePastLimit(t *testing.T) {
 		t.Skip("the limit is the platform int here, so no reported size can pass it")
 	}
 	ds := NewDynSsz(nil)
-	if _, err := ds.SizeSSZ(&hugeSizer{}); !errors.Is(err, sszutils.ErrInvalidValueRange) {
-		t.Fatalf("SizeSSZ err = %v, want ErrInvalidValueRange", err)
+	if _, err := ds.SizeSSZ(&hugeSizer{}); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+		t.Fatalf("SizeSSZ err = %v, want the SSZ size limit reported", err)
 	}
-	if _, err := ds.MarshalSSZ(&hugeSizer{}); !errors.Is(err, sszutils.ErrInvalidValueRange) {
-		t.Fatalf("MarshalSSZ err = %v, want ErrInvalidValueRange", err)
+	if _, err := ds.MarshalSSZ(&hugeSizer{}); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+		t.Fatalf("MarshalSSZ err = %v, want the SSZ size limit reported", err)
 	}
 	// MarshalSSZTo appends what the value's own marshaller writes and never
 	// needs a size, so it does not ask for one: a reported size is bounded
@@ -5554,19 +5555,19 @@ func (n *negSizer) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, e
 // as it is inside the engines, instead of an allocation from it.
 func TestNegativeDelegatedSizeAtEntryPoints(t *testing.T) {
 	ds := NewDynSsz(nil)
-	if _, err := ds.MarshalSSZ(&negSizer{}); !errors.Is(err, sszutils.ErrInvalidValueRange) {
-		t.Fatalf("MarshalSSZ err = %v, want ErrInvalidValueRange", err)
+	if _, err := ds.MarshalSSZ(&negSizer{}); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+		t.Fatalf("MarshalSSZ err = %v, want the SSZ size limit reported", err)
 	}
-	if _, err := ds.SizeSSZ(&negSizer{}); !errors.Is(err, sszutils.ErrInvalidValueRange) {
-		t.Fatalf("SizeSSZ err = %v, want ErrInvalidValueRange", err)
+	if _, err := ds.SizeSSZ(&negSizer{}); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+		t.Fatalf("SizeSSZ err = %v, want the SSZ size limit reported", err)
 	}
 	// The view paths take the size from the view sizer.
 	view := &testDynViewAll{MarshalBuf: []byte{1}, Size: -1}
-	if _, err := ds.MarshalSSZ(view, WithViewDescriptor(&testViewType{})); !errors.Is(err, sszutils.ErrInvalidValueRange) {
-		t.Fatalf("view MarshalSSZ err = %v, want ErrInvalidValueRange", err)
+	if _, err := ds.MarshalSSZ(view, WithViewDescriptor(&testViewType{})); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+		t.Fatalf("view MarshalSSZ err = %v, want the SSZ size limit reported", err)
 	}
-	if _, err := ds.SizeSSZ(view, WithViewDescriptor(&testViewType{})); !errors.Is(err, sszutils.ErrInvalidValueRange) {
-		t.Fatalf("view SizeSSZ err = %v, want ErrInvalidValueRange", err)
+	if _, err := ds.SizeSSZ(view, WithViewDescriptor(&testViewType{})); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+		t.Fatalf("view SizeSSZ err = %v, want the SSZ size limit reported", err)
 	}
 }
 
@@ -7273,15 +7274,15 @@ func TestMarshalNegativeDelegatedSize(t *testing.T) {
 		B []byte `ssz-max:"8"`
 	}
 	h := &negHolder{B: []byte{1, 2}}
-	if _, err := ds.MarshalSSZ(h); !errors.Is(err, sszutils.ErrInvalidValueRange) {
-		t.Errorf("MarshalSSZ nested: err = %v, want ErrInvalidValueRange", err)
+	if _, err := ds.MarshalSSZ(h); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+		t.Errorf("MarshalSSZ nested: err = %v, want the SSZ size limit reported", err)
 	}
 	var w bytes.Buffer
-	if err := ds.MarshalSSZWriter(h, &w); !errors.Is(err, sszutils.ErrInvalidValueRange) {
-		t.Errorf("MarshalSSZWriter nested: err = %v, want ErrInvalidValueRange", err)
+	if err := ds.MarshalSSZWriter(h, &w); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+		t.Errorf("MarshalSSZWriter nested: err = %v, want the SSZ size limit reported", err)
 	}
-	if _, err := ds.SizeSSZ(h); !errors.Is(err, sszutils.ErrInvalidValueRange) {
-		t.Errorf("SizeSSZ nested: err = %v, want ErrInvalidValueRange", err)
+	if _, err := ds.SizeSSZ(h); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+		t.Errorf("SizeSSZ nested: err = %v, want the SSZ size limit reported", err)
 	}
 }
 
@@ -7300,7 +7301,7 @@ func TestMarshalWriterOffsetOverflow(t *testing.T) {
 			t.Error("expected an error for the oversized claims")
 			return
 		}
-		if !errors.Is(err, sszutils.ErrOffset) && !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		if !errors.Is(err, sszutils.ErrOffset) && !errors.Is(err, sszutils.ErrSszSizeExceeded) {
 			t.Errorf("expected an offset or size error, got: %v", err)
 		}
 	}
