@@ -8496,3 +8496,75 @@ func TestUnknownSizeWrappedEOF(t *testing.T) {
 		t.Fatalf("decoded %+v", back)
 	}
 }
+
+// hugeVec declares a vector far larger than any input under test; nothing may
+// be reserved for it before the bytes that would fill it have arrived.
+type hugeVec []uint64
+
+var _ = sszutils.Annotate[hugeVec](`ssz-size:"125000000"`)
+
+// hugeDynVecElem is the variable-size element of hugeDynVec.
+type hugeDynVecElem struct {
+	Data []byte `ssz-max:"32"`
+}
+
+// hugeDynVec declares as many variable-size elements; its offset table alone
+// would be 40 MB.
+type hugeDynVec []hugeDynVecElem
+
+var _ = sszutils.Annotate[hugeDynVec](`ssz-size:"10000000"`)
+
+// reservedBytes reports what the heap grew by while fn ran.
+func reservedBytes(fn func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	fn()
+	runtime.ReadMemStats(&after)
+
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+// A vector states its length in the schema, not in the input, so an input that
+// cannot hold it is refused before the length is reserved.
+func TestUnmarshalVectorReservesNothingForAnInputThatCannotHoldIt(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+
+	var value hugeVec
+	var err error
+	reserved := reservedBytes(func() {
+		err = ds.UnmarshalSSZ(&value, []byte{1, 2, 3})
+	})
+
+	if err == nil {
+		t.Fatal("three bytes decoded as a 125 million element vector")
+	}
+	if reserved > 8<<20 {
+		t.Errorf("reserved %d bytes for a three-byte input", reserved)
+	}
+}
+
+// The same holds for variable-size elements read from a stream of unknown
+// extent: the offset table and the elements are declared, not delivered.
+func TestUnmarshalDynamicVectorReservesWhatArrives(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+
+	// Large enough that the region is still open when the offset table is
+	// sized: a payload the reader exhausts immediately collapses the region to
+	// a known length, and the length check refuses it before anything is
+	// reserved.
+	payload := make([]byte, 1<<20)
+	var value hugeDynVec
+	var err error
+	reserved := reservedBytes(func() {
+		err = ds.UnmarshalSSZReader(&value, bytes.NewReader(payload), -1)
+	})
+
+	if err == nil {
+		t.Fatal("a megabyte decoded as a ten million element vector")
+	}
+	// The declared table alone is 40 MB; what arrived bounds it instead.
+	if reserved > 8<<20 {
+		t.Errorf("reserved %d bytes for a one megabyte payload", reserved)
+	}
+}

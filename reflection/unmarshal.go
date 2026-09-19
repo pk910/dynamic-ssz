@@ -644,6 +644,18 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 	fieldType := targetType.ElemDesc
 	arrLen := int(vecLen)
 
+	// The length is declared by the type, not by the input, so the allocation
+	// below is sized before a byte is read. Where the input's extent is known,
+	// one that cannot hold the vector is refused first: the decode would fail
+	// on the same bytes anyway, and reserving the declared extent to discover
+	// it lets a three-byte input reserve whatever the schema declares. An open
+	// region states no extent, so there is nothing to compare against.
+	if elemSize := fieldType.Size; elemSize > 0 && arrLen > 0 && decoder.LengthKnown() {
+		if int64(decoder.GetLength())/elemSize < int64(arrLen) {
+			return sszutils.ErrUnexpectedEOF
+		}
+	}
+
 	var newValue reflect.Value
 	switch targetType.Kind {
 	case reflect.Slice:
@@ -771,9 +783,12 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 		startPos = decoder.GetPosition()
 		decoder.SkipBytes(requiredOffsetBytes)
 	} else {
-		// read all item offsets
-		sliceOffsets = sszutils.GetOffsetSlice(vectorLen)
-		defer sszutils.PutOffsetSlice(sliceOffsets)
+		// The length is declared by the type, not witnessed by the input, so an
+		// open region can declare far more offsets than it will deliver. Seed
+		// from what has arrived and grow as the offsets are read, as the list
+		// path does -- each one costs the sender four bytes.
+		sliceOffsets = sszutils.GetOffsetSlice(sszutils.CredibleCount(decoder, vectorLen, 4))
+		defer func() { sszutils.PutOffsetSlice(sliceOffsets) }()
 
 		for i := 0; i < vectorLen; i++ {
 			offset, err := decoder.DecodeOffset()
@@ -781,6 +796,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 				return sszutils.ErrorWithPathf(err, "[%d:o]", i)
 			}
 
+			sliceOffsets = sszutils.GrowSlice(sliceOffsets, i+1, vectorLen)
 			sliceOffsets[i] = offset
 		}
 	}
@@ -805,11 +821,19 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 		return sszutils.ErrFirstOffsetMismatchFn(offset, uint32(requiredOffsetBytes))
 	}
 
+	// A known region is backed by the caller's complete input and keeps the
+	// exact-allocation path. For an open stream region the offset table proves
+	// the element count but not that any element body exists, so reserve only a
+	// byte-bounded prefix and grow as bodies are reached.
 	var newValue reflect.Value
-	if targetType.Kind == reflect.Array {
+	switch {
+	case targetType.Kind == reflect.Array:
 		newValue = targetValue
-	} else {
+	case lengthKnown:
 		newValue = expandSliceValue(targetValue, fieldT, vectorLen)
+	default:
+		initialLen := dynamicListPreallocation(vectorLen, uint64(fieldT.Elem().Size()))
+		newValue = expandSliceValue(targetValue, fieldT, initialLen)
 	}
 
 	// Pointer elements (except optionals, which decode in place) get a fresh
@@ -818,6 +842,15 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 
 	// decode slice items
 	for i := 0; i < vectorLen; i++ {
+		if targetType.Kind != reflect.Array && i >= newValue.Len() {
+			// Make the whole geometric chunk addressable so this branch is
+			// taken only at chunk boundaries, as the list path does.
+			chunkLen := min(vectorLen, max(i+1, newValue.Len()*2))
+			grown := reflect.MakeSlice(fieldT, chunkLen, chunkLen)
+			reflect.Copy(grown, newValue)
+			newValue = grown
+		}
+
 		var itemVal reflect.Value
 		if allocPointerElems {
 			itemVal = reusePointerElem(newValue.Index(i), fieldType.Type.Elem())
