@@ -695,8 +695,9 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
 		return 0, err
 	}
 
-	// The type cache bounds every static size to the platform int at analysis
-	// and a delegated sizer speaks int, so the size fits.
+	// Every size is bounded to the SSZ size limit where it enters the size
+	// domain, and that limit is the platform int where the int is narrower, so
+	// the value fits: min(MaxUint32, MaxInt) can never exceed MaxInt.
 	return int(size), nil
 }
 
