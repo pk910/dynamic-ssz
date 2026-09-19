@@ -39,6 +39,8 @@ func TestGeneratedPathsRefuseSizesPastThePlatformRange(t *testing.T) {
 		{"HashTreeRoot", func() error { _, err := value.HashTreeRoot(); return err }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			defer func() {
 				if r := recover(); r != nil {
 					t.Fatalf("panicked instead of reporting the size: %v", r)
