@@ -8644,3 +8644,58 @@ func TestUnmarshalVectorIsRefusedBeforeReservingAtAnySize(t *testing.T) {
 		t.Errorf("reserved %d bytes for a three-byte input; the 2 KiB slice was made before the input was consulted", reserved)
 	}
 }
+
+// growVecElem is dynamic, so a vector of it is decoded through the offset table,
+// and its Go size of one slice header keeps the byte-bounded preallocation well
+// under the element count.
+type growVecElem struct {
+	Data []byte `ssz-max:"8"`
+}
+
+type growVecHolder struct {
+	Items []growVecElem `ssz-size:"2800"`
+}
+
+// A vector whose region is open states its element count in the offset table but
+// proves no element body, so the slice is reserved from the bytes that may
+// arrive rather than from the count, and grown as bodies are reached. A reader
+// of unknown length is the only way to open the region: with a known length the
+// count is backed by input and the exact allocation is made up front.
+func TestUnmarshalDynamicVectorGrowsOverAnOpenRegion(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+
+	value := &growVecHolder{Items: make([]growVecElem, 2800)}
+	for i := range value.Items {
+		value.Items[i].Data = []byte{byte(i), byte(i >> 8)}
+	}
+	data, err := ds.MarshalSSZ(value)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// 2800 elements is past 64 KiB / sizeof([]byte), so the reservation cannot
+	// cover the vector and the decode has to grow into it.
+	var got growVecHolder
+	if err := ds.UnmarshalSSZReader(&got, bytes.NewReader(data), -1); err != nil {
+		t.Fatalf("unmarshal over an open region: %v", err)
+	}
+	if len(got.Items) != 2800 {
+		t.Fatalf("decoded %d elements, want 2800", len(got.Items))
+	}
+	for i := range got.Items {
+		want := []byte{byte(i), byte(i >> 8)}
+		if !bytes.Equal(got.Items[i].Data, want) {
+			t.Fatalf("element %d decoded %x, want %x", i, got.Items[i].Data, want)
+		}
+	}
+
+	// The same input with its length known takes the exact-allocation path and
+	// must decode identically.
+	var known growVecHolder
+	if err := ds.UnmarshalSSZReader(&known, bytes.NewReader(data), len(data)); err != nil {
+		t.Fatalf("unmarshal with a known length: %v", err)
+	}
+	if !reflect.DeepEqual(got, known) {
+		t.Fatal("open and known regions decoded the same input differently")
+	}
+}
