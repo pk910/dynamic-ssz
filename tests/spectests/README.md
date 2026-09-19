@@ -4,7 +4,7 @@ This directory contains Ethereum consensus specification tests for the dynamic-s
 
 ## Overview
 
-The spec tests automatically download the latest consensus spec test data from the [ethereum/consensus-spec-tests](https://github.com/ethereum/consensus-spec-tests) repository and run comprehensive validation tests.
+The spec tests automatically download the latest consensus spec test data from the [ethereum/consensus-specs](https://github.com/ethereum/consensus-specs) releases and run comprehensive validation tests.
 
 ## Test Structure
 
@@ -71,10 +71,10 @@ go test -v -timeout=30m ./...
 ### Automatic Download
 
 The `setup_test_data.sh` script automatically:
-1. Fetches the latest release from ethereum/consensus-spec-tests
+1. Fetches the latest release from ethereum/consensus-specs, pre-releases included
 2. Downloads the appropriate preset (mainnet.tar.gz or minimal.tar.gz)
 3. Extracts test data to `consensus-spec-tests/` directory
-4. Caches data for 24 hours to avoid repeated downloads
+4. Reuses the extracted data while it matches that release, and replaces it when the release moves on
 
 ### Commands
 
@@ -130,7 +130,7 @@ with an explanatory message rather than skipping silently.
 
 - Check internet connection
 - Verify GitHub access
-- Try manual download from [consensus-spec-tests releases](https://github.com/ethereum/consensus-spec-tests/releases)
+- Try manual download from [consensus-specs releases](https://github.com/ethereum/consensus-specs/releases)
 
 ### "Test data verification failed"
 

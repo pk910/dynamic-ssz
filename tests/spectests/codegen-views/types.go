@@ -128,6 +128,7 @@ type BeaconState struct {
 	PendingDeposits               []*PendingDeposit
 	PendingPartialWithdrawals     []*PendingPartialWithdrawal
 	PendingConsolidations         []*PendingConsolidation
+	ProposerLookahead             []ValidatorIndex
 }
 
 type Checkpoint struct {

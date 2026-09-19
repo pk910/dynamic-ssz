@@ -738,7 +738,7 @@ type ElectraWithdrawalRequest struct {
 }
 
 // Fulu types
-type FuluBeaconState struct { // TODO: Update to Fulu (latest spectests release still uses Electra)
+type FuluBeaconState struct {
 	GenesisTime                   uint64
 	GenesisValidatorsRoot         Root `ssz-size:"32"`
 	Slot                          Slot
@@ -775,5 +775,6 @@ type FuluBeaconState struct { // TODO: Update to Fulu (latest spectests release 
 	EarliestConsolidationEpoch    Epoch
 	PendingDeposits               []*ElectraPendingDeposit           `dynssz-max:"PENDING_DEPOSITS_LIMIT"            ssz-max:"134217728"`
 	PendingPartialWithdrawals     []*ElectraPendingPartialWithdrawal `dynssz-max:"PENDING_PARTIAL_WITHDRAWALS_LIMIT" ssz-max:"134217728"`
-	PendingConsolidations         []*ElectraPendingConsolidation     `dynssz-max:"PENDING_CONSOLIDATIONS_LIMIT"      ssz-max:"262144"`
+	PendingConsolidations         []*ElectraPendingConsolidation     `dynssz-max:"PENDING_CONSOLIDATIONS_LIMIT"            ssz-max:"262144"`
+	ProposerLookahead             []ValidatorIndex                   `dynssz-size:"(MIN_SEED_LOOKAHEAD+1)*SLOTS_PER_EPOCH" ssz-size:"64"`
 }

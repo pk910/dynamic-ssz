@@ -12,6 +12,7 @@ import (
 	"github.com/ethpandaops/go-eth2-client/spec/capella"
 	"github.com/ethpandaops/go-eth2-client/spec/deneb"
 	"github.com/ethpandaops/go-eth2-client/spec/electra"
+	"github.com/ethpandaops/go-eth2-client/spec/fulu"
 	"github.com/ethpandaops/go-eth2-client/spec/phase0"
 	"github.com/pk910/dynamic-ssz/spectests/codegen"
 	codegen_views "github.com/pk910/dynamic-ssz/spectests/codegen-views"
@@ -68,9 +69,9 @@ func TestConsensusSpecFulu(t *testing.T) {
 		},
 		{
 			name: "BeaconState",
-			s:    &electra.BeaconState{}, // TODO: Update to Fulu (latest spectests release still uses Electra)
-			s2:   &codegen.ElectraBeaconState{},
-			s3:   []any{&codegen_views.BeaconState{}, &codegen_views.ElectraBeaconState{}},
+			s:    &fulu.BeaconState{},
+			s2:   &codegen.FuluBeaconState{},
+			s3:   []any{&codegen_views.BeaconState{}, &codegen_views.FuluBeaconState{}},
 		},
 		{
 			name: "BlobIdentifier",
