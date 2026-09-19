@@ -66,6 +66,12 @@ var (
 	// target cannot hold is ErrPlatformOverflow instead.
 	ErrSszSizeExceeded = fmt.Errorf("ssz size exceeds the maximum encodable size")
 
+	// ErrChunkLimitExceeded is returned when a walk merkleizes more chunks
+	// than the limit it was given holds. Both engines refuse an over-capacity
+	// value before it reaches a walker, so the surplus comes from a hash
+	// method that left more than one leaf per value.
+	ErrChunkLimitExceeded = fmt.Errorf("merkleized more chunks than the limit holds")
+
 	// ErrMaxDepthExceeded is returned when a value nests deeper than the
 	// configured maximum. Only recursive types can reach an input-controlled
 	// depth; the bound turns what would be an unrecoverable stack overflow into
@@ -565,6 +571,15 @@ func ErrSszSizeLimitFn(description string, value, elemWidth uint64) error {
 	return &sszError{
 		err:     err,
 		message: fmt.Sprintf("%s %d exceeds the SSZ size limit of %d", description, value, uint64(MaxSszSize)/elemWidth),
+	}
+}
+
+// ErrChunkLimitFn names the chunk count a walk reduced and the limit it was
+// given for it.
+func ErrChunkLimitFn(count, limit any) error {
+	return &sszError{
+		err:     ErrChunkLimitExceeded,
+		message: fmt.Sprintf("%v chunks merkleized against a limit of %v", count, limit),
 	}
 }
 

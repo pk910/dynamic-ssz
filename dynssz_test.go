@@ -8051,22 +8051,18 @@ func TestPackedWrappedElementsAreNotDelegated(t *testing.T) {
 }
 
 // A custom element of a basic size whose walker method merkleizes a leaf of
-// its own breaks the packed contract: it is not refused, and both walkers give
-// the same root for it. One with only a root method hashes like the basic type
-// it stands in for.
+// its own breaks the packed contract: the scope holds packed bytes and the
+// leaf is a whole chunk, so the reduction is handed more chunks than the
+// limit holds. Both walkers report it. One with only a root method hashes
+// like the basic type it stands in for.
 func TestPackedCustomDelegates(t *testing.T) {
 	ds := NewDynSsz(nil)
 	leaf := &leafCustomHolder{L: []leafCustom{{1}, {2}, {3}}}
-	leafRoot, err := ds.HashTreeRoot(leaf)
-	if err != nil {
-		t.Fatalf("leaf delegate: %v", err)
+	if _, err := ds.HashTreeRoot(leaf); !errors.Is(err, sszutils.ErrChunkLimitExceeded) {
+		t.Errorf("leaf delegate: err = %v, want the chunk limit reported", err)
 	}
-	leafTree, err := ds.GetTree(leaf)
-	if err != nil {
-		t.Fatalf("leaf delegate tree: %v", err)
-	}
-	if !bytes.Equal(leafTree.Hash(), leafRoot[:]) {
-		t.Fatalf("leaf delegate tree %x != hasher %x", leafTree.Hash(), leafRoot)
+	if _, err := ds.GetTree(leaf); !errors.Is(err, sszutils.ErrChunkLimitExceeded) {
+		t.Errorf("leaf delegate tree: err = %v, want the chunk limit reported", err)
 	}
 
 	holder := &rootOnlyCustomHolder{R: []rootOnlyCustom{{1}, {2}, {3}}, RV: [4]rootOnlyCustom{{4}, {5}, {6}, {7}}}
@@ -8196,20 +8192,16 @@ func TestPackedBasicViewElements(t *testing.T) {
 	}
 
 	// A view method that merkleizes a leaf of its own inside a packed scope
-	// breaks the contract; it is not refused, and both walkers agree on the
-	// root it produces.
+	// breaks the contract: it contributes a whole chunk where the scope holds
+	// packed bytes, so the reduction is handed more chunks than the limit
+	// holds. Both walkers report it.
 	ds := NewDynSsz(nil)
 	leafView := WithViewDescriptor((*leafViewSchema)(nil))
-	viewRoot, err := ds.HashTreeRoot(&leafViewHolder{L: []leafViewNum{1, 2, 3}}, leafView)
-	if err != nil {
-		t.Fatalf("leaf view: %v", err)
+	if _, err := ds.HashTreeRoot(&leafViewHolder{L: []leafViewNum{1, 2, 3}}, leafView); !errors.Is(err, sszutils.ErrChunkLimitExceeded) {
+		t.Errorf("leaf view: err = %v, want the chunk limit reported", err)
 	}
-	viewTree, err := ds.GetTree(&leafViewHolder{L: []leafViewNum{1, 2, 3}}, leafView)
-	if err != nil {
-		t.Fatalf("leaf view tree: %v", err)
-	}
-	if !bytes.Equal(viewTree.Hash(), viewRoot[:]) {
-		t.Fatalf("leaf view tree %x != hasher %x", viewTree.Hash(), viewRoot)
+	if _, err := ds.GetTree(&leafViewHolder{L: []leafViewNum{1, 2, 3}}, leafView); !errors.Is(err, sszutils.ErrChunkLimitExceeded) {
+		t.Errorf("leaf view tree: err = %v, want the chunk limit reported", err)
 	}
 }
 

@@ -89,10 +89,11 @@ type Hasher struct {
 	// sha256 hash function
 	hash HashFn
 
-	// hashErr holds the first error a hash function returned for this
-	// hasher. Every reduction records it and carries on; HashRoot reports
-	// it instead of a root built from bytes the hash function never
-	// produced. Cleared on Reset.
+	// hashErr holds the first failure recorded for this hasher: an error a
+	// hash function returned, or a reduction handed more chunks than its
+	// limit holds. Every reduction records it and carries on; HashRoot
+	// reports it instead of a root the walk did not properly produce.
+	// Cleared on Reset.
 	hashErr error
 
 	// layers is the stack of open SSZ object scopes. StartTree() pushes,
@@ -172,9 +173,9 @@ func (h *Hasher) WithTemp(fn func(tmp []byte) []byte) {
 	h.tmp = fn(h.tmp)
 }
 
-// setHashErr records the first error a hash function returned. Later errors
-// are dropped: the first one is the failure the caller has to act on, and the
-// reductions after it ran over bytes it never produced.
+// setHashErr records the first failure of the walk. Later errors are dropped:
+// the first one is the failure the caller has to act on, and the reductions
+// after it ran over bytes it never properly produced.
 func (h *Hasher) setHashErr(err error) {
 	if err != nil && h.hashErr == nil {
 		h.hashErr = err
@@ -1510,6 +1511,7 @@ func (h *Hasher) merkleizeImpl(dst, input []byte, limit uint64) []byte {
 	// surplus comes from a hash method leaving more than one leaf per value;
 	// that is the method's contract to keep, not checked here.
 	if count > limit {
+		h.setHashErr(sszutils.ErrChunkLimitFn(count, limit))
 		limit = count
 	}
 

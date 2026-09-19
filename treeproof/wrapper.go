@@ -113,11 +113,23 @@ func (w *Wrapper) CurrentIndex() int {
 	return len(w.buf)
 }
 
-// HashErr reports a scope the walker refused to reduce in the shape it was
-// opened for. The walk continues after such a refusal so the caller sees one
+// HashErr reports the first failure the walker recorded: a scope reduced in a
+// shape it was not opened for, or a reduction handed more chunks than its
+// limit holds. The walk continues after such a refusal so the caller sees one
 // error rather than a cascade, which leaves the state it built unusable.
 func (w *Wrapper) HashErr() error {
 	return w.shapeErr
+}
+
+// checkChunkLimit records a reduction handed more chunks than its limit holds.
+// A limit of zero states none, which an unbounded list asks for. The reduction
+// still runs, over a tree deep enough for the chunks, so the walker keeps
+// answering as hasher.Hasher does; the root is refused.
+func (w *Wrapper) checkChunkLimit(count, limit uint64) {
+	if limit == 0 || count <= limit || w.shapeErr != nil {
+		return
+	}
+	w.shapeErr = sszutils.ErrChunkLimitFn(count, limit)
 }
 
 // checkShape records a scope reduced in a shape it was not opened for. A
@@ -433,6 +445,7 @@ func (w *Wrapper) reduceBinary(indx int) {
 
 func (w *Wrapper) reduceBinaryWithMixin(indx int, num, limit uint64) {
 	leaves := w.regionLeaves(indx)
+	w.checkChunkLimit(uint64(len(leaves)), limit)
 	res, err := TreeFromNodesWithMixin64(leaves, num, limit)
 	if err != nil {
 		panic(err)

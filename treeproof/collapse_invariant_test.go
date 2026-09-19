@@ -85,11 +85,18 @@ func run(w sszutils.HashWalker, s shape, cadence int) {
 	}
 }
 
+// A reduction handed more chunks than its limit holds runs over a tree deep
+// enough for them and refuses the root. The hint must not move that root
+// either, so it is read from the walk where the refusal withholds it.
 func hasherRoot(t *testing.T, s shape, cadence int) [32]byte {
 	t.Helper()
 	h := hasher.NewHasher()
 	run(h, s, cadence)
 	root, err := h.HashRoot()
+	if errors.Is(err, sszutils.ErrChunkLimitExceeded) {
+		copy(root[:], h.Hash())
+		err = nil
+	}
 	if err != nil {
 		t.Fatalf("%s cadence=%d: hasher: %v", s, cadence, err)
 	}
@@ -101,6 +108,10 @@ func wrapperRoot(t *testing.T, s shape, cadence int) [32]byte {
 	w := NewWrapper()
 	run(w, s, cadence)
 	root, err := w.HashRoot()
+	if errors.Is(err, sszutils.ErrChunkLimitExceeded) {
+		copy(root[:], w.Hash())
+		err = nil
+	}
 	if err != nil {
 		t.Fatalf("%s cadence=%d: wrapper: %v", s, cadence, err)
 	}

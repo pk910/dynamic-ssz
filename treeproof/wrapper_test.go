@@ -1232,8 +1232,10 @@ func TestWrapperPutBitlistZeroMaxMatchesHasher(t *testing.T) {
 	}
 }
 
-// Wrapper.MerkleizeWithMixin with a limit below the chunk count must clamp
-// the limit up to the count like Hasher does (a root, not a panic).
+// Wrapper.MerkleizeWithMixin with a limit below the chunk count clamps the
+// limit up to the count like Hasher does, so the two produce the same bytes,
+// and both report the reduction that was handed more chunks than its limit
+// holds rather than panicking or answering with a root.
 func TestWrapperMixinLimitBelowChunksMatchesHasher(t *testing.T) {
 	var wRoot []byte
 	func() {
@@ -1257,12 +1259,12 @@ func TestWrapperMixinLimitBelowChunksMatchesHasher(t *testing.T) {
 		hh.PutUint64(uint64(i))
 	}
 	hh.MerkleizeWithMixin(hidx, 8, 2)
-	hRoot, err := hh.HashRoot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(wRoot, hRoot[:]) {
+	hRoot := hh.Hash()
+	if !bytes.Equal(wRoot, hRoot) {
 		t.Errorf("mixin limit below chunks: wrapper=%x hasher=%x", wRoot[:8], hRoot[:8])
+	}
+	if _, err := hh.HashRoot(); !errors.Is(err, sszutils.ErrChunkLimitExceeded) {
+		t.Errorf("hasher root: err = %v, want the chunk limit reported", err)
 	}
 
 	// The same sequence through the public convenience API.
@@ -1280,12 +1282,12 @@ func TestWrapperMixinLimitBelowChunksMatchesHasher(t *testing.T) {
 
 	hh2 := hasher.NewHasher()
 	hh2.PutUint64Array(make([]uint64, 100), 8)
-	h2Root, err := hh2.HashRoot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(w2Root, h2Root[:]) {
+	h2Root := hh2.Hash()
+	if !bytes.Equal(w2Root, h2Root) {
 		t.Errorf("PutUint64Array cap overflow: wrapper=%x hasher=%x", w2Root[:8], h2Root[:8])
+	}
+	if _, err := hh2.HashRoot(); !errors.Is(err, sszutils.ErrChunkLimitExceeded) {
+		t.Errorf("hasher root: err = %v, want the chunk limit reported", err)
 	}
 }
 

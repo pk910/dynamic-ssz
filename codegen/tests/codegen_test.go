@@ -4381,33 +4381,24 @@ func TestCodegenBasicSizedCustomElements(t *testing.T) {
 }
 
 // A custom element of a basic size whose walker method merkleizes a leaf of
-// its own breaks the packed contract. Neither engine refuses it, and the
-// generated code, the reflection walk and the tree walker agree on the root it
-// produces.
+// its own breaks the packed contract: the scope holds packed bytes and the
+// leaf is a whole chunk, so the reduction is handed more chunks than the limit
+// holds. The generated code, the reflection walk and the tree walker all
+// report it.
 func TestCodegenPackedLeafDelegateConsistent(t *testing.T) {
 	if _, ok := any(&LeafCustomHolder_Payload).(sszutils.DynamicHashRoot); !ok {
 		t.Skip("no generated code present")
 	}
 
 	ds := dynssz.NewDynSsz(nil)
-	genRoot, err := ds.HashTreeRoot(&LeafCustomHolder_Payload)
-	if err != nil {
-		t.Fatalf("generated hash: %v", err)
-	}
 	refl := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
-	reflRoot, err := refl.HashTreeRoot(&LeafCustomHolder_Payload)
-	if err != nil {
-		t.Fatalf("reflection hash: %v", err)
+	for name, engine := range map[string]*dynssz.DynSsz{"generated": ds, "reflection": refl} {
+		if _, err := engine.HashTreeRoot(&LeafCustomHolder_Payload); !errors.Is(err, sszutils.ErrChunkLimitExceeded) {
+			t.Errorf("%s hash: err = %v, want the chunk limit reported", name, err)
+		}
 	}
-	if genRoot != reflRoot {
-		t.Fatalf("generated %x, reflection %x", genRoot, reflRoot)
-	}
-	tree, err := ds.GetTree(&LeafCustomHolder_Payload)
-	if err != nil {
-		t.Fatalf("tree: %v", err)
-	}
-	if !bytes.Equal(tree.Hash(), genRoot[:]) {
-		t.Fatalf("tree %x != hasher %x", tree.Hash(), genRoot)
+	if _, err := ds.GetTree(&LeafCustomHolder_Payload); !errors.Is(err, sszutils.ErrChunkLimitExceeded) {
+		t.Errorf("tree: err = %v, want the chunk limit reported", err)
 	}
 }
 
@@ -4467,20 +4458,16 @@ func TestCodegenPackedBasicViewElements(t *testing.T) {
 	}
 
 	// A view method that merkleizes a leaf of its own inside a packed scope
-	// breaks the contract; it is not refused, and both walkers agree on the
-	// root it produces.
+	// breaks the contract: it contributes a whole chunk where the scope holds
+	// packed bytes, so the reduction is handed more chunks than the limit
+	// holds. Both walkers report it.
 	leafView := dynssz.WithViewDescriptor((*ViewLeafTypes_View1)(nil))
 	ds := dynssz.NewDynSsz(nil)
-	viewRoot, err := ds.HashTreeRoot(&ViewLeafTypes_Payload, leafView)
-	if err != nil {
-		t.Fatalf("generated leaf view: %v", err)
+	if _, err := ds.HashTreeRoot(&ViewLeafTypes_Payload, leafView); !errors.Is(err, sszutils.ErrChunkLimitExceeded) {
+		t.Errorf("generated leaf view: err = %v, want the chunk limit reported", err)
 	}
-	viewTree, err := ds.GetTree(&ViewLeafTypes_Payload, leafView)
-	if err != nil {
-		t.Fatalf("generated leaf view tree: %v", err)
-	}
-	if !bytes.Equal(viewTree.Hash(), viewRoot[:]) {
-		t.Fatalf("generated leaf view tree %x != hasher %x", viewTree.Hash(), viewRoot)
+	if _, err := ds.GetTree(&ViewLeafTypes_Payload, leafView); !errors.Is(err, sszutils.ErrChunkLimitExceeded) {
+		t.Errorf("generated leaf view tree: err = %v, want the chunk limit reported", err)
 	}
 }
 
