@@ -572,6 +572,11 @@ func (ctx *encoderContext) marshalContainer(desc *ssztypes.TypeDescriptor, varNa
 	}
 	staticSizeVars = append(staticSizeVars, fmt.Sprintf("%d", staticSize))
 
+	// The fixed section holds the offset positions written below, so a section
+	// the target's int cannot address is refused before any of them is formed,
+	// as the buffer path refuses it.
+	platformGuard(ctx.appendCode, indent, ctx.typePrinter, uint64(staticSize), false, "return "+typePath.getErrorWith(fmt.Sprintf("sszutils.ErrPlatformOverflowFn(\"container size\", uint64(%d))", staticSize)))
+
 	if hasDynamic {
 		ctx.usedSeekable = true
 		ctx.appendCode(indent, "dstlen := enc.GetPosition()\n")

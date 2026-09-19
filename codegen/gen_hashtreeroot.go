@@ -560,6 +560,20 @@ func (ctx *hashTreeRootContext) hashBigInt(desc *ssztypes.TypeDescriptor, varNam
 
 // hashContainer generates hash tree root code for SSZ container (struct) types.
 func (ctx *hashTreeRootContext) hashContainer(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
+	// A container whose declared fixed section the target's int cannot hold has
+	// no serialization there, and so no root: it is refused here as the encode
+	// and decode paths refuse it, rather than being hashed field by field until
+	// one of them exhausts the address space.
+	staticSize := 0
+	for _, field := range desc.ContainerDesc.Fields {
+		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+			staticSize += 4
+		} else if field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr == 0 || ctx.options.WithoutDynamicExpressions {
+			staticSize += int(field.Type.Size)
+		}
+	}
+	platformGuard(ctx.appendCode, indent, ctx.typePrinter, uint64(staticSize), false, "return "+typePath.getErrorWith(fmt.Sprintf("sszutils.ErrPlatformOverflowFn(\"container size\", uint64(%d))", staticSize)))
+
 	// Start container merkleization
 	ctx.appendCode(indent, "idx := hh.StartTree(sszutils.TreeTypeNone)\n")
 

@@ -6,6 +6,7 @@ package codegen
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 	"slices"
 	"strings"
@@ -667,7 +668,14 @@ func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName, sizeVar
 			if desc.ElemDesc.Size == 1 {
 				ctx.appendCode(indent, "%s += len(%s)\n", sizeVar, valueVar)
 			} else {
-				platformGuard(ctx.appendCode, indent, ctx.typePrinter, uint64(desc.ElemDesc.Size), false, "return 0")
+				// An empty list forms no product, and its size is exact on any
+				// target: only a value with elements is refused for a width the
+				// target's int cannot hold.
+				if uint64(desc.ElemDesc.Size) > math.MaxInt32 {
+					ctx.appendCode(indent, "if len(%s) > 0 {\n", valueVar)
+					platformGuard(ctx.appendCode, indent+1, ctx.typePrinter, uint64(desc.ElemDesc.Size), false, "return 0")
+					ctx.appendCode(indent, "}\n")
+				}
 				ctx.appendCode(indent, "%s += len(%s) * %s\n", sizeVar, valueVar, intLitStr(fmt.Sprintf("%d", desc.ElemDesc.Size)))
 			}
 		} else {
