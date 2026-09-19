@@ -581,16 +581,31 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 
 	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation, d.options.MaxNestingDepth)
 
-	// No size is computed up front: streaming allocates nothing, so it would
-	// cost a second full walk only to check the byte count afterwards. The
-	// buffer entry points need the size to allocate and keep that check.
+	// The size is computed up front only to weigh the output against it. That
+	// costs a second walk of the value, which streaming would otherwise not
+	// need, and it is paid because the walk and the size pass can disagree:
+	// a type whose own methods answer for a different value than the one being
+	// marshalled produces bytes no decoder accepts, and streaming has already
+	// put them on the wire by the time anything else could notice.
+	size, err := ctx.SizeSSZ(sourceTypeDesc, sourceValue)
+	if err != nil {
+		return err
+	}
+
 	err = ctx.MarshalSSZ(sourceTypeDesc, sourceValue, encoder)
 	if err != nil {
 		return err
 	}
 
 	encoder.Flush()
-	return encoder.GetWriteError()
+	if werr := encoder.GetWriteError(); werr != nil {
+		return werr
+	}
+
+	if int64(encoder.GetPosition()) != size {
+		return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "ssz length does not match expected length (expected: %v, got: %v)", size, encoder.GetPosition())
+	}
+	return nil
 }
 
 // SizeSSZ calculates the size of the given source object when serialized using SSZ encoding.

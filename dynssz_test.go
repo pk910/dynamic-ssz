@@ -3852,10 +3852,11 @@ func (z *zeroSizeCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils
 	return nil
 }
 
-// The buffer entry points size their allocation from SizeSSZ, so checking the
-// bytes against it is free and an inconsistent nested marshaler is rejected.
-// Streaming allocates nothing and has no precomputed size to compare against.
-func TestMarshalLengthGuardIsBufferOnly(t *testing.T) {
+// Every marshal entry point weighs its output against SizeSSZ, so a value whose
+// own methods answer for something other than the value being marshalled is
+// refused rather than encoded. The streaming path pays a second walk for it:
+// bytes it has written are already gone.
+func TestMarshalLengthGuardCoversEveryEntryPoint(t *testing.T) {
 	type outer struct {
 		Inner inconsistentSizeCustom `ssz-type:"custom"`
 	}
@@ -3866,10 +3867,9 @@ func TestMarshalLengthGuardIsBufferOnly(t *testing.T) {
 		t.Fatal("MarshalSSZ (buffer) should reject a size/length mismatch")
 	}
 
-	// The streaming path writes what the marshaler produced, unweighed.
 	var buf bytes.Buffer
-	if err := ds.MarshalSSZWriter(v, &buf); err != nil {
-		t.Fatalf("MarshalSSZWriter (stream) does not weigh output against SizeSSZ: %v", err)
+	if err := ds.MarshalSSZWriter(v, &buf); err == nil {
+		t.Fatal("MarshalSSZWriter (stream) should reject a size/length mismatch")
 	}
 
 	if _, err := ds.MarshalSSZTo(v, nil); err == nil {
