@@ -644,21 +644,18 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 	fieldType := targetType.ElemDesc
 	arrLen := int(vecLen)
 
-	// The length is declared by the type, not by the input, so the allocation
-	// below is sized before a byte is read. Where the input's extent is known,
-	// one that cannot hold the vector is refused first: the decode would fail
-	// on the same bytes anyway, and reserving the declared extent to discover
-	// it lets a three-byte input reserve whatever the schema declares. An open
-	// region states no extent, so there is nothing to compare against.
-	if elemSize := fieldType.Size; elemSize > 0 && arrLen > 0 && decoder.LengthKnown() {
-		if int64(decoder.GetLength())/elemSize < int64(arrLen) {
-			return sszutils.ErrUnexpectedEOF
-		}
-	}
-
 	var newValue reflect.Value
 	switch targetType.Kind {
 	case reflect.Slice:
+		// A vector's length comes from the type, so the slice is sized before
+		// any input is read: refuse one the region cannot hold instead of
+		// reserving it. An open region declares no extent to compare against.
+		// Arrays are allocated with the value holding them, so this is the
+		// only branch that reserves anything.
+		if size := targetType.Size; decoder.LengthKnown() && int64(decoder.GetLength()) < size {
+			return sszutils.ErrUnexpectedEOF
+		}
+
 		// For pointer types (e.g. a *NamedSlice root), unmarshalType already
 		// dereferenced targetValue, so create the underlying slice type.
 		sliceT := targetType.Type

@@ -8603,3 +8603,43 @@ func TestBigIntLimitFromSpecIsEnforced(t *testing.T) {
 		})
 	}
 }
+
+// subKiloVec is small enough that a size threshold would wave it through, and
+// large enough that a reservation would be measurable.
+type subKiloVec []uint64
+
+var _ = sszutils.Annotate[subKiloVec](`ssz-size:"256"`)
+
+// The refusal does not depend on how large the reservation would be: the check
+// sits in the branch that reserves, so every slice-kind vector the input cannot
+// hold is refused before its slice is made.
+func TestUnmarshalVectorIsRefusedBeforeReservingAtAnySize(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+
+	// Also caches the type descriptor, so the measurement below sees only the
+	// decode.
+	full := make([]byte, 256*8)
+	for i := range full {
+		full[i] = byte(i)
+	}
+	var ok subKiloVec
+	if err := ds.UnmarshalSSZ(&ok, full); err != nil {
+		t.Fatalf("a vector its input holds must decode: %v", err)
+	}
+	if len(ok) != 256 {
+		t.Fatalf("decoded %d elements, want 256", len(ok))
+	}
+
+	// 2 KiB, well under any threshold worth drawing; three bytes cannot hold it.
+	var value subKiloVec
+	var err error
+	reserved := reservedBytes(func() {
+		err = ds.UnmarshalSSZ(&value, []byte{1, 2, 3})
+	})
+	if err == nil {
+		t.Fatal("three bytes decoded as a 2 KiB vector")
+	}
+	if reserved >= 2048 {
+		t.Errorf("reserved %d bytes for a three-byte input; the 2 KiB slice was made before the input was consulted", reserved)
+	}
+}
