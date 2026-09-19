@@ -50,6 +50,9 @@ type Wrapper struct {
 	// scopes holds one entry per open scope, in the order they were opened.
 	scopes []wScope
 	tmp    []byte
+	// shapeErr records a scope reduced in a shape it was not opened for. The
+	// walkers have to answer alike, and hasher.Hasher refuses the same thing.
+	shapeErr error
 }
 
 // nodeRef is a subtree root and the 32 bytes of buf it occupies.
@@ -60,11 +63,13 @@ type nodeRef struct {
 	filled bool
 }
 
-// wScope is an open scope: where its content begins, and whether it packs
-// basic values.
+// wScope is an open scope: where its content begins, whether it packs basic
+// values, and whether it was opened for the progressive tree shape.
 type wScope struct {
-	off    int
-	packed bool
+	off         int
+	packed      bool
+	declared    bool
+	progressive bool
 }
 
 // NewWrapper creates a new Wrapper ready to construct a Merkle tree.
@@ -95,8 +100,10 @@ func (w *Wrapper) Index() int {
 // instead of a chunk of its own.
 func (w *Wrapper) StartTree(treeType sszutils.TreeType) int {
 	w.scopes = append(w.scopes, wScope{
-		off:    len(w.buf),
-		packed: treeType&sszutils.TreeTypePacked != 0,
+		off:         len(w.buf),
+		packed:      treeType&sszutils.TreeTypePacked != 0,
+		declared:    treeType&^sszutils.TreeTypePacked != sszutils.TreeTypeNone,
+		progressive: treeType&^sszutils.TreeTypePacked == sszutils.TreeTypeProgressive,
 	})
 	return len(w.buf)
 }
@@ -104,6 +111,19 @@ func (w *Wrapper) StartTree(treeType sszutils.TreeType) int {
 // CurrentIndex returns the current buffer position.
 func (w *Wrapper) CurrentIndex() int {
 	return len(w.buf)
+}
+
+// checkShape records a scope reduced in a shape it was not opened for. A
+// scope that declared no shape accepts either reduction. The reduction still
+// runs; the root is refused.
+func (w *Wrapper) checkShape(indx int, progressive bool) {
+	n := len(w.scopes)
+	if n == 0 || w.scopes[n-1].off != indx || w.shapeErr != nil {
+		return
+	}
+	if scope := w.scopes[n-1]; scope.declared && scope.progressive != progressive {
+		w.shapeErr = sszutils.ErrScopeShapeMismatch
+	}
 }
 
 // closeScope drops the innermost scope when it is the one being reduced, as
@@ -305,6 +325,7 @@ func (w *Wrapper) PutProgressiveBitlist(bb []byte) {
 // Merkleize reduces the region that began at indx into one subtree.
 func (w *Wrapper) Merkleize(indx int) {
 	indx = w.clampIndex(indx)
+	w.checkShape(indx, false)
 	w.closeScope(indx)
 	w.reduceBinary(indx)
 }
@@ -314,6 +335,7 @@ func (w *Wrapper) Merkleize(indx int) {
 // capacity above the platform int range hashes correctly instead of panicking.
 func (w *Wrapper) MerkleizeWithMixin(indx int, num, limit uint64) {
 	indx = w.clampIndex(indx)
+	w.checkShape(indx, false)
 	w.closeScope(indx)
 	w.reduceBinaryWithMixin(indx, num, limit)
 }
@@ -322,6 +344,7 @@ func (w *Wrapper) MerkleizeWithMixin(indx int, num, limit uint64) {
 // progressive algorithm.
 func (w *Wrapper) MerkleizeProgressive(indx int) {
 	indx = w.clampIndex(indx)
+	w.checkShape(indx, true)
 	w.closeScope(indx)
 	w.reduceProgressive(indx)
 }
@@ -330,6 +353,7 @@ func (w *Wrapper) MerkleizeProgressive(indx int) {
 // mixin.
 func (w *Wrapper) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 	indx = w.clampIndex(indx)
+	w.checkShape(indx, true)
 	w.closeScope(indx)
 	w.reduceProgressiveWithMixin(indx, num)
 }
@@ -338,6 +362,7 @@ func (w *Wrapper) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 // mixes in an active-fields bitvector.
 func (w *Wrapper) MerkleizeProgressiveWithActiveFields(indx int, activeFields []byte) {
 	indx = w.clampIndex(indx)
+	w.checkShape(indx, true)
 	w.closeScope(indx)
 	leaves := w.regionLeaves(indx)
 	res, err := TreeFromNodesProgressiveWithActiveFields(leaves, activeFields)
@@ -594,6 +619,9 @@ func (w *Wrapper) AddEmpty() { w.addEmpty() }
 // what is missing. The conditions are hasher.Hasher's: no scope may be open
 // and the buffer must hold exactly one chunk.
 func (w *Wrapper) rootNode() (*Node, error) {
+	if w.shapeErr != nil {
+		return nil, w.shapeErr
+	}
 	if len(w.scopes) > 0 {
 		return nil, fmt.Errorf("unfinished hashing scopes")
 	}

@@ -49,6 +49,7 @@ const maxTreeDepth = 40
 type treeLayer struct {
 	bufIdx      int  // byte offset where this scope started
 	incremental bool // true if opened via StartTree(), supports collapse
+	declared    bool // true if opened with an explicit tree shape, which the reduction must match
 	collapsed   bool // true once at least one binary batch has been collapsed
 	progressive bool // true if using progressive tree shape
 	packed      bool // true if the scope packs basic values: Put* appends packed bytes
@@ -565,6 +566,7 @@ func (h *Hasher) StartTree(treeType sszutils.TreeType) int {
 	layer := h.pushLayer()
 	layer.bufIdx = idx
 	layer.incremental = treeType != sszutils.TreeTypeNone
+	layer.declared = treeType != sszutils.TreeTypeNone
 	layer.progressive = treeType == sszutils.TreeTypeProgressive
 	layer.packed = packed
 	return idx
@@ -588,6 +590,7 @@ func (h *Hasher) Index() int {
 	layer := h.pushLayer()
 	layer.bufIdx = idx
 	layer.incremental = true
+	layer.declared = false
 	return idx
 }
 
@@ -598,10 +601,13 @@ func (h *Hasher) CurrentIndex() int {
 
 // Collapse hints the hasher to collapse accumulated chunks in the current
 // layer if the batch threshold is reached. This is a no-op for
-// non-incremental layers or when no layer is active. The hint never changes
-// the root of a scope that respects its limit; a scope holding more chunks
-// than its limit has no defined root, and its value then depends on the
-// hints received.
+// non-incremental layers or when no layer is active.
+//
+// The hint is optional and never changes a root, whatever the scope holds:
+// a scope over its limit reduces at the depth its chunks need either way. The
+// one shape it could move -- a scope opened progressive and reduced as binary,
+// where the hint decides whether progressive groups or raw chunks are reduced
+// -- is refused instead, through ErrProgressiveScopeClosedBinary.
 func (h *Hasher) Collapse() {
 	if h.layerCount < 0 {
 		return
@@ -1140,6 +1146,9 @@ func (h *Hasher) Merkleize(indx int) {
 	layer := h.getMatchingLayer(indx)
 
 	if layer != nil {
+		if layer.progressive && layer.declared {
+			h.setHashErr(sszutils.ErrScopeShapeMismatch)
+		}
 		// Defer a container scope into its incremental parent so it batches with
 		// its siblings (single getMatchingLayer keeps the hot path cheap for the
 		// many small containers in a block). A scope holds plain chunks — and is
@@ -1229,18 +1238,23 @@ func (h *Hasher) Merkleize(indx int) {
 
 // MerkleizeWithMixin computes the binary merkle root from indx with the given
 // limit, then mixes in num as the list length. Pops the matching layer if one
-// exists. A scope holding more chunks than the limit allows has no defined
-// root: both engines reject an over-capacity value before this point, so the
-// surplus can only come from a hash method leaving more than one leaf, and
-// the value then depends on the Collapse hints received.
+// exists. A scope holding more chunks than the limit allows is reduced at the
+// depth its chunks need, so every chunk reaches the root: both engines reject
+// an over-capacity value before this point, so the surplus can only come from
+// a hash method leaving more than one leaf per value.
 func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 	indx = h.clampMerkleizeIndex(indx)
 	h.fillRegionUpTo32(indx)
 
 	layer := h.getMatchingLayer(indx)
 
-	if layer != nil && layer.pendCount > 0 {
-		h.flushPending(layer, false)
+	if layer != nil {
+		if layer.progressive && layer.declared {
+			h.setHashErr(sszutils.ErrScopeShapeMismatch)
+		}
+		if layer.pendCount > 0 {
+			h.flushPending(layer, false)
+		}
 	}
 	h.drainJobsFor(indx)
 
@@ -1284,8 +1298,13 @@ func (h *Hasher) MerkleizeProgressive(indx int) {
 	indx = h.clampMerkleizeIndex(indx)
 	layer := h.getMatchingLayer(indx)
 
-	if layer != nil && layer.pendCount > 0 {
-		h.flushPending(layer, false)
+	if layer != nil {
+		if !layer.progressive && layer.declared {
+			h.setHashErr(sszutils.ErrScopeShapeMismatch)
+		}
+		if layer.pendCount > 0 {
+			h.flushPending(layer, false)
+		}
 	}
 	h.drainJobsFor(indx)
 
@@ -1326,8 +1345,13 @@ func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 	indx = h.clampMerkleizeIndex(indx)
 	layer := h.getMatchingLayer(indx)
 
-	if layer != nil && layer.pendCount > 0 {
-		h.flushPending(layer, false)
+	if layer != nil {
+		if !layer.progressive && layer.declared {
+			h.setHashErr(sszutils.ErrScopeShapeMismatch)
+		}
+		if layer.pendCount > 0 {
+			h.flushPending(layer, false)
+		}
 	}
 	h.drainJobsFor(indx)
 
@@ -1373,8 +1397,13 @@ func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []b
 	indx = h.clampMerkleizeIndex(indx)
 	layer := h.getMatchingLayer(indx)
 
-	if layer != nil && layer.pendCount > 0 {
-		h.flushPending(layer, false)
+	if layer != nil {
+		if !layer.progressive && layer.declared {
+			h.setHashErr(sszutils.ErrScopeShapeMismatch)
+		}
+		if layer.pendCount > 0 {
+			h.flushPending(layer, false)
+		}
 	}
 	h.drainJobsFor(indx)
 
