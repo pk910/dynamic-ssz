@@ -28,6 +28,8 @@ type Blob [131072]byte
 type KZGProof [48]byte
 type KZGCommitmentInclusionProofElement [32]byte
 type KZGCommitmentInclusionProof []KZGCommitmentInclusionProofElement
+type BuilderIndex uint64
+type BlockAccessList []byte
 
 // types
 type AggregateAndProof struct {
@@ -65,19 +67,22 @@ type BeaconBlock struct {
 }
 
 type BeaconBlockBody struct {
-	RANDAOReveal          BLSSignature
-	ETH1Data              *ETH1Data
-	Graffiti              [32]byte
-	ProposerSlashings     []*ProposerSlashing
-	AttesterSlashings     []*AttesterSlashing
-	Attestations          []*Attestation
-	Deposits              []*Deposit
-	VoluntaryExits        []*SignedVoluntaryExit
-	SyncAggregate         *SyncAggregate
-	ExecutionPayload      *ExecutionPayload
-	BLSToExecutionChanges []*SignedBLSToExecutionChange
-	BlobKZGCommitments    []KZGCommitment
-	ExecutionRequests     *ExecutionRequests
+	RANDAOReveal              BLSSignature
+	ETH1Data                  *ETH1Data
+	Graffiti                  [32]byte
+	ProposerSlashings         []*ProposerSlashing
+	AttesterSlashings         []*AttesterSlashing
+	Attestations              []*Attestation
+	Deposits                  []*Deposit
+	VoluntaryExits            []*SignedVoluntaryExit
+	SyncAggregate             *SyncAggregate
+	ExecutionPayload          *ExecutionPayload
+	BLSToExecutionChanges     []*SignedBLSToExecutionChange
+	BlobKZGCommitments        []KZGCommitment
+	ExecutionRequests         *ExecutionRequests
+	SignedExecutionPayloadBid *SignedExecutionPayloadBid
+	PayloadAttestations       []*PayloadAttestation
+	ParentExecutionRequests   *ExecutionRequests
 }
 
 type BeaconBlockHeader struct {
@@ -129,6 +134,15 @@ type BeaconState struct {
 	PendingPartialWithdrawals     []*PendingPartialWithdrawal
 	PendingConsolidations         []*PendingConsolidation
 	ProposerLookahead             []ValidatorIndex
+	LatestBlockHash               Hash32
+	Builders                      []*Builder
+	NextWithdrawalBuilderIndex    BuilderIndex
+	ExecutionPayloadAvailability  []uint8
+	BuilderPendingPayments        []*BuilderPendingPayment
+	BuilderPendingWithdrawals     []*BuilderPendingWithdrawal
+	LatestExecutionPayloadBid     *ExecutionPayloadBid
+	PayloadExpectedWithdrawals    []*Withdrawal
+	PTCWindow                     [][]ValidatorIndex
 }
 
 type Checkpoint struct {
@@ -282,6 +296,8 @@ type ExecutionPayload struct {
 	Withdrawals          []*Withdrawal
 	BlobGasUsed          uint64
 	ExcessBlobGas        uint64
+	BlockAccessList      BlockAccessList
+	SlotNumber           uint64
 }
 
 type ExecutionPayloadHeader struct {
@@ -366,9 +382,11 @@ type DepositRequest struct {
 }
 
 type ExecutionRequests struct {
-	Deposits       []*DepositRequest
-	Withdrawals    []*WithdrawalRequest
-	Consolidations []*ConsolidationRequest
+	Deposits        []*DepositRequest
+	Withdrawals     []*WithdrawalRequest
+	Consolidations  []*ConsolidationRequest
+	BuilderDeposits []*BuilderDepositRequest
+	BuilderExits    []*BuilderExitRequest
 }
 
 type PendingDeposit struct {
@@ -394,4 +412,109 @@ type WithdrawalRequest struct {
 	SourceAddress   ExecutionAddress
 	ValidatorPubkey BLSPubKey
 	Amount          Gwei
+}
+
+// gloas types
+type Builder struct {
+	PublicKey         BLSPubKey
+	Version           uint8
+	ExecutionAddress  ExecutionAddress
+	Balance           Gwei
+	DepositEpoch      Epoch
+	WithdrawableEpoch Epoch
+}
+
+type BuilderDepositRequest struct {
+	Pubkey                BLSPubKey
+	WithdrawalCredentials []byte
+	Amount                Gwei
+	Signature             BLSSignature
+}
+
+type BuilderExitRequest struct {
+	SourceAddress ExecutionAddress
+	Pubkey        BLSPubKey
+}
+
+type BuilderPendingPayment struct {
+	Weight        Gwei
+	Withdrawal    *BuilderPendingWithdrawal
+	ProposerIndex ValidatorIndex
+}
+
+type BuilderPendingWithdrawal struct {
+	FeeRecipient ExecutionAddress
+	Amount       Gwei
+	BuilderIndex BuilderIndex
+}
+
+type ExecutionPayloadBid struct {
+	ParentBlockHash       Hash32
+	ParentBlockRoot       Root
+	BlockHash             Hash32
+	PrevRandao            Root
+	FeeRecipient          ExecutionAddress
+	GasLimit              uint64
+	BuilderIndex          BuilderIndex
+	Slot                  Slot
+	Value                 Gwei
+	ExecutionPayment      Gwei
+	BlobKZGCommitments    []KZGCommitment
+	ExecutionRequestsRoot Root
+}
+
+type SignedExecutionPayloadBid struct {
+	Message   *ExecutionPayloadBid
+	Signature BLSSignature
+}
+
+type ExecutionPayloadEnvelope struct {
+	Payload               *ExecutionPayload
+	ExecutionRequests     *ExecutionRequests
+	BuilderIndex          BuilderIndex
+	BeaconBlockRoot       Root
+	ParentBeaconBlockRoot Root
+}
+
+type SignedExecutionPayloadEnvelope struct {
+	Message   *ExecutionPayloadEnvelope
+	Signature BLSSignature
+}
+
+type PayloadAttestation struct {
+	AggregationBits bitfield.Bitvector512
+	Data            *PayloadAttestationData
+	Signature       BLSSignature
+}
+
+type PayloadAttestationData struct {
+	BeaconBlockRoot   Root
+	Slot              Slot
+	PayloadPresent    bool
+	BlobDataAvailable bool
+}
+
+type PayloadAttestationMessage struct {
+	ValidatorIndex ValidatorIndex
+	Data           *PayloadAttestationData
+	Signature      BLSSignature
+}
+
+type IndexedPayloadAttestation struct {
+	AttestingIndices []ValidatorIndex
+	Data             *PayloadAttestationData
+	Signature        BLSSignature
+}
+
+type ProposerPreferences struct {
+	DependentRoot  Root
+	ProposalSlot   Slot
+	ValidatorIndex ValidatorIndex
+	FeeRecipient   ExecutionAddress
+	TargetGasLimit uint64
+}
+
+type SignedProposerPreferences struct {
+	Message   *ProposerPreferences
+	Signature BLSSignature
 }
