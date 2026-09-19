@@ -272,7 +272,7 @@ func (ctx *decoderContext) unmarshalDelegatedMethod(desc *ssztypes.TypeDescripto
 		case desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0:
 			// A fixed-size delegate is framed at its size, even when that is
 			// zero; only a variable-size delegate consumes the region.
-			sizeStr = fmt.Sprintf("%d", desc.Size)
+			sizeStr = intLitStr(fmt.Sprintf("%d", desc.Size))
 		}
 		ctx.appendCode(indent, "if buf, err := sszutils.DecodeDelegateBuffer(dec, %s); err != nil {\n", sizeStr)
 		ctx.appendCode(indent+1, "return err\n")
@@ -317,7 +317,7 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 				}
 				sizeStr = fmt.Sprintf("int(%s)", sizeVar)
 			case desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0:
-				sizeStr = fmt.Sprintf("%d", desc.Size)
+				sizeStr = intLitStr(fmt.Sprintf("%d", desc.Size))
 			}
 			ctx.appendCode(indent, "if buf, err := sszutils.DecodeDelegateBuffer(dec, %s); err != nil {\n", sizeStr)
 			ctx.appendCode(indent+1, "return err\n")
@@ -343,7 +343,7 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 	if useFastSsz && !isRoot && !isView {
 		sizeStr := "-1"
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
-			sizeStr = fmt.Sprintf("%d", desc.Size)
+			sizeStr = intLitStr(fmt.Sprintf("%d", desc.Size))
 		}
 		ctx.appendCode(indent, "if buf, err := sszutils.DecodeDelegateBuffer(dec, %s); err != nil {\n", sizeStr)
 		ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith("err"))
