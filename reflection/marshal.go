@@ -234,24 +234,28 @@ func (ctx *ReflectionCtx) tryMarshalCompat(sourceType *ssztypes.TypeDescriptor, 
 	}
 
 	if useFastSsz {
-		if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.FastsszBufferMarshaler); ok {
-			newBuf, err := marshaller.MarshalSSZTo(encoder.GetBuffer())
-			if err != nil {
-				return true, err
+		if sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastsszBufferMarshaler != 0 {
+			if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.FastsszBufferMarshaler); ok {
+				newBuf, err := marshaller.MarshalSSZTo(encoder.GetBuffer())
+				if err != nil {
+					return true, err
+				}
+				encoder.SetBuffer(newBuf)
+				return true, nil
 			}
-			encoder.SetBuffer(newBuf)
-			return true, nil
 		}
 		// A type that only marshals into a buffer of its own is appended to the
 		// encoder's, which costs an allocation and a copy. Reached only where
 		// neither MarshalSSZTo nor a spec-aware method exists.
-		if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.FastsszValueMarshaler); ok {
-			data, err := marshaller.MarshalSSZ()
-			if err != nil {
-				return true, err
+		if sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastsszValueMarshaler != 0 {
+			if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.FastsszValueMarshaler); ok {
+				data, err := marshaller.MarshalSSZ()
+				if err != nil {
+					return true, err
+				}
+				encoder.SetBuffer(append(encoder.GetBuffer(), data...))
+				return true, nil
 			}
-			encoder.SetBuffer(append(encoder.GetBuffer(), data...))
-			return true, nil
 		}
 	}
 

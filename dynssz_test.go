@@ -8699,3 +8699,68 @@ func TestUnmarshalDynamicVectorGrowsOverAnOpenRegion(t *testing.T) {
 		t.Fatal("open and known regions decoded the same input differently")
 	}
 }
+
+// promoInner carries the generated-style fastssz surface. Embedding it promotes
+// every one of those methods to the outer type.
+type promoInner struct {
+	A uint64
+}
+
+func (p *promoInner) SizeSSZ() int { return 8 }
+func (p *promoInner) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return append(buf, sszutils.MarshalUint64(nil, p.A)...), nil
+}
+func (p *promoInner) MarshalSSZ() ([]byte, error) { return p.MarshalSSZTo(nil) }
+
+// promoOuter embeds promoInner, so MarshalSSZTo is promoted and answers only for
+// the embedded value, and declares its own MarshalSSZ covering both fields.
+type promoOuter struct {
+	promoInner
+	B uint64
+}
+
+func (p *promoOuter) MarshalSSZ() ([]byte, error) {
+	buf := sszutils.MarshalUint64(nil, p.A)
+	return sszutils.MarshalUint64(buf, p.B), nil
+}
+
+// Declared beside it, so the size the type reports covers both fields as its own
+// marshal method does. Only MarshalSSZTo is left promoted.
+func (p *promoOuter) SizeSSZ() int { return 16 }
+
+// A method promoted from an embedded field answers for that field, not for the
+// type that promotes it, so the descriptor admits each fastssz method by its own
+// flag. An interface assertion cannot tell a promoted method from a declared
+// one: asserting without consulting the flag reaches the promoted MarshalSSZTo
+// and encodes only the embedded value, dropping every field declared beside it.
+func TestMarshalPrefersADeclaredMethodOverAPromotedOne(t *testing.T) {
+	ds := NewDynSsz(nil)
+	value := &promoOuter{promoInner: promoInner{A: 0x1122334455667788}, B: 0x99aabbccddeeff00}
+
+	want, err := value.MarshalSSZ()
+	if err != nil {
+		t.Fatalf("the type's own method: %v", err)
+	}
+	if len(want) != 16 {
+		t.Fatalf("fixture encodes %d bytes, want 16", len(want))
+	}
+
+	got, err := ds.MarshalSSZ(value)
+	if err != nil {
+		t.Fatalf("MarshalSSZ: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("MarshalSSZ produced %x, want %x", got, want)
+	}
+
+	var buf bytes.Buffer
+	if err := ds.MarshalSSZWriter(value, &buf); err != nil {
+		t.Fatalf("MarshalSSZWriter: %v", err)
+	}
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Errorf("MarshalSSZWriter produced %x, want %x", buf.Bytes(), want)
+	}
+	if !bytes.Equal(buf.Bytes(), got) {
+		t.Errorf("the buffer and streaming entry points disagree: %x vs %x", got, buf.Bytes())
+	}
+}
