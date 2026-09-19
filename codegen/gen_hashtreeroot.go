@@ -538,11 +538,10 @@ func (ctx *hashTreeRootContext) hashOptional(desc *ssztypes.TypeDescriptor, varN
 func (ctx *hashTreeRootContext) hashBigInt(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	// Enforce a static ssz-max (payload = sign byte + magnitude), matching the
 	// buffer marshaller so HashTreeRoot does not produce a root for a value that
-	// cannot be serialized. Dynamic (dynssz-max expression) limits stay unchecked
-	// to keep generated code consistent with the reflection engine.
-	if desc.MaxExpression == nil && desc.Limit > 0 {
-		errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", uint64(1+len(%s.Bytes())), %s)", varName, uintLitArg(fmt.Sprintf("%d", desc.Limit)))
-		ctx.appendCode(indent, "if uint64(1+len(%s.Bytes())) > %d {\n\treturn %s\n}\n", varName, desc.Limit, typePath.getErrorWith(errCode))
+	// cannot be serialized, whether the limit is static or resolved.
+	if limit := bigIntLimit(desc, ctx.exprVars, ctx.options); limit != "" {
+		errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", uint64(1+len(%s.Bytes())), %s)", varName, uintLitArg(limit))
+		ctx.appendCode(indent, "if uint64(1+len(%s.Bytes())) > %s {\n\treturn %s\n}\n", varName, limit, typePath.getErrorWith(errCode))
 	}
 	// Hash the payload byte length, then the sign byte and big-endian magnitude.
 	// Prepending the length keeps it ahead of the trailing-zero chunk padding so

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/big"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -5888,5 +5889,40 @@ func TestCodegenWideByteCustomElements(t *testing.T) {
 	}
 	if size, err := refl.SizeSSZ(&holder); err != nil || size != len(encoded) {
 		t.Fatalf("size %d err %v, want %d", size, err, len(encoded))
+	}
+}
+
+// A big.Int limit stated through the spec bounds the value in generated code as
+// a static one does, and the resolved value is the one that counts.
+func TestCodegenBigIntLimitFromSpec(t *testing.T) {
+	if _, generated := any(&BigIntSpecLimit{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	// A 21-byte magnitude, so the payload is 22 bytes with its sign byte.
+	huge := new(big.Int).Lsh(big.NewInt(1), 160)
+
+	for _, tc := range []struct {
+		name     string
+		limit    uint64
+		accepted bool
+	}{
+		{"below the payload", 5, false},
+		{"above the payload", 64, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := dynssz.NewDynSsz(map[string]any{"BIGINT_SPEC_MAX": tc.limit}, dynssz.WithExtendedTypes())
+
+			data, err := ds.MarshalSSZ(&BigIntSpecLimit{B: huge})
+			if accepted := err == nil; accepted != tc.accepted {
+				t.Fatalf("marshal err = %v, accepted = %v, want accepted = %v", err, accepted, tc.accepted)
+			}
+			if !tc.accepted {
+				return
+			}
+			if err := ds.UnmarshalSSZ(&BigIntSpecLimit{}, data); err != nil {
+				t.Errorf("round trip: %v", err)
+			}
+		})
 	}
 }

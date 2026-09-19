@@ -1514,15 +1514,15 @@ func (ctx *decoderContext) unmarshalBigInt(desc *ssztypes.TypeDescriptor, varNam
 	emptyErr := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"big.Int payload must contain at least a sign byte\")"
 	leadZeroErr := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"non-canonical big.Int magnitude with leading zero\")"
 	negZeroErr := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"non-canonical negative zero big.Int\")"
-	// Enforce a static ssz-max before reading the region, symmetrically with
-	// the buffer path; dynamic limits (dynssz-max expressions) stay unchecked.
+	// Enforce the ssz-max before reading the region, symmetrically with the
+	// buffer path, whether the limit is static or resolved from the spec.
 	bigIntMaxArg := "-1"
-	if desc.MaxExpression == nil && desc.Limit > 0 {
-		limitErr := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", dec.GetLength(), %s)", uintLitArg(fmt.Sprintf("%d", desc.Limit)))
-		ctx.appendCode(indent, "if dec.LengthKnown() && uint64(dec.GetLength()) > %d {\n\treturn %s\n}\n", desc.Limit, typePath.getErrorWith(limitErr))
+	if limit := bigIntLimit(desc, ctx.exprVars, ctx.options); limit != "" {
+		limitErr := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", dec.GetLength(), %s)", uintLitArg(limit))
+		ctx.appendCode(indent, "if dec.LengthKnown() && uint64(dec.GetLength()) > %s {\n\treturn %s\n}\n", limit, typePath.getErrorWith(limitErr))
 		// The read cap is an int; a limit past the platform's range caps to
 		// it, which the comparison above has already shown the region to fit.
-		bigIntMaxArg = intLitStr(fmt.Sprintf("%d", desc.Limit))
+		bigIntMaxArg = intCapExpr(limit)
 	}
 	// The magnitude has no internal framing, so the payload runs to the region
 	// end -- only discoverable at EOF when the region is open. The ssz-max bound

@@ -688,11 +688,10 @@ func (ctx *unmarshalContext) unmarshalBigInt(desc *ssztypes.TypeDescriptor, varN
 	ctx.appendCode(indent, "if len(buf) == 0 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(emptyErr))
 	// Enforce a static ssz-max symmetrically with the marshaler: an over-limit
 	// payload would decode into a value that can be neither re-encoded nor
-	// hashed. Dynamic limits (dynssz-max expressions) stay unchecked like on
-	// the marshal side.
-	if desc.MaxExpression == nil && desc.Limit > 0 {
-		limitErr := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", len(buf), %s)", uintLitArg(fmt.Sprintf("%d", desc.Limit)))
-		ctx.appendCode(indent, "if %s {\n\t\treturn %s\n\t}\n", uintCmpExpr("len(buf)", ">", fmt.Sprintf("%d", desc.Limit)), typePath.getErrorWith(limitErr))
+	// hashed, whether the limit is static or resolved.
+	if limit := bigIntLimit(desc, ctx.exprVars, ctx.options); limit != "" {
+		limitErr := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", len(buf), %s)", uintLitArg(limit))
+		ctx.appendCode(indent, "if %s {\n\t\treturn %s\n\t}\n", uintCmpExpr("len(buf)", ">", limit), typePath.getErrorWith(limitErr))
 	}
 	ctx.appendCode(indent, "if buf[0] > 1 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(signErr))
 	ctx.appendCode(indent, "if len(buf) > 1 && buf[1] == 0 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(leadZeroErr))

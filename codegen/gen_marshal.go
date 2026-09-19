@@ -487,12 +487,11 @@ func (ctx *marshalContext) marshalOptionalList(desc *ssztypes.TypeDescriptor, va
 
 // marshalBigInt generates marshal code for SSZ big int types.
 func (ctx *marshalContext) marshalBigInt(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
-	// Enforce a static ssz-max (payload = sign byte + magnitude). Dynamic limits
-	// (dynssz-max expressions) are left unchecked so generated code stays
-	// consistent with the reflection path.
-	if desc.MaxExpression == nil && desc.Limit > 0 {
-		errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", uint64(1+len(%s.Bytes())), %s)", varName, uintLitArg(fmt.Sprintf("%d", desc.Limit)))
-		ctx.appendCode(indent, "if uint64(1+len(%s.Bytes())) > %d {\n\treturn nil, %s\n}\n", varName, desc.Limit, typePath.getErrorWith(errCode))
+	// Enforce the ssz-max (payload = sign byte + magnitude), whether it is
+	// stated statically or resolved from the spec.
+	if limit := bigIntLimit(desc, ctx.exprVars, ctx.options); limit != "" {
+		errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", uint64(1+len(%s.Bytes())), %s)", varName, uintLitArg(limit))
+		ctx.appendCode(indent, "if uint64(1+len(%s.Bytes())) > %s {\n\treturn nil, %s\n}\n", varName, limit, typePath.getErrorWith(errCode))
 	}
 	// sign byte (0 = non-negative, 1 = negative) followed by the big-endian magnitude
 	ctx.appendCode(indent, "if %s.Sign() < 0 {\n\tdst = append(dst, 1)\n} else {\n\tdst = append(dst, 0)\n}\n", varName)

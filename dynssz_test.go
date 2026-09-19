@@ -8568,3 +8568,38 @@ func TestUnmarshalDynamicVectorReservesWhatArrives(t *testing.T) {
 		t.Errorf("reserved %d bytes for a one megabyte payload", reserved)
 	}
 }
+
+// bigIntSpecMax states its limit through the spec; the static value is the
+// fallback the generator bakes when it has no spec to resolve.
+type bigIntSpecMax struct {
+	B *big.Int `ssz-type:"bigint" ssz-max:"5" dynssz-max:"BIGINT_MAX"`
+}
+
+// A limit a big.Int states through the spec bounds it as a static one does: it
+// is the author's declaration either way, and the resolved value is the one
+// that counts.
+func TestBigIntLimitFromSpecIsEnforced(t *testing.T) {
+	// A 21-byte magnitude, so the payload is 22 bytes with its sign byte.
+	huge := new(big.Int).Lsh(big.NewInt(1), 160)
+
+	for _, tc := range []struct {
+		name     string
+		limit    uint64
+		accepted bool
+	}{
+		{"below the payload", 5, false},
+		{"above the payload", 64, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := NewDynSsz(map[string]any{"BIGINT_MAX": tc.limit}, WithNoFastSsz(), WithExtendedTypes())
+
+			_, err := ds.MarshalSSZ(&bigIntSpecMax{B: huge})
+			if accepted := err == nil; accepted != tc.accepted {
+				t.Errorf("marshal err = %v, accepted = %v, want accepted = %v", err, accepted, tc.accepted)
+			}
+			if _, err := ds.HashTreeRoot(&bigIntSpecMax{B: huge}); (err == nil) != tc.accepted {
+				t.Errorf("hash tree root err = %v, want accepted = %v", err, tc.accepted)
+			}
+		})
+	}
+}

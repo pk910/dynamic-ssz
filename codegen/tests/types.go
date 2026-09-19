@@ -5400,6 +5400,12 @@ type BigIntLimit struct {
 	B *big.Int `ssz-type:"bigint" ssz-max:"4294967296"`
 }
 
+// BigIntSpecLimit states its bigint limit through the spec, with the static
+// value as the fallback the generator bakes when no spec resolves it.
+type BigIntSpecLimit struct {
+	B *big.Int `ssz-type:"bigint" ssz-max:"5" dynssz-max:"BIGINT_SPEC_MAX"`
+}
+
 // The probe fixtures carry different subsets of the fastssz-style methods, so a
 // test can tell which method each engine reaches for. Every method encodes what
 // walking the type would encode, so delegation is invisible in the output and

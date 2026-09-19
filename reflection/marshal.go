@@ -1001,12 +1001,11 @@ func (ctx *ReflectionCtx) marshalOptionalList(sourceType *ssztypes.TypeDescripto
 }
 
 // checkBigIntLimit enforces a static ssz-max on a big.Int payload (1 sign byte +
-// magnitude), matching marshalBigInt. Dynamic (dynssz-max expression) limits are
-// left unchecked so the reflection and codegen engines stay consistent, and so
-// SizeSSZ, HashTreeRoot and GetTree agree with MarshalSSZ on which values are
-// serializable instead of committing to a value no decoder can produce.
+// magnitude), matching marshalBigInt. A limit stated through a dynssz-max is
+// resolved when the descriptor is built, so it bounds the value exactly as a
+// static one does: both are the author's declaration of what the type holds.
 func checkBigIntLimit(t *ssztypes.TypeDescriptor, magLen int) error {
-	if t.MaxExpression == nil && t.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
+	if t.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
 		if payloadLen := uint64(1 + magLen); payloadLen > t.Limit {
 			return sszutils.NewSszErrorf(sszutils.ErrListTooBig, "big.Int payload length %d exceeds maximum %d", payloadLen, t.Limit)
 		}
@@ -1018,7 +1017,7 @@ func checkBigIntLimit(t *ssztypes.TypeDescriptor, magLen int) error {
 // magnitude) enforced by checkBigIntLimit, so a decoder can apply it as a read
 // cap instead of validating after the fact.
 func bigIntLimitBytes(t *ssztypes.TypeDescriptor) (int, bool) {
-	if t.MaxExpression != nil || t.SszTypeFlags&ssztypes.SszTypeFlagHasLimit == 0 {
+	if t.SszTypeFlags&ssztypes.SszTypeFlagHasLimit == 0 {
 		return 0, false
 	}
 	if t.Limit > math.MaxInt {

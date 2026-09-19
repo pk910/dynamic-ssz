@@ -549,6 +549,27 @@ func minSizeExpr(desc *ssztypes.TypeDescriptor, sizeVars *staticSizeVarGenerator
 	}
 }
 
+// bigIntLimit states the payload limit of a big.Int as the generated code must
+// see it: the resolved variable where the limit comes from the spec, the
+// literal where it is fixed, and no limit where the type states none. A limit
+// declared through a dynssz-max bounds the value exactly as a static one does,
+// so the two are resolved the same way here.
+func bigIntLimit(desc *ssztypes.TypeDescriptor, exprVars *exprVarGenerator, options *CodeGeneratorOptions) string {
+	maxExpression := desc.MaxExpression
+	if options.WithoutDynamicExpressions {
+		maxExpression = nil
+	}
+
+	switch {
+	case maxExpression != nil:
+		return exprVars.getExprVar(*maxExpression, desc.Limit)
+	case desc.Limit > 0:
+		return fmt.Sprintf("%d", desc.Limit)
+	default:
+		return ""
+	}
+}
+
 // emitPreludes writes what a method body refers to before its own statements:
 // the spec values it resolved and the size variables formed from them, in that
 // order, since a size variable may be formed from a resolved value.

@@ -378,11 +378,11 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 	case ssztypes.SszOptionalListType:
 		return ctx.sizeOptionalList(desc, varName, sizeVar, indent)
 	case ssztypes.SszBigIntType:
-		// A static ssz-max is enforced by the marshal/HTR paths (which return an
+		// The ssz-max is enforced by the marshal/HTR paths (which return an
 		// error); the size path has no error channel, so an over-max value yields
 		// size 0 to signal it is not serializable rather than a misleading size.
-		if desc.MaxExpression == nil && desc.Limit > 0 {
-			ctx.appendCode(indent, "if uint64(1+len(%s.Bytes())) > %d {\n\treturn 0\n}\n", varName, desc.Limit)
+		if limit := bigIntLimit(desc, ctx.exprVars, ctx.options); limit != "" {
+			ctx.appendCode(indent, "if uint64(1+len(%s.Bytes())) > %s {\n\treturn 0\n}\n", varName, limit)
 		}
 		ctx.appendCode(indent, "%s += 1 + len(%s.Bytes())\n", sizeVar, varName)
 
