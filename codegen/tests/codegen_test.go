@@ -5917,11 +5917,28 @@ func TestCodegenBigIntLimitFromSpec(t *testing.T) {
 			if accepted := err == nil; accepted != tc.accepted {
 				t.Fatalf("marshal err = %v, accepted = %v, want accepted = %v", err, accepted, tc.accepted)
 			}
+
+			// The streaming encoder is generated separately from the buffer
+			// marshaller and has to reach the same verdict: writing a value the
+			// buffer path refuses puts SSZ on the wire that nothing can decode,
+			// and the writer reports no error of its own.
+			var stream bytes.Buffer
+			streamErr := ds.MarshalSSZWriter(&BigIntSpecLimit{B: huge}, &stream)
+			if accepted := streamErr == nil; accepted != tc.accepted {
+				t.Fatalf("MarshalSSZWriter err = %v, accepted = %v, want accepted = %v", streamErr, accepted, tc.accepted)
+			}
+
 			if !tc.accepted {
 				return
 			}
+			if !bytes.Equal(stream.Bytes(), data) {
+				t.Errorf("streamed %x, buffered %x", stream.Bytes(), data)
+			}
 			if err := ds.UnmarshalSSZ(&BigIntSpecLimit{}, data); err != nil {
 				t.Errorf("round trip: %v", err)
+			}
+			if err := ds.UnmarshalSSZ(&BigIntSpecLimit{}, stream.Bytes()); err != nil {
+				t.Errorf("round trip of the streamed bytes: %v", err)
 			}
 		})
 	}
