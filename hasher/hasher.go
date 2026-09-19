@@ -1449,13 +1449,17 @@ func (h *Hasher) merkleizeImpl(dst, input []byte, limit uint64) []byte {
 	}
 
 	// A limit below the chunk count describes a value that overflows its own
-	// type, so no depth can hold it and there is no correct root. Rather than
-	// grow the tree to fit -- which invents a root the type cannot have -- the
-	// tree keeps the depth the limit asks for and the surplus chunks fall
-	// outside it, leaving the root of the first 2^depth chunks. Both engines
-	// reject an over-capacity list before they reach this point, so the
-	// surplus can only come from a hash method that leaves more than one
-	// leaf per value; that is the method's contract to keep, not checked here.
+	// type, so no depth holds it and no root is the right one. The tree then
+	// takes the depth the chunks need: every chunk reaches the root, so two
+	// values that differ cannot share one, where dropping the surplus would
+	// give them the same root. It is also what the collapsed reduction does
+	// with the same input, so a Collapse hint cannot move the result. Both
+	// engines reject an over-capacity list before reaching this point, so the
+	// surplus comes from a hash method leaving more than one leaf per value;
+	// that is the method's contract to keep, not checked here.
+	if count > limit {
+		limit = count
+	}
 
 	if limit == 0 {
 		return append(dst, zeroBytes[:32]...)

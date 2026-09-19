@@ -1249,16 +1249,18 @@ func TestTreeFromNodesWithMixinLimitBelowCount(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Only the first two leaves fit under a limit of 2.
-	reference, err := TreeFromNodesWithMixin(nodes[:2], 8, 2)
+	// No depth holds more leaves than the limit allows, so the tree takes the
+	// depth the leaves need and every one of them reaches the root.
+	reference, err := TreeFromNodesWithMixin(nodes, 8, 8)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !bytes.Equal(tree.Hash(), reference.Hash()) {
-		t.Errorf("over-capacity root mismatch: %x != %x", tree.Hash(), reference.Hash())
+		t.Errorf("over-capacity root %x, want the root of every leaf %x", tree.Hash(), reference.Hash())
 	}
 
-	// The leaves that do not fit make no difference to the root.
+	// A leaf past the limit is part of the value, so it moves the root: two
+	// values that differ there cannot share one.
 	altered := make([]*Node, len(nodes))
 	copy(altered, nodes)
 	altered[7] = NewNodeWithValue([]byte{0xff})
@@ -1266,8 +1268,8 @@ func TestTreeFromNodesWithMixinLimitBelowCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !bytes.Equal(tree.Hash(), alt.Hash()) {
-		t.Errorf("a leaf outside the limit changed the root")
+	if bytes.Equal(tree.Hash(), alt.Hash()) {
+		t.Errorf("a leaf past the limit left the root unchanged")
 	}
 }
 

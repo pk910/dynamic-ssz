@@ -565,17 +565,15 @@ func TreeFromNodesWithMixin64(leaves []*Node, num, limit uint64) (*Node, error) 
 	}
 
 	// A limit below the leaf count describes a value that overflows its own
-	// type. The Hasher keeps the depth the limit asks for and lets the surplus
-	// chunks fall outside the tree, which leaves the root of the leaves that do
-	// fit; the Wrapper does the same so both walkers produce the same root for
-	// the same call sequence. Only a hash method that leaves more than one leaf
-	// per value can get here; keeping to one leaf is that method's contract.
-	depth := chunkLimitDepth(limit)
-	if depth < 63 {
-		if capacity := uint64(1) << uint(depth); count > capacity {
-			leaves = leaves[:capacity]
-		}
+	// type. The tree then takes the depth the leaves need, as hasher.Hasher
+	// takes it, so every leaf reaches the root and no two values that differ
+	// share one. Only a hash method that leaves more than one leaf per value
+	// can get here; keeping to one leaf is that method's contract.
+	if count > limit {
+		limit = count
 	}
+
+	depth := chunkLimitDepth(limit)
 
 	mainTree, err := treeFromNodesToDepthFn(leaves, depth)
 	if err != nil {

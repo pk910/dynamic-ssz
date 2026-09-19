@@ -1878,7 +1878,9 @@ func TestGetDepthOverflow(t *testing.T) {
 
 // Void merkleization entry points have no error channel, so a too-small limit
 // must clamp instead of panicking with an internal assertion.
-func TestMerkleizeWithMixinClampsLowLimit(t *testing.T) {
+// A limit below the chunk count is out of contract, and the reduction answers
+// with the tree the chunks need rather than failing.
+func TestMerkleizeWithMixinLimitBelowChunkCount(t *testing.T) {
 	checks := []struct {
 		name string
 		fn   func(h *Hasher)
@@ -1899,7 +1901,7 @@ func TestMerkleizeWithMixinClampsLowLimit(t *testing.T) {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					t.Errorf("%s panicked on undersized limit: %v", c.name, r)
+					t.Errorf("%s panicked on a limit below the chunk count: %v", c.name, r)
 				}
 			}()
 			h := DefaultHasherPool.Get()
