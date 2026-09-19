@@ -127,9 +127,12 @@ func WithStreamReaderBufferSize(size int) DynSszOption {
 
 // WithMaxStreamSize sets the upper bound on the total size of an SSZ payload
 // decoded by UnmarshalSSZReader without a size (size < 0): the decode stops at
-// the bound. A declared size is its own bound and is not subject to it.
-// Defaults to sszutils.DefaultMaxStreamSize (512 MiB) if not set or set to a
-// non-positive value. WithStreamSizeLimit overrides it for a single call.
+// the bound. A declared size is its own bound and is not subject to it: the
+// decode sizes its allocations from that declaration before the bytes arrive,
+// so setting this alongside a declared size does nothing. Pass a negative size
+// to put the decode under this bound instead. Defaults to
+// sszutils.DefaultMaxStreamSize (512 MiB) if not set or set to a non-positive
+// value. WithStreamSizeLimit overrides it for a single call.
 //
 // The bound is deliberate and cannot be disabled: an unknown-length decode
 // would otherwise let an endless input drive unbounded wire buffering. It also
