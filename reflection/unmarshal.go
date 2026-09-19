@@ -1513,13 +1513,10 @@ func (ctx *ReflectionCtx) unmarshalBitlist(targetType *ssztypes.TypeDescriptor, 
 		}
 	}
 
-	if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
-		targetValue.Set(reflect.ValueOf(byteSlice))
-	} else {
-		// A slice of a named uint8 type has the same header and element
-		// layout as []byte, so the decoded slice is handed over as is.
-		targetValue.Set(reflect.NewAt(targetValue.Type(), unsafe.Pointer(&byteSlice)).Elem())
-	}
+	// The type cache admits a bitlist only as a slice of non-pointer uint8,
+	// which is what SetBytes requires. It writes the header in place; boxing
+	// the slice or taking its address heap-allocates one per bitlist.
+	targetValue.SetBytes(byteSlice)
 
 	return nil
 }
