@@ -5670,3 +5670,15 @@ type ProbeHolder struct {
 	F []byte `ssz-max:"32"`
 	G ProbeDynamicSizer
 }
+
+// GiBElem declares a width a 32-bit int holds comfortably, so no per-width
+// guard refuses it; only the product with a list length passes the domain.
+type GiBElem struct {
+	X []byte `ssz-size:"1073741824"`
+}
+
+// GiBList holds enough of them that the product wraps a 32-bit int while
+// staying inside a 64-bit one, which is where the two targets disagree.
+type GiBList struct {
+	L []GiBElem `ssz-max:"8"`
+}

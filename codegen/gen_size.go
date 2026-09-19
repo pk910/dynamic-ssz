@@ -117,7 +117,7 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 	typeName := typePrinter.TypeString(rootTypeDesc)
 
 	// Generate size calculation code
-	if err := ctx.sizeType(rootTypeDesc, "t", "size", 0, true); err != nil {
+	if err := ctx.sizeType(rootTypeDesc, "t", sizeAccumulator, 0, true); err != nil {
 		return err
 	}
 
@@ -135,7 +135,7 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 	if genStaticFn {
 		if !ctx.usedDynSpecs {
 			appendCode(codeBuilder, 0, "// SizeSSZ returns the SSZ encoded size of the %s.\n", typeName)
-			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "SizeSSZ", "", "", "size int", "0", false)
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "SizeSSZ", "", "", "int", "0", false)
 			if rootTypeDesc.Size > 0 {
 				// A size past the target's int range cannot be produced there;
 				// the size path has no error channel, so it reports 0.
@@ -144,16 +144,17 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 				}, 0, ctx.typePrinter, uint64(rootTypeDesc.Size), false, "return 0")
 				appendCode(codeBuilder, 1, "return %s\n", intLitStr(fmt.Sprintf("%d", rootTypeDesc.Size)))
 			} else {
+				appendCode(codeBuilder, 1, "var %s int64\n", sizeAccumulator)
 				appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 				appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
 				appendCode(codeBuilder, 1, ctx.codeBuf.String())
-				appendCode(codeBuilder, 1, "return size\n")
+				appendCode(codeBuilder, 1, emitSizeReturn(ctx.typePrinter))
 			}
 			appendCode(codeBuilder, 0, "}\n\n")
 		} else {
 			dynsszAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
 			appendCode(codeBuilder, 0, "// SizeSSZ returns the SSZ encoded size of the %s.\n", typeName)
-			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "SizeSSZ", "", "", "size int", "0", false)
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "SizeSSZ", "", "", "int", "0", false)
 			appendCode(codeBuilder, 1, "return t.%s(%s.GetGlobalDynSsz()%s)\n", depthForwardName("SizeSSZDyn", ctx.depthAware), dynsszAlias, depthForwardArg(ctx.depthAware))
 			appendCode(codeBuilder, 0, "}\n\n")
 		}
@@ -168,17 +169,18 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 			if viewName == "" {
 				appendCode(codeBuilder, 0, "// SizeSSZDyn returns the SSZ encoded size of the %s using dynamic specifications.\n", typeName)
 			}
-			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs", "ds", "size int", "0", false)
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs", "ds", "int", "0", false)
+			appendCode(codeBuilder, 1, "var %s int64\n", sizeAccumulator)
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
 			appendCode(codeBuilder, 1, ctx.codeBuf.String())
-			appendCode(codeBuilder, 1, "return size\n")
+			appendCode(codeBuilder, 1, emitSizeReturn(ctx.typePrinter))
 			appendCode(codeBuilder, 0, "}\n\n")
 		} else {
 			if viewName == "" {
 				appendCode(codeBuilder, 0, "// SizeSSZDyn returns the SSZ encoded size of the %s using dynamic specifications.\n", typeName)
 			}
-			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs", "ds", "size int", "0", true)
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs", "ds", "int", "0", true)
 			appendCode(codeBuilder, 1, "return t.%s(%s)\n", depthForwardName("SizeSSZ", ctx.depthAware), depthForwardArgBare(ctx.depthAware))
 			appendCode(codeBuilder, 0, "}\n\n")
 		}
@@ -190,6 +192,19 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 func (ctx *sizeContext) getIndexVar() string {
 	ctx.indexVarCounter++
 	return fmt.Sprintf("i%d", ctx.indexVarCounter)
+}
+
+// sizeAccumulator is the name of the wide local every generated sizer adds
+// into. Sizes are summed as int64 so no product or sum formed along the way can
+// wrap, and the total is weighed against the size limit once, where it is
+// narrowed to the int the size interface returns. The path has no error
+// channel, so a total no size domain holds reports 0.
+const sizeAccumulator = "size"
+
+// emitSizeReturn closes a generated sizer: one bound, then the narrowing.
+func emitSizeReturn(typePrinter *TypePrinter) string {
+	sszutilsAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz/sszutils", "sszutils")
+	return fmt.Sprintf("if %s > %s.MaxSszSize {\n\treturn 0\n}\nreturn int(%s)\n", sizeAccumulator, sszutilsAlias, sizeAccumulator)
 }
 
 func (ctx *sizeContext) getSizeVar() string {
@@ -238,7 +253,7 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 
 	// Handle types that have generated methods we can call
 	if ptr, ok := ctx.useTypeFnMap[desc]; ok {
-		ctx.appendCode(indent, "%s += %s\n", sizeVar, ptr.getFnCall(varName))
+		ctx.appendCode(indent, "%s += int64(%s)\n", sizeVar, ptr.getFnCall(varName))
 		if ptr.needDynSpecs {
 			ctx.usedDynSpecs = true
 		}
@@ -250,7 +265,7 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewSizer != 0 {
 			viewFn, viewArg := descendCall(ctx.depthAware, ctx.recursion, desc, "SizeSSZDynView")
 			ctx.appendCode(indent, "if viewFn := %s.%s((%s)(nil)%s); viewFn != nil {\n", varName, viewFn, ctx.typePrinter.ViewTypeString(desc, true), viewArg)
-			ctx.appendCode(indent+1, "%s += viewFn(ds)\n", sizeVar)
+			ctx.appendCode(indent+1, "%s += int64(viewFn(ds))\n", sizeVar)
 			ctx.appendCode(indent, "}\n")
 			ctx.usedDynSpecs = true
 			return nil
@@ -276,7 +291,7 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 		if staticBuild {
 			if useFastSsz {
 				fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "SizeSSZ")
-				ctx.appendCode(indent, "%s += %s.%s(%s)\n", sizeVar, varName, fn, strings.TrimPrefix(arg, ", "))
+				ctx.appendCode(indent, "%s += int64(%s.%s(%s))\n", sizeVar, varName, fn, strings.TrimPrefix(arg, ", "))
 				return nil
 			}
 			// Never call a *Dyn method. A dynamic-only type is inlined by falling
@@ -290,14 +305,14 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 		} else {
 			if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 {
 				fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "SizeSSZDyn")
-				ctx.appendCode(indent, "%s += %s.%s(ds%s)\n", sizeVar, varName, fn, arg)
+				ctx.appendCode(indent, "%s += int64(%s.%s(ds%s))\n", sizeVar, varName, fn, arg)
 				ctx.usedDynSpecs = true
 				return nil
 			}
 
 			if useFastSsz {
 				fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "SizeSSZ")
-				ctx.appendCode(indent, "%s += %s.%s(%s)\n", sizeVar, varName, fn, strings.TrimPrefix(arg, ", "))
+				ctx.appendCode(indent, "%s += int64(%s.%s(%s))\n", sizeVar, varName, fn, strings.TrimPrefix(arg, ", "))
 				return nil
 			}
 		}
@@ -384,7 +399,7 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 		if limit := bigIntLimit(desc, ctx.exprVars, ctx.options); limit != "" {
 			ctx.appendCode(indent, "if uint64(1+len(%s.Bytes())) > %s {\n\treturn 0\n}\n", varName, limit)
 		}
-		ctx.appendCode(indent, "%s += 1 + len(%s.Bytes())\n", sizeVar, varName)
+		ctx.appendCode(indent, "%s += 1 + int64(len(%s.Bytes()))\n", sizeVar, varName)
 
 	default:
 		return fmt.Errorf("unsupported SSZ type: %v", desc.SszType)
@@ -453,7 +468,7 @@ func (ctx *sizeContext) sizeContainer(desc *ssztypes.TypeDescriptor, varName, si
 		// A size past the target's int range cannot be produced there; the
 		// size path has no error channel, so it reports 0.
 		platformGuard(ctx.appendCode, indent, ctx.typePrinter, uint64(staticSize), false, "return 0")
-		ctx.appendCode(indent, "%s += %s\n", sizeVar, intLitStr(fmt.Sprintf("%d", staticSize)))
+		ctx.appendCode(indent, "%s += %d\n", sizeVar, staticSize)
 	}
 
 	// Add calculated size for static fields
@@ -522,7 +537,7 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 		if err != nil {
 			return err
 		}
-		ctx.appendCode(indent, "%s += int(%s)\n", sizeVar, vecSizeVar)
+		ctx.appendCode(indent, "%s += int64(%s)\n", sizeVar, vecSizeVar)
 		return nil
 	}
 
@@ -551,13 +566,13 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 		// A literal length times a literal element size, bounded at analysis.
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 || desc.ElemDesc.Size == 1 {
-			ctx.appendCode(indent, "%s += %s\n", sizeVar, limitVar)
+			ctx.appendCode(indent, "%s += int64(%s)\n", sizeVar, limitVar)
 		} else {
-			ctx.appendCode(indent, "%s += %s * %d\n", sizeVar, limitVar, desc.ElemDesc.Size)
+			ctx.appendCode(indent, "%s += int64(%s) * %d\n", sizeVar, limitVar, desc.ElemDesc.Size)
 		}
 	} else {
 		// Dynamic size elements - need to iterate
-		ctx.appendCode(indent, "%s += %s * 4\n", sizeVar, limitVar)
+		ctx.appendCode(indent, "%s += int64(%s) * 4\n", sizeVar, limitVar)
 
 		if desc.Kind == reflect.Array {
 			indexVar := ctx.getIndexVar()
@@ -590,11 +605,11 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 			ctx.appendCode(indent, "if vlen < %s {\n", limitVar)
 			ctx.appendCode(indent, "\tvar zeroItem %s\n", ctx.typePrinter.TypeString(desc.ElemDesc))
 			innerSizeVar := ctx.getSizeVar()
-			ctx.appendCode(indent, "\t%s := 0\n", innerSizeVar)
+			ctx.appendCode(indent, "\tvar %s int64\n", innerSizeVar)
 			if err := ctx.sizeType(desc.ElemDesc, "zeroItem", innerSizeVar, indent+1, false); err != nil {
 				return err
 			}
-			ctx.appendCode(indent, "\t%s += %s * (%s - vlen)\n", sizeVar, innerSizeVar, limitVar)
+			ctx.appendCode(indent, "\t%s += %s * int64(%s - vlen)\n", sizeVar, innerSizeVar, limitVar)
 			ctx.appendCode(indent, "}\n")
 		}
 	}
@@ -619,12 +634,12 @@ func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName, sizeVar
 		ctx.appendCode(indent, "if len(%s) == 0 {\n", valueVar)
 		ctx.appendCode(indent, "\t%s += 1\n", sizeVar)
 		ctx.appendCode(indent, "} else {\n")
-		ctx.appendCode(indent, "\t%s += len(%s)\n", sizeVar, valueVar)
+		ctx.appendCode(indent, "\t%s += int64(len(%s))\n", sizeVar, valueVar)
 		ctx.appendCode(indent, "}\n")
 		return nil
 	}
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
-		ctx.appendCode(indent, "%s += len(%s)\n", sizeVar, valueVar)
+		ctx.appendCode(indent, "%s += int64(len(%s))\n", sizeVar, valueVar)
 		return nil
 	}
 
@@ -646,7 +661,7 @@ func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName, sizeVar
 		ctx.appendCode(indent, "vlen := len(%s)\n", valueVar)
 
 		// Add offset space
-		ctx.appendCode(indent, "%s += vlen * 4 // Offsets\n", sizeVar)
+		ctx.appendCode(indent, "%s += int64(vlen) * 4 // Offsets\n", sizeVar)
 
 		// Add size of each element
 		indexVar := ctx.getIndexVar()
@@ -660,7 +675,7 @@ func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName, sizeVar
 		// Fixed size elements
 		if desc.ElemDesc.Size > 0 && (desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr == 0 || ctx.options.WithoutDynamicExpressions) {
 			if desc.ElemDesc.Size == 1 {
-				ctx.appendCode(indent, "%s += len(%s)\n", sizeVar, valueVar)
+				ctx.appendCode(indent, "%s += int64(len(%s))\n", sizeVar, valueVar)
 			} else {
 				// An empty list forms no product, and its size is exact on any
 				// target: only a value with elements is refused for a width the
@@ -670,19 +685,19 @@ func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName, sizeVar
 					platformGuard(ctx.appendCode, indent+1, ctx.typePrinter, uint64(desc.ElemDesc.Size), false, "return 0")
 					ctx.appendCode(indent, "}\n")
 				}
-				ctx.appendCode(indent, "%s += len(%s) * %s\n", sizeVar, valueVar, intLitStr(fmt.Sprintf("%d", desc.ElemDesc.Size)))
+				ctx.appendCode(indent, "%s += int64(len(%s)) * %d\n", sizeVar, valueVar, desc.ElemDesc.Size)
 			}
 		} else {
 			useVar()
 			ctx.appendCode(indent, "vlen := len(%s)\n", valueVar)
 			ctx.appendCode(indent, "if vlen > 0 {\n")
 			innerSizeVar := ctx.getSizeVar()
-			ctx.appendCode(indent, "\t%s := 0\n", innerSizeVar)
+			ctx.appendCode(indent, "\tvar %s int64\n", innerSizeVar)
 			itemVarName := fmt.Sprintf("%s[0]", valueVar)
 			if err := ctx.sizeType(desc.ElemDesc, itemVarName, innerSizeVar, indent+1, false); err != nil {
 				return err
 			}
-			ctx.appendCode(indent, "\t%s += %s * vlen\n", sizeVar, innerSizeVar)
+			ctx.appendCode(indent, "\t%s += %s * int64(vlen)\n", sizeVar, innerSizeVar)
 			ctx.appendCode(indent, "}\n")
 		}
 	}
@@ -747,7 +762,7 @@ func (ctx *sizeContext) sizeUnion(desc *ssztypes.TypeDescriptor, varName, sizeVa
 			platformGuard(func(guardIndent int, code string, args ...any) {
 				ctx.appendCode(guardIndent, "\t"+code, args...)
 			}, indent, ctx.typePrinter, uint64(variantDesc.Size), false, "return 0")
-			ctx.appendCode(indent, "\t%s += %s\n", sizeVar, posLit(int(variantDesc.Size)))
+			ctx.appendCode(indent, "\t%s += %d\n", sizeVar, variantDesc.Size)
 		}
 	}
 

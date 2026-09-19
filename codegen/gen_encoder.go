@@ -260,16 +260,17 @@ func (ctx *encoderContext) generateSizeFnCode(indent int) (string, error) {
 		}
 		sizeCtx.useTypeFnMap = sizeFnMap
 
-		ctx.sizeFnSignature[fnName] = fmt.Sprintf("func(ctx *encoderCtx, t %s) (size int)", ctx.typePrinter.TypeString(desc))
+		ctx.sizeFnSignature[fnName] = fmt.Sprintf("func(ctx *encoderCtx, t %s) int", ctx.typePrinter.TypeString(desc))
 
 		appendCode(&codeBuf, indent, "// size for %s\n", ctx.typePrinter.TypeString(desc))
-		appendCode(&codeBuf, indent, "ctx.%s = func(ctx *encoderCtx, t %s) (size int) {\n", fnName, ctx.typePrinter.TypeString(desc))
-		if err := sizeCtx.sizeType(desc, "t", "size", 0, false); err != nil {
+		appendCode(&codeBuf, indent, "ctx.%s = func(ctx *encoderCtx, t %s) int {\n", fnName, ctx.typePrinter.TypeString(desc))
+		if err := sizeCtx.sizeType(desc, "t", sizeAccumulator, 0, false); err != nil {
 			return "", err
 		}
+		appendCode(&codeBuf, indent+1, "var %s int64\n", sizeAccumulator)
 		appendCode(&codeBuf, indent+1, "%s", sizeCtx.staticSizeVars.getCode())
 		appendCode(&codeBuf, indent+1, "%s", sizeCtx.codeBuf.String())
-		appendCode(&codeBuf, indent+1, "return size\n")
+		appendCode(&codeBuf, indent+1, "%s", emitSizeReturn(ctx.typePrinter))
 		appendCode(&codeBuf, indent, "}\n")
 	}
 
@@ -1021,6 +1022,10 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 		ctx.usedSeekable = true
 		ctx.appendCode(indent, "dstlen := enc.GetPosition()\n")
 		addVlen()
+		// One offset per element precedes the bodies, so the table alone can
+		// pass the size limit; bound the count before the product is formed.
+		appendListLenBound(ctx.appendCode, ctx.typePrinter, indent, "vlen", "4", literalListMax(desc, ctx.options),
+			"return "+typePath.getErrorWith(`sszutils.ErrPlatformOverflowFn("list offset table for", vlen)`))
 		ctx.appendCode(indent, "if canSeek {\n")
 		ctx.appendCode(indent, "\tenc.EncodeZeroPadding(vlen * 4)\n")
 		ctx.appendCode(indent, "} else if vlen > 0 {\n")

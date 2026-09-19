@@ -6,6 +6,7 @@ package tests
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"testing"
 
@@ -131,5 +132,56 @@ func TestGeneratedSizeOfAnEmptyWideList(t *testing.T) {
 	}
 	if size := sizer.SizeSSZ(); size != len(data) {
 		t.Errorf("SizeSSZ = %d, marshalled %d bytes", size, len(data))
+	}
+}
+
+// A list length times its element width can pass every size domain. The sizer
+// sums into a wide accumulator and weighs the total once, where it narrows, so
+// an unrepresentable total is reported as 0 rather than as the positive number
+// the product wrapped into.
+//
+// The two widths cover the two targets. Three gibibytes is refused per element
+// on a 32-bit target before any product is formed, so only a 64-bit one reaches
+// the overflow; one gibibyte fits a 32-bit int comfortably, so there the
+// product alone carries it past the domain.
+func TestGeneratedSizeOfAWideListRefusesAnUnrepresentableTotal(t *testing.T) {
+	t.Parallel()
+
+	const listOffset = int64(4)
+
+	for _, fixture := range []struct {
+		name      string
+		elemBytes int64
+		build     func(count int) any
+	}{
+		{"3GiB elements", 3000000000, func(n int) any { return &WideListHolder{L: make([]WideListElem, n)} }},
+		{"1GiB elements", 1073741824, func(n int) any { return &GiBList{L: make([]GiBElem, n)} }},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			t.Parallel()
+			for _, count := range []int{0, 1, 2, 3} {
+				t.Run(fmt.Sprintf("count=%d", count), func(t *testing.T) {
+					t.Parallel()
+
+					sizer, sized := fixture.build(count).(sizeSSZ)
+					if !sized {
+						t.Skip("generated methods are not present in this checkout")
+					}
+
+					want := listOffset + int64(count)*fixture.elemBytes
+					got := sizer.SizeSSZ()
+
+					if want > int64(sszutils.MaxSszSize) {
+						if got != 0 {
+							t.Errorf("SizeSSZ = %d for a total of %d no size domain holds, want 0", got, want)
+						}
+						return
+					}
+					if int64(got) != want {
+						t.Errorf("SizeSSZ = %d, want %d", got, want)
+					}
+				})
+			}
+		})
 	}
 }

@@ -805,6 +805,47 @@ func declaredVectorBytes(desc *ssztypes.TypeDescriptor) (uint64, bool) {
 	return lo, hi != 0
 }
 
+// literalListMax states a list's declared limit where generation knows its
+// value: a limit resolved from the spec at run time has none to state here.
+func literalListMax(desc *ssztypes.TypeDescriptor, options *CodeGeneratorOptions) string {
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasLimit == 0 {
+		return ""
+	}
+	if desc.MaxExpression != nil && !options.WithoutDynamicExpressions {
+		return ""
+	}
+	return fmt.Sprintf("%d", desc.Limit)
+}
+
+// appendListLenBound refuses a list length that the element width takes past
+// the size limit. The length is what the value supplies, so it carries the
+// bound: the limit is divided by the width rather than the product being formed
+// and inspected, so nothing overflows on the way to the check. A width of zero
+// occupies nothing whatever the length is and cannot divide; a literal width
+// folds the division at compile time. retStmt is the full return statement of
+// the surrounding method.
+func appendListLenBound(appendCode func(int, string, ...any), typePrinter *TypePrinter, indent int, lenExpr, elemBytes, declaredMax, retStmt string) {
+	if lenExpr == "" || elemBytes == "" || elemBytes == "0" || elemBytes == "1" {
+		return
+	}
+	// A declared limit already refused a longer list before this runs, so it
+	// bounds the product too whenever the two multiply out inside the size
+	// domain. The narrowest target decides, since one generation serves all of
+	// them. A limit resolved at run time states no value to decide with.
+	if maxLit, err := strconv.ParseUint(declaredMax, 10, 64); err == nil {
+		if width, werr := strconv.ParseUint(elemBytes, 10, 64); werr == nil && width > 0 && maxLit <= uint64(math.MaxInt32)/width {
+			return
+		}
+	}
+	sszutilsAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz/sszutils", "sszutils")
+	guard := ""
+	if _, literal := strconv.ParseUint(elemBytes, 10, 64); literal != nil {
+		// A width only known at run time may be zero, which cannot divide.
+		guard = elemBytes + " > 0 && "
+	}
+	appendCode(indent, "if %s%s > %s.MaxSszSize/%s {\n\t%s\n}\n", guard, lenExpr, sszutilsAlias, elemBytes, retStmt)
+}
+
 // platformGuard emits a rejection of a declared size that cannot exist on
 // the target platform, so the capped literals that follow are never reached
 // there; the comparison is between constants and folds away where the size

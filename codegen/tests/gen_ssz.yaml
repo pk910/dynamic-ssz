@@ -259,6 +259,8 @@ types:
   - name: WideSplitStatics
     output: gen_edgecases.go
   - name: WideListHolder
+  - name: GiBElem
+  - name: GiBList
     output: gen_edgecases.go
   - name: WideAggregate
     output: gen_edgecases.go
