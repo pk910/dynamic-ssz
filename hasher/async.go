@@ -372,8 +372,21 @@ func (h *Hasher) discardJobs() {
 // hole end, so scopes that operate entirely above it — every child scope
 // opened after its parents' flushes — skip the wait and keep the background
 // reductions overlapped with the walk.
+//
+// The overlap test is split out to keep this inlinable: it runs at every scope
+// boundary, and a hash that never went async has no jobs to wait for.
 func (h *Hasher) drainJobsFor(indx int) {
-	if h.jobCount > 0 && indx < h.jobMaxEnd {
+	if h.jobCount > 0 {
+		h.drainJobsOverlapping(indx)
+	}
+}
+
+// drainJobsOverlapping drains when the region starting at indx reaches below the
+// highest outstanding hole end. Kept out of line to keep drainJobsFor inlinable.
+//
+//go:noinline
+func (h *Hasher) drainJobsOverlapping(indx int) {
+	if indx < h.jobMaxEnd {
 		h.drainJobs()
 	}
 }
