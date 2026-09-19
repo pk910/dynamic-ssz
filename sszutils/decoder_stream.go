@@ -887,10 +887,12 @@ func (e *StreamDecoder) DecodeBytes(buf []byte) ([]byte, error) {
 // must copy.
 func (e *StreamDecoder) DecodeBytesBuf(l int) ([]byte, error) {
 	if l < 0 {
-		// "All remaining" in the current region. For an open region the extent
-		// is only known at EOF, so fall back to the growing path and hand back
-		// the freshly allocated slice.
-		if e.lastOpen {
+		// "All remaining" in the current region. The extent is only a number to
+		// read up to when input known to exist backs it: an open region ends at
+		// EOF, and a region an offset declared inside one can name far more than
+		// the sender will deliver. Both take the growing path, which reads what
+		// arrives, and hand back the freshly allocated slice.
+		if !e.LengthKnown() {
 			return e.DecodeRemaining(-1)
 		}
 		l = e.lastLimit - e.position

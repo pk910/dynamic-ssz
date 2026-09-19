@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -2793,5 +2794,28 @@ func TestStreamEncoderFlushBeforeBoolAndOffset(t *testing.T) {
 	want = []byte{8, 7, 6, 5, 4, 3, 2, 1, 0x44, 0x33, 0x22, 0x11}
 	if !bytes.Equal(buf.Bytes(), want) {
 		t.Fatalf("encoded % x, want % x", buf.Bytes(), want)
+	}
+}
+
+// A region an offset declared inside a stream of unknown extent states how much
+// it holds; only the sender's bytes prove it. Reading its remainder must cost
+// what arrives, not what it claims.
+func TestStreamDecoderRemainderOfAnUnverifiedRegion(t *testing.T) {
+	const declared = 256 << 20
+
+	dec := NewUnknownStreamDecoder(bytes.NewReader([]byte{1, 2, 3, 4}), 1<<10, 0)
+	dec.PushLimit(declared)
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	buf, err := dec.DecodeBytesBuf(-1)
+	runtime.ReadMemStats(&after)
+
+	if err == nil && len(buf) == declared {
+		t.Fatalf("four bytes satisfied a %d byte region", declared)
+	}
+	if reserved := after.TotalAlloc - before.TotalAlloc; reserved > 8<<20 {
+		t.Errorf("reserved %d bytes for four delivered bytes", reserved)
 	}
 }
