@@ -765,7 +765,14 @@ func getEmptyNode(depth int) *Node {
 // batchHashFn compresses a packed sequence of 64-byte sibling pairs into
 // 32-byte parent hashes in a single call, using the vectorized hashtree
 // backend when available.
-var batchHashFn = hasher.FastHasherPool.HashFn
+//
+// The pool's function is read here rather than captured once: package
+// initialisation runs before a caller can install a backend, so a captured one
+// would be the built-in for the life of the process and a tree would hash with
+// a different function than a root does.
+var batchHashFn hasher.HashFn = func(dst, input []byte) error {
+	return hasher.FastHasherPool.CurrentHashFn()(dst, input)
+}
 
 // finalizeThreshold is the unhashed-branch count below which finalize hashes
 // recursively: tiny batches pay more in buffer setup and per-batch backend

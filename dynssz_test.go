@@ -8800,3 +8800,51 @@ func TestHashTreeRootWithReportsAFailedHashFunction(t *testing.T) {
 		t.Logf("walker left %x", root)
 	}
 }
+
+// A hash backend installed on the pool decides what every root is built from,
+// so the two entry points must reach the same one. The tree walker hashes
+// outside a pooled hasher, and the pool hands its hashers a function that was
+// chosen when they were made, so either could quietly keep the built-in: then
+// one value has two roots and neither call reports anything.
+func TestInstalledHashBackendReachesRootAndTree(t *testing.T) {
+	// A backend that is recognisably not sha256: every pair compresses to the
+	// first chunk, so any root built with it differs from the built-in's.
+	installed := func(dst []byte, input []byte) error {
+		for i := 0; i+64 <= len(input); i += 64 {
+			copy(dst[i/2:i/2+32], input[i:i+32])
+		}
+		return nil
+	}
+
+	original := hasher.FastHasherPool.HashFn
+	defer func() { hasher.FastHasherPool.HashFn = original }()
+
+	value := &struct {
+		A uint64
+		B uint64
+		C uint64
+		D uint64
+	}{A: 1, B: 2, C: 3, D: 4}
+
+	ds := NewDynSsz(nil)
+
+	// Warm the pool so a pooled hasher predates the backend, which is what
+	// makes the effect depend on occupancy rather than on the installation.
+	if _, err := ds.HashTreeRoot(value); err != nil {
+		t.Fatalf("warming the pool: %v", err)
+	}
+
+	hasher.FastHasherPool.HashFn = installed
+
+	root, err := ds.HashTreeRoot(value)
+	if err != nil {
+		t.Fatalf("HashTreeRoot: %v", err)
+	}
+	tree, err := ds.GetTree(value)
+	if err != nil {
+		t.Fatalf("GetTree: %v", err)
+	}
+	if got := tree.Hash(); !bytes.Equal(got, root[:]) {
+		t.Errorf("GetTree root %x disagrees with HashTreeRoot %x: the two reached different backends", got, root)
+	}
+}
