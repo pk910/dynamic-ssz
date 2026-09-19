@@ -808,6 +808,23 @@ func TestTypeDescriptor_MinSize(t *testing.T) {
 		})
 	}
 
+	// The floor of a vector of dynamic elements is a product, and a product
+	// that does not fit states no floor at all: a wrapped value would bound the
+	// region below the truth and refuse valid input. The builder bounds a
+	// vector's length long before this, so the guard is only reachable here.
+	t.Run("overflowing product states no floor", func(t *testing.T) {
+		desc := &TypeDescriptor{
+			SszType:      SszVectorType,
+			SszTypeFlags: SszTypeFlagIsDynamic,
+			Len:          4,
+			ElemDesc:     &TypeDescriptor{MinSize: 1 << 62},
+		}
+		desc.SetMinSize()
+		if desc.MinSize != 0 {
+			t.Errorf("MinSize = %d, want 0: 4*(4+2^62) does not fit and states no floor", desc.MinSize)
+		}
+	})
+
 	t.Run("list element states no floor", func(t *testing.T) {
 		desc, err := cache.GetTypeDescriptor(reflect.TypeFor[struct {
 			L []dynElem `ssz-max:"8"`

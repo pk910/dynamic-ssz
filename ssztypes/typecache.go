@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/bits"
 	"reflect"
 	"slices"
 	"strings"
@@ -182,7 +183,8 @@ func (tc *TypeCache) DisableSpecResolution() {
 //	if err != nil {
 //	    log.Fatal("Failed to get type descriptor:", err)
 //	}
-//	fmt.Printf("Type size: %d bytes (dynamic: %v)\n", typeDesc.Size, typeDesc.Size < 0)
+//	fmt.Printf("Type size: %d bytes (dynamic: %v)\n", typeDesc.Size,
+//	    typeDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0)
 func (tc *TypeCache) GetTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
 	// When no view descriptor is used, runtime and schema types are the same
 	return tc.GetTypeDescriptorWithSchema(t, t, sizeHints, maxSizeHints, typeHints)
@@ -1241,10 +1243,12 @@ func (td *TypeDescriptor) SetMinSize() {
 		// the element count here, not a byte size.
 		if td.ElemDesc != nil {
 			// An overflowing product would bound the region above the true floor
-			// and refuse valid input, so it states no bound instead.
-			minSize := uint64(td.Len) * (4 + uint64(td.ElemDesc.MinSize))
-			if minSize <= math.MaxInt64 {
-				td.MinSize = int64(minSize)
+			// and refuse valid input, so it states no bound instead. The product
+			// is formed in two words: checking it after it has wrapped would
+			// accept the wrapped value as a floor.
+			hi, lo := bits.Mul64(uint64(td.Len), 4+uint64(td.ElemDesc.MinSize))
+			if hi == 0 && lo <= math.MaxInt64 {
+				td.MinSize = int64(lo)
 			}
 		}
 	default:
