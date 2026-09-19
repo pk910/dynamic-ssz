@@ -528,36 +528,9 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 
 	limitVar := ctx.getLimitVar()
 	if sizeExpression != nil {
-		defaultValue := uint64(desc.Len)
-		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
-			if desc.BitSize > 0 {
-				defaultValue = uint64(desc.BitSize)
-			} else {
-				defaultValue = uint64(desc.Len) * 8
-			}
-		}
-
-		// The length bounds what the vector occupies, so it is bounded by the
-		// width of one element; a variable-size element is bounded by its
-		// offset instead.
-		// The length bounds what the vector occupies, so it is bounded by the
-		// width of one element. A literal width joins the length's own guard;
-		// a resolved one is checked once the variable holding it exists.
-		elemBytes, elemLiteral := "", ""
-		if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
-			bytesExpr, isLiteral, bytesErr := ctx.staticSizeVars.elemSizeExpr(desc.ElemDesc)
-			if bytesErr != nil {
-				return bytesErr
-			}
-			elemBytes = bytesExpr
-			if isLiteral {
-				elemLiteral = bytesExpr
-			}
-		}
-
-		exprVar := ctx.exprVars.getVectorLenExprVar(*sizeExpression, defaultValue, desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0, desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0, elemLiteral)
-		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize == 0 && elemLiteral == "" {
-			ctx.staticSizeVars.appendVectorLenBound(exprVar, elemBytes, *sizeExpression)
+		exprVar, lenErr := vectorLenVar(desc, ctx.exprVars, ctx.staticSizeVars, sizeExpression)
+		if lenErr != nil {
+			return lenErr
 		}
 
 		rawLimit := exprVar

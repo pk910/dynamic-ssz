@@ -123,8 +123,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 			// what emits the depth twin those references resolve against.
 			appendCode(codeBuilder, 0, "// HashTreeRootWith computes the SSZ hash tree root of the %s using the given hash walker.\n", typeName)
 			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "HashTreeRootWith", "hh sszutils.HashWalker", "hh", "error", depthFailErr(ctx.recursion), false)
-			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
-			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
+			emitPreludes(codeBuilder, ctx.exprVars, ctx.staticSizeVars)
 			appendCode(codeBuilder, 1, codeBuf.String())
 			appendCode(codeBuilder, 1, "return nil\n")
 			appendCode(codeBuilder, 0, "}\n\n")
@@ -163,8 +162,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 				appendCode(codeBuilder, 0, "// HashTreeRootWithDyn computes the SSZ hash tree root of the %s using dynamic specifications and the given hash walker.\n", typeName)
 			}
 			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, hh sszutils.HashWalker", "ds, hh", "error", depthFailErr(ctx.recursion), false)
-			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
-			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
+			emitPreludes(codeBuilder, ctx.exprVars, ctx.staticSizeVars)
 			appendCode(codeBuilder, 1, codeBuf.String())
 			appendCode(codeBuilder, 1, "return nil\n")
 			appendCode(codeBuilder, 0, "}\n\n")
@@ -694,36 +692,9 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 	intLimit := ""
 	bitlimitVar := ""
 	if sizeExpression != nil {
-		defaultValue := uint64(desc.Len)
-		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
-			if desc.BitSize > 0 {
-				defaultValue = uint64(desc.BitSize)
-			} else {
-				defaultValue = uint64(desc.Len) * 8
-			}
-		}
-
-		// The length bounds what the vector occupies, so it is bounded by the
-		// width of one element; a variable-size element is bounded by its
-		// offset instead.
-		// The length bounds what the vector occupies, so it is bounded by the
-		// width of one element. A literal width joins the length's own guard;
-		// a resolved one is checked once the variable holding it exists.
-		elemBytes, elemLiteral := "", ""
-		if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
-			bytesExpr, isLiteral, bytesErr := ctx.staticSizeVars.elemSizeExpr(desc.ElemDesc)
-			if bytesErr != nil {
-				return bytesErr
-			}
-			elemBytes = bytesExpr
-			if isLiteral {
-				elemLiteral = bytesExpr
-			}
-		}
-
-		exprVar := ctx.exprVars.getVectorLenExprVar(*sizeExpression, defaultValue, desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0, desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0, elemLiteral)
-		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize == 0 && elemLiteral == "" {
-			ctx.staticSizeVars.appendVectorLenBound(exprVar, elemBytes, *sizeExpression)
+		exprVar, lenErr := vectorLenVar(desc, ctx.exprVars, ctx.staticSizeVars, sizeExpression)
+		if lenErr != nil {
+			return lenErr
 		}
 
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {

@@ -549,6 +549,55 @@ func minSizeExpr(desc *ssztypes.TypeDescriptor, sizeVars *staticSizeVarGenerator
 	}
 }
 
+// emitPreludes writes what a method body refers to before its own statements:
+// the spec values it resolved and the size variables formed from them, in that
+// order, since a size variable may be formed from a resolved value.
+func emitPreludes(codeBuilder *strings.Builder, exprVars *exprVarGenerator, sizeVars *staticSizeVarGenerator) {
+	appendCode(codeBuilder, 1, exprVars.getCode())
+	if sizeVars != nil {
+		appendCode(codeBuilder, 1, sizeVars.getCode())
+	}
+}
+
+// vectorLenVar resolves a vector's length expression and bounds it by the width
+// of one element: the length decides what the vector occupies, and the product
+// of the two is what would overflow. A literal width joins the length's own
+// guard, where the division folds at compile time; a width resolved from the
+// spec is checked once the variable holding it exists. A bit count is measured
+// by the bytes it occupies, and a variable-size element by its offset.
+func vectorLenVar(desc *ssztypes.TypeDescriptor, exprVars *exprVarGenerator, sizeVars *staticSizeVarGenerator, sizeExpression *string) (string, error) {
+	bits := desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0
+	defaultValue := uint64(desc.Len)
+	if bits {
+		if desc.BitSize > 0 {
+			defaultValue = uint64(desc.BitSize)
+		} else {
+			defaultValue = uint64(desc.Len) * 8
+		}
+	}
+
+	dynamicElems := desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0
+
+	elemBytes, elemLiteral := "", ""
+	if !dynamicElems {
+		bytesExpr, isLiteral, err := sizeVars.elemSizeExpr(desc.ElemDesc)
+		if err != nil {
+			return "", err
+		}
+		elemBytes = bytesExpr
+		if isLiteral {
+			elemLiteral = bytesExpr
+		}
+	}
+
+	exprVar := exprVars.getVectorLenExprVar(*sizeExpression, defaultValue, dynamicElems, bits, elemLiteral)
+	if !bits && elemLiteral == "" {
+		sizeVars.appendVectorLenBound(exprVar, elemBytes, *sizeExpression)
+	}
+
+	return exprVar, nil
+}
+
 // mulOrAddExpr joins two size expressions, folding them when both are literals
 // so a fully static bound stays a plain number in the generated code. It reports
 // false if the result would be zero, which states no bound.
