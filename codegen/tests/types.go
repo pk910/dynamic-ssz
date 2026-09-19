@@ -5591,6 +5591,54 @@ type ProbeFailWalkHolder struct {
 	A ProbeMarshalFails
 }
 
+// ProbePromotedValueInner gives whatever embeds it a MarshalSSZ and nothing
+// else, the shape that reaches the promotion rule through a single method.
+type ProbePromotedValueInner struct {
+	V uint64
+}
+
+func (t *ProbePromotedValueInner) MarshalSSZ() ([]byte, error) {
+	ProbeMarshalSSZCalls.Add(1)
+	return binary.LittleEndian.AppendUint64(nil, t.V), nil
+}
+
+// ProbePromotedValue reaches MarshalSSZ by promotion, so it must be walked:
+// the promoted method answers for the embedded value and would drop W.
+type ProbePromotedValue struct {
+	ProbePromotedValueInner
+	W uint64
+}
+
+// ProbeMixedPromotionInner contributes a promoted sizer.
+type ProbeMixedPromotionInner struct {
+	V uint64
+}
+
+func (t *ProbeMixedPromotionInner) SizeSSZ() int {
+	ProbeSizeSSZCalls.Add(1)
+	return 8
+}
+
+// ProbeMixedPromotion declares one static method itself and reaches another by
+// promotion. Mixing them would measure the embedded value and marshal this one,
+// so neither may be used.
+type ProbeMixedPromotion struct {
+	ProbeMixedPromotionInner
+	W uint64
+}
+
+func (t *ProbeMixedPromotion) MarshalSSZTo(dst []byte) ([]byte, error) {
+	ProbeMarshalSSZToCalls.Add(1)
+	dst = binary.LittleEndian.AppendUint64(dst, t.V)
+	return binary.LittleEndian.AppendUint64(dst, t.W), nil
+}
+
+// ProbePromotionHolder carries both promotion shapes as fields.
+type ProbePromotionHolder struct {
+	A ProbePromotedValue
+	B ProbeMixedPromotion
+}
+
 // ProbeWalkHolder holds the same shapes as ProbeHolder and stays out of the
 // generation set, so it has no methods of its own for either engine to reach:
 // it is always walked, and each probe is met as a field.

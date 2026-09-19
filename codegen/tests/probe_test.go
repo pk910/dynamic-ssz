@@ -53,6 +53,19 @@ var probeShapes = []struct {
 		reflect.TypeFor[ProbePromoted](),
 		0,
 	},
+	{
+		// One promoted method is enough, whichever it is.
+		"ProbePromotedValue",
+		reflect.TypeFor[ProbePromotedValue](),
+		0,
+	},
+	{
+		// The promoted sizer answers for the embedded value and is dropped;
+		// the marshaller this type declares itself is kept.
+		"ProbeMixedPromotion",
+		reflect.TypeFor[ProbeMixedPromotion](),
+		ssztypes.SszCompatFlagFastsszBufferMarshaler,
+	},
 }
 
 // The two type front ends must name the same methods for the same type: a
@@ -192,8 +205,8 @@ func TestFastsszProbePathsPerMethod(t *testing.T) {
 // The error a delegate reports travels back to the caller through either
 // engine, with the field that produced it named.
 func TestFastsszProbeFallbackError(t *testing.T) {
-	t.Parallel()
-
+	// The probe call counters are package state, so the tests that read them
+	// run one at a time.
 	ds := dynssz.NewDynSsz(nil)
 
 	for _, tc := range []struct {
@@ -204,8 +217,6 @@ func TestFastsszProbeFallbackError(t *testing.T) {
 		{"walked", &ProbeFailWalkHolder{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
 			_, err := ds.MarshalSSZ(tc.value)
 			if !errors.Is(err, ErrProbeMarshal) {
 				t.Fatalf("marshal err = %v, want the delegate's error", err)
@@ -216,5 +227,56 @@ func TestFastsszProbeFallbackError(t *testing.T) {
 				t.Fatalf("stream marshal err = %v, want the delegate's error", err)
 			}
 		})
+	}
+}
+
+// A promoted method answers for the embedded value, so a type that reaches one
+// is walked and keeps every field it declares.
+func TestFastsszPromotedSurfaceIsNotDelegated(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+	holder := &ProbePromotionHolder{
+		A: ProbePromotedValue{ProbePromotedValueInner: ProbePromotedValueInner{V: 1}, W: 2},
+		B: ProbeMixedPromotion{ProbeMixedPromotionInner: ProbeMixedPromotionInner{V: 3}, W: 4},
+	}
+
+	want := make([]byte, 0, 32)
+	for _, v := range []uint64{1, 2, 3, 4} {
+		want = binary.LittleEndian.AppendUint64(want, v)
+	}
+
+	ResetProbeCounts()
+	data, err := ds.MarshalSSZ(holder)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Equal(data, want) {
+		t.Fatalf("marshal = %x, want %x", data, want)
+	}
+	// The embedded value is a field of its own and serves itself there, which
+	// is the MarshalSSZ call. B marshals through the method it declares itself,
+	// beside a promoted sizer that is not used. What must not happen is the
+	// outer type being served by a method that answers for an embedded value.
+	if got := ProbeMarshalSSZCalls.Load(); got != 1 {
+		t.Errorf("MarshalSSZ calls = %d, want the embedded field serving itself", got)
+	}
+	if got := ProbeMarshalSSZToCalls.Load(); got != 1 {
+		t.Errorf("MarshalSSZTo calls = %d, want the direct marshaller used once", got)
+	}
+
+	ResetProbeCounts()
+	size, err := ds.SizeSSZ(holder)
+	if err != nil || size != len(want) {
+		t.Fatalf("size = %d, %v, want %d", size, err, len(want))
+	}
+	if got := ProbeSizeSSZCalls.Load(); got != 0 {
+		t.Errorf("SizeSSZ calls = %d, want none: the sizer is promoted", got)
+	}
+
+	decoded := &ProbePromotionHolder{}
+	if err := ds.UnmarshalSSZ(decoded, data); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if *decoded != *holder {
+		t.Fatalf("round trip = %+v, want %+v", decoded, holder)
 	}
 }

@@ -1095,11 +1095,20 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			if promoted["UnmarshalSSZDecoderView"] {
 				desc.SszCompatFlags &^= SszCompatFlagDynamicViewDecoder
 			}
-			// A promoted method answers for the embedded value while a direct
-			// one answers for the outer type, so the two cannot be mixed: one
-			// promoted piece clears the whole static surface.
-			if promoted["MarshalSSZ"] || promoted["MarshalSSZTo"] || promoted["SizeSSZ"] || promoted["UnmarshalSSZ"] {
-				desc.SszCompatFlags &^= SszCompatFlagFastsszSurface
+			// A promoted method answers for the embedded value, so it is never
+			// the outer type's. A method the type declares itself is, so it
+			// stays: each is cleared on its own.
+			if promoted["MarshalSSZ"] {
+				desc.SszCompatFlags &^= SszCompatFlagFastsszValueMarshaler
+			}
+			if promoted["MarshalSSZTo"] {
+				desc.SszCompatFlags &^= SszCompatFlagFastsszBufferMarshaler
+			}
+			if promoted["SizeSSZ"] {
+				desc.SszCompatFlags &^= SszCompatFlagFastsszSizer
+			}
+			if promoted["UnmarshalSSZ"] {
+				desc.SszCompatFlags &^= SszCompatFlagFastsszUnmarshaler
 			}
 			if promoted["HashTreeRoot"] {
 				desc.SszCompatFlags &^= SszCompatFlagFastsszHashRoot

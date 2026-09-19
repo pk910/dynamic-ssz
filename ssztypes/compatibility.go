@@ -49,7 +49,7 @@ var delegationMethodNames = []string{
 	"MarshalSSZEncoder", "UnmarshalSSZDecoder",
 	"MarshalSSZDynView", "UnmarshalSSZDynView", "SizeSSZDynView", "HashTreeRootWithDynView",
 	"MarshalSSZEncoderView", "UnmarshalSSZDecoderView",
-	"MarshalSSZTo", "UnmarshalSSZ", "SizeSSZ", "HashTreeRoot", "HashTreeRootWith",
+	"MarshalSSZ", "MarshalSSZTo", "UnmarshalSSZ", "SizeSSZ", "HashTreeRoot", "HashTreeRootWith",
 }
 
 // PromotedDelegationMethods returns the SSZ delegation methods a struct type

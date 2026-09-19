@@ -119,6 +119,11 @@ func TestShallowDescriptorParity(t *testing.T) {
 		if parsed != tc.want || reflected != tc.want {
 			t.Fatalf("%s: parser %s, type cache %s, want %s", tc.name, parsed, reflected, tc.want)
 		}
+		// Which methods each front end says the type provides decides which of
+		// them the emitters call, so the two must name the same set.
+		if parsedRoot.SszCompatFlags != reflectedRoot.SszCompatFlags {
+			t.Errorf("%s: parser compat %b, type cache compat %b", tc.name, parsedRoot.SszCompatFlags, reflectedRoot.SszCompatFlags)
+		}
 	}
 
 	// edgeOpaque delegates and lies on a cycle with edgeCycleA, which is
