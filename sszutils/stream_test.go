@@ -7,6 +7,7 @@ package sszutils
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"runtime"
@@ -2819,5 +2820,53 @@ func TestStreamDecoderRemainderOfAnUnverifiedRegion(t *testing.T) {
 	}
 	if reserved := after.TotalAlloc - before.TotalAlloc; reserved > 8<<20 {
 		t.Errorf("reserved %d bytes for four delivered bytes", reserved)
+	}
+}
+
+// A region declaring its end past the bytes the input holds cannot be the
+// region it says it is, so both decoders refuse it and stay refused. They have
+// to say so through every method that answers for a region, not only through a
+// sized read: one reporting "nothing left, no error" where the other reports
+// the truncation lets a caller close a value the decoder already rejected, and
+// lets the two engines accept different inputs.
+func TestRefusedRegionAnswersAlikeOnBothDecoders(t *testing.T) {
+	const declared = 32
+	payload := []byte{1, 2, 3, 4, 5, 6} // fewer bytes than the region declares
+
+	probe := func(d Decoder) []string {
+		d.PushLimit(declared)
+
+		errText := func(err error) string {
+			if err == nil {
+				return "<nil>"
+			}
+			return err.Error()
+		}
+
+		var out []string
+		rest, err := d.DecodeRemaining(-1)
+		out = append(out, fmt.Sprintf("DecodeRemaining=%x,%s", rest, errText(err)))
+
+		more, err := d.More()
+		out = append(out, fmt.Sprintf("More=%v,%s", more, errText(err)))
+
+		buf, err := d.DecodeBytesBuf(-1)
+		out = append(out, fmt.Sprintf("DecodeBytesBuf=%x,%s", buf, errText(err)))
+
+		out = append(out, fmt.Sprintf("GetLength=%d", d.GetLength()))
+		out = append(out, fmt.Sprintf("FinishRegion=%s", errText(d.FinishRegion())))
+		return out
+	}
+
+	buffer := probe(NewBufferDecoder(payload))
+	stream := probe(NewStreamDecoder(bytes.NewReader(payload), len(payload), 0))
+
+	for i := range buffer {
+		if buffer[i] != stream[i] {
+			t.Errorf("after a refused region the decoders disagree:\n  buffer %s\n  stream %s", buffer[i], stream[i])
+		}
+	}
+	if buffer[len(buffer)-1] == "FinishRegion=<nil>" {
+		t.Error("FinishRegion reported success on a region the decoder itself refused")
 	}
 }
