@@ -170,6 +170,9 @@ type HashWalker interface {
 	// slice is only valid until the next walker operation.
 	Hash() []byte
 
+	// HashErr reports the first failure the walker recorded, or nil.
+	HashErr() error
+
 	// Methods for appending single values
 	AppendBool(b bool)
 	AppendUint8(i uint8)

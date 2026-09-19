@@ -113,6 +113,13 @@ func (w *Wrapper) CurrentIndex() int {
 	return len(w.buf)
 }
 
+// HashErr reports a scope the walker refused to reduce in the shape it was
+// opened for. The walk continues after such a refusal so the caller sees one
+// error rather than a cascade, which leaves the state it built unusable.
+func (w *Wrapper) HashErr() error {
+	return w.shapeErr
+}
+
 // checkShape records a scope reduced in a shape it was not opened for. A
 // scope that declared no shape accepts either reduction. The reduction still
 // runs; the root is refused.

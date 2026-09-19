@@ -119,11 +119,18 @@ type Hasher struct {
 	jobRingBuf [asyncRingInline]asyncJob // inline backing to avoid heap allocation
 }
 
+// defaultHashFn is the built-in sha256 compression, used where no backend was
+// installed. It draws per-call instances from a pool, so a hasher using it may
+// be gated into async hashing.
+func defaultHashFn() HashFn {
+	return NativeHashWrapperFactory(sha256.New)
+}
+
 // NewHasher creates a new Hasher with the default sha256 hash function. The
 // hash function draws per-call instances from a pool, so the hasher may be
 // gated into async hashing.
 func NewHasher() *Hasher {
-	return NewHasherWithHashFn(NativeHashWrapperFactory(sha256.New))
+	return NewHasherWithHashFn(defaultHashFn())
 }
 
 // NewHasherWithHash creates a new Hasher with a custom hash.Hash function.
@@ -1660,4 +1667,13 @@ func (h *Hasher) HashRoot() (res [32]byte, err error) {
 	}
 	copy(res[:], h.buf)
 	return
+}
+
+// HashErr reports the first error a hash function returned for this hasher, or
+// nil. A failed hash leaves the bytes it would have written untouched, so a
+// caller reading the buffer -- through Hash, or by caching a scope root -- takes
+// a value that was never produced. HashRoot reports the same error, but a walk
+// that ends without asking for the root has nothing else to consult.
+func (h *Hasher) HashErr() error {
+	return h.hashErr
 }

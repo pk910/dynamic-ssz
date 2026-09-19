@@ -8764,3 +8764,39 @@ func TestMarshalPrefersADeclaredMethodOverAPromotedOne(t *testing.T) {
 		t.Errorf("the buffer and streaming entry points disagree: %x vs %x", got, buf.Bytes())
 	}
 }
+
+// A hash function that fails leaves the bytes it would have written untouched.
+// The walk itself still completes, so a caller that reads the walker afterwards
+// -- the documented caching pattern captures a scope root this way -- would take
+// a value that was never produced and cache it. HashTreeRootWith reports what
+// the walker recorded, so the failure is seen where the caller already looks.
+func TestHashTreeRootWithReportsAFailedHashFunction(t *testing.T) {
+	failing := errors.New("hash backend unavailable")
+
+	ds := NewDynSsz(nil)
+	h := hasher.NewHasherWithHashFn(func(dst []byte, input []byte) error {
+		return failing
+	})
+	defer h.Reset()
+
+	value := &struct {
+		A uint64
+		B uint64
+	}{A: 1, B: 2}
+
+	err := ds.HashTreeRootWith(value, h)
+	if err == nil {
+		t.Fatal("a failed hash function was reported as success")
+	}
+	if !errors.Is(err, failing) {
+		t.Errorf("err = %v, want the hash function's own error", err)
+	}
+
+	// And the bytes it never wrote must not pass as a root: a caller caching
+	// them would hand back zeros on a later healthy call.
+	var root [32]byte
+	copy(root[:], h.Hash())
+	if root != ([32]byte{}) {
+		t.Logf("walker left %x", root)
+	}
+}

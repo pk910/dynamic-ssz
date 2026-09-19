@@ -1157,7 +1157,7 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 			// A delegate may leave only the packed bytes of its value; the
 			// root is one leaf.
 			hh.FillUpTo32()
-			return nil
+			return hh.HashErr()
 		}
 	} else if viewHasher, ok := source.(sszutils.DynamicViewHashRoot); ok && !d.options.NoDelegation && d.delegable(source, "HashTreeRootWithDynView") {
 		if hashFn := viewHasher.HashTreeRootWithDynView(cfg.viewDescriptor); hashFn != nil {
@@ -1166,7 +1166,7 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 				return err
 			}
 			hh.FillUpTo32()
-			return nil
+			return hh.HashErr()
 		}
 	}
 
@@ -1188,7 +1188,7 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 		return err
 	}
 
-	return nil
+	return hh.HashErr()
 }
 
 // GetTree builds and returns the complete Merkle tree for the given value.

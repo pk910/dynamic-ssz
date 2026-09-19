@@ -1166,6 +1166,7 @@ func (m *mockHashWalker) PutProgressiveBitlist(_ []byte)                       {
 func (m *mockHashWalker) PutBool(_ bool)                                       {}
 func (m *mockHashWalker) PutBytes(_ []byte)                                    {}
 func (m *mockHashWalker) FillUpTo32()                                          {}
+func (m *mockHashWalker) HashErr() error                                       { return nil }
 func (m *mockHashWalker) Append(_ []byte)                                      {}
 func (m *mockHashWalker) Index() int                                           { return 0 }
 func (m *mockHashWalker) CurrentIndex() int                                    { return 0 }
