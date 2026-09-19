@@ -17,6 +17,7 @@ type BufferDecoder struct {
 	lastLimit int
 	bufferLen int
 	position  int
+	malformed bool
 }
 
 var _ Decoder = (*BufferDecoder)(nil)
@@ -114,11 +115,17 @@ func (e *BufferDecoder) PushLimit(limit int) {
 	if limit < 0 {
 		limit = 0
 	}
-	// Guard the addition: a huge limit must clamp to the enclosing region,
-	// not wrap around the integer range.
-	limitPos := e.lastLimit
-	if limit < e.lastLimit-e.position {
+	// The whole input is in hand, so a region declaring more than its parent
+	// holds is not a region this payload could have: it is refused here rather
+	// than silently read as the smaller one the bytes would allow. The region
+	// is pushed empty, so the bounds check every read already performs fails
+	// it, and the addition below cannot wrap because it only runs for a limit
+	// that fits.
+	limitPos := e.position
+	if limit <= e.lastLimit-e.position {
 		limitPos = e.position + limit
+	} else {
+		e.malformed = true
 	}
 
 	e.limits = append(e.limits, limitPos)
@@ -133,9 +140,15 @@ func (e *BufferDecoder) PopLimit() int {
 		return 0
 	}
 	limit := e.limits[limitsLen-1]
-	if limitsLen <= 1 {
+	switch {
+	case e.malformed:
+		// Nothing after an impossible declaration is decodable: leaving the
+		// region empty keeps every later read failing through the same bounds
+		// check, at no cost to the ones that read a well-formed payload.
+		e.lastLimit = e.position
+	case limitsLen <= 1:
 		e.lastLimit = e.bufferLen
-	} else {
+	default:
 		e.lastLimit = e.limits[limitsLen-2]
 	}
 	e.limits = e.limits[:limitsLen-1]

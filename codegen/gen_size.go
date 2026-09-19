@@ -6,6 +6,7 @@ package codegen
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 	"slices"
 	"strings"
@@ -263,7 +264,7 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 		// and must never call a *Dyn method. A child exposing a static SizeSSZ
 		// (every dynssz-generated child in this mode, plus external fastssz types)
 		// is reached through it even when fastssz delegation is otherwise disabled.
-		isFastsszSizer := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+		isFastsszSizer := desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszSizer != 0
 		useFastSsz := isFastsszSizer && !hasDynamicSize && (!ctx.options.NoFastSsz || staticBuild)
 		if desc.SszType == ssztypes.SszCustomType {
 			// A custom type has no structure to inline: it is reached through its
@@ -377,11 +378,11 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 	case ssztypes.SszOptionalListType:
 		return ctx.sizeOptionalList(desc, varName, sizeVar, indent)
 	case ssztypes.SszBigIntType:
-		// A static ssz-max is enforced by the marshal/HTR paths (which return an
+		// The ssz-max is enforced by the marshal/HTR paths (which return an
 		// error); the size path has no error channel, so an over-max value yields
 		// size 0 to signal it is not serializable rather than a misleading size.
-		if desc.MaxExpression == nil && desc.Limit > 0 {
-			ctx.appendCode(indent, "if uint64(1+len(%s.Bytes())) > %d {\n\treturn 0\n}\n", varName, desc.Limit)
+		if limit := bigIntLimit(desc, ctx.exprVars, ctx.options); limit != "" {
+			ctx.appendCode(indent, "if uint64(1+len(%s.Bytes())) > %s {\n\treturn 0\n}\n", varName, limit)
 		}
 		ctx.appendCode(indent, "%s += 1 + len(%s.Bytes())\n", sizeVar, varName)
 
@@ -527,16 +528,10 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 
 	limitVar := ctx.getLimitVar()
 	if sizeExpression != nil {
-		defaultValue := uint64(desc.Len)
-		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
-			if desc.BitSize > 0 {
-				defaultValue = uint64(desc.BitSize)
-			} else {
-				defaultValue = uint64(desc.Len) * 8
-			}
+		exprVar, lenErr := vectorLenVar(desc, ctx.exprVars, ctx.staticSizeVars, sizeExpression)
+		if lenErr != nil {
+			return lenErr
 		}
-
-		exprVar := ctx.exprVars.getVectorLenExprVar(*sizeExpression, defaultValue, desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0, desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0)
 
 		rawLimit := exprVar
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
@@ -667,7 +662,14 @@ func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName, sizeVar
 			if desc.ElemDesc.Size == 1 {
 				ctx.appendCode(indent, "%s += len(%s)\n", sizeVar, valueVar)
 			} else {
-				platformGuard(ctx.appendCode, indent, ctx.typePrinter, uint64(desc.ElemDesc.Size), false, "return 0")
+				// An empty list forms no product, and its size is exact on any
+				// target: only a value with elements is refused for a width the
+				// target's int cannot hold.
+				if uint64(desc.ElemDesc.Size) > math.MaxInt32 {
+					ctx.appendCode(indent, "if len(%s) > 0 {\n", valueVar)
+					platformGuard(ctx.appendCode, indent+1, ctx.typePrinter, uint64(desc.ElemDesc.Size), false, "return 0")
+					ctx.appendCode(indent, "}\n")
+				}
 				ctx.appendCode(indent, "%s += len(%s) * %s\n", sizeVar, valueVar, intLitStr(fmt.Sprintf("%d", desc.ElemDesc.Size)))
 			}
 		} else {
@@ -739,7 +741,13 @@ func (ctx *sizeContext) sizeUnion(desc *ssztypes.TypeDescriptor, varName, sizeVa
 			ctx.appendCode(indent, "\tif _, ok := %s.Data.(%s); !ok {\n", varName, variantType)
 			ctx.appendCode(indent, "\t\treturn 0\n")
 			ctx.appendCode(indent, "\t}\n")
-			ctx.appendCode(indent, "\t%s += %d\n", sizeVar, variantDesc.Size)
+			// A declared size the target cannot hold is refused before it is
+			// added, so the capped literal below is never the figure a target
+			// with a narrower int reports.
+			platformGuard(func(guardIndent int, code string, args ...any) {
+				ctx.appendCode(guardIndent, "\t"+code, args...)
+			}, indent, ctx.typePrinter, uint64(variantDesc.Size), false, "return 0")
+			ctx.appendCode(indent, "\t%s += %s\n", sizeVar, posLit(int(variantDesc.Size)))
 		}
 	}
 

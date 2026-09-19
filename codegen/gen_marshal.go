@@ -232,7 +232,7 @@ func (ctx *marshalContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 
 	// Handle types that have generated methods we can call
 	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
-	isFastsszMarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+	isFastsszMarshaler := desc.SszCompatFlags&(ssztypes.SszCompatFlagFastsszBufferMarshaler|ssztypes.SszCompatFlagFastsszValueMarshaler) != 0
 	// Under WithoutDynamicExpressions the generated buffer code must be fully
 	// static and must never call a *Dyn method. A child exposing a static
 	// MarshalSSZTo (every dynssz-generated child in this mode, plus external
@@ -271,6 +271,14 @@ func (ctx *marshalContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 	}
 
 	if useFastSsz && !isRoot && !isView {
+		if desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszBufferMarshaler == 0 {
+			// A type that only marshals into a buffer of its own is appended to
+			// the destination, which costs an allocation and a copy.
+			ctx.appendCode(indent, "if data, err := %s.MarshalSSZ(); err != nil {\n", varName)
+			ctx.appendCode(indent+1, "return nil, %s\n", typePath.getErrorWith("err"))
+			ctx.appendCode(indent, "} else {\n\tdst = append(dst, data...)\n}\n")
+			return nil
+		}
 		fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "MarshalSSZTo")
 		ctx.appendCode(indent, "if dst, err = %s.%s(dst%s); err != nil {\n", varName, fn, arg)
 		ctx.appendCode(indent+1, "return nil, %s\n", typePath.getErrorWith("err"))
@@ -479,12 +487,11 @@ func (ctx *marshalContext) marshalOptionalList(desc *ssztypes.TypeDescriptor, va
 
 // marshalBigInt generates marshal code for SSZ big int types.
 func (ctx *marshalContext) marshalBigInt(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
-	// Enforce a static ssz-max (payload = sign byte + magnitude). Dynamic limits
-	// (dynssz-max expressions) are left unchecked so generated code stays
-	// consistent with the reflection path.
-	if desc.MaxExpression == nil && desc.Limit > 0 {
-		errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", uint64(1+len(%s.Bytes())), %s)", varName, uintLitArg(fmt.Sprintf("%d", desc.Limit)))
-		ctx.appendCode(indent, "if uint64(1+len(%s.Bytes())) > %d {\n\treturn nil, %s\n}\n", varName, desc.Limit, typePath.getErrorWith(errCode))
+	// Enforce the ssz-max (payload = sign byte + magnitude), whether it is
+	// stated statically or resolved from the spec.
+	if limit := bigIntLimit(desc, ctx.exprVars, ctx.options); limit != "" {
+		errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", uint64(1+len(%s.Bytes())), %s)", varName, uintLitArg(limit))
+		ctx.appendCode(indent, "if uint64(1+len(%s.Bytes())) > %s {\n\treturn nil, %s\n}\n", varName, limit, typePath.getErrorWith(errCode))
 	}
 	// sign byte (0 = non-negative, 1 = negative) followed by the big-endian magnitude
 	ctx.appendCode(indent, "if %s.Sign() < 0 {\n\tdst = append(dst, 1)\n} else {\n\tdst = append(dst, 0)\n}\n", varName)
@@ -495,12 +502,19 @@ func (ctx *marshalContext) marshalBigInt(desc *ssztypes.TypeDescriptor, varName 
 // marshalContainer generates marshal code for SSZ container (struct) types.
 func (ctx *marshalContext) marshalContainer(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	hasDynamic := false
+	staticSize := 0
 	for _, field := range desc.ContainerDesc.Fields {
 		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 			hasDynamic = true
-			break
+			staticSize += 4
+		} else if field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr == 0 || ctx.options.WithoutDynamicExpressions {
+			staticSize += int(field.Type.Size)
 		}
 	}
+
+	// The fixed section holds the offset positions written below, so a section
+	// the target's int cannot address is refused before any of them is formed.
+	platformGuard(ctx.appendCode, indent, ctx.typePrinter, uint64(staticSize), false, "return nil, "+typePath.getErrorWith(fmt.Sprintf("sszutils.ErrPlatformOverflowFn(\"container size\", uint64(%d))", staticSize)))
 
 	if hasDynamic {
 		ctx.appendCode(indent, "dstlen := len(dst)\n")
@@ -619,16 +633,10 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 	bitlimitVar := ""
 	hasLimitVar := false
 	if sizeExpression != nil {
-		defaultValue := uint64(desc.Len)
-		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
-			if desc.BitSize > 0 {
-				defaultValue = uint64(desc.BitSize)
-			} else {
-				defaultValue = uint64(desc.Len) * 8
-			}
+		exprVar, lenErr := vectorLenVar(desc, ctx.exprVars, ctx.staticSizeVars, sizeExpression)
+		if lenErr != nil {
+			return lenErr
 		}
-
-		exprVar := ctx.exprVars.getVectorLenExprVar(*sizeExpression, defaultValue, desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0, desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0)
 
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 			bitlimitVar = exprVar

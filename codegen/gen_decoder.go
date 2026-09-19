@@ -198,7 +198,7 @@ func (ctx *decoderContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 
 	// Inline types with fastssz unmarshaler
 	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0
-	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszUnmarshaler != 0
 	useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
 	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
 		useFastSsz = true
@@ -330,7 +330,7 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 	}
 
 	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0
-	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszUnmarshaler != 0
 	useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
 	if desc.SszType == ssztypes.SszCustomType {
 		// A custom type has no structure to inline: it is reached through its
@@ -673,16 +673,10 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 	bitlimitVar := ""
 
 	if sizeExpression != nil {
-		defaultValue := uint64(desc.Len)
-		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
-			if desc.BitSize > 0 {
-				defaultValue = uint64(desc.BitSize)
-			} else {
-				defaultValue = uint64(desc.Len) * 8
-			}
+		exprVar, lenErr := vectorLenVar(desc, ctx.exprVars, ctx.staticSizeVars, sizeExpression)
+		if lenErr != nil {
+			return lenErr
 		}
-
-		exprVar := ctx.exprVars.getVectorLenExprVar(*sizeExpression, defaultValue, desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0, desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0)
 
 		// The decode arithmetic below runs in the int domain, so the resolved
 		// limit binds once as int and every use stays plain.
@@ -1215,8 +1209,8 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 			}
 			errCode = fmt.Sprintf("sszutils.ErrListRegionTooSmallFn(itemCount, %s, sszLen-int(startOffset))", uintLitArg(minElemSize))
 			regionCmp := fmt.Sprintf("uint64(itemCount) > uint64(sszLen-int(startOffset))/(%s)", minElemSize)
-			if _, lerr := strconv.ParseUint(minElemSize, 10, 64); lerr == nil {
-				regionCmp = fmt.Sprintf("itemCount > (sszLen-int(startOffset))/(%s)", intLitStr(minElemSize))
+			if _, lerr := strconv.ParseUint(minElemSize, 10, 64); lerr == nil && !bigLiteral(minElemSize) {
+				regionCmp = fmt.Sprintf("itemCount > (sszLen-int(startOffset))/(%s)", minElemSize)
 			}
 			ctx.appendCode(indent, "if dec.LengthKnown() && %s%s {\n\treturn %s\n}\n", guard, regionCmp, typePath.getErrorWith(errCode))
 		}
@@ -1520,15 +1514,15 @@ func (ctx *decoderContext) unmarshalBigInt(desc *ssztypes.TypeDescriptor, varNam
 	emptyErr := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"big.Int payload must contain at least a sign byte\")"
 	leadZeroErr := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"non-canonical big.Int magnitude with leading zero\")"
 	negZeroErr := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"non-canonical negative zero big.Int\")"
-	// Enforce a static ssz-max before reading the region, symmetrically with
-	// the buffer path; dynamic limits (dynssz-max expressions) stay unchecked.
+	// Enforce the ssz-max before reading the region, symmetrically with the
+	// buffer path, whether the limit is static or resolved from the spec.
 	bigIntMaxArg := "-1"
-	if desc.MaxExpression == nil && desc.Limit > 0 {
-		limitErr := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", dec.GetLength(), %s)", uintLitArg(fmt.Sprintf("%d", desc.Limit)))
-		ctx.appendCode(indent, "if dec.LengthKnown() && uint64(dec.GetLength()) > %d {\n\treturn %s\n}\n", desc.Limit, typePath.getErrorWith(limitErr))
+	if limit := bigIntLimit(desc, ctx.exprVars, ctx.options); limit != "" {
+		limitErr := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", dec.GetLength(), %s)", uintLitArg(limit))
+		ctx.appendCode(indent, "if dec.LengthKnown() && uint64(dec.GetLength()) > %s {\n\treturn %s\n}\n", limit, typePath.getErrorWith(limitErr))
 		// The read cap is an int; a limit past the platform's range caps to
 		// it, which the comparison above has already shown the region to fit.
-		bigIntMaxArg = intLitStr(fmt.Sprintf("%d", desc.Limit))
+		bigIntMaxArg = intCapExpr(limit)
 	}
 	// The magnitude has no internal framing, so the payload runs to the region
 	// end -- only discoverable at EOF when the region is open. The ssz-max bound

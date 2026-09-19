@@ -104,6 +104,17 @@ var (
 	// ExtendedTypes flag on the TypeCache.
 	ErrExtendedTypeDisabled = fmt.Errorf("extended type not enabled")
 
+	// ErrScopeShapeMismatch is returned when a hashing scope is reduced in a
+	// different tree shape than it was opened for: opened for the progressive
+	// shape and reduced as a binary tree, or the reverse. The two shapes
+	// disagree about what the accumulated chunks mean, so the reduction has no
+	// defined answer -- for a progressive scope reduced as binary it even
+	// depends on the collapse hints received, which are optional by contract.
+	// A scope that declares no shape, opened with Index or with
+	// TreeTypeNone, may be reduced either way: that is how generated code
+	// before StartTree spells a progressive container.
+	ErrScopeShapeMismatch = fmt.Errorf("scope reduced in a shape it was not opened for")
+
 	// ErrMissingInterface is returned when a required method or interface
 	// is not found on a type (e.g. missing GetDescriptorType method,
 	// custom type without fastssz marshaler/hasher).

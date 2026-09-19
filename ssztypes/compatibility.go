@@ -17,7 +17,12 @@ var (
 	byteType   = reflect.TypeOf(byte(0))
 	bigIntType = reflect.TypeOf(big.Int{})
 )
-var sszMarshalerType = reflect.TypeOf((*sszutils.FastsszMarshaler)(nil)).Elem()
+
+// Each delegate method is probed through its own interface, so a type is
+// delegated to for the operations it can serve rather than for a whole family.
+var sszValueMarshalerType = reflect.TypeOf((*sszutils.FastsszValueMarshaler)(nil)).Elem()
+var sszBufferMarshalerType = reflect.TypeOf((*sszutils.FastsszBufferMarshaler)(nil)).Elem()
+var sszSizerType = reflect.TypeOf((*sszutils.FastsszSizer)(nil)).Elem()
 var sszUnmarshalerType = reflect.TypeOf((*sszutils.FastsszUnmarshaler)(nil)).Elem()
 var sszHashRootType = reflect.TypeOf((*sszutils.FastsszHashRoot)(nil)).Elem()
 var hashWalkerType = reflect.TypeOf((*sszutils.HashWalker)(nil)).Elem()
@@ -44,7 +49,7 @@ var delegationMethodNames = []string{
 	"MarshalSSZEncoder", "UnmarshalSSZDecoder",
 	"MarshalSSZDynView", "UnmarshalSSZDynView", "SizeSSZDynView", "HashTreeRootWithDynView",
 	"MarshalSSZEncoderView", "UnmarshalSSZDecoderView",
-	"MarshalSSZTo", "UnmarshalSSZ", "SizeSSZ", "HashTreeRoot", "HashTreeRootWith",
+	"MarshalSSZ", "MarshalSSZTo", "UnmarshalSSZ", "SizeSSZ", "HashTreeRoot", "HashTreeRootWith",
 }
 
 // PromotedDelegationMethods returns the SSZ delegation methods a struct type
@@ -144,11 +149,26 @@ func methodIsPromotedWrapper(method *reflect.Method) bool {
 //   or referenced types, is evaluated to ensure it aligns with fastssz's requirements for static encoding and decoding.
 //
 // Returns:
-// - A boolean indicating whether the type is compatible with fastssz's static encoding and decoding.
+// - The flag set naming each fastssz-style method the type provides.
 
-func getFastsszConvertCompatibility(targetType reflect.Type) bool {
+func getFastsszCompatFlags(targetType reflect.Type) SszCompatFlag {
 	targetPtrType := reflect.New(targetType).Type()
-	return targetPtrType.Implements(sszMarshalerType) && targetPtrType.Implements(sszUnmarshalerType)
+
+	var flags SszCompatFlag
+	if targetPtrType.Implements(sszValueMarshalerType) {
+		flags |= SszCompatFlagFastsszValueMarshaler
+	}
+	if targetPtrType.Implements(sszBufferMarshalerType) {
+		flags |= SszCompatFlagFastsszBufferMarshaler
+	}
+	if targetPtrType.Implements(sszSizerType) {
+		flags |= SszCompatFlagFastsszSizer
+	}
+	if targetPtrType.Implements(sszUnmarshalerType) {
+		flags |= SszCompatFlagFastsszUnmarshaler
+	}
+
+	return flags
 }
 
 // getFastsszHashCompatibility evaluates the compatibility of a given type with fastssz's HashRoot interface, determining whether

@@ -1249,16 +1249,18 @@ func TestTreeFromNodesWithMixinLimitBelowCount(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Only the first two leaves fit under a limit of 2.
-	reference, err := TreeFromNodesWithMixin(nodes[:2], 8, 2)
+	// No depth holds more leaves than the limit allows, so the tree takes the
+	// depth the leaves need and every one of them reaches the root.
+	reference, err := TreeFromNodesWithMixin(nodes, 8, 8)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !bytes.Equal(tree.Hash(), reference.Hash()) {
-		t.Errorf("over-capacity root mismatch: %x != %x", tree.Hash(), reference.Hash())
+		t.Errorf("over-capacity root %x, want the root of every leaf %x", tree.Hash(), reference.Hash())
 	}
 
-	// The leaves that do not fit make no difference to the root.
+	// A leaf past the limit is part of the value, so it moves the root: two
+	// values that differ there cannot share one.
 	altered := make([]*Node, len(nodes))
 	copy(altered, nodes)
 	altered[7] = NewNodeWithValue([]byte{0xff})
@@ -1266,8 +1268,8 @@ func TestTreeFromNodesWithMixinLimitBelowCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !bytes.Equal(tree.Hash(), alt.Hash()) {
-		t.Errorf("a leaf outside the limit changed the root")
+	if bytes.Equal(tree.Hash(), alt.Hash()) {
+		t.Errorf("a leaf past the limit left the root unchanged")
 	}
 }
 
@@ -3244,5 +3246,38 @@ func TestLeafEmptyOnlyForPadding(t *testing.T) {
 	}
 	if _, err := root.Prove(2); err != nil {
 		t.Fatalf("proof of the zero-valued leaf: %v", err)
+	}
+}
+
+// Both walkers refuse a failing hash function. The walkers are required to
+// agree, and a root one of them builds from bytes the hash function never
+// produced would be a silent disagreement: the tree reports the failure, so
+// the hasher does too.
+func TestBothWalkersRefuseAFailingHashFn(t *testing.T) {
+	backend := errors.New("hash backend unavailable")
+	failing := func(_, _ []byte) error { return backend }
+
+	fill := func(w sszutils.HashWalker) {
+		idx := w.Index()
+		for i := 0; i < 32; i++ {
+			w.PutUint64(uint64(i))
+		}
+		w.Merkleize(idx)
+	}
+
+	hh := hasher.NewHasherWithHashFn(failing)
+	fill(hh)
+	if _, err := hh.HashRoot(); !errors.Is(err, backend) {
+		t.Fatalf("hasher.HashRoot err = %v, want %v", err, backend)
+	}
+
+	w := NewWrapper()
+	fill(w)
+	root, err := w.Root()
+	if err != nil {
+		t.Fatalf("Root: %v", err)
+	}
+	if err := root.Finalize(WithHashFn(failing)); !errors.Is(err, backend) {
+		t.Fatalf("Finalize err = %v, want %v", err, backend)
 	}
 }

@@ -2,7 +2,9 @@ package tests
 
 import (
 	"encoding/binary"
+	"errors"
 	"math/big"
+	"sync/atomic"
 	"time"
 
 	dynssz "github.com/pk910/dynamic-ssz"
@@ -2619,6 +2621,25 @@ type WideOptional struct {
 	O *WideOptionalInner `ssz-type:"optional"`
 }
 
+// WideUnionVariants carries a declared size no 32-bit target can hold inside a
+// union variant, where the variant's length check and its size are formed from
+// that declaration.
+type WideUnionVariants struct {
+	A WideOptionalInner
+	B uint64
+}
+
+type WideUnionHolder struct {
+	U dynssz.CompatibleUnion[WideUnionVariants] `ssz-type:"compatible-union"`
+}
+
+// WideExprAfterStatic puts a spec-sized field behind a wide static one, so the
+// fixed section's byte positions are formed from that declaration.
+type WideExprAfterStatic struct {
+	S []byte `ssz-size:"3000000000"`
+	E []byte `ssz-size:"32" dynssz-size:"SPEC"`
+}
+
 type WideSplitStatics struct {
 	D1 []byte `ssz-max:"8"`
 	S1 []byte `ssz-size:"1500000000"`
@@ -2767,6 +2788,73 @@ type CustomPairFieldRefl struct {
 // CustomPairListRefl is the same shape without generated methods.
 type CustomPairListRefl struct {
 	L []customPair `ssz-max:"8"`
+}
+
+// dynWidthCustom is a delegated custom type whose width one spec value
+// supplies: two bytes by default, whatever WIDTH says otherwise. A width that
+// is not a literal makes the value composite, so it takes a leaf of its own
+// rather than packing with its neighbours.
+type dynWidthCustom [4]byte
+
+var _ = sszutils.Annotate[dynWidthCustom](`ssz-type:"custom" ssz-static:"true" ssz-size:"2" dynssz-size:"WIDTH"`)
+
+func dynWidthOf(ds sszutils.DynamicSpecs) (int, error) {
+	w, err := sszutils.ResolveSpecValueWithDefault(ds, "WIDTH", 2)
+	if err != nil {
+		return 0, err
+	}
+	// The width has to fit the four bytes this type holds, which is also what
+	// makes the narrowing below safe.
+	if w > 4 {
+		return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "WIDTH %d exceeds the four bytes of this type", w)
+	}
+	return int(w), nil
+}
+
+func (*dynWidthCustom) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
+	w, err := dynWidthOf(ds)
+	if err != nil {
+		return 0
+	}
+	return w
+}
+
+func (v *dynWidthCustom) MarshalSSZDyn(ds sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	w, err := dynWidthOf(ds)
+	if err != nil {
+		return nil, err
+	}
+	return append(b, v[:w]...), nil
+}
+
+func (v *dynWidthCustom) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, b []byte) error {
+	w, err := dynWidthOf(ds)
+	if err != nil {
+		return err
+	}
+	if len(b) != w {
+		return sszutils.ErrUnexpectedEOF
+	}
+	copy(v[:], b)
+	return nil
+}
+
+func (v *dynWidthCustom) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, h sszutils.HashWalker) error {
+	w, err := dynWidthOf(ds)
+	if err != nil {
+		return err
+	}
+	h.Append(v[:w])
+	return nil
+}
+
+type DynWidthList struct {
+	L []dynWidthCustom `ssz-max:"17"`
+}
+
+// DynWidthListRefl is the same shape without generated methods.
+type DynWidthListRefl struct {
+	L []dynWidthCustom `ssz-max:"17"`
 }
 
 // declaredU64 is a Go array declaring a uint64 shape, a width its Go kind
@@ -5310,4 +5398,275 @@ type DynVecDeclared struct {
 // BigIntLimit carries a bigint limit past the 32-bit int range.
 type BigIntLimit struct {
 	B *big.Int `ssz-type:"bigint" ssz-max:"4294967296"`
+}
+
+// BigIntSpecLimit states its bigint limit through the spec, with the static
+// value as the fallback the generator bakes when no spec resolves it.
+type BigIntSpecLimit struct {
+	B *big.Int `ssz-type:"bigint" ssz-max:"5" dynssz-max:"BIGINT_SPEC_MAX"`
+}
+
+// The probe fixtures carry different subsets of the fastssz-style methods, so a
+// test can tell which method each engine reaches for. Every method encodes what
+// walking the type would encode, so delegation is invisible in the output and
+// only the counters below distinguish the paths.
+var (
+	ProbeMarshalSSZCalls   atomic.Int64
+	ProbeMarshalSSZToCalls atomic.Int64
+	ProbeSizeSSZCalls      atomic.Int64
+	ProbeUnmarshalSSZCalls atomic.Int64
+)
+
+// ResetProbeCounts clears the probe call counters.
+func ResetProbeCounts() {
+	ProbeMarshalSSZCalls.Store(0)
+	ProbeMarshalSSZToCalls.Store(0)
+	ProbeSizeSSZCalls.Store(0)
+	ProbeUnmarshalSSZCalls.Store(0)
+}
+
+// ProbeMarshalOnly carries MarshalSSZ and nothing else, so marshalling reaches
+// it only through the buffer-returning fallback.
+type ProbeMarshalOnly struct {
+	V uint64
+}
+
+func (t *ProbeMarshalOnly) MarshalSSZ() ([]byte, error) {
+	ProbeMarshalSSZCalls.Add(1)
+	return binary.LittleEndian.AppendUint64(nil, t.V), nil
+}
+
+// ProbeStaticSurface carries the three methods generated code calls, without
+// MarshalSSZ.
+type ProbeStaticSurface struct {
+	V uint64
+}
+
+func (t *ProbeStaticSurface) MarshalSSZTo(dst []byte) ([]byte, error) {
+	ProbeMarshalSSZToCalls.Add(1)
+	return binary.LittleEndian.AppendUint64(dst, t.V), nil
+}
+
+func (t *ProbeStaticSurface) SizeSSZ() int {
+	ProbeSizeSSZCalls.Add(1)
+	return 8
+}
+
+func (t *ProbeStaticSurface) UnmarshalSSZ(buf []byte) error {
+	ProbeUnmarshalSSZCalls.Add(1)
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	t.V = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+
+// ProbeNoSizer marshals and unmarshals through its own methods and leaves
+// sizing to the walk.
+type ProbeNoSizer struct {
+	V uint64
+}
+
+func (t *ProbeNoSizer) MarshalSSZTo(dst []byte) ([]byte, error) {
+	ProbeMarshalSSZToCalls.Add(1)
+	return binary.LittleEndian.AppendUint64(dst, t.V), nil
+}
+
+func (t *ProbeNoSizer) UnmarshalSSZ(buf []byte) error {
+	ProbeUnmarshalSSZCalls.Add(1)
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	t.V = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+
+// ProbeFullFastssz carries the whole fastssz surface, as a fastssz-generated
+// type does.
+type ProbeFullFastssz struct {
+	V uint64
+}
+
+func (t *ProbeFullFastssz) MarshalSSZ() ([]byte, error) {
+	ProbeMarshalSSZCalls.Add(1)
+	return binary.LittleEndian.AppendUint64(nil, t.V), nil
+}
+
+func (t *ProbeFullFastssz) MarshalSSZTo(dst []byte) ([]byte, error) {
+	ProbeMarshalSSZToCalls.Add(1)
+	return binary.LittleEndian.AppendUint64(dst, t.V), nil
+}
+
+func (t *ProbeFullFastssz) SizeSSZ() int {
+	ProbeSizeSSZCalls.Add(1)
+	return 8
+}
+
+func (t *ProbeFullFastssz) UnmarshalSSZ(buf []byte) error {
+	ProbeUnmarshalSSZCalls.Add(1)
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	t.V = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+
+func (t *ProbeFullFastssz) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:8], t.V)
+	return root, nil
+}
+
+// ProbePromotedInner provides the static surface to whatever embeds it.
+type ProbePromotedInner struct {
+	V uint64
+}
+
+func (t *ProbePromotedInner) MarshalSSZTo(dst []byte) ([]byte, error) {
+	ProbeMarshalSSZToCalls.Add(1)
+	return binary.LittleEndian.AppendUint64(dst, t.V), nil
+}
+
+func (t *ProbePromotedInner) SizeSSZ() int {
+	ProbeSizeSSZCalls.Add(1)
+	return 8
+}
+
+func (t *ProbePromotedInner) UnmarshalSSZ(buf []byte) error {
+	ProbeUnmarshalSSZCalls.Add(1)
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	t.V = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+
+// ProbePromoted reaches the inner type's methods by promotion, so they answer
+// for the embedded value and not for this one.
+type ProbePromoted struct {
+	ProbePromotedInner
+	W uint64
+}
+
+// ProbeDynamicSizer is variable-size, so its width is known only by asking it.
+type ProbeDynamicSizer struct {
+	V []byte `ssz-max:"32"`
+}
+
+func (t *ProbeDynamicSizer) MarshalSSZTo(dst []byte) ([]byte, error) {
+	ProbeMarshalSSZToCalls.Add(1)
+	dst = binary.LittleEndian.AppendUint32(dst, 4)
+	return append(dst, t.V...), nil
+}
+
+func (t *ProbeDynamicSizer) SizeSSZ() int {
+	ProbeSizeSSZCalls.Add(1)
+	return 4 + len(t.V)
+}
+
+func (t *ProbeDynamicSizer) UnmarshalSSZ(buf []byte) error {
+	ProbeUnmarshalSSZCalls.Add(1)
+	if len(buf) < 4 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	t.V = append([]byte(nil), buf[4:]...)
+	return nil
+}
+
+// ErrProbeMarshal is what ProbeMarshalFails reports.
+var ErrProbeMarshal = errors.New("probe marshal failed")
+
+// ProbeMarshalFails fails in the only marshalling method it has, so the error
+// travels back through the buffer-returning fallback.
+type ProbeMarshalFails struct {
+	V uint64
+}
+
+func (t *ProbeMarshalFails) MarshalSSZ() ([]byte, error) {
+	ProbeMarshalSSZCalls.Add(1)
+	return nil, ErrProbeMarshal
+}
+
+// ProbeFailHolder reaches the failing probe through generated code.
+type ProbeFailHolder struct {
+	A ProbeMarshalFails
+}
+
+// ProbeFailWalkHolder reaches it through the reflection walk.
+type ProbeFailWalkHolder struct {
+	A ProbeMarshalFails
+}
+
+// ProbePromotedValueInner gives whatever embeds it a MarshalSSZ and nothing
+// else, the shape that reaches the promotion rule through a single method.
+type ProbePromotedValueInner struct {
+	V uint64
+}
+
+func (t *ProbePromotedValueInner) MarshalSSZ() ([]byte, error) {
+	ProbeMarshalSSZCalls.Add(1)
+	return binary.LittleEndian.AppendUint64(nil, t.V), nil
+}
+
+// ProbePromotedValue reaches MarshalSSZ by promotion, so it must be walked:
+// the promoted method answers for the embedded value and would drop W.
+type ProbePromotedValue struct {
+	ProbePromotedValueInner
+	W uint64
+}
+
+// ProbeMixedPromotionInner contributes a promoted sizer.
+type ProbeMixedPromotionInner struct {
+	V uint64
+}
+
+func (t *ProbeMixedPromotionInner) SizeSSZ() int {
+	ProbeSizeSSZCalls.Add(1)
+	return 8
+}
+
+// ProbeMixedPromotion declares one static method itself and reaches another by
+// promotion. Mixing them would measure the embedded value and marshal this one,
+// so neither may be used.
+type ProbeMixedPromotion struct {
+	ProbeMixedPromotionInner
+	W uint64
+}
+
+func (t *ProbeMixedPromotion) MarshalSSZTo(dst []byte) ([]byte, error) {
+	ProbeMarshalSSZToCalls.Add(1)
+	dst = binary.LittleEndian.AppendUint64(dst, t.V)
+	return binary.LittleEndian.AppendUint64(dst, t.W), nil
+}
+
+// ProbePromotionHolder carries both promotion shapes as fields.
+type ProbePromotionHolder struct {
+	A ProbePromotedValue
+	B ProbeMixedPromotion
+}
+
+// ProbeWalkHolder holds the same shapes as ProbeHolder and stays out of the
+// generation set, so it has no methods of its own for either engine to reach:
+// it is always walked, and each probe is met as a field.
+type ProbeWalkHolder struct {
+	A ProbeMarshalOnly
+	B ProbeStaticSurface
+	C ProbeNoSizer
+	D ProbeFullFastssz
+	E ProbePromoted
+	F []byte `ssz-max:"32"`
+	G ProbeDynamicSizer
+}
+
+// ProbeHolder places each probe shape where an engine has to choose a path. The
+// trailing list makes the container variable-size, so sizing walks its fields
+// instead of reading one static width.
+type ProbeHolder struct {
+	A ProbeMarshalOnly
+	B ProbeStaticSurface
+	C ProbeNoSizer
+	D ProbeFullFastssz
+	E ProbePromoted
+	F []byte `ssz-max:"32"`
+	G ProbeDynamicSizer
 }

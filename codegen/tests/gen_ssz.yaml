@@ -252,6 +252,10 @@ types:
     output: gen_edgecases.go
   - name: WideDynList
     output: gen_edgecases.go
+  - name: WideUnionHolder
+    output: gen_edgecases.go
+  - name: WideExprAfterStatic
+    output: gen_edgecases.go
   - name: WideSplitStatics
     output: gen_edgecases.go
   - name: WideListHolder
@@ -269,6 +273,8 @@ types:
   - name: PartialScopeHolder
     output: gen_edgecases.go
   - name: CustomPairList
+    output: gen_edgecases.go
+  - name: DynWidthList
     output: gen_edgecases.go
   - name: CustomPairField
     output: gen_edgecases.go
@@ -393,4 +399,8 @@ types:
   - name: WideByteCustomHolder
     output: gen_edgecases.go
   - name: GenCovCustomHolder2
+    output: gen_edgecases.go
+  - name: ProbeHolder
+    output: gen_edgecases.go
+  - name: ProbeFailHolder
     output: gen_edgecases.go

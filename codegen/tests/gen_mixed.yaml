@@ -19,3 +19,5 @@ types:
   - name: DynVecDeclared
   - name: BigIntLimit
     with-extended-types: true
+  - name: BigIntSpecLimit
+    with-extended-types: true

@@ -107,8 +107,7 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 		if !ctx.usedDynSpecs {
 			appendCode(codeBuilder, 0, "// UnmarshalSSZ unmarshals the %s from SSZ-encoded bytes.\n", typeName)
 			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "UnmarshalSSZ", "buf []byte", "buf", "err error", depthFailErr(ctx.recursion), false)
-			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
-			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
+			emitPreludes(codeBuilder, ctx.exprVars, ctx.staticSizeVars)
 			appendCode(codeBuilder, 1, codeBuf.String())
 			appendCode(codeBuilder, 1, "return nil\n")
 			appendCode(codeBuilder, 0, "}\n\n")
@@ -131,8 +130,7 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 				appendCode(codeBuilder, 0, "// UnmarshalSSZDyn unmarshals the %s from SSZ-encoded bytes using dynamic specifications.\n", typeName)
 			}
 			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, buf []byte", "ds, buf", "err error", depthFailErr(ctx.recursion), false)
-			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
-			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
+			emitPreludes(codeBuilder, ctx.exprVars, ctx.staticSizeVars)
 			appendCode(codeBuilder, 1, codeBuf.String())
 			appendCode(codeBuilder, 1, "return nil\n")
 			appendCode(codeBuilder, 0, "}\n\n")
@@ -225,7 +223,7 @@ func (ctx *unmarshalContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 	// Inline types with fastssz unmarshaler (or, under WithoutDynamicExpressions,
 	// any type exposing a static UnmarshalSSZ — matching unmarshalCompatType).
 	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
-	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszUnmarshaler != 0
 	useFastSsz := isFastsszUnmarshaler && !hasDynamicSize && (!ctx.options.NoFastSsz || ctx.options.WithoutDynamicExpressions)
 	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
 		useFastSsz = true
@@ -273,7 +271,7 @@ func (ctx *unmarshalContext) unmarshalViewType(desc *ssztypes.TypeDescriptor, va
 
 func (ctx *unmarshalContext) unmarshalCompatType(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) (bool, error) {
 	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
-	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszUnmarshaler != 0
 	// Under WithoutDynamicExpressions the generated code must be fully static and
 	// must never call a *Dyn method. A child exposing a static UnmarshalSSZ
 	// (every dynssz-generated child in this mode, plus external fastssz types) is
@@ -598,8 +596,12 @@ func (ctx *unmarshalContext) unmarshalOptional(desc *ssztypes.TypeDescriptor, va
 			trailErr := typePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(uint64(len(buf)) - 1 - %s)", sizeVar))
 			ctx.appendExactLenCheck(indent+1, "1+"+sizeVar, "uint64(len(buf))", eofErr, trailErr)
 		} else {
-			trailErr := typePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %s)", posLit(int(1+desc.ElemDesc.Size))))
-			ctx.appendExactLenCheck(indent+1, posLit(int(1+desc.ElemDesc.Size)), "len(buf)", eofErr, trailErr)
+			// The comparison takes the declared size as it is, against a
+			// widened length, so a size past the target's int range narrows
+			// neither the check nor the figure the error carries.
+			sizeExpr := fmt.Sprintf("%d", 1+desc.ElemDesc.Size)
+			trailErr := typePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(%s)", lenMinusExpr("len(buf)", sizeExpr)))
+			ctx.appendExactLenCheck(indent+1, sizeExpr, "len(buf)", eofErr, trailErr)
 		}
 	}
 
@@ -686,11 +688,10 @@ func (ctx *unmarshalContext) unmarshalBigInt(desc *ssztypes.TypeDescriptor, varN
 	ctx.appendCode(indent, "if len(buf) == 0 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(emptyErr))
 	// Enforce a static ssz-max symmetrically with the marshaler: an over-limit
 	// payload would decode into a value that can be neither re-encoded nor
-	// hashed. Dynamic limits (dynssz-max expressions) stay unchecked like on
-	// the marshal side.
-	if desc.MaxExpression == nil && desc.Limit > 0 {
-		limitErr := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", len(buf), %s)", uintLitArg(fmt.Sprintf("%d", desc.Limit)))
-		ctx.appendCode(indent, "if %s {\n\t\treturn %s\n\t}\n", uintCmpExpr("len(buf)", ">", fmt.Sprintf("%d", desc.Limit)), typePath.getErrorWith(limitErr))
+	// hashed, whether the limit is static or resolved.
+	if limit := bigIntLimit(desc, ctx.exprVars, ctx.options); limit != "" {
+		limitErr := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", len(buf), %s)", uintLitArg(limit))
+		ctx.appendCode(indent, "if %s {\n\t\treturn %s\n\t}\n", uintCmpExpr("len(buf)", ">", limit), typePath.getErrorWith(limitErr))
 	}
 	ctx.appendCode(indent, "if buf[0] > 1 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(signErr))
 	ctx.appendCode(indent, "if len(buf) > 1 && buf[1] == 0 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(leadZeroErr))
@@ -818,7 +819,10 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, v
 				if err != nil {
 					return err
 				}
-				ctx.appendCode(indent, "\tbuf := buf[%s%d : %s%s+%d]\n", offsetPrefix, offset, offsetPrefix, fieldSizeVar, offset)
+				// The low bound is an int position, so a literal past the
+				// target's int range is capped; the high bound is formed in
+				// the size variable's own unsigned type.
+				ctx.appendCode(indent, "\tbuf := buf[%s%s : %s%s+%d]\n", offsetPrefix, posLit(offset), offsetPrefix, fieldSizeVar, offset)
 				ctx.appendCode(indent, "\texproffset += %s\n", fieldSizeVar)
 				offsetPrefix = "exproffset+"
 			} else {
@@ -907,16 +911,10 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 	needExpression := desc.GoTypeFlags&ssztypes.GoTypeFlagIsString == 0 || !noBufCheck
 
 	if sizeExpression != nil && needExpression {
-		defaultValue := uint64(desc.Len)
-		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
-			if desc.BitSize > 0 {
-				defaultValue = uint64(desc.BitSize)
-			} else {
-				defaultValue = uint64(desc.Len) * 8
-			}
+		exprVar, lenErr := vectorLenVar(desc, ctx.exprVars, ctx.staticSizeVars, sizeExpression)
+		if lenErr != nil {
+			return lenErr
 		}
-
-		exprVar := ctx.exprVars.getVectorLenExprVar(*sizeExpression, defaultValue, desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0, desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0)
 
 		// The buffer arithmetic below runs in the int domain (len(buf) and
 		// slice bounds), so the resolved limit binds once as int and every use
@@ -1335,8 +1333,8 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 			}
 			errCode = fmt.Sprintf("sszutils.ErrListRegionTooSmallFn(itemCount, %s, len(buf)-startOffset)", uintLitArg(minElemSize))
 			regionCmp := fmt.Sprintf("uint64(itemCount) > uint64(len(buf)-startOffset)/(%s)", minElemSize)
-			if _, lerr := strconv.ParseUint(minElemSize, 10, 64); lerr == nil {
-				regionCmp = fmt.Sprintf("itemCount > (len(buf)-startOffset)/(%s)", intLitStr(minElemSize))
+			if _, lerr := strconv.ParseUint(minElemSize, 10, 64); lerr == nil && !bigLiteral(minElemSize) {
+				regionCmp = fmt.Sprintf("itemCount > (len(buf)-startOffset)/(%s)", minElemSize)
 			}
 			ctx.appendCode(indent, "if %s%s {\n\treturn %s\n}\n", guard, regionCmp, typePath.getErrorWith(errCode))
 		}
@@ -1468,6 +1466,9 @@ func (ctx *unmarshalContext) unmarshalUnion(desc *ssztypes.TypeDescriptor, varNa
 			// static default: doing so under-/over-reads the union region for any
 			// preset whose resolved size differs from the static fallback. Compute
 			// the runtime size the same way the size/marshal paths do.
+			// The size is compared against a widened length, and reported in
+			// the same domain, so a declaration past the target's int range
+			// neither narrows the check nor the figure the error carries.
 			var sizeExpr string
 			if variantDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
 				sizeVar, serr := ctx.staticSizeVars.getStaticSizeVar(variantDesc)
@@ -1478,8 +1479,12 @@ func (ctx *unmarshalContext) unmarshalUnion(desc *ssztypes.TypeDescriptor, varNa
 			} else {
 				sizeExpr = fmt.Sprintf("%d", 1+elemSize)
 			}
-			eofErr := childTypePath.getErrorWith(fmt.Sprintf("sszutils.ErrUnionVariantEOFFn(len(buf), %s)", sizeExpr))
-			trailErr := childTypePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - (%s))", sizeExpr))
+			trailExpr := fmt.Sprintf("len(buf) - (%s)", sizeExpr)
+			if bigLiteral(sizeExpr) {
+				trailExpr = lenMinusExpr("len(buf)", sizeExpr)
+			}
+			eofErr := childTypePath.getErrorWith(fmt.Sprintf("sszutils.ErrUnionVariantEOFFn(len(buf), %s)", uintLitArg(sizeExpr)))
+			trailErr := childTypePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(%s)", trailExpr))
 			ctx.appendExactLenCheck(indent+1, sizeExpr, "len(buf)", eofErr, trailErr)
 		}
 

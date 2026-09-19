@@ -10,16 +10,15 @@ import (
 
 	"github.com/ethpandaops/go-eth2-client/spec/altair"
 	"github.com/ethpandaops/go-eth2-client/spec/capella"
-	"github.com/ethpandaops/go-eth2-client/spec/deneb"
 	"github.com/ethpandaops/go-eth2-client/spec/electra"
-	"github.com/ethpandaops/go-eth2-client/spec/fulu"
+	"github.com/ethpandaops/go-eth2-client/spec/gloas"
 	"github.com/ethpandaops/go-eth2-client/spec/phase0"
 	"github.com/pk910/dynamic-ssz/spectests/codegen"
 	codegen_views "github.com/pk910/dynamic-ssz/spectests/codegen-views"
 )
 
-// TestConsensusSpecFulu tests the types against the Ethereum consensus spec tests.
-func TestConsensusSpecFulu(t *testing.T) {
+// TestConsensusSpecGloas tests the types against the Ethereum consensus spec tests.
+func TestConsensusSpecGloas(t *testing.T) {
 	if os.Getenv("CONSENSUS_SPEC_TESTS_DIR") == "" {
 		t.Skip("CONSENSUS_SPEC_TESTS_DIR not supplied, not running spec tests")
 	}
@@ -27,15 +26,15 @@ func TestConsensusSpecFulu(t *testing.T) {
 	tests := []SpecTestStruct{
 		{
 			name: "AggregateAndProof",
-			s:    &electra.AggregateAndProof{},
-			s2:   &codegen.ElectraAggregateAndProof{},
-			s3:   []any{&codegen_views.AggregateAndProof{}, &codegen_views.ElectraAggregateAndProof{}},
+			s:    &gloas.AggregateAndProof{},
+			s2:   &codegen.GloasAggregateAndProof{},
+			s3:   []any{&codegen_views.AggregateAndProof{}, &codegen_views.GloasAggregateAndProof{}},
 		},
 		{
 			name: "Attestation",
-			s:    &electra.Attestation{},
-			s2:   &codegen.ElectraAttestation{},
-			s3:   []any{&codegen_views.Attestation{}, &codegen_views.ElectraAttestation{}},
+			s:    &gloas.Attestation{},
+			s2:   &codegen.GloasAttestation{},
+			s3:   []any{&codegen_views.Attestation{}, &codegen_views.GloasAttestation{}},
 		},
 		{
 			name: "AttestationData",
@@ -45,21 +44,21 @@ func TestConsensusSpecFulu(t *testing.T) {
 		},
 		{
 			name: "AttesterSlashing",
-			s:    &electra.AttesterSlashing{},
-			s2:   &codegen.ElectraAttesterSlashing{},
-			s3:   []any{&codegen_views.AttesterSlashing{}, &codegen_views.ElectraAttesterSlashing{}},
+			s:    &gloas.AttesterSlashing{},
+			s2:   &codegen.GloasAttesterSlashing{},
+			s3:   []any{&codegen_views.AttesterSlashing{}, &codegen_views.GloasAttesterSlashing{}},
 		},
 		{
 			name: "BeaconBlock",
-			s:    &electra.BeaconBlock{},
-			s2:   &codegen.ElectraBeaconBlock{},
-			s3:   []any{&codegen_views.BeaconBlock{}, &codegen_views.ElectraBeaconBlock{}},
+			s:    &gloas.BeaconBlock{},
+			s2:   &codegen.GloasBeaconBlock{},
+			s3:   []any{&codegen_views.BeaconBlock{}, &codegen_views.GloasBeaconBlock{}},
 		},
 		{
 			name: "BeaconBlockBody",
-			s:    &electra.BeaconBlockBody{},
-			s2:   &codegen.ElectraBeaconBlockBody{},
-			s3:   []any{&codegen_views.BeaconBlockBody{}, &codegen_views.ElectraBeaconBlockBody{}},
+			s:    &gloas.BeaconBlockBody{},
+			s2:   &codegen.GloasBeaconBlockBody{},
+			s3:   []any{&codegen_views.BeaconBlockBody{}, &codegen_views.GloasBeaconBlockBody{}},
 		},
 		{
 			name: "BeaconBlockHeader",
@@ -69,21 +68,9 @@ func TestConsensusSpecFulu(t *testing.T) {
 		},
 		{
 			name: "BeaconState",
-			s:    &fulu.BeaconState{},
-			s2:   &codegen.FuluBeaconState{},
-			s3:   []any{&codegen_views.BeaconState{}, &codegen_views.FuluBeaconState{}},
-		},
-		{
-			name: "BlobIdentifier",
-			s:    &deneb.BlobIdentifier{},
-			s2:   &codegen.DenebBlobIdentifier{},
-			s3:   []any{&codegen_views.BlobIdentifier{}, &codegen_views.DenebBlobIdentifier{}},
-		},
-		{
-			name: "BlobSidecar",
-			s:    &deneb.BlobSidecar{},
-			s2:   &codegen.DenebBlobSidecar{},
-			s3:   []any{&codegen_views.BlobSidecar{}, &codegen_views.DenebBlobSidecar{}},
+			s:    &gloas.BeaconState{},
+			s2:   &codegen.GloasBeaconState{},
+			s3:   []any{&codegen_views.BeaconState{}, &codegen_views.GloasBeaconState{}},
 		},
 		{
 			name: "BLSToExecutionChange",
@@ -92,16 +79,40 @@ func TestConsensusSpecFulu(t *testing.T) {
 			s3:   []any{&codegen_views.BLSToExecutionChange{}, &codegen_views.CapellaBLSToExecutionChange{}},
 		},
 		{
+			name: "Builder",
+			s:    &gloas.Builder{},
+			s2:   &codegen.GloasBuilder{},
+			s3:   []any{&codegen_views.Builder{}, &codegen_views.GloasBuilder{}},
+		},
+		{
+			name: "BuilderDepositRequest",
+			s:    &gloas.BuilderDepositRequest{},
+			s2:   &codegen.GloasBuilderDepositRequest{},
+			s3:   []any{&codegen_views.BuilderDepositRequest{}, &codegen_views.GloasBuilderDepositRequest{}},
+		},
+		{
+			name: "BuilderExitRequest",
+			s:    &gloas.BuilderExitRequest{},
+			s2:   &codegen.GloasBuilderExitRequest{},
+			s3:   []any{&codegen_views.BuilderExitRequest{}, &codegen_views.GloasBuilderExitRequest{}},
+		},
+		{
+			name: "BuilderPendingPayment",
+			s:    &gloas.BuilderPendingPayment{},
+			s2:   &codegen.GloasBuilderPendingPayment{},
+			s3:   []any{&codegen_views.BuilderPendingPayment{}, &codegen_views.GloasBuilderPendingPayment{}},
+		},
+		{
+			name: "BuilderPendingWithdrawal",
+			s:    &gloas.BuilderPendingWithdrawal{},
+			s2:   &codegen.GloasBuilderPendingWithdrawal{},
+			s3:   []any{&codegen_views.BuilderPendingWithdrawal{}, &codegen_views.GloasBuilderPendingWithdrawal{}},
+		},
+		{
 			name: "Checkpoint",
 			s:    &phase0.Checkpoint{},
 			s2:   &codegen.Checkpoint{},
 			s3:   []any{&codegen_views.Checkpoint{}, &codegen_views.Phase0Checkpoint{}},
-		},
-		{
-			name: "Consolidation",
-			s:    &electra.Consolidation{},
-			s2:   &codegen.ElectraConsolidation{},
-			s3:   []any{&codegen_views.Consolidation{}, &codegen_views.ElectraConsolidation{}},
 		},
 		{
 			name: "ConsolidationRequest",
@@ -128,16 +139,16 @@ func TestConsensusSpecFulu(t *testing.T) {
 			s3:   []any{&codegen_views.DepositData{}, &codegen_views.Phase0DepositData{}},
 		},
 		{
-			name: "DepositRequest",
-			s:    &electra.DepositRequest{},
-			s2:   &codegen.ElectraDepositRequest{},
-			s3:   []any{&codegen_views.DepositRequest{}, &codegen_views.ElectraDepositRequest{}},
-		},
-		{
 			name: "DepositMessage",
 			s:    &phase0.DepositMessage{},
 			s2:   &codegen.DepositMessage{},
 			s3:   []any{&codegen_views.DepositMessage{}, &codegen_views.Phase0DepositMessage{}},
+		},
+		{
+			name: "DepositRequest",
+			s:    &electra.DepositRequest{},
+			s2:   &codegen.ElectraDepositRequest{},
+			s3:   []any{&codegen_views.DepositRequest{}, &codegen_views.ElectraDepositRequest{}},
 		},
 		{
 			name: "Eth1Data",
@@ -146,10 +157,28 @@ func TestConsensusSpecFulu(t *testing.T) {
 			s3:   []any{&codegen_views.ETH1Data{}, &codegen_views.Phase0ETH1Data{}},
 		},
 		{
+			name: "ExecutionPayload",
+			s:    &gloas.ExecutionPayload{},
+			s2:   &codegen.GloasExecutionPayload{},
+			s3:   []any{&codegen_views.ExecutionPayload{}, &codegen_views.GloasExecutionPayload{}},
+		},
+		{
+			name: "ExecutionPayloadBid",
+			s:    &gloas.ExecutionPayloadBid{},
+			s2:   &codegen.GloasExecutionPayloadBid{},
+			s3:   []any{&codegen_views.ExecutionPayloadBid{}, &codegen_views.GloasExecutionPayloadBid{}},
+		},
+		{
+			name: "ExecutionPayloadEnvelope",
+			s:    &gloas.ExecutionPayloadEnvelope{},
+			s2:   &codegen.GloasExecutionPayloadEnvelope{},
+			s3:   []any{&codegen_views.ExecutionPayloadEnvelope{}, &codegen_views.GloasExecutionPayloadEnvelope{}},
+		},
+		{
 			name: "ExecutionRequests",
-			s:    &electra.ExecutionRequests{},
-			s2:   &codegen.ElectraExecutionRequests{},
-			s3:   []any{&codegen_views.ExecutionRequests{}, &codegen_views.ElectraExecutionRequests{}},
+			s:    &gloas.ExecutionRequests{},
+			s2:   &codegen.GloasExecutionRequests{},
+			s3:   []any{&codegen_views.ExecutionRequests{}, &codegen_views.GloasExecutionRequests{}},
 		},
 		{
 			name: "Fork",
@@ -171,21 +200,33 @@ func TestConsensusSpecFulu(t *testing.T) {
 		},
 		{
 			name: "IndexedAttestation",
-			s:    &electra.IndexedAttestation{},
-			s2:   &codegen.ElectraIndexedAttestation{},
-			s3:   []any{&codegen_views.IndexedAttestation{}, &codegen_views.ElectraIndexedAttestation{}},
+			s:    &gloas.IndexedAttestation{},
+			s2:   &codegen.GloasIndexedAttestation{},
+			s3:   []any{&codegen_views.IndexedAttestation{}, &codegen_views.GloasIndexedAttestation{}},
 		},
 		{
-			name: "PendingAttestation",
-			s:    &phase0.PendingAttestation{},
-			s2:   &codegen.PendingAttestation{},
-			s3:   []any{&codegen_views.PendingAttestation{}, &codegen_views.Phase0PendingAttestation{}},
+			name: "IndexedPayloadAttestation",
+			s:    &gloas.IndexedPayloadAttestation{},
+			s2:   &codegen.GloasIndexedPayloadAttestation{},
+			s3:   []any{&codegen_views.IndexedPayloadAttestation{}, &codegen_views.GloasIndexedPayloadAttestation{}},
 		},
 		{
-			name: "PendingDeposit",
-			s:    &electra.PendingDeposit{},
-			s2:   &codegen.ElectraPendingDeposit{},
-			s3:   []any{&codegen_views.PendingDeposit{}, &codegen_views.ElectraPendingDeposit{}},
+			name: "PayloadAttestation",
+			s:    &gloas.PayloadAttestation{},
+			s2:   &codegen.GloasPayloadAttestation{},
+			s3:   []any{&codegen_views.PayloadAttestation{}, &codegen_views.GloasPayloadAttestation{}},
+		},
+		{
+			name: "PayloadAttestationData",
+			s:    &gloas.PayloadAttestationData{},
+			s2:   &codegen.GloasPayloadAttestationData{},
+			s3:   []any{&codegen_views.PayloadAttestationData{}, &codegen_views.GloasPayloadAttestationData{}},
+		},
+		{
+			name: "PayloadAttestationMessage",
+			s:    &gloas.PayloadAttestationMessage{},
+			s2:   &codegen.GloasPayloadAttestationMessage{},
+			s3:   []any{&codegen_views.PayloadAttestationMessage{}, &codegen_views.GloasPayloadAttestationMessage{}},
 		},
 		{
 			name: "PendingConsolidation",
@@ -194,10 +235,22 @@ func TestConsensusSpecFulu(t *testing.T) {
 			s3:   []any{&codegen_views.PendingConsolidation{}, &codegen_views.ElectraPendingConsolidation{}},
 		},
 		{
+			name: "PendingDeposit",
+			s:    &electra.PendingDeposit{},
+			s2:   &codegen.ElectraPendingDeposit{},
+			s3:   []any{&codegen_views.PendingDeposit{}, &codegen_views.ElectraPendingDeposit{}},
+		},
+		{
 			name: "PendingPartialWithdrawal",
 			s:    &electra.PendingPartialWithdrawal{},
 			s2:   &codegen.ElectraPendingPartialWithdrawal{},
 			s3:   []any{&codegen_views.PendingPartialWithdrawal{}, &codegen_views.ElectraPendingPartialWithdrawal{}},
+		},
+		{
+			name: "ProposerPreferences",
+			s:    &gloas.ProposerPreferences{},
+			s2:   &codegen.GloasProposerPreferences{},
+			s3:   []any{&codegen_views.ProposerPreferences{}, &codegen_views.GloasProposerPreferences{}},
 		},
 		{
 			name: "ProposerSlashing",
@@ -207,15 +260,15 @@ func TestConsensusSpecFulu(t *testing.T) {
 		},
 		{
 			name: "SignedAggregateAndProof",
-			s:    &electra.SignedAggregateAndProof{},
-			s2:   &codegen.ElectraSignedAggregateAndProof{},
-			s3:   []any{&codegen_views.SignedAggregateAndProof{}, &codegen_views.ElectraSignedAggregateAndProof{}},
+			s:    &gloas.SignedAggregateAndProof{},
+			s2:   &codegen.GloasSignedAggregateAndProof{},
+			s3:   []any{&codegen_views.SignedAggregateAndProof{}, &codegen_views.GloasSignedAggregateAndProof{}},
 		},
 		{
 			name: "SignedBeaconBlock",
-			s:    &electra.SignedBeaconBlock{},
-			s2:   &codegen.ElectraSignedBeaconBlock{},
-			s3:   []any{&codegen_views.SignedBeaconBlock{}, &codegen_views.ElectraSignedBeaconBlock{}},
+			s:    &gloas.SignedBeaconBlock{},
+			s2:   &codegen.GloasSignedBeaconBlock{},
+			s3:   []any{&codegen_views.SignedBeaconBlock{}, &codegen_views.GloasSignedBeaconBlock{}},
 		},
 		{
 			name: "SignedBeaconBlockHeader",
@@ -234,6 +287,24 @@ func TestConsensusSpecFulu(t *testing.T) {
 			s:    &altair.SignedContributionAndProof{},
 			s2:   &codegen.AltairSignedContributionAndProof{},
 			s3:   []any{&codegen_views.SignedContributionAndProof{}, &codegen_views.AltairSignedContributionAndProof{}},
+		},
+		{
+			name: "SignedExecutionPayloadBid",
+			s:    &gloas.SignedExecutionPayloadBid{},
+			s2:   &codegen.GloasSignedExecutionPayloadBid{},
+			s3:   []any{&codegen_views.SignedExecutionPayloadBid{}, &codegen_views.GloasSignedExecutionPayloadBid{}},
+		},
+		{
+			name: "SignedExecutionPayloadEnvelope",
+			s:    &gloas.SignedExecutionPayloadEnvelope{},
+			s2:   &codegen.GloasSignedExecutionPayloadEnvelope{},
+			s3:   []any{&codegen_views.SignedExecutionPayloadEnvelope{}, &codegen_views.GloasSignedExecutionPayloadEnvelope{}},
+		},
+		{
+			name: "SignedProposerPreferences",
+			s:    &gloas.SignedProposerPreferences{},
+			s2:   &codegen.GloasSignedProposerPreferences{},
+			s3:   []any{&codegen_views.SignedProposerPreferences{}, &codegen_views.GloasSignedProposerPreferences{}},
 		},
 		{
 			name: "SignedVoluntaryExit",
@@ -291,9 +362,9 @@ func TestConsensusSpecFulu(t *testing.T) {
 		},
 	}
 
-	mainnetRes := runForkConsensusSpecTest(t, "fulu", "mainnet", tests)
-	minimalRes := runForkConsensusSpecTest(t, "fulu", "minimal", tests)
+	mainnetRes := runForkConsensusSpecTest(t, "gloas", "mainnet", tests)
+	minimalRes := runForkConsensusSpecTest(t, "gloas", "minimal", tests)
 	if !mainnetRes && !minimalRes {
-		t.Skipf("Fork fulu not found in test data")
+		t.Skipf("Fork gloas not found in test data")
 	}
 }

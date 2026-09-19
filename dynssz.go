@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"math"
+	"math/big"
 	"reflect"
 	"sync"
 
@@ -124,9 +124,17 @@ func NewDynSsz(specs map[string]any, options ...DynSszOption) *DynSsz {
 
 	// The caller keeps its map and may go on writing to it; a concurrent read
 	// of a map being written is fatal in Go, and this type is safe to use from
-	// several goroutines, so the library reads a copy nobody else holds.
+	// several goroutines, so the library reads a copy nobody else holds. A
+	// big.Int is the one spec value that is a pointer to something the caller
+	// can still change, so it is copied too: every other accepted value is
+	// immutable once handed over.
 	ownSpecs := make(map[string]any, len(specs))
-	maps.Copy(ownSpecs, specs)
+	for name, value := range specs {
+		if n, ok := value.(*big.Int); ok && n != nil {
+			value = new(big.Int).Set(n)
+		}
+		ownSpecs[name] = value
+	}
 
 	dynssz := &DynSsz{
 		specValues:     ownSpecs,
@@ -224,7 +232,7 @@ func (d *DynSsz) delegable(v any, method string) bool {
 //   - Arrays and slices of supported types
 //   - Structs with appropriate SSZ tags
 //   - Pointers to supported types
-//   - Types implementing fastssz.Marshaler interface
+//   - Types implementing any of the fastssz marshalling interfaces
 //
 // Example:
 //
@@ -619,11 +627,12 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 // produces, and both engines agree on it.
 //
 // For a value that does not encode -- a union holding data that does not match
-// its selector, say -- the number means nothing, and what comes back depends on
-// which engine ran. A type with generated code sizes itself through
-// DynamicSizer, which returns a bare int and so cannot report the problem; it
-// yields 0, which is indistinguishable from a value that really is zero bytes
-// long. The reflection engine returns an error instead.
+// its selector, or a list past its limit, say -- the number means nothing, and
+// what comes back depends on which engine ran. A type with generated code sizes
+// itself through DynamicSizer, which returns a bare int and so cannot report the
+// problem: it answers with whatever the shape adds up to, a plausible number
+// that no encoding of the value will ever match, or with 0 where the shape
+// itself is refused. The reflection engine returns an error instead.
 //
 // So use this to size a buffer, not to decide whether a value is encodable.
 // MarshalSSZ rejects such a value in either engine.
@@ -686,8 +695,9 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
 		return 0, err
 	}
 
-	// The type cache bounds every static size to the platform int at analysis
-	// and a delegated sizer speaks int, so the size fits.
+	// Every size is bounded to the SSZ size limit where it enters the size
+	// domain, and that limit is the platform int where the int is narrower, so
+	// the value fits: min(MaxUint32, MaxInt) can never exceed MaxInt.
 	return int(size), nil
 }
 

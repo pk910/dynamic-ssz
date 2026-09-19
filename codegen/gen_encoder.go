@@ -349,7 +349,7 @@ func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 	}
 
 	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0
-	isFastsszMarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+	isFastsszMarshaler := desc.SszCompatFlags&(ssztypes.SszCompatFlagFastsszBufferMarshaler|ssztypes.SszCompatFlagFastsszValueMarshaler) != 0
 	useFastSsz := !ctx.options.NoFastSsz && isFastsszMarshaler && !hasDynamicSize
 	if desc.SszType == ssztypes.SszCustomType {
 		// A custom type has no structure to inline: it is reached through its
@@ -360,6 +360,12 @@ func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 	}
 
 	if useFastSsz && !isRoot && !isView {
+		if desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszBufferMarshaler == 0 {
+			// A type that only marshals into a buffer of its own is appended to
+			// the encoder's, which costs an allocation and a copy.
+			ctx.appendCode(indent, "if data, err := %s.MarshalSSZ(); err != nil {\n\treturn %s\n} else {\n\tenc.SetBuffer(append(enc.GetBuffer(), data...))\n}\n", varName, typePath.getErrorWith("err"))
+			return nil
+		}
 		fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "MarshalSSZTo")
 		ctx.appendCode(indent, "if buf, err := %s.%s(enc.GetBuffer()%s); err != nil {\n\treturn %s\n} else {\n\tenc.SetBuffer(buf)\n}\n", varName, fn, arg, typePath.getErrorWith("err"))
 		return nil
@@ -566,6 +572,11 @@ func (ctx *encoderContext) marshalContainer(desc *ssztypes.TypeDescriptor, varNa
 	}
 	staticSizeVars = append(staticSizeVars, fmt.Sprintf("%d", staticSize))
 
+	// The fixed section holds the offset positions written below, so a section
+	// the target's int cannot address is refused before any of them is formed,
+	// as the buffer path refuses it.
+	platformGuard(ctx.appendCode, indent, ctx.typePrinter, uint64(staticSize), false, "return "+typePath.getErrorWith(fmt.Sprintf("sszutils.ErrPlatformOverflowFn(\"container size\", uint64(%d))", staticSize)))
+
 	if hasDynamic {
 		ctx.usedSeekable = true
 		ctx.appendCode(indent, "dstlen := enc.GetPosition()\n")
@@ -658,16 +669,10 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 	// empty for literal limits.
 	convSuppress := ""
 	if sizeExpression != nil {
-		defaultValue := uint64(desc.Len)
-		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
-			if desc.BitSize > 0 {
-				defaultValue = uint64(desc.BitSize)
-			} else {
-				defaultValue = uint64(desc.Len) * 8
-			}
+		exprVar, lenErr := vectorLenVar(desc, ctx.exprVars, ctx.staticSizeVars, sizeExpression)
+		if lenErr != nil {
+			return lenErr
 		}
-
-		exprVar := ctx.exprVars.getVectorLenExprVar(*sizeExpression, defaultValue, desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0, desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0)
 
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 			bitlimitVar = exprVar

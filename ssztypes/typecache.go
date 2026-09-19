@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/bits"
 	"reflect"
 	"slices"
 	"strings"
@@ -182,7 +183,8 @@ func (tc *TypeCache) DisableSpecResolution() {
 //	if err != nil {
 //	    log.Fatal("Failed to get type descriptor:", err)
 //	}
-//	fmt.Printf("Type size: %d bytes (dynamic: %v)\n", typeDesc.Size, typeDesc.Size < 0)
+//	fmt.Printf("Type size: %d bytes (dynamic: %v)\n", typeDesc.Size,
+//	    typeDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0)
 func (tc *TypeCache) GetTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
 	// When no view descriptor is used, runtime and schema types are the same
 	return tc.GetTypeDescriptorWithSchema(t, t, sizeHints, maxSizeHints, typeHints)
@@ -823,7 +825,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			// only taken for types that delegate through the spec-aware dynamic
 			// (or dynamic view) interfaces, so suppress the fastssz family and let
 			// those handle every operation correctly.
-			desc.SszCompatFlags &^= SszCompatFlagFastSSZMarshaler | SszCompatFlagFastSSZHasher | SszCompatFlagHashTreeRootWith
+			desc.SszCompatFlags &^= SszCompatFlagFastsszSurface | SszCompatFlagFastsszHashRoot | SszCompatFlagFastsszHashRootWith
 			desc.HashTreeRootWithMethod = nil
 			// A shallow descriptor has no traversed subtree: a static one still
 			// knows its size, a dynamic one states no floor.
@@ -1095,16 +1097,26 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			if promoted["UnmarshalSSZDecoderView"] {
 				desc.SszCompatFlags &^= SszCompatFlagDynamicViewDecoder
 			}
-			// The fastssz convert surface spans marshal and unmarshal; a
-			// promoted piece anywhere poisons the whole pair.
-			if promoted["MarshalSSZ"] || promoted["MarshalSSZTo"] || promoted["SizeSSZ"] || promoted["UnmarshalSSZ"] {
-				desc.SszCompatFlags &^= SszCompatFlagFastSSZMarshaler
+			// A promoted method answers for the embedded value, so it is never
+			// the outer type's. A method the type declares itself is, so it
+			// stays: each is cleared on its own.
+			if promoted["MarshalSSZ"] {
+				desc.SszCompatFlags &^= SszCompatFlagFastsszValueMarshaler
+			}
+			if promoted["MarshalSSZTo"] {
+				desc.SszCompatFlags &^= SszCompatFlagFastsszBufferMarshaler
+			}
+			if promoted["SizeSSZ"] {
+				desc.SszCompatFlags &^= SszCompatFlagFastsszSizer
+			}
+			if promoted["UnmarshalSSZ"] {
+				desc.SszCompatFlags &^= SszCompatFlagFastsszUnmarshaler
 			}
 			if promoted["HashTreeRoot"] {
-				desc.SszCompatFlags &^= SszCompatFlagFastSSZHasher
+				desc.SszCompatFlags &^= SszCompatFlagFastsszHashRoot
 			}
 			if promoted["HashTreeRootWith"] {
-				desc.SszCompatFlags &^= SszCompatFlagHashTreeRootWith
+				desc.SszCompatFlags &^= SszCompatFlagFastsszHashRootWith
 				desc.HashTreeRootWithMethod = nil
 			}
 		}
@@ -1120,9 +1132,9 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			SszCompatFlagDynamicHashRoot |
 			SszCompatFlagDynamicEncoder |
 			SszCompatFlagDynamicDecoder |
-			SszCompatFlagFastSSZMarshaler |
-			SszCompatFlagFastSSZHasher |
-			SszCompatFlagHashTreeRootWith
+			SszCompatFlagFastsszSurface |
+			SszCompatFlagFastsszHashRoot |
+			SszCompatFlagFastsszHashRootWith
 	}
 
 	// Optional and optional-list reshape the encoding around the inner type
@@ -1136,9 +1148,9 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			SszCompatFlagDynamicHashRoot |
 			SszCompatFlagDynamicEncoder |
 			SszCompatFlagDynamicDecoder |
-			SszCompatFlagFastSSZMarshaler |
-			SszCompatFlagFastSSZHasher |
-			SszCompatFlagHashTreeRootWith
+			SszCompatFlagFastsszSurface |
+			SszCompatFlagFastsszHashRoot |
+			SszCompatFlagFastsszHashRootWith
 	}
 
 	// Per the SSZ spec, containers (including progressive containers) must have
@@ -1154,22 +1166,21 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 
 	if desc.SszType == SszCustomType {
 		// A custom type delegates every SSZ operation to its own methods. Each
-		// operation may be served by either the fastssz method or the dynssz
+		// operation may be served by either the fastssz-style method or the dynssz
 		// (Dynamic*) equivalent, but at least one implementation per operation is
-		// required. The fastssz marshaler interface bundles marshal, unmarshal and
-		// size; the fastssz hasher covers the hash tree root.
+		// required. Marshalling accepts either fastssz-style marshal method.
 		f := desc.SszCompatFlags
 		var missing []string
-		if f&(SszCompatFlagFastSSZMarshaler|SszCompatFlagDynamicMarshaler|SszCompatFlagDynamicEncoder) == 0 {
+		if f&(SszCompatFlagFastsszBufferMarshaler|SszCompatFlagFastsszValueMarshaler|SszCompatFlagDynamicMarshaler|SszCompatFlagDynamicEncoder) == 0 {
 			missing = append(missing, "marshaler")
 		}
-		if f&(SszCompatFlagFastSSZMarshaler|SszCompatFlagDynamicUnmarshaler|SszCompatFlagDynamicDecoder) == 0 {
+		if f&(SszCompatFlagFastsszUnmarshaler|SszCompatFlagDynamicUnmarshaler|SszCompatFlagDynamicDecoder) == 0 {
 			missing = append(missing, "unmarshaler")
 		}
-		if f&(SszCompatFlagFastSSZMarshaler|SszCompatFlagDynamicSizer) == 0 {
+		if f&(SszCompatFlagFastsszSizer|SszCompatFlagDynamicSizer) == 0 {
 			missing = append(missing, "sizer")
 		}
-		if f&(SszCompatFlagFastSSZHasher|SszCompatFlagHashTreeRootWith|SszCompatFlagDynamicHashRoot) == 0 {
+		if f&(SszCompatFlagFastsszHashRoot|SszCompatFlagFastsszHashRootWith|SszCompatFlagDynamicHashRoot) == 0 {
 			missing = append(missing, "hasher")
 		}
 		if len(missing) > 0 {
@@ -1232,10 +1243,12 @@ func (td *TypeDescriptor) SetMinSize() {
 		// the element count here, not a byte size.
 		if td.ElemDesc != nil {
 			// An overflowing product would bound the region above the true floor
-			// and refuse valid input, so it states no bound instead.
-			minSize := uint64(td.Len) * (4 + uint64(td.ElemDesc.MinSize))
-			if minSize <= math.MaxInt64 {
-				td.MinSize = int64(minSize)
+			// and refuse valid input, so it states no bound instead. The product
+			// is formed in two words: checking it after it has wrapped would
+			// accept the wrapped value as a floor.
+			hi, lo := bits.Mul64(uint64(td.Len), 4+uint64(td.ElemDesc.MinSize))
+			if hi == 0 && lo <= math.MaxInt64 {
+				td.MinSize = int64(lo)
 			}
 		}
 	default:
@@ -1249,16 +1262,16 @@ func (td *TypeDescriptor) SetMinSize() {
 // and hasher are only flagged when the type does not carry a dynamic size/max,
 // since those use the static fastssz layout.
 func (tc *TypeCache) detectCompatFlags(desc *TypeDescriptor, runtimeType, schemaType reflect.Type) {
-	if desc.SszTypeFlags&SszTypeFlagHasDynamicSize == 0 && getFastsszConvertCompatibility(runtimeType) {
-		desc.SszCompatFlags |= SszCompatFlagFastSSZMarshaler
+	if desc.SszTypeFlags&SszTypeFlagHasDynamicSize == 0 {
+		desc.SszCompatFlags |= getFastsszCompatFlags(runtimeType)
 	}
 	if desc.SszTypeFlags&SszTypeFlagHasDynamicMax == 0 {
 		if getFastsszHashCompatibility(runtimeType) {
-			desc.SszCompatFlags |= SszCompatFlagFastSSZHasher
+			desc.SszCompatFlags |= SszCompatFlagFastsszHashRoot
 		}
 		if method := getHashTreeRootWithCompatibility(runtimeType); method != nil {
 			desc.HashTreeRootWithMethod = method
-			desc.SszCompatFlags |= SszCompatFlagHashTreeRootWith
+			desc.SszCompatFlags |= SszCompatFlagFastsszHashRootWith
 		}
 	}
 
@@ -1370,8 +1383,8 @@ func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType refle
 	if sizer, ok := zero.(sszutils.DynamicSizer); ok {
 		return validate(sizer.SizeSSZDyn(specs))
 	}
-	if marshaler, ok := zero.(sszutils.FastsszMarshaler); ok {
-		return validate(marshaler.SizeSSZ())
+	if sizer, ok := zero.(sszutils.FastsszSizer); ok {
+		return validate(sizer.SizeSSZ())
 	}
 	return 0, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "static type %v provides no usable sizer", runtimeType)
 }

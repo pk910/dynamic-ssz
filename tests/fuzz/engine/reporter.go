@@ -15,6 +15,7 @@ type IssueType string
 const (
 	IssuePanic           IssueType = "panic"
 	IssueMarshalMismatch IssueType = "marshal-mismatch"
+	IssueSizeMismatch    IssueType = "size-mismatch"
 	IssueHTRMismatch     IssueType = "htr-mismatch"
 	IssueStreamMismatch  IssueType = "stream-mismatch"
 	IssueUnmarshalDiff   IssueType = "unmarshal-diff"

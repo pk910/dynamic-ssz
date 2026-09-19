@@ -2394,7 +2394,7 @@ func TestRecursionSuppressesFastsszDelegation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("descriptor: %v", err)
 	}
-	if descC.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0 {
+	if descC.SszCompatFlags&ssztypes.SszCompatFlagFastsszHashRoot != 0 {
 		t.Error("fastssz hasher flag should be suppressed for a spec-dependent subtree")
 	}
 }
@@ -3703,6 +3703,72 @@ func (b *inconsistentSizeCustom) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, _ 
 
 func (b *inconsistentSizeCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
 	return nil
+}
+
+// The library reads a spec map nobody else holds: the map itself is copied,
+// and so is the one accepted value that is a pointer the caller can still
+// write through, so a write that lands before the library first resolves the
+// name does not change what it resolves.
+func TestSpecValuesAreOwned(t *testing.T) {
+	type holder struct {
+		L []uint64 `ssz-max:"2" dynssz-max:"LIMIT"`
+	}
+	v := &holder{L: []uint64{1, 2, 3}}
+
+	limit := big.NewInt(4)
+	ds := NewDynSsz(map[string]any{"LIMIT": limit})
+	// The caller goes on using the value it handed over.
+	limit.SetInt64(64)
+	got, err := ds.HashTreeRoot(v)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+
+	want, err := NewDynSsz(map[string]any{"LIMIT": big.NewInt(4)}).HashTreeRoot(v)
+	if err != nil {
+		t.Fatalf("hash with an untouched value: %v", err)
+	}
+	if got != want {
+		t.Fatalf("root = %x, want the root of the specs handed over, %x", got, want)
+	}
+}
+
+// widestCustom occupies no Go memory and declares the widest size SSZ can
+// express, so a list of it can hold more elements than that size without
+// costing anything to build.
+type widestCustom struct{}
+
+var _ = sszutils.Annotate[widestCustom](`ssz-type:"custom" ssz-static:"true"`)
+
+func (w *widestCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return int(sszutils.MaxSszSize) }
+func (w *widestCustom) MarshalSSZEncoder(_ sszutils.DynamicSpecs, _ sszutils.Encoder) error {
+	return nil
+}
+
+func (w *widestCustom) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, _ sszutils.Decoder) error {
+	return nil
+}
+
+func (w *widestCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+// A list of more elements than the SSZ size limit has no encoding whatever its
+// element width, and the count is refused where it enters rather than after it
+// has been multiplied by that width, where the product would wrap into a
+// plausible size. Nothing is allocated for the claimed image.
+func TestSizeSSZRefusesMoreElementsThanTheLimit(t *testing.T) {
+	if uint64(math.MaxInt) <= sszutils.MaxSszSize {
+		t.Skip("a count past the SSZ size limit is not representable on this platform")
+	}
+	ds := NewDynSsz(nil)
+	// Formed through a variable: the sum is not a constant this file can hold
+	// on a 32-bit target, where the skip above already applies.
+	limit := int(sszutils.MaxSszSize)
+	items := make([]widestCustom, limit+3)
+	if _, err := ds.SizeSSZ(&items); !errors.Is(err, sszutils.ErrListTooBig) {
+		t.Fatalf("err = %v, want the list refused", err)
+	}
 }
 
 // pastLimitCustom reports a size past the SSZ size limit without writing it.
@@ -8428,5 +8494,112 @@ func TestUnknownSizeWrappedEOF(t *testing.T) {
 	}
 	if back.A != 7 || len(back.L) != 3 {
 		t.Fatalf("decoded %+v", back)
+	}
+}
+
+// hugeVec declares a vector far larger than any input under test; nothing may
+// be reserved for it before the bytes that would fill it have arrived.
+type hugeVec []uint64
+
+var _ = sszutils.Annotate[hugeVec](`ssz-size:"125000000"`)
+
+// hugeDynVecElem is the variable-size element of hugeDynVec.
+type hugeDynVecElem struct {
+	Data []byte `ssz-max:"32"`
+}
+
+// hugeDynVec declares as many variable-size elements; its offset table alone
+// would be 40 MB.
+type hugeDynVec []hugeDynVecElem
+
+var _ = sszutils.Annotate[hugeDynVec](`ssz-size:"10000000"`)
+
+// reservedBytes reports what the heap grew by while fn ran.
+func reservedBytes(fn func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	fn()
+	runtime.ReadMemStats(&after)
+
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+// A vector states its length in the schema, not in the input, so an input that
+// cannot hold it is refused before the length is reserved.
+func TestUnmarshalVectorReservesNothingForAnInputThatCannotHoldIt(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+
+	var value hugeVec
+	var err error
+	reserved := reservedBytes(func() {
+		err = ds.UnmarshalSSZ(&value, []byte{1, 2, 3})
+	})
+
+	if err == nil {
+		t.Fatal("three bytes decoded as a 125 million element vector")
+	}
+	if reserved > 8<<20 {
+		t.Errorf("reserved %d bytes for a three-byte input", reserved)
+	}
+}
+
+// The same holds for variable-size elements read from a stream of unknown
+// extent: the offset table and the elements are declared, not delivered.
+func TestUnmarshalDynamicVectorReservesWhatArrives(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+
+	// Large enough that the region is still open when the offset table is
+	// sized: a payload the reader exhausts immediately collapses the region to
+	// a known length, and the length check refuses it before anything is
+	// reserved.
+	payload := make([]byte, 1<<20)
+	var value hugeDynVec
+	var err error
+	reserved := reservedBytes(func() {
+		err = ds.UnmarshalSSZReader(&value, bytes.NewReader(payload), -1)
+	})
+
+	if err == nil {
+		t.Fatal("a megabyte decoded as a ten million element vector")
+	}
+	// The declared table alone is 40 MB; what arrived bounds it instead.
+	if reserved > 8<<20 {
+		t.Errorf("reserved %d bytes for a one megabyte payload", reserved)
+	}
+}
+
+// bigIntSpecMax states its limit through the spec; the static value is the
+// fallback the generator bakes when it has no spec to resolve.
+type bigIntSpecMax struct {
+	B *big.Int `ssz-type:"bigint" ssz-max:"5" dynssz-max:"BIGINT_MAX"`
+}
+
+// A limit a big.Int states through the spec bounds it as a static one does: it
+// is the author's declaration either way, and the resolved value is the one
+// that counts.
+func TestBigIntLimitFromSpecIsEnforced(t *testing.T) {
+	// A 21-byte magnitude, so the payload is 22 bytes with its sign byte.
+	huge := new(big.Int).Lsh(big.NewInt(1), 160)
+
+	for _, tc := range []struct {
+		name     string
+		limit    uint64
+		accepted bool
+	}{
+		{"below the payload", 5, false},
+		{"above the payload", 64, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := NewDynSsz(map[string]any{"BIGINT_MAX": tc.limit}, WithNoFastSsz(), WithExtendedTypes())
+
+			_, err := ds.MarshalSSZ(&bigIntSpecMax{B: huge})
+			if accepted := err == nil; accepted != tc.accepted {
+				t.Errorf("marshal err = %v, accepted = %v, want accepted = %v", err, accepted, tc.accepted)
+			}
+			if _, err := ds.HashTreeRoot(&bigIntSpecMax{B: huge}); (err == nil) != tc.accepted {
+				t.Errorf("hash tree root err = %v, want accepted = %v", err, tc.accepted)
+			}
+		})
 	}
 }

@@ -808,6 +808,23 @@ func TestTypeDescriptor_MinSize(t *testing.T) {
 		})
 	}
 
+	// The floor of a vector of dynamic elements is a product, and a product
+	// that does not fit states no floor at all: a wrapped value would bound the
+	// region below the truth and refuse valid input. The builder bounds a
+	// vector's length long before this, so the guard is only reachable here.
+	t.Run("overflowing product states no floor", func(t *testing.T) {
+		desc := &TypeDescriptor{
+			SszType:      SszVectorType,
+			SszTypeFlags: SszTypeFlagIsDynamic,
+			Len:          4,
+			ElemDesc:     &TypeDescriptor{MinSize: 1 << 62},
+		}
+		desc.SetMinSize()
+		if desc.MinSize != 0 {
+			t.Errorf("MinSize = %d, want 0: 4*(4+2^62) does not fit and states no floor", desc.MinSize)
+		}
+	})
+
 	t.Run("list element states no floor", func(t *testing.T) {
 		desc, err := cache.GetTypeDescriptor(reflect.TypeFor[struct {
 			L []dynElem `ssz-max:"8"`
@@ -869,10 +886,10 @@ func TestTypeCache_GetCompatFlag(t *testing.T) {
 	}
 
 	// Add a compat flag and test
-	cache.CompatFlags["uint32"] = SszCompatFlagFastSSZMarshaler
+	cache.CompatFlags["uint32"] = SszCompatFlagFastsszBufferMarshaler
 	flag = cache.getCompatFlag(reflect.TypeOf(uint32(0)), reflect.TypeOf(uint32(0)))
-	if flag != SszCompatFlagFastSSZMarshaler {
-		t.Errorf("Expected SszCompatFlagFastSSZMarshaler, got %d", flag)
+	if flag != SszCompatFlagFastsszBufferMarshaler {
+		t.Errorf("Expected SszCompatFlagMarshalSSZTo, got %d", flag)
 	}
 }
 
@@ -4006,10 +4023,10 @@ func TestTypeCache_FastSSZInterfaceCompat(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if desc.SszCompatFlags&SszCompatFlagFastSSZMarshaler == 0 {
-			t.Error("expected SszCompatFlagFastSSZMarshaler to be set")
+		if desc.SszCompatFlags&SszCompatFlagFastsszSurface != SszCompatFlagFastsszSurface {
+			t.Error("expected every fastssz-style method to be flagged")
 		}
-		if desc.SszCompatFlags&SszCompatFlagFastSSZHasher == 0 {
+		if desc.SszCompatFlags&SszCompatFlagFastsszHashRoot == 0 {
 			t.Error("expected SszCompatFlagFastSSZHasher to be set")
 		}
 	})
@@ -4021,7 +4038,7 @@ func TestTypeCache_FastSSZInterfaceCompat(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if desc.SszCompatFlags&SszCompatFlagHashTreeRootWith == 0 {
+		if desc.SszCompatFlags&SszCompatFlagFastsszHashRootWith == 0 {
 			t.Error("expected SszCompatFlagHashTreeRootWith to be set")
 		}
 		if desc.HashTreeRootWithMethod == nil {
@@ -6385,8 +6402,8 @@ func TestTypeCache_PromotedCompatSuppression(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	suppressed := SszCompatFlagFastSSZMarshaler | SszCompatFlagFastSSZHasher |
-		SszCompatFlagHashTreeRootWith | SszCompatFlagDynamicEncoder | SszCompatFlagDynamicDecoder
+	suppressed := SszCompatFlagFastsszSurface | SszCompatFlagFastsszHashRoot |
+		SszCompatFlagFastsszHashRootWith | SszCompatFlagDynamicEncoder | SszCompatFlagDynamicDecoder
 	if got := desc.SszCompatFlags & suppressed; got != 0 {
 		t.Errorf("promoted compat flags not suppressed: %b", got)
 	}
@@ -6468,7 +6485,7 @@ func TestPromotedDelegationWalkerMethodAndValueReceivers(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%v: %v", typ, err)
 		}
-		if desc.SszCompatFlags&SszCompatFlagHashTreeRootWith != 0 || desc.HashTreeRootWithMethod != nil {
+		if desc.SszCompatFlags&SszCompatFlagFastsszHashRootWith != 0 || desc.HashTreeRootWithMethod != nil {
 			t.Errorf("%v: promoted HashTreeRootWith still delegable", typ)
 		}
 	}

@@ -54,6 +54,8 @@ func TestShallowDescriptorParity(t *testing.T) {
 					return `ssz-type:"uint64" ssz-static:"true"`
 				case "customPair":
 					return `ssz-type:"custom" ssz-size:"2" ssz-static:"true"`
+				case "dynWidthCustom":
+					return `ssz-type:"custom" ssz-static:"true" ssz-size:"2" dynssz-size:"WIDTH"`
 				}
 			}
 			return ""
@@ -94,6 +96,9 @@ func TestShallowDescriptorParity(t *testing.T) {
 		{name: "declaredU64", elem: tests.DeclaredU64Holder{}.L, want: "basic=true width=8 packed=8 dynamic=false shallow=true"},
 		// A custom type packs like the basic type its width matches.
 		{name: "customPair", elem: tests.CustomPairList{}.L, want: "basic=false width=0 packed=2 dynamic=false shallow=true"},
+		// A width a spec supplies is not a literal, so the value takes a leaf
+		// of its own instead of packing.
+		{name: "dynWidthCustom", elem: tests.DynWidthList{}.L, want: "basic=false width=0 packed=0 dynamic=false shallow=true"},
 		// A signed basic, which is basic only where extended types are on.
 		{name: "plainExtScalar", elem: tests.PlainExtHolder{}.L, want: "basic=true width=4 packed=4 dynamic=false shallow=true"},
 	} {
@@ -113,6 +118,11 @@ func TestShallowDescriptorParity(t *testing.T) {
 		parsed, reflected := shape(parsedRoot), shape(reflectedRoot)
 		if parsed != tc.want || reflected != tc.want {
 			t.Fatalf("%s: parser %s, type cache %s, want %s", tc.name, parsed, reflected, tc.want)
+		}
+		// Which methods each front end says the type provides decides which of
+		// them the emitters call, so the two must name the same set.
+		if parsedRoot.SszCompatFlags != reflectedRoot.SszCompatFlags {
+			t.Errorf("%s: parser compat %b, type cache compat %b", tc.name, parsedRoot.SszCompatFlags, reflectedRoot.SszCompatFlags)
 		}
 	}
 
@@ -684,10 +694,10 @@ func TestGetCompatFlag(t *testing.T) {
 
 	t.Run("SetFlag", func(t *testing.T) {
 		uint64Type := types.Typ[types.Uint64]
-		parser.CompatFlags["uint64"] = ssztypes.SszCompatFlagFastSSZMarshaler
+		parser.CompatFlags["uint64"] = ssztypes.SszCompatFlagFastsszBufferMarshaler
 		flag := parser.getCompatFlag(uint64Type, uint64Type)
-		if flag != ssztypes.SszCompatFlagFastSSZMarshaler {
-			t.Errorf("Expected FastSSZMarshaler flag, got %v", flag)
+		if flag != ssztypes.SszCompatFlagFastsszBufferMarshaler {
+			t.Errorf("Expected the MarshalSSZTo flag, got %v", flag)
 		}
 	})
 }
@@ -2033,7 +2043,7 @@ func TestInterfaceCompatibilityChecks(t *testing.T) {
 	// Test compatibility functions - these will return false for simple types,
 	// but we're testing the function execution
 	t.Run("FastSSZConvert", func(t *testing.T) {
-		compat := parser.getFastsszConvertCompatibility(uint64Type)
+		compat := parser.getFastsszCompatFlags(uint64Type)
 		_ = compat // Function should execute without error
 	})
 
@@ -2092,7 +2102,7 @@ func TestCustomTypesAndErrors(t *testing.T) {
 
 	t.Run("CustomTypeMissingHasher", func(t *testing.T) {
 		int64Type := types.Typ[types.Int64]
-		parser.CompatFlags[int64Type.String()] = ssztypes.SszCompatFlagFastSSZMarshaler
+		parser.CompatFlags[int64Type.String()] = ssztypes.SszCompatFlagFastsszSurface
 		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszCustomType}}
 		_, err := parser.buildTypeDescriptor(int64Type, int64Type, typeHint, nil, nil)
 		if err == nil || !strings.Contains(err.Error(), "missing a fastssz or dynssz hasher") {
@@ -2103,7 +2113,7 @@ func TestCustomTypesAndErrors(t *testing.T) {
 	t.Run("CustomTypeWithSizeHint", func(t *testing.T) {
 		// Mock a type with FastSSZ compatibility for testing
 		uint64Type := types.Typ[types.Uint64]
-		parser.CompatFlags[uint64Type.String()] = ssztypes.SszCompatFlagFastSSZMarshaler | ssztypes.SszCompatFlagFastSSZHasher
+		parser.CompatFlags[uint64Type.String()] = ssztypes.SszCompatFlagFastsszSurface | ssztypes.SszCompatFlagFastsszHashRoot
 
 		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszCustomType}}
 		sizeHint := []ssztypes.SszSizeHint{{Size: 64}}
@@ -2118,7 +2128,7 @@ func TestCustomTypesAndErrors(t *testing.T) {
 
 	t.Run("CustomTypeWithoutSize", func(t *testing.T) {
 		uint64Type := types.Typ[types.Uint64]
-		parser.CompatFlags[uint64Type.String()] = ssztypes.SszCompatFlagFastSSZMarshaler | ssztypes.SszCompatFlagFastSSZHasher
+		parser.CompatFlags[uint64Type.String()] = ssztypes.SszCompatFlagFastsszSurface | ssztypes.SszCompatFlagFastsszHashRoot
 
 		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszCustomType}}
 		desc, err := parser.buildTypeDescriptor(uint64Type, uint64Type, typeHint, nil, nil)

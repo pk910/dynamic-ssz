@@ -36,8 +36,8 @@ func delegatedSize(desc *ssztypes.TypeDescriptor, size int) (int64, error) {
 //   - Arrays multiply element size by length
 //   - Slices account for actual length and any padding from size hints
 //
-// The function optimizes performance by delegating to fastssz's SizeSSZ method when:
-//   - The type implements the fastssz Marshaler interface
+// The function optimizes performance by delegating to the type's own SizeSSZ when:
+//   - The type implements sszutils.FastsszSizer
 //   - The type and all nested types have static sizes (no dynamic spec values)
 //
 // Parameters:
@@ -99,7 +99,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		}
 	} else if targetType.SszCompatFlags != 0 || targetType.SszType == ssztypes.SszCustomType {
 		// Fast path: skip compat interface checks for types that don't implement any
-		useFastSsz := !ctx.noFastSsz && targetType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+		useFastSsz := !ctx.noFastSsz && targetType.SszCompatFlags&ssztypes.SszCompatFlagFastsszSizer != 0
 		if !useFastSsz && targetType.SszType == ssztypes.SszCustomType {
 			useFastSsz = true
 		}
@@ -109,8 +109,8 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		}
 
 		if useFastSsz {
-			if marshaller, ok := getPtr(targetValue).Interface().(sszutils.FastsszMarshaler); ok {
-				return delegatedSize(targetType, marshaller.SizeSSZ())
+			if sizer, ok := getPtr(targetValue).Interface().(sszutils.FastsszSizer); ok {
+				return delegatedSize(targetType, sizer.SizeSSZ())
 			}
 		}
 
@@ -216,6 +216,15 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 	case ssztypes.SszListType, ssztypes.SszBitlistType, ssztypes.SszProgressiveListType, ssztypes.SszProgressiveBitlistType:
 		fieldType := targetType.ElemDesc
 		sliceLen := targetValue.Len()
+
+		// Every element occupies at least one byte, so a list of more than
+		// MaxSszSize elements has no encoding whatever its element width. The
+		// count is runtime data rather than a declaration, so it is bounded
+		// here, where it enters: every size product below then stays inside
+		// the unsigned range, since both terms are bounded by the limit.
+		if uint64(sliceLen) > sszutils.MaxSszSize {
+			return 0, sszutils.ErrListLengthFn(sliceLen, sszutils.MaxSszSize)
+		}
 
 		// Enforce ssz-max like marshalList: a list longer than its limit cannot be
 		// serialized, so return the same error instead of a size for an

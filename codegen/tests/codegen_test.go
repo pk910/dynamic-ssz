@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/big"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -4717,6 +4718,48 @@ func TestCodegenRuntimeSizeProductOverflow(t *testing.T) {
 	}
 }
 
+// Two spec-resolved dimensions whose byte product passes the SSZ size limit
+// without passing 2^64 are refused by every generated path, as reflection
+// refuses the schema: the product is what overflows, and neither factor alone
+// says so.
+func TestCodegenRuntimeSizeProductOverLimit(t *testing.T) {
+	if _, generated := any(&RuntimeProduct{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	// 65536 elements of 65536 bytes is 2^32 bytes: one past the limit, and far
+	// inside the range the product is formed in.
+	specs := map[string]any{"OUTER": uint64(65536), "INNER": uint64(65536)}
+	gen := dynssz.NewDynSsz(specs)
+
+	for _, tc := range []struct {
+		name string
+		call func() error
+	}{
+		{"MarshalSSZ", func() error { _, err := gen.MarshalSSZ(&RuntimeProduct{}); return err }},
+		{"MarshalSSZWriter", func() error { return gen.MarshalSSZWriter(&RuntimeProduct{}, io.Discard) }},
+		{"UnmarshalSSZ", func() error { return gen.UnmarshalSSZ(&RuntimeProduct{}, nil) }},
+		{"HashTreeRoot", func() error { _, err := gen.HashTreeRoot(&RuntimeProduct{}); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("panicked instead of refusing the product: %v", r)
+				}
+			}()
+
+			if err := tc.call(); !errors.Is(err, sszutils.ErrPlatformOverflow) {
+				t.Errorf("err = %v, want the product refused", err)
+			}
+		})
+	}
+
+	refl := dynssz.NewDynSsz(specs, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation())
+	if _, err := refl.HashTreeRoot(&RuntimeProduct{}); err == nil {
+		t.Error("reflection returned a root for a value whose bytes cannot exist")
+	}
+}
+
 // A delegated static child whose sizer reports a negative size is refused by
 // the generated decoders, which frame the child by that size, instead of
 // being framed at zero bytes.
@@ -4937,6 +4980,60 @@ func TestReflectionSizerCustomFieldIsInline(t *testing.T) {
 	var back SizerCustomField
 	if err := ds.UnmarshalSSZ(&back, encoded); err != nil || back != *v {
 		t.Fatalf("round trip = %+v, %v, want %+v", back, err, *v)
+	}
+}
+
+// A custom element whose width a spec value supplies takes a leaf of its own
+// rather than packing with its neighbours, and its width is read from its own
+// sizer. Both engines agree on the root, the bytes and the size, at the
+// fallback width and at a spec width that differs from it.
+func TestCodegenSpecWidthCustomElement(t *testing.T) {
+	if _, generated := any(&DynWidthList{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	items := []dynWidthCustom{{1, 2, 3, 4}, {5, 6, 7, 8}}
+	for _, specs := range []map[string]any{nil, {"WIDTH": uint64(4)}} {
+		ds := dynssz.NewDynSsz(specs)
+		gen := &DynWidthList{L: items}
+		refl := &DynWidthListRefl{L: items}
+
+		genBytes, err := ds.MarshalSSZ(gen)
+		if err != nil {
+			t.Fatalf("specs %v: generated marshal: %v", specs, err)
+		}
+		reflBytes, err := ds.MarshalSSZ(refl)
+		if err != nil {
+			t.Fatalf("specs %v: reflection marshal: %v", specs, err)
+		}
+		if !bytes.Equal(genBytes, reflBytes) {
+			t.Fatalf("specs %v: generated %x, reflection %x", specs, genBytes, reflBytes)
+		}
+
+		size, err := ds.SizeSSZ(gen)
+		if err != nil || size != len(genBytes) {
+			t.Fatalf("specs %v: size = %d, %v, want %d", specs, size, err, len(genBytes))
+		}
+
+		var back DynWidthList
+		if err = ds.UnmarshalSSZ(&back, genBytes); err != nil {
+			t.Fatalf("specs %v: generated unmarshal: %v", specs, err)
+		}
+		if len(back.L) != len(items) {
+			t.Fatalf("specs %v: round trip gave %d elements, want %d", specs, len(back.L), len(items))
+		}
+
+		genRoot, err := ds.HashTreeRoot(gen)
+		if err != nil {
+			t.Fatalf("specs %v: generated root: %v", specs, err)
+		}
+		reflRoot, err := ds.HashTreeRoot(refl)
+		if err != nil || reflRoot != genRoot {
+			t.Fatalf("specs %v: reflection root = %x, %v, want %x", specs, reflRoot, err, genRoot)
+		}
+		tree, err := ds.GetTree(gen)
+		if err != nil || !bytes.Equal(tree.Hash(), genRoot[:]) {
+			t.Fatalf("specs %v: tree = %x, %v, want %x", specs, tree.Hash(), err, genRoot)
+		}
 	}
 }
 
@@ -5792,5 +5889,40 @@ func TestCodegenWideByteCustomElements(t *testing.T) {
 	}
 	if size, err := refl.SizeSSZ(&holder); err != nil || size != len(encoded) {
 		t.Fatalf("size %d err %v, want %d", size, err, len(encoded))
+	}
+}
+
+// A big.Int limit stated through the spec bounds the value in generated code as
+// a static one does, and the resolved value is the one that counts.
+func TestCodegenBigIntLimitFromSpec(t *testing.T) {
+	if _, generated := any(&BigIntSpecLimit{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	// A 21-byte magnitude, so the payload is 22 bytes with its sign byte.
+	huge := new(big.Int).Lsh(big.NewInt(1), 160)
+
+	for _, tc := range []struct {
+		name     string
+		limit    uint64
+		accepted bool
+	}{
+		{"below the payload", 5, false},
+		{"above the payload", 64, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := dynssz.NewDynSsz(map[string]any{"BIGINT_SPEC_MAX": tc.limit}, dynssz.WithExtendedTypes())
+
+			data, err := ds.MarshalSSZ(&BigIntSpecLimit{B: huge})
+			if accepted := err == nil; accepted != tc.accepted {
+				t.Fatalf("marshal err = %v, accepted = %v, want accepted = %v", err, accepted, tc.accepted)
+			}
+			if !tc.accepted {
+				return
+			}
+			if err := ds.UnmarshalSSZ(&BigIntSpecLimit{}, data); err != nil {
+				t.Errorf("round trip: %v", err)
+			}
+		})
 	}
 }

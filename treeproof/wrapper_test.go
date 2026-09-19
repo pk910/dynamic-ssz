@@ -556,11 +556,42 @@ func TestWrapperAddMethods(t *testing.T) {
 	})
 
 	t.Run("AddBytesEmpty", func(t *testing.T) {
-		// An empty value contributes nothing, as in hasher.Hasher.
+		// A value added through this API takes a place in the leaf order, an
+		// empty one included: it is a leaf of zeros, as it has been since v1.
 		w := NewWrapper()
 		w.AddBytes(nil)
-		if nodeCount(w) != 0 || len(w.buf) != 0 {
-			t.Errorf("empty AddBytes left %d chunks and %d bytes, want none", nodeCount(w), len(w.buf))
+		root, err := w.Root()
+		if err != nil {
+			t.Fatalf("empty AddBytes: %v", err)
+		}
+		if !bytes.Equal(root.Hash(), make([]byte, 32)) {
+			t.Errorf("empty AddBytes gave %x, want a leaf of zeros", root.Hash())
+		}
+
+		// Among siblings it keeps its position rather than shifting the rest.
+		w2 := NewWrapper()
+		idx := w2.Index()
+		w2.AddUint64(1)
+		w2.AddBytes(nil)
+		w2.AddUint64(2)
+		w2.Merkleize(idx)
+		with, err := w2.Root()
+		if err != nil {
+			t.Fatalf("with the empty value: %v", err)
+		}
+
+		w3 := NewWrapper()
+		idx = w3.Index()
+		w3.AddUint64(1)
+		w3.AddNode(LeafFromBytes(nil))
+		w3.AddUint64(2)
+		w3.Merkleize(idx)
+		spelled, err := w3.Root()
+		if err != nil {
+			t.Fatalf("with the leaf spelled out: %v", err)
+		}
+		if !bytes.Equal(with.Hash(), spelled.Hash()) {
+			t.Errorf("root = %x, want the same as an explicit zero leaf %x", with.Hash(), spelled.Hash())
 		}
 	})
 
