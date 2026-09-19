@@ -2322,3 +2322,86 @@ func TestHasherCollapseDoesNotMoveRoot(t *testing.T) {
 		}
 	}
 }
+
+// A hash function that fails leaves the buffer holding bytes it never
+// produced, so HashRoot reports the failure instead of a root built from
+// them. The first failure is the one reported.
+func TestHashRootReportsHashFnError(t *testing.T) {
+	first := errors.New("hash backend unavailable")
+	later := errors.New("hash backend still unavailable")
+
+	var calls int
+	hh := NewHasherWithHashFn(func(dst, src []byte) error {
+		calls++
+		if calls == 1 {
+			return first
+		}
+		return later
+	})
+
+	idx := hh.Index()
+	for i := 0; i < 32; i++ {
+		hh.PutUint64(uint64(i))
+	}
+	hh.Merkleize(idx)
+
+	root, err := hh.HashRoot()
+	if !errors.Is(err, first) {
+		t.Fatalf("HashRoot err = %v, want %v", err, first)
+	}
+	if root != ([32]byte{}) {
+		t.Errorf("HashRoot returned %x alongside the error", root)
+	}
+	if calls < 2 {
+		t.Fatalf("hash function called %d times; the test needs a failure after the first", calls)
+	}
+}
+
+// Reset clears the hash error, so a pooled hasher never reports the failure
+// its predecessor hit.
+func TestResetClearsHashFnError(t *testing.T) {
+	good := NativeHashWrapperFactory(sha256.New)
+	failing := true
+	hh := NewHasherWithHashFn(func(dst, src []byte) error {
+		if failing {
+			return errors.New("hash backend unavailable")
+		}
+		return good(dst, src)
+	})
+
+	idx := hh.Index()
+	for i := 0; i < 32; i++ {
+		hh.PutUint64(uint64(i))
+	}
+	hh.Merkleize(idx)
+	if _, err := hh.HashRoot(); err == nil {
+		t.Fatal("HashRoot returned no error while the hash function was failing")
+	}
+
+	failing = false
+	hh.Reset()
+
+	idx = hh.Index()
+	for i := 0; i < 32; i++ {
+		hh.PutUint64(uint64(i))
+	}
+	hh.Merkleize(idx)
+	got, err := hh.HashRoot()
+	if err != nil {
+		t.Fatalf("HashRoot after Reset: %v", err)
+	}
+
+	want := NewHasher()
+	idx = want.Index()
+	for i := 0; i < 32; i++ {
+		want.PutUint64(uint64(i))
+	}
+	want.Merkleize(idx)
+	wantRoot, err := want.HashRoot()
+	if err != nil {
+		t.Fatalf("reference HashRoot: %v", err)
+	}
+	if got != wantRoot {
+		t.Errorf("root after Reset %x, want %x", got, wantRoot)
+	}
+}

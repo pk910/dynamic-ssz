@@ -88,6 +88,12 @@ type Hasher struct {
 	// sha256 hash function
 	hash HashFn
 
+	// hashErr holds the first error a hash function returned for this
+	// hasher. Every reduction records it and carries on; HashRoot reports
+	// it instead of a root built from bytes the hash function never
+	// produced. Cleared on Reset.
+	hashErr error
+
 	// layers is the stack of open SSZ object scopes. StartTree() pushes,
 	// Merkleize*() pops. The slice only grows; layerCount tracks the
 	// current top (-1 = empty).
@@ -158,10 +164,20 @@ func (h *Hasher) WithTemp(fn func(tmp []byte) []byte) {
 	h.tmp = fn(h.tmp)
 }
 
-// Reset clears the buffer, layer stack and async gate for reuse. Outstanding
-// background reductions are awaited and their results discarded.
+// setHashErr records the first error a hash function returned. Later errors
+// are dropped: the first one is the failure the caller has to act on, and the
+// reductions after it ran over bytes it never produced.
+func (h *Hasher) setHashErr(err error) {
+	if err != nil && h.hashErr == nil {
+		h.hashErr = err
+	}
+}
+
+// Reset clears the buffer, layer stack, hash error and async gate for reuse.
+// Outstanding background reductions are awaited and their results discarded.
 func (h *Hasher) Reset() {
 	h.buf = h.buf[:0]
+	h.hashErr = nil
 	h.discardJobs()
 	h.layerCount = -1
 	h.async = false
@@ -314,7 +330,7 @@ func (h *Hasher) PutBytes(b []byte) {
 	// a single hash, skipping merkleizeImpl's general depth loop. These dominate
 	// validator hashing, so the per-call saving adds up over large lists.
 	if len(b) <= 64 {
-		_ = h.hash(h.buf[indx:indx+32], h.buf[indx:indx+64])
+		h.setHashErr(h.hash(h.buf[indx:indx+32], h.buf[indx:indx+64]))
 		h.buf = h.buf[:indx+32]
 		return
 	}
@@ -351,7 +367,7 @@ func (h *Hasher) internalMerkleizeWithMixin(indx int, num, limit uint64) {
 	input = append(input, zeroBytes[:32]...)
 	binary.LittleEndian.PutUint64(input[n:], num)
 
-	_ = h.hash(input, input)
+	h.setHashErr(h.hash(input, input))
 	h.buf = append(h.buf[:indx], input[:32]...)
 }
 
@@ -428,7 +444,7 @@ func (h *Hasher) PutProgressiveBitlist(bb []byte) {
 	n := len(input)
 	input = append(input, zeroBytes[:32]...)
 	binary.LittleEndian.PutUint64(input[n:], size)
-	_ = h.hash(input, input)
+	h.setHashErr(h.hash(input, input))
 	h.buf = append(h.buf[:indx], input[:32]...)
 }
 
@@ -512,7 +528,7 @@ func (h *Hasher) flushPending(layer *treeLayer, allowAsync bool) {
 	width := count * elem
 	for width > count {
 		half := (width / 2) * 32
-		_ = h.hash(h.buf[start:start+half], h.buf[start:start+width*32])
+		h.setHashErr(h.hash(h.buf[start:start+half], h.buf[start:start+width*32]))
 		width /= 2
 	}
 	// Move anything that was appended after the pending run down so the buffer
@@ -703,7 +719,7 @@ func (h *Hasher) maybeCollapseBinary(layer *treeLayer) {
 		}
 
 		// Hash leftmost batchCount entries in-place
-		_ = h.hash(h.buf[dStart:dStart+batchBytes/2], h.buf[dStart:dStart+batchBytes])
+		h.setHashErr(h.hash(h.buf[dStart:dStart+batchBytes/2], h.buf[dStart:dStart+batchBytes]))
 
 		// Shift tail (remainder of depth-d + all lower depths) left
 		afterBatch := dStart + batchBytes
@@ -877,7 +893,7 @@ func (h *Hasher) maybeCollapseProgressive(layer *treeLayer) {
 		odd := n % 2
 
 		if pairs > 0 {
-			_ = h.hash(h.buf[writePos:writePos+pairs*32], h.buf[readPos:readPos+pairs*2*32])
+			h.setHashErr(h.hash(h.buf[writePos:writePos+pairs*32], h.buf[readPos:readPos+pairs*2*32]))
 			writePos += pairs * 32
 			readPos += pairs * 2 * 32
 			newCounts[d+1] += uint32(pairs)
@@ -1006,7 +1022,7 @@ func (h *Hasher) collapseAllDepths(layer *treeLayer, indx, bufEnd int, limit uin
 
 		chunkBytes := count * 32
 		batchStart := bufEnd - chunkBytes
-		_ = h.hash(h.buf[batchStart:batchStart+chunkBytes/2], h.buf[batchStart:batchStart+chunkBytes])
+		h.setHashErr(h.hash(h.buf[batchStart:batchStart+chunkBytes/2], h.buf[batchStart:batchStart+chunkBytes]))
 		bufEnd = batchStart + chunkBytes/2
 
 		layer.counts[lowestDepth] = 0
@@ -1030,7 +1046,7 @@ func (h *Hasher) collapseAllDepths(layer *treeLayer, indx, bufEnd int, limit uin
 		pos := bufEnd - 32
 		for currentDepth < targetDepth {
 			copy(h.buf[pos+32:pos+64], zeroHashes[currentDepth][:])
-			_ = h.hash(h.buf[pos:pos+32], h.buf[pos:pos+64])
+			h.setHashErr(h.hash(h.buf[pos:pos+32], h.buf[pos:pos+64]))
 			currentDepth++
 		}
 		bufEnd = pos + 32
@@ -1092,7 +1108,7 @@ func (h *Hasher) collapseProgressiveLayer(layer *treeLayer, indx int) {
 	for i := nRoots - 1; i >= 0; i-- {
 		rootPos := indx + i*32
 		copy(h.tmp[:32], h.buf[rootPos:rootPos+32])
-		_ = h.hash(h.tmp[:32], h.tmp[:64])
+		h.setHashErr(h.hash(h.tmp[:32], h.tmp[:64]))
 		copy(h.tmp[32:64], h.tmp[:32])
 	}
 
@@ -1252,7 +1268,7 @@ func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 		logfn("merkleize-mixin: %x (%d, %d) ", input, num, limit)
 	}
 
-	_ = h.hash(input, input)
+	h.setHashErr(h.hash(input, input))
 	h.buf = append(h.buf[:indx], input[:32]...)
 
 	if debug {
@@ -1343,7 +1359,7 @@ func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 	}
 
 	// input is of the form [<progressive_root><size>] of 64 bytes
-	_ = h.hash(input, input)
+	h.setHashErr(h.hash(input, input))
 	h.buf = append(h.buf[:indx], input[:32]...)
 
 	if debug {
@@ -1412,7 +1428,7 @@ func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []b
 	}
 
 	// input is of the form [<progressive_root><active_fields_root>] of 64 bytes
-	_ = h.hash(input, input)
+	h.setHashErr(h.hash(input, input))
 	h.buf = append(h.buf[:indx], input[:32]...)
 
 	if debug {
@@ -1488,7 +1504,7 @@ func (h *Hasher) merkleizeImpl(dst, input []byte, limit uint64) []byte {
 
 		outputLen := (layerLen / 2) * 32
 
-		_ = h.hash(input, input)
+		h.setHashErr(h.hash(input, input))
 		input = input[:outputLen]
 	}
 
@@ -1567,7 +1583,7 @@ func (h *Hasher) merkleizeProgressiveImpl(dst, chunks []byte, depth uint8) []byt
 	// PairNode(left, right) - hash(left, right)
 	copy(h.tmp[:32], leftRoot)
 	copy(h.tmp[32:], rightRoot)
-	_ = h.hash(h.tmp[:32], h.tmp[0:64])
+	h.setHashErr(h.hash(h.tmp[:32], h.tmp[0:64]))
 
 	return append(dst, h.tmp[:32]...)
 }
@@ -1593,13 +1609,18 @@ func (h *Hasher) Hash() []byte {
 	return h.buf[start:]
 }
 
-// HashRoot returns the final 32-byte hash root, or an error if scopes are
-// still open or the buffer is not exactly 32 bytes. Outstanding background
-// reductions are drained first so no unfilled hole can be exposed — with
-// async hashing, a buffer of the right length is not otherwise evidence of
-// a finished computation.
+// HashRoot returns the final 32-byte hash root, or an error if a hash
+// function failed, scopes are still open, or the buffer is not exactly 32
+// bytes. Outstanding background reductions are drained first so no unfilled
+// hole can be exposed and a failure inside one is seen here — with async
+// hashing, a buffer of the right length is not otherwise evidence of a
+// finished computation.
 func (h *Hasher) HashRoot() (res [32]byte, err error) {
 	h.drainJobs()
+	if h.hashErr != nil {
+		err = h.hashErr
+		return
+	}
 	if h.layerCount >= 0 {
 		err = fmt.Errorf("unfinished hashing scopes")
 		return

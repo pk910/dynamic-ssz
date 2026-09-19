@@ -3248,3 +3248,36 @@ func TestLeafEmptyOnlyForPadding(t *testing.T) {
 		t.Fatalf("proof of the zero-valued leaf: %v", err)
 	}
 }
+
+// Both walkers refuse a failing hash function. The walkers are required to
+// agree, and a root one of them builds from bytes the hash function never
+// produced would be a silent disagreement: the tree reports the failure, so
+// the hasher does too.
+func TestBothWalkersRefuseAFailingHashFn(t *testing.T) {
+	backend := errors.New("hash backend unavailable")
+	failing := func(_, _ []byte) error { return backend }
+
+	fill := func(w sszutils.HashWalker) {
+		idx := w.Index()
+		for i := 0; i < 32; i++ {
+			w.PutUint64(uint64(i))
+		}
+		w.Merkleize(idx)
+	}
+
+	hh := hasher.NewHasherWithHashFn(failing)
+	fill(hh)
+	if _, err := hh.HashRoot(); !errors.Is(err, backend) {
+		t.Fatalf("hasher.HashRoot err = %v, want %v", err, backend)
+	}
+
+	w := NewWrapper()
+	fill(w)
+	root, err := w.Root()
+	if err != nil {
+		t.Fatalf("Root: %v", err)
+	}
+	if err := root.Finalize(WithHashFn(failing)); !errors.Is(err, backend) {
+		t.Fatalf("Finalize err = %v, want %v", err, backend)
+	}
+}
