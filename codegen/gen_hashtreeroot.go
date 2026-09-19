@@ -27,14 +27,15 @@ import (
 //   - usedDynSpecs: Flag tracking whether generated code uses dynamic SSZ functionality
 //   - valVarCounter: Counter for generating unique variable names during code generation
 type hashTreeRootContext struct {
-	appendCode    func(indent int, code string, args ...any)
-	typePrinter   *TypePrinter
-	options       *CodeGeneratorOptions
-	exprVars      *exprVarGenerator
-	usedDynSpecs  bool
-	valVarCounter int
-	indexCounter  int
-	recursion     *recursionBound
+	appendCode     func(indent int, code string, args ...any)
+	typePrinter    *TypePrinter
+	options        *CodeGeneratorOptions
+	exprVars       *exprVarGenerator
+	staticSizeVars *staticSizeVarGenerator
+	usedDynSpecs   bool
+	valVarCounter  int
+	indexCounter   int
+	recursion      *recursionBound
 	// depthAware is set while emitting a type that lies on a recursive cycle,
 	// where the body runs inside a depth-carrying method and can pass the depth
 	// on to a cyclic child.
@@ -75,6 +76,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 		options:     options,
 		exprVars:    newExprVarGenerator("expr", typePrinter, options),
 	}
+	ctx.staticSizeVars = newStaticSizeVarGenerator(typePrinter, options, ctx.exprVars)
 	ctx.recursion = newRecursionBound(rootTypeDesc, options)
 	ctx.depthAware = ctx.recursion.threads(rootTypeDesc)
 
@@ -122,6 +124,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 			appendCode(codeBuilder, 0, "// HashTreeRootWith computes the SSZ hash tree root of the %s using the given hash walker.\n", typeName)
 			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "HashTreeRootWith", "hh sszutils.HashWalker", "hh", "error", depthFailErr(ctx.recursion), false)
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
+			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
 			appendCode(codeBuilder, 1, codeBuf.String())
 			appendCode(codeBuilder, 1, "return nil\n")
 			appendCode(codeBuilder, 0, "}\n\n")
@@ -161,6 +164,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 			}
 			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, hh sszutils.HashWalker", "ds, hh", "error", depthFailErr(ctx.recursion), false)
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
+			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
 			appendCode(codeBuilder, 1, codeBuf.String())
 			appendCode(codeBuilder, 1, "return nil\n")
 			appendCode(codeBuilder, 0, "}\n\n")
@@ -699,7 +703,28 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 			}
 		}
 
-		exprVar := ctx.exprVars.getVectorLenExprVar(*sizeExpression, defaultValue, desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0, desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0)
+		// The length bounds what the vector occupies, so it is bounded by the
+		// width of one element; a variable-size element is bounded by its
+		// offset instead.
+		// The length bounds what the vector occupies, so it is bounded by the
+		// width of one element. A literal width joins the length's own guard;
+		// a resolved one is checked once the variable holding it exists.
+		elemBytes, elemLiteral := "", ""
+		if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
+			bytesExpr, isLiteral, bytesErr := ctx.staticSizeVars.elemSizeExpr(desc.ElemDesc)
+			if bytesErr != nil {
+				return bytesErr
+			}
+			elemBytes = bytesExpr
+			if isLiteral {
+				elemLiteral = bytesExpr
+			}
+		}
+
+		exprVar := ctx.exprVars.getVectorLenExprVar(*sizeExpression, defaultValue, desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0, desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0, elemLiteral)
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize == 0 && elemLiteral == "" {
+			ctx.staticSizeVars.appendVectorLenBound(exprVar, elemBytes, *sizeExpression)
+		}
 
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 			bitlimitVar = exprVar

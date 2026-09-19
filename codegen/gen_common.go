@@ -100,11 +100,16 @@ func (g *exprVarGenerator) getExprVar(expr string, defaultValue uint64) string {
 // their use sites (allocations, loop bounds, the int-based codec surface), so
 // the guard makes those conversions exact. List limits keep their full uint64
 // range by resolving through getExprVar directly.
-// getVectorLenExprVar resolves the length expression of a vector. A vector of
-// variable-size elements leads with one 4-byte offset per element inside its
-// fixed section, so its length is bounded to a quarter of the size limit. A
-// bit count is measured by the bytes it occupies, as the tag parser bounds it.
-func (g *exprVarGenerator) getVectorLenExprVar(expr string, defaultValue uint64, dynamicElems, bits bool) string {
+// getVectorLenExprVar resolves the length expression of a vector. The length
+// bounds what the vector occupies, so where the element width is a literal the
+// limit is divided by it here and the length carries one bound: the division
+// folds at compile time, and the product that would overflow is never formed.
+// A vector of variable-size elements leads with one 4-byte offset per element
+// inside its fixed section, so a quarter of the limit bounds it instead. A bit
+// count is measured by the bytes it occupies, as the tag parser bounds it. A
+// width resolved at run time is bounded by appendVectorLenBound, which runs
+// after the variable holding it exists.
+func (g *exprVarGenerator) getVectorLenExprVar(expr string, defaultValue uint64, dynamicElems, bits bool, elemLiteral string) string {
 	if expr == "" {
 		return fmt.Sprintf("%v", defaultValue)
 	}
@@ -112,13 +117,15 @@ func (g *exprVarGenerator) getVectorLenExprVar(expr string, defaultValue uint64,
 	exprVar := g.getExprVar(expr, defaultValue)
 
 	bound := "sszutils.MaxSszSize"
-	if dynamicElems {
+	switch {
+	case dynamicElems:
 		bound += "/4"
-	}
-	// A bit count occupies more than the limit exactly when it passes eight
-	// times the limit, which states the rule without forming the division.
-	if bits {
+	case bits:
+		// A bit count occupies more than the limit exactly when it passes
+		// eight times the limit, which states the rule without a division.
 		bound += "*8"
+	case elemLiteral != "" && elemLiteral != "0" && elemLiteral != "1":
+		bound += "/" + elemLiteral
 	}
 	guardKey := sha256.Sum256([]byte(fmt.Sprintf("sizeguard\n%s\n%v\n%s\n%v", expr, defaultValue, bound, bits)))
 	if _, ok := g.varMap[guardKey]; ok {
@@ -182,6 +189,41 @@ func (g *staticSizeVarGenerator) elemSizeExpr(elemDesc *ssztypes.TypeDescriptor)
 		return sizeVar, false, err
 	}
 	return fmt.Sprintf("%d", elemDesc.Size), true, nil
+}
+
+// appendVectorLenBound refuses a vector length that the element width takes
+// past the size limit. The product is what overflows, so the limit is divided
+// by the width instead of forming it; a width of zero occupies nothing whatever
+// the length is, and cannot divide. A literal width folds the division at
+// compile time, so the check costs a comparison once per call.
+func (g *staticSizeVarGenerator) appendVectorLenBound(lenVar, elemBytes, expr string) {
+	if lenVar == "" || elemBytes == "" || elemBytes == "0" || elemBytes == "1" {
+		return
+	}
+	if _, err := strconv.ParseUint(lenVar, 10, 64); err == nil {
+		// A literal length is bounded where the type is described.
+		return
+	}
+
+	guard := ""
+	if _, literal := strconv.ParseUint(elemBytes, 10, 64); literal != nil {
+		guard = elemBytes + " > 0 && "
+	}
+
+	guardKey := sha256.Sum256([]byte(fmt.Sprintf("vectorlenbound\n%s\n%s", lenVar, elemBytes)))
+	if _, ok := g.varMap[guardKey]; ok {
+		return
+	}
+	g.varMap[guardKey] = lenVar
+
+	retVars := g.retVars
+	if retVars == "" {
+		retVars = g.exprVarGenerator.retVars
+	}
+	errExpr := fmt.Sprintf("sszutils.ErrPlatformOverflowFn(\"size expression %s\", %s)", expr, lenVar)
+	appendCode(g.codeBuf, 0, "if %s%s > sszutils.MaxSszSize/%s {\n", guard, lenVar, elemBytes)
+	appendCode(g.codeBuf, 1, "return %s\n", strings.Replace(retVars, "err", errExpr, 1))
+	appendCode(g.codeBuf, 0, "}\n")
 }
 
 // getStaticSizeVar generates a variable name for cached static size calculations.
@@ -305,7 +347,14 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 					}
 				}
 				bits := desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0
-				exprVar := g.exprVarGenerator.getVectorLenExprVar(*sizeExpression, defaultValue, false, bits)
+				itemLiteral := ""
+				if _, err := strconv.ParseUint(itemSizeVar, 10, 64); err == nil {
+					itemLiteral = itemSizeVar
+				}
+				exprVar := g.exprVarGenerator.getVectorLenExprVar(*sizeExpression, defaultValue, false, bits, itemLiteral)
+				if !bits && itemLiteral == "" {
+					g.appendVectorLenBound(exprVar, itemSizeVar, *sizeExpression)
+				}
 
 				if bits {
 					exprVar = fmt.Sprintf("(%s+7)/8", exprVar)
@@ -486,7 +535,7 @@ func minSizeExpr(desc *ssztypes.TypeDescriptor, sizeVars *staticSizeVarGenerator
 			return expr, "", exprOk && desc.Len > 0
 		}
 
-		count := sizeVars.exprVarGenerator.getVectorLenExprVar(*desc.SizeExpression, uint64(desc.Len), desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0, false)
+		count := sizeVars.exprVarGenerator.getVectorLenExprVar(*desc.SizeExpression, uint64(desc.Len), desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0, false, "")
 		expr, exprOk := mulOrAddExpr("*", count, perElem)
 
 		// The product is what the caller divides by, so it is what has to be

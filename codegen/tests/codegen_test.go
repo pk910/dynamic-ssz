@@ -4717,6 +4717,48 @@ func TestCodegenRuntimeSizeProductOverflow(t *testing.T) {
 	}
 }
 
+// Two spec-resolved dimensions whose byte product passes the SSZ size limit
+// without passing 2^64 are refused by every generated path, as reflection
+// refuses the schema: the product is what overflows, and neither factor alone
+// says so.
+func TestCodegenRuntimeSizeProductOverLimit(t *testing.T) {
+	if _, generated := any(&RuntimeProduct{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	// 65536 elements of 65536 bytes is 2^32 bytes: one past the limit, and far
+	// inside the range the product is formed in.
+	specs := map[string]any{"OUTER": uint64(65536), "INNER": uint64(65536)}
+	gen := dynssz.NewDynSsz(specs)
+
+	for _, tc := range []struct {
+		name string
+		call func() error
+	}{
+		{"MarshalSSZ", func() error { _, err := gen.MarshalSSZ(&RuntimeProduct{}); return err }},
+		{"MarshalSSZWriter", func() error { return gen.MarshalSSZWriter(&RuntimeProduct{}, io.Discard) }},
+		{"UnmarshalSSZ", func() error { return gen.UnmarshalSSZ(&RuntimeProduct{}, nil) }},
+		{"HashTreeRoot", func() error { _, err := gen.HashTreeRoot(&RuntimeProduct{}); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("panicked instead of refusing the product: %v", r)
+				}
+			}()
+
+			if err := tc.call(); !errors.Is(err, sszutils.ErrPlatformOverflow) {
+				t.Errorf("err = %v, want the product refused", err)
+			}
+		})
+	}
+
+	refl := dynssz.NewDynSsz(specs, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation())
+	if _, err := refl.HashTreeRoot(&RuntimeProduct{}); err == nil {
+		t.Error("reflection returned a root for a value whose bytes cannot exist")
+	}
+}
+
 // A delegated static child whose sizer reports a negative size is refused by
 // the generated decoders, which frame the child by that size, instead of
 // being framed at zero bytes.
