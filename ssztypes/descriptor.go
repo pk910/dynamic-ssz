@@ -82,7 +82,7 @@ type TypeDescriptor struct {
 	SchemaType             reflect.Type              `json:"-"`                       // Schema type that defines SSZ layout (may differ from Type for view descriptors)
 	CodegenInfo            *any                      `json:"-"`                       // Codegen information or view pointer
 	Kind                   reflect.Kind              `json:"kind"`                    // Reflect kind of the type
-	Size                   int64                     `json:"size"`                    // SSZ size (-1 if dynamic)
+	Size                   int64                     `json:"size"`                    // Serialized size of the fixed part; a dynamic type carries SszTypeFlagIsDynamic and sizes its tail at runtime
 	Len                    int64                     `json:"len"`                     // Length of array/slice / static size of container
 	Limit                  uint64                    `json:"limit"`                   // Limit of array/slice (ssz-max tag)
 	ContainerDesc          *ContainerDescriptor      `json:"container,omitempty"`     // For structs

@@ -193,6 +193,18 @@ since encoding it would drop data. Decoding always yields the full length, so a
 short slice does not come back unchanged — what is encoded is the vector, not
 the slice handed to it.
 
+On a Go *array* the declared length wins, and it may be shorter than the array.
+This is what lets one Go type serve several presets: an array sized for the
+largest one carries a shorter vector where the spec resolves smaller. Only the
+declared elements are encoded, and decoding fills only those, so anything the
+caller left in the tail stays as it was and a Go value does not survive a round
+trip through a vector shorter than its array. A declared length *longer* than
+the array is rejected, since the array cannot hold it.
+
+```go
+Roots [8192][32]byte `ssz-size:"64,32" dynssz-size:"SLOTS_PER_HISTORICAL_ROOT,32"` // 64 of 8192 encoded
+```
+
 A dimension is either fixed or variable, so `ssz-size` and `ssz-max` cannot
 disagree about the same one — a fixed length has no capacity left to bound, and
 declaring a *different* limit for it is rejected. A limit *equal* to the fixed
