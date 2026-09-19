@@ -589,7 +589,7 @@ func (e *Engine) compareStreaming(entry corpus.TypeEntry, ds *dynssz.DynSsz, tar
 		return err
 	})
 
-	if isPanicError(bufErr) || bufErr != nil {
+	if isPanicError(bufErr) {
 		return
 	}
 
@@ -603,14 +603,23 @@ func (e *Engine) compareStreaming(entry corpus.TypeEntry, ds *dynssz.DynSsz, tar
 		return
 	}
 
-	if streamErr != nil {
+	// The two paths must agree on whether the value encodes at all. Either
+	// order of disagreement is a mismatch: the buffer path takes its offsets
+	// from the bytes it has written and the stream path takes them from the
+	// sizes it is told, so a value only one of them accepts is one whose
+	// declared and produced sizes differ.
+	if (bufErr == nil) != (streamErr == nil) {
 		e.stats.StreamMismatches.Add(1)
 		e.reporter.Report(&Issue{
 			Type:     IssueStreamMismatch,
 			TypeName: entry.Name,
 			Data:     origData,
-			Details:  fmt.Sprintf("buffer marshal succeeded but stream marshal failed: %v", streamErr),
+			Details:  fmt.Sprintf("buffer marshal err: %v, stream marshal err: %v", bufErr, streamErr),
 		})
+		return
+	}
+
+	if bufErr != nil {
 		return
 	}
 
