@@ -943,6 +943,11 @@ func (e *Engine) sizeReflection(ds *dynssz.DynSsz, source any) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	// A size past the platform's int is no size this host can compare against
+	// the bytes it produced.
+	if size > int64(math.MaxInt) {
+		return 0, sszutils.ErrPlatformOverflowFn("SSZ size", size)
+	}
 
 	return int(size), nil
 }
