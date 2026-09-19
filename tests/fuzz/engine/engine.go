@@ -492,7 +492,8 @@ func (e *Engine) compareMarshal(entry corpus.TypeEntry, ds *dynssz.DynSsz, reflT
 // encode is out of this contract: the size methods are documented to answer
 // with a number that means nothing there.
 func (e *Engine) compareSize(entry corpus.TypeEntry, ds *dynssz.DynSsz, reflTarget, codegenTarget any, origData []byte, marshalled int) {
-	var reflSize, codegenSize int
+	var reflSize int64
+	var codegenSize int
 
 	reflSizeErr := e.catchPanic(fmt.Sprintf("reflection-size[%s]", entry.Name), entry, origData, func() error {
 		var err error
@@ -515,7 +516,7 @@ func (e *Engine) compareSize(entry corpus.TypeEntry, ds *dynssz.DynSsz, reflTarg
 	case reflSizeErr != nil || codegenSizeErr != nil:
 		// The value marshalled, so neither engine may refuse to size it.
 		details = fmt.Sprintf("size of an encodable value failed: reflection err %v, codegen err %v", reflSizeErr, codegenSizeErr)
-	case reflSize != marshalled || codegenSize != marshalled:
+	case reflSize != int64(marshalled) || codegenSize != marshalled:
 		details = fmt.Sprintf("size differs from the %d bytes marshalled: reflection=%d, codegen=%d", marshalled, reflSize, codegenSize)
 	default:
 		return
@@ -930,8 +931,10 @@ func (e *Engine) marshalReflection(ds *dynssz.DynSsz, source any) ([]byte, error
 	return encoder.GetBuffer(), nil
 }
 
-// sizeReflection sizes through the reflection engine alone.
-func (e *Engine) sizeReflection(ds *dynssz.DynSsz, source any) (int, error) {
+// sizeReflection sizes through the reflection engine alone. The size stays in
+// the domain the engine answers in, so the comparison against the bytes
+// produced happens there rather than through a narrowing conversion.
+func (e *Engine) sizeReflection(ds *dynssz.DynSsz, source any) (int64, error) {
 	typeDesc, err := ds.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(source), nil, nil, nil)
 	if err != nil {
 		return 0, fmt.Errorf("get type descriptor: %w", err)
@@ -939,17 +942,7 @@ func (e *Engine) sizeReflection(ds *dynssz.DynSsz, source any) (int, error) {
 
 	ctx := reflection.NewReflectionCtx(ds, nil, false, true, true, 0)
 
-	size, err := ctx.SizeSSZ(typeDesc, reflect.ValueOf(source))
-	if err != nil {
-		return 0, err
-	}
-	// A size past the platform's int is no size this host can compare against
-	// the bytes it produced.
-	if size > int64(math.MaxInt) {
-		return 0, sszutils.ErrPlatformOverflowFn("SSZ size", size)
-	}
-
-	return int(size), nil
+	return ctx.SizeSSZ(typeDesc, reflect.ValueOf(source))
 }
 
 // sizeCodegen sizes through the generated methods.
