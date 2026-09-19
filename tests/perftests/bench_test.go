@@ -26,6 +26,8 @@ var (
 	blockMinimalHTR [32]byte
 	stateMinimalHTR [32]byte
 
+	sliceVectorData []byte
+
 	// Codegen mode: uses generated SSZ code when available
 	dynSszCodegenMainnet *ssz.DynSsz
 	dynSszCodegenMinimal *ssz.DynSsz
@@ -73,6 +75,37 @@ func init() {
 	dynSszCodegenMinimal = ssz.NewDynSsz(minimalSpecs)
 	dynSszReflMainnet = ssz.NewDynSsz(nil, ssz.WithNoFastSsz(), ssz.WithNoDelegation())
 	dynSszReflMinimal = ssz.NewDynSsz(minimalSpecs, ssz.WithNoFastSsz(), ssz.WithNoDelegation())
+
+	sliceVectorData = buildSliceVectorData()
+}
+
+// buildSliceVectorData serializes a filled SliceVectorBundle. The values only
+// have to be well formed and stable; the fixture exists for its field shapes.
+func buildSliceVectorData() []byte {
+	fill := func(count, width int) [][]byte {
+		out := make([][]byte, count)
+		for i := range out {
+			elem := make([]byte, width)
+			for j := range elem {
+				elem[j] = byte(i + j)
+			}
+			out[i] = elem
+		}
+		return out
+	}
+
+	bundle := &SliceVectorBundle{
+		Roots:      fill(4096, 32),
+		Pubkeys:    fill(2048, 48),
+		Signatures: fill(512, 96),
+		Graffiti:   make([]byte, 32),
+	}
+
+	data, err := ssz.NewDynSsz(nil).MarshalSSZ(bundle)
+	if err != nil {
+		panic("failed to build slice vector fixture: " + err.Error())
+	}
+	return data
 }
 
 func loadHTR(path string) [32]byte {
@@ -396,4 +429,82 @@ func BenchmarkReflection_BlockMinimal(b *testing.B) {
 
 func BenchmarkReflection_StateMinimal(b *testing.B) {
 	runStateBenchmarks(b, dynSszReflMinimal, stateMinimalData, stateMinimalHTR)
+}
+
+// runSliceVectorBenchmarks runs the operations over a fixture whose fields are
+// all slice-backed vectors, so every element decoded is one reservation.
+func runSliceVectorBenchmarks(b *testing.B, ds *ssz.DynSsz, data []byte) {
+	b.Helper()
+
+	b.Run("Unmarshal", func(b *testing.B) {
+		var bundle *SliceVectorBundle
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			bundle = new(SliceVectorBundle)
+			if err := ds.UnmarshalSSZ(bundle, data); err != nil {
+				b.Fatal(err)
+			}
+		}
+		b.StopTimer()
+		if len(bundle.Roots) != 4096 {
+			b.Fatalf("decoded %d roots, want 4096", len(bundle.Roots))
+		}
+	})
+
+	b.Run("UnmarshalReader", func(b *testing.B) {
+		var bundle *SliceVectorBundle
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			bundle = new(SliceVectorBundle)
+			reader := bytes.NewReader(data)
+			if err := ds.UnmarshalSSZReader(bundle, reader, len(data)); err != nil {
+				b.Fatal(err)
+			}
+		}
+		b.StopTimer()
+		if len(bundle.Roots) != 4096 {
+			b.Fatalf("decoded %d roots, want 4096", len(bundle.Roots))
+		}
+	})
+
+	b.Run("Marshal", func(b *testing.B) {
+		bundle := new(SliceVectorBundle)
+		if err := ds.UnmarshalSSZ(bundle, data); err != nil {
+			b.Fatal(err)
+		}
+		var result []byte
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			var err error
+			result, err = ds.MarshalSSZ(bundle)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+		b.StopTimer()
+		if !bytes.Equal(result, data) {
+			b.Fatal("marshaled data does not match original")
+		}
+	})
+
+	b.Run("HashTreeRoot", func(b *testing.B) {
+		bundle := new(SliceVectorBundle)
+		if err := ds.UnmarshalSSZ(bundle, data); err != nil {
+			b.Fatal(err)
+		}
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			if _, err := ds.HashTreeRoot(bundle); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func BenchmarkCodegen_SliceVectors(b *testing.B) {
+	runSliceVectorBenchmarks(b, dynSszCodegenMainnet, sliceVectorData)
+}
+
+func BenchmarkReflection_SliceVectors(b *testing.B) {
+	runSliceVectorBenchmarks(b, dynSszReflMainnet, sliceVectorData)
 }
