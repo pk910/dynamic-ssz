@@ -248,17 +248,20 @@ func (e *StreamDecoder) PushLimit(limit int) {
 		e.truncated = true
 		limitPos = e.lastLimit
 	}
-	// An open region's bound is the allowance, which a child may not exceed
-	// either. An established bound -- a bounded parent, or an open one that
-	// EOF has made exact -- ends where the input ends: a child declared past
-	// it keeps its declared end, so the child computes its content from the
-	// declaration and every read of it fails, instead of shrinking to whatever
-	// is left and succeeding on nothing.
+	// What the bound in force means decides this. An open region is bounded by
+	// the allowance, a policy limit rather than a statement about the input:
+	// bytes past it may simply not have arrived, so a child declaring more is
+	// clamped to it. An established bound -- a bounded parent, or an open one
+	// that EOF has made exact -- is the extent of the input itself, so a child
+	// declared past it cannot be what it says it is. That region is refused:
+	// it holds nothing, and the input stays marked so no later read succeeds
+	// either.
 	if limitPos > e.lastLimit {
 		if e.lastOpen {
 			limitPos = e.lastLimit
 		} else {
 			e.truncated = true
+			limitPos = e.position
 		}
 	}
 

@@ -858,9 +858,11 @@ func TestStreamDecoder_SkipBytes_NotSupported(t *testing.T) {
 	}
 }
 
-// A region declared past an established bound keeps its declared extent and
-// marks the input truncated: the bytes it promises do not exist, so every
-// read of it fails instead of shrinking to what is left.
+// An established bound is the extent of the input itself, so a region declared
+// past it cannot be what it says it is. It is refused: the region holds
+// nothing, and the input stays marked so no later read succeeds either. This
+// is what BufferDecoder does with the same declaration, which it can always
+// prove impossible.
 func TestStreamDecoder_PushLimit_PastEstablishedBound(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -878,8 +880,8 @@ func TestStreamDecoder_PushLimit_PastEstablishedBound(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dec := tc.mk()
 			dec.PushLimit(20)
-			if dec.GetLength() != 20 {
-				t.Fatalf("declared length = %d, want 20", dec.GetLength())
+			if got := dec.GetLength(); got != 0 {
+				t.Fatalf("length inside a refused region = %d, want 0", got)
 			}
 			if _, err := dec.More(); !errors.Is(err, ErrUnexpectedEOF) {
 				t.Fatalf("More err = %v, want ErrUnexpectedEOF", err)
