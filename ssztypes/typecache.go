@@ -2576,8 +2576,12 @@ func (tc *TypeCache) extractGenericTypeParameter(unionType reflect.Type) (reflec
 // Recursive types form a cyclic descriptor graph that standard JSON
 // marshalling cannot represent; those fall back to a deterministic
 // reference-based serialization so distinct recursive layouts hash to
-// distinct values. Acyclic descriptors keep the plain JSON form and their
-// historical hash values.
+// distinct values. Acyclic descriptors keep the plain JSON form.
+//
+// The hash covers that encoding, not the wire format: encoding/json emits
+// fields in declaration order, so reordering TypeDescriptor moves every hash
+// without changing any serialization. It identifies a layout within one
+// version of this package, not across versions.
 func (td *TypeDescriptor) GetTypeHash() [32]byte {
 	jsonDesc, err := json.Marshal(td)
 	if err != nil {

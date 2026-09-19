@@ -77,27 +77,39 @@ const (
 )
 
 // TypeDescriptor represents a cached, optimized descriptor for a type's SSZ encoding/decoding
+//
+// Field order is load-bearing: fields are grouped by how often the reflection
+// engine reads them. The first four are read for every value, the next six for
+// every composite; on amd64 the ten fill the first cache line. The rest are
+// read only for the kind that carries them, or not at all.
+//
+// GetTypeHash marshals this struct as JSON in declaration order, so reordering
+// moves every type hash and every generated "// Hash:" header.
+// TestTypeDescriptorHotFieldsShareACacheLine pins the grouping.
 type TypeDescriptor struct {
-	Type                   reflect.Type              `json:"-"`                       // Reflect type (runtime type where data lives)
-	SchemaType             reflect.Type              `json:"-"`                       // Schema type that defines SSZ layout (may differ from Type for view descriptors)
-	CodegenInfo            *any                      `json:"-"`                       // Codegen information or view pointer
+	// Read for every walked value.
+	SszCompatFlags SszCompatFlag        `json:"compat"`              // SSZ compatibility flags, one per delegate method
+	SszTypeFlags   SszTypeFlag          `json:"flags"`               // SSZ type flags
+	SszType        SszType              `json:"type"`                // SSZ type of the type
+	GoTypeFlags    GoTypeFlag           `json:"go_flags"`            // Additional go type flags
+	ElemDesc       *TypeDescriptor      `json:"field,omitempty"`     // For slices/arrays
+	ContainerDesc  *ContainerDescriptor `json:"container,omitempty"` // For structs
+	Size           int64                `json:"size"`                // Serialized size of the fixed part; a dynamic type carries SszTypeFlagIsDynamic and sizes its tail at runtime
+	Len            int64                `json:"len"`                 // Length of array/slice / static size of container
+	Limit          uint64               `json:"limit"`               // Limit of array/slice (ssz-max tag)
+	Type           reflect.Type         `json:"-"`                   // Reflect type (runtime type where data lives)
+
+	// Read only for the SSZ kinds that carry them.
 	Kind                   reflect.Kind              `json:"kind"`                    // Reflect kind of the type
-	Size                   int64                     `json:"size"`                    // Serialized size of the fixed part; a dynamic type carries SszTypeFlagIsDynamic and sizes its tail at runtime
-	Len                    int64                     `json:"len"`                     // Length of array/slice / static size of container
-	Limit                  uint64                    `json:"limit"`                   // Limit of array/slice (ssz-max tag)
-	ContainerDesc          *ContainerDescriptor      `json:"container,omitempty"`     // For structs
+	WrapperFieldIndex      uint32                    `json:"wrapper_field,omitempty"` // Index of the wrapped value field in a wrapper struct (excluded fields may precede it)
+	MinSize                int64                     `json:"min_size,omitempty"`      // Smallest serialization of this type; 0 when it has no floor (see SetMinSize)
+	BitSize                int64                     `json:"bit_size,omitempty"`      // Bit size for bit vector types (ssz-bitsize tag)
 	UnionVariants          map[uint8]*TypeDescriptor `json:"union,omitempty"`         // Union variant types by index (for CompatibleUnion)
-	ElemDesc               *TypeDescriptor           `json:"field,omitempty"`         // For slices/arrays
+	CodegenInfo            *any                      `json:"-"`                       // Codegen information or view pointer
 	HashTreeRootWithMethod *reflect.Method           `json:"-"`                       // Cached HashTreeRootWith method for performance
 	SizeExpression         *string                   `json:"size_expr,omitempty"`     // The dynamic expression used to calculate the size of the type
 	MaxExpression          *string                   `json:"max_expr,omitempty"`      // The dynamic expression used to calculate the max size of the type
-	BitSize                int64                     `json:"bit_size,omitempty"`      // Bit size for bit vector types (ssz-bitsize tag)
-	MinSize                int64                     `json:"min_size,omitempty"`      // Smallest serialization of this type; 0 when it has no floor (see SetMinSize)
-	WrapperFieldIndex      uint32                    `json:"wrapper_field,omitempty"` // Index of the wrapped value field in a wrapper struct (excluded fields may precede it)
-	SszCompatFlags         SszCompatFlag             `json:"compat"`                  // SSZ compatibility flags, one per delegate method
-	SszTypeFlags           SszTypeFlag               `json:"flags"`                   // SSZ type flags
-	SszType                SszType                   `json:"type"`                    // SSZ type of the type
-	GoTypeFlags            GoTypeFlag                `json:"go_flags"`                // Additional go type flags
+	SchemaType             reflect.Type              `json:"-"`                       // Schema type that defines SSZ layout (may differ from Type for view descriptors)
 }
 
 // ContainerDescriptor holds the field descriptors of a struct.
