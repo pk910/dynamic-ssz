@@ -42,26 +42,54 @@ func TestGeneratedPathsRefuseSizesPastThePlatformRange(t *testing.T) {
 
 	value := any(&WideAggregate{})
 
+	// Each case reports the error its method returned and whether the method is
+	// there at all, so the table holds no test helpers.
 	for _, tc := range []struct {
 		name string
-		call func(t *testing.T) error
+		call func() (error, bool)
 	}{
-		{"MarshalSSZ", func(t *testing.T) error {
-			return withGenerated(t, value, func(v marshalSSZ) error { _, err := v.MarshalSSZ(); return err })
+		{"MarshalSSZ", func() (error, bool) {
+			v, ok := value.(marshalSSZ)
+			if !ok {
+				return nil, false
+			}
+			_, err := v.MarshalSSZ()
+
+			return err, true
 		}},
-		{"MarshalSSZTo", func(t *testing.T) error {
-			return withGenerated(t, value, func(v marshalSSZTo) error { _, err := v.MarshalSSZTo(nil); return err })
+		{"MarshalSSZTo", func() (error, bool) {
+			v, ok := value.(marshalSSZTo)
+			if !ok {
+				return nil, false
+			}
+			_, err := v.MarshalSSZTo(nil)
+
+			return err, true
 		}},
-		{"MarshalSSZEncoder", func(t *testing.T) error {
-			return withGenerated(t, value, func(v marshalSSZEncoder) error {
-				return v.MarshalSSZEncoder(dynssz.GetGlobalDynSsz(), sszutils.NewBufferEncoder(nil))
-			})
+		{"MarshalSSZEncoder", func() (error, bool) {
+			v, ok := value.(marshalSSZEncoder)
+			if !ok {
+				return nil, false
+			}
+
+			return v.MarshalSSZEncoder(dynssz.GetGlobalDynSsz(), sszutils.NewBufferEncoder(nil)), true
 		}},
-		{"UnmarshalSSZ", func(t *testing.T) error {
-			return withGenerated(t, value, func(v unmarshalSSZ) error { return v.UnmarshalSSZ(nil) })
+		{"UnmarshalSSZ", func() (error, bool) {
+			v, ok := value.(unmarshalSSZ)
+			if !ok {
+				return nil, false
+			}
+
+			return v.UnmarshalSSZ(nil), true
 		}},
-		{"HashTreeRoot", func(t *testing.T) error {
-			return withGenerated(t, value, func(v hashTreeRoot) error { _, err := v.HashTreeRoot(); return err })
+		{"HashTreeRoot", func() (error, bool) {
+			v, ok := value.(hashTreeRoot)
+			if !ok {
+				return nil, false
+			}
+			_, err := v.HashTreeRoot()
+
+			return err, true
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -73,24 +101,15 @@ func TestGeneratedPathsRefuseSizesPastThePlatformRange(t *testing.T) {
 				}
 			}()
 
-			if err := tc.call(t); !errors.Is(err, sszutils.ErrPlatformOverflow) {
+			err, generated := tc.call()
+			if !generated {
+				t.Skip("generated methods are not present in this checkout")
+			}
+			if !errors.Is(err, sszutils.ErrPlatformOverflow) {
 				t.Errorf("err = %v, want the platform range reported", err)
 			}
 		})
 	}
-}
-
-// withGenerated runs call against the generated method the type provides, or
-// skips where the fixtures were not generated.
-func withGenerated[T any](t *testing.T, value any, call func(T) error) error {
-	t.Helper()
-
-	method, ok := value.(T)
-	if !ok {
-		t.Skip("generated methods are not present in this checkout")
-	}
-
-	return call(method)
 }
 
 // A size method answers for the value it is given: an empty list forms no
