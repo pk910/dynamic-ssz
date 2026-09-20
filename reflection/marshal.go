@@ -478,11 +478,11 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth reflectionDepth) error {
 	vecLen := sourceType.Len
 	if vecLen > math.MaxInt {
-		return sszutils.ErrPlatformOverflowFn("vector length", sourceType.Len)
+		return sszutils.ErrPlatformOverflowWidthFn("vector length", uint64(sourceType.Len))
 	}
 	vecElemSize := sourceType.ElemDesc.Size
 	if vecElemSize > math.MaxInt {
-		return sszutils.ErrPlatformOverflowFn("element size", sourceType.ElemDesc.Size)
+		return sszutils.ErrPlatformOverflowWidthFn("element size", uint64(sourceType.ElemDesc.Size))
 	}
 
 	sliceLen := sourceValue.Len()
@@ -577,7 +577,7 @@ func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sou
 func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth reflectionDepth) error {
 	dynVecLen := sourceType.Len
 	if dynVecLen > math.MaxInt {
-		return sszutils.ErrPlatformOverflowFn("dynamic vector length", sourceType.Len)
+		return sszutils.ErrPlatformOverflowWidthFn("dynamic vector length", uint64(sourceType.Len))
 	}
 
 	fieldType := sourceType.ElemDesc

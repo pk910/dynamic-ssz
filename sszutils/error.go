@@ -659,16 +659,31 @@ func ErrMaxDepthExceededFn(maxDepth any) error {
 // reported as the size limit instead. A value of no integer type states no
 // width to weigh, so it is reported against the platform's range.
 func ErrPlatformOverflowFn(description string, value any) error {
-	if width, ok := unsignedWidth(value); ok && width > math.MaxUint32 {
-		return &sszError{
-			err:     ErrSszSizeExceeded,
-			message: fmt.Sprintf("%s %v exceeds the SSZ size limit", description, value),
-		}
+	if width, ok := unsignedWidth(value); ok {
+		return ErrPlatformOverflowWidthFn(description, width)
 	}
 
 	return &sszError{
 		err:     ErrPlatformOverflow,
 		message: fmt.Sprintf("%s %v exceeds platform int max", description, value),
+	}
+}
+
+// ErrPlatformOverflowWidthFn is ErrPlatformOverflowFn for a width already held
+// as a number. Handing one to an any parameter puts it on the heap, and the
+// sites that report this are reached from the walks, so they state the width
+// as a width.
+func ErrPlatformOverflowWidthFn(description string, width uint64) error {
+	if width > math.MaxUint32 {
+		return &sszError{
+			err:     ErrSszSizeExceeded,
+			message: fmt.Sprintf("%s %d exceeds the SSZ size limit", description, width),
+		}
+	}
+
+	return &sszError{
+		err:     ErrPlatformOverflow,
+		message: fmt.Sprintf("%s %d exceeds platform int max", description, width),
 	}
 }
 
