@@ -1233,18 +1233,21 @@ func TestTreeFromNodesWithMixinZeroLimit(t *testing.T) {
 	}
 }
 
-// A limit below the leaf count overflows the type it declares, so the tree
-// keeps the depth the limit asks for and the surplus leaves fall outside it --
-// the root is the one the leaves that fit produce. The Hasher does the same,
-// and so does fastssz, which is what a foreign type's HashTreeRootWith is
-// measured against.
+// A limit below the leaf count overflows the type it declares. The exported
+// form refuses it; the form the walkers reduce through takes the depth the
+// leaves need, as hasher.Hasher does, so every leaf reaches the root and two
+// values that differ cannot share one.
 func TestTreeFromNodesWithMixinLimitBelowCount(t *testing.T) {
 	nodes := make([]*Node, 8)
 	for i := range nodes {
 		nodes[i] = NewNodeWithValue([]byte{byte(i + 1)})
 	}
 
-	tree, err := TreeFromNodesWithMixin(nodes, 8, 2)
+	if _, err := TreeFromNodesWithMixin(nodes, 8, 2); !errors.Is(err, sszutils.ErrChunkLimitExceeded) {
+		t.Fatalf("a limit below the leaf count was accepted: %v", err)
+	}
+
+	tree, err := treeFromNodesWithMixin64(nodes, 8, 2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1264,7 +1267,7 @@ func TestTreeFromNodesWithMixinLimitBelowCount(t *testing.T) {
 	altered := make([]*Node, len(nodes))
 	copy(altered, nodes)
 	altered[7] = NewNodeWithValue([]byte{0xff})
-	alt, err := TreeFromNodesWithMixin(altered, 8, 2)
+	alt, err := treeFromNodesWithMixin64(altered, 8, 2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1300,6 +1303,31 @@ func TestTreeFromNodesProgressiveWithActiveFieldsEmpty(t *testing.T) {
 	}
 	if tree == nil {
 		t.Fatal("expected non-nil tree")
+	}
+}
+
+// A bitvector wider than one chunk is merkleized to its root before the mixin,
+// as hasher.Hasher does, so the fields past the first chunk reach the tree.
+func TestTreeFromNodesProgressiveWithActiveFieldsWide(t *testing.T) {
+	leaves := []*Node{LeafFromUint64(1), LeafFromUint64(2)}
+
+	activeFields := make([]byte, 65)
+	activeFields[0] = 0x03
+	tree, err := TreeFromNodesProgressiveWithActiveFields(leaves, activeFields)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	altered := make([]byte, len(activeFields))
+	copy(altered, activeFields)
+	altered[64] = 0x01
+	alt, err := TreeFromNodesProgressiveWithActiveFields(leaves, altered)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if bytes.Equal(tree.Hash(), alt.Hash()) {
+		t.Fatal("a field past the first chunk did not reach the root")
 	}
 }
 

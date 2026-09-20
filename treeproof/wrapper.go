@@ -471,7 +471,7 @@ func (w *Wrapper) reduceBinary(indx int) {
 func (w *Wrapper) reduceBinaryWithMixin(indx int, num, limit uint64) {
 	leaves := w.regionLeaves(indx)
 	w.checkChunkLimit(uint64(len(leaves)), limit)
-	res, err := TreeFromNodesWithMixin64(leaves, num, limit)
+	res, err := treeFromNodesWithMixin64(leaves, num, limit)
 	if err != nil {
 		panic(err)
 	}
