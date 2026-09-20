@@ -412,6 +412,7 @@ func TestSizeLimitSentinelSeparatesTheTwoLimits(t *testing.T) {
 		{"a value past every target's reach", ErrPlatformOverflowFn("count", pastSsz), ErrSszSizeExceeded},
 		{"a count stating a size past the SSZ offset width", ErrSszSizeLimitFn("count", math.MaxUint32/4+1, 4), ErrSszSizeExceeded},
 		{"a count stating a size a wider int would hold", ErrSszSizeLimitFn("count", math.MaxUint32/4, 4), ErrPlatformOverflow},
+		{"a count with no width", ErrSszSizeLimitFn("count", uint64(math.MaxUint32)+1, 0), ErrSszSizeExceeded},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			other := ErrPlatformOverflow

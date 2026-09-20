@@ -2843,7 +2843,7 @@ func TestRefusedRegionAnswersAlikeOnBothDecoders(t *testing.T) {
 			return err.Error()
 		}
 
-		out := make([]string, 0, 5)
+		out := make([]string, 0, 6)
 		rest, err := d.DecodeRemaining(-1)
 		out = append(out, fmt.Sprintf("DecodeRemaining=%x,%s", rest, errText(err)))
 
@@ -2851,8 +2851,12 @@ func TestRefusedRegionAnswersAlikeOnBothDecoders(t *testing.T) {
 		out = append(out, fmt.Sprintf("More=%v,%s", more, errText(err)))
 
 		buf, err := d.DecodeBytesBuf(-1)
+		out = append(out, fmt.Sprintf("DecodeBytesBuf=%x,%s", buf, errText(err)))
+
+		into := make([]byte, 2)
+		read, err := d.DecodeBytes(into)
 		out = append(out,
-			fmt.Sprintf("DecodeBytesBuf=%x,%s", buf, errText(err)),
+			fmt.Sprintf("DecodeBytes=%x,%s", read, errText(err)),
 			fmt.Sprintf("GetLength=%d", d.GetLength()),
 			fmt.Sprintf("FinishRegion=%s", errText(d.FinishRegion())),
 		)
