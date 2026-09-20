@@ -999,6 +999,21 @@ func (h *Hasher) collapseAllDepths(layer *treeLayer, indx, bufEnd int, limit uin
 
 	h.syncCollapseStateWithEnd(layer, bufEnd)
 
+	// A limit below the chunks the scope holds is what merkleizeImpl reports
+	// for a scope that was never collapsed. A node tracked at depth d stands
+	// for 1<<d of those chunks, so the figure is the same one either path
+	// reduces, and a hint that collapses a scope cannot change whether the
+	// walk is refused.
+	if limit > 0 {
+		var chunks uint64
+		for d := 0; d <= layer.maxDepth; d++ {
+			chunks += uint64(layer.counts[d]) << uint(d)
+		}
+		if chunks > limit {
+			h.setHashErr(sszutils.ErrChunkLimitFn(chunks, limit))
+		}
+	}
+
 	for {
 		lowestDepth := -1
 		for d := 0; d <= layer.maxDepth; d++ {

@@ -1289,6 +1289,32 @@ func TestWrapperMixinLimitBelowChunksMatchesHasher(t *testing.T) {
 	if _, err := hh2.HashRoot(); !errors.Is(err, sszutils.ErrChunkLimitExceeded) {
 		t.Errorf("hasher root: err = %v, want the chunk limit reported", err)
 	}
+
+	// Both engines collapse a scope every 256 elements, which reduces it by a
+	// different path. A hint is optional, so it cannot decide whether the walk
+	// is refused: the two walkers answer alike on either side of that size.
+	collapsed := func(w sszutils.HashWalker, n int) ([]byte, error) {
+		idx := w.StartTree(sszutils.TreeTypeBinary)
+		for i := range n {
+			w.AppendBytes32([]byte{byte(i), byte(i >> 8)})
+			if (i+1)%256 == 0 {
+				w.Collapse()
+			}
+		}
+		w.MerkleizeWithMixin(idx, uint64(n), 1)
+
+		return w.Hash(), w.HashErr()
+	}
+	for _, n := range []int{255, 256, 257, 600} {
+		wRoot, wErr := collapsed(NewWrapper(), n)
+		hRoot, hErr := collapsed(hasher.NewHasher(), n)
+		if !errors.Is(wErr, sszutils.ErrChunkLimitExceeded) || !errors.Is(hErr, sszutils.ErrChunkLimitExceeded) {
+			t.Errorf("%d chunks against a limit of 1: wrapper err = %v, hasher err = %v", n, wErr, hErr)
+		}
+		if !bytes.Equal(wRoot, hRoot) {
+			t.Errorf("%d chunks collapsed: wrapper=%x hasher=%x", n, wRoot[:8], hRoot[:8])
+		}
+	}
 }
 
 // AppendBytes32 on a buffer that is not chunk-aligned must pad identically in
