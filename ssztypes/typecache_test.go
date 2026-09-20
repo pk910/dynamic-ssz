@@ -1705,10 +1705,16 @@ func TestTypeCache_DelegatedShallowBuild(t *testing.T) {
 		}
 	})
 
-	t.Run("OutOfRangeSizerRejected", func(t *testing.T) {
-		_, err := cache.GetTypeDescriptor(reflect.TypeOf(delegatedNegSize{}), nil, nil, nil)
-		if err == nil || !strings.Contains(err.Error(), "out-of-range size") {
-			t.Fatalf("expected out-of-range sizer rejection, got: %v", err)
+	// A sizer that refuses states no size rather than an invalid one, so the
+	// type is described without a fixed size and the refusal is reported where
+	// a size is actually asked for.
+	t.Run("RefusingSizerDescribedAsDynamic", func(t *testing.T) {
+		desc, err := cache.GetTypeDescriptor(reflect.TypeOf(delegatedNegSize{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("a refusing sizer should not refuse the type: %v", err)
+		}
+		if desc.SszTypeFlags&SszTypeFlagIsDynamic == 0 || desc.Size != 0 {
+			t.Errorf("descriptor states size %d, dynamic=%v; want no fixed size", desc.Size, desc.SszTypeFlags&SszTypeFlagIsDynamic != 0)
 		}
 	})
 
@@ -5696,18 +5702,24 @@ type staticNoSizer struct{}
 func TestDelegatedStaticSize(t *testing.T) {
 	tc := NewTypeCache(nil)
 
-	sz, err := tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticDynSizer{}))
-	if err != nil || sz != 8 {
-		t.Errorf("dynssz sizer: size=%d err=%v; want 8", sz, err)
+	sz, sized, err := tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticDynSizer{}))
+	if err != nil || !sized || sz != 8 {
+		t.Errorf("dynssz sizer: size=%d sized=%v err=%v; want 8", sz, sized, err)
 	}
 
-	sz, err = tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticFastSizer{}))
-	if err != nil || sz != 16 {
-		t.Errorf("fastssz sizer: size=%d err=%v; want 16", sz, err)
+	sz, sized, err = tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticFastSizer{}))
+	if err != nil || !sized || sz != 16 {
+		t.Errorf("fastssz sizer: size=%d sized=%v err=%v; want 16", sz, sized, err)
 	}
 
-	if _, err = tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticNoSizer{})); err == nil {
+	if _, _, err = tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticNoSizer{})); err == nil {
 		t.Error("no sizer: expected error")
+	}
+
+	// A sizer that refuses states no size, which describes the type without a
+	// fixed one rather than refusing the type.
+	if sz, sized, err := tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(delegatedNegSize{})); err != nil || sized || sz != 0 {
+		t.Errorf("refusing sizer: size=%d sized=%v err=%v; want no size and no error", sz, sized, err)
 	}
 }
 

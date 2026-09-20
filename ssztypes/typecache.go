@@ -806,11 +806,14 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			if partner := tc.cycleWith(runtimeType); partner != nil {
 				return sszutils.NewSszErrorf(sszutils.ErrUnsupportedType, "%v delegates to its own SSZ methods but forms a recursive cycle with %v, which is described here: the members of a cycle must be generated in one run", runtimeType, partner)
 			}
+			size, sized, err := int64(0), false, error(nil)
 			if *staticAnnotation {
-				size, err := tc.delegatedStaticSize(desc, runtimeType)
+				size, sized, err = tc.delegatedStaticSize(desc, runtimeType)
 				if err != nil {
 					return err
 				}
+			}
+			if sized {
 				desc.Size = size
 			} else {
 				desc.SszTypeFlags |= SszTypeFlagIsDynamic
@@ -959,9 +962,15 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		case len(sizeHints) > 0 && sizeHints[0].Size > 0:
 			desc.Size = sizeHints[0].Size
 		case staticAnnotation != nil && *staticAnnotation:
-			size, err := tc.delegatedStaticSize(desc, runtimeType)
+			size, sized, err := tc.delegatedStaticSize(desc, runtimeType)
 			if err != nil {
 				return err
+			}
+			if !sized {
+				desc.Size = 0
+				desc.SszTypeFlags |= SszTypeFlagIsDynamic
+
+				break
 			}
 			desc.Size = size
 		default:
@@ -1352,17 +1361,25 @@ func fullyDelegatesSSZView(runtimeType reflect.Type, promoted map[string]bool) b
 // derives its result from constants and spec values only — never from field data
 // — so a zero value yields the correct size, and spec-dependent fixed sizes are
 // resolved against the cache's specs. View descriptors use the view sizer.
-func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType reflect.Type) (int64, error) {
+func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType reflect.Type) (int64, bool, error) {
 	specs := tc.specs // never nil: NewTypeCache substitutes emptySpecs{}
 	zero := reflect.New(runtimeType).Interface()
 
 	// A sizer returns int; its result enters the size domain here, so it is
-	// bounded to the SSZ size range like every other size.
-	validate := func(n int) (int64, error) {
-		if n < 0 || n > sszutils.MaxSszSize {
-			return 0, sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(uint64(n)), "sizer for static type %v returned out-of-range size %d", runtimeType, n)
+	// bounded to the SSZ size range like every other size. A refusal states no
+	// size at all -- a spec value the cache cannot resolve reads the same as an
+	// over-limit total through that one return -- so the type is described
+	// without a fixed size rather than refused, and the size is asked for again
+	// where a caller can be told why it cannot be given.
+	validate := func(n int) (int64, bool, error) {
+		if n < 0 {
+			return 0, false, nil
 		}
-		return int64(n), nil
+		if n > sszutils.MaxSszSize {
+			return 0, false, sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(uint64(n)), "sizer for static type %v returned out-of-range size %d", runtimeType, n)
+		}
+
+		return int64(n), true, nil
 	}
 
 	if desc.GoTypeFlags&GoTypeFlagIsView != 0 {
@@ -1371,7 +1388,7 @@ func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType refle
 				return validate(sizeFn(specs))
 			}
 		}
-		return 0, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "static view type %v does not provide a usable view sizer", runtimeType)
+		return 0, false, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "static view type %v does not provide a usable view sizer", runtimeType)
 	}
 
 	// Non-view static types may size themselves through either the dynssz sizer
@@ -1383,7 +1400,7 @@ func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType refle
 	if sizer, ok := zero.(sszutils.FastsszSizer); ok {
 		return validate(sizer.SizeSSZ())
 	}
-	return 0, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "static type %v provides no usable sizer", runtimeType)
+	return 0, false, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "static type %v provides no usable sizer", runtimeType)
 }
 
 // buildTypeWrapperDescriptor builds a descriptor for TypeWrapper types with runtime/schema pairing.
