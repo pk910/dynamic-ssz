@@ -337,10 +337,16 @@ Hash methods are called wherever the value sits. A list or vector of basic
 values opens a packed walker scope (`StartTree` with `sszutils.TreeTypePacked`
 set on the shape), in which the walker's `Put*` methods append the packed bytes
 of a value instead of a padded chunk; the same method therefore packs its value
-as a list element and leaves a chunk as a field. A method owns what it leaves
-on the walker: the engines do not verify it, and both walkers lay bytes out
-identically, so a method that leaves something else produces the same root
-through `HashTreeRoot` and through `GetTree`.
+as a list element and leaves a chunk as a field.
+
+A method owns what it leaves on the walker, and the engines check one thing
+about it: a scope reduced with more chunks than its limit holds is refused with
+`sszutils.ErrChunkLimitExceeded`. A method that merkleizes a leaf of its own
+inside a packed scope contributes a whole chunk where the scope holds packed
+bytes, so a list of such elements states a limit its own contents pass. Both
+walkers report it, and both report it at every size. Anything else a method
+leaves is unverified, and both walkers lay bytes out identically, so it
+produces the same root through `HashTreeRoot` and through `GetTree`.
 
 ### Dynamic Interfaces (spec-aware)
 
@@ -615,18 +621,49 @@ See [Code Generator](code-generator.md) for detailed usage.
 
 ## Error Types
 
-Common errors from the `sszutils` package:
+Every error the library returns wraps one of these sentinels, so `errors.Is`
+tells a caller what happened. They do not wrap each other: a value refused for
+its size does not match `ErrInvalidValueRange`.
 
 ```go
 var (
-    ErrListTooBig          = fmt.Errorf("list length is higher than max value")
+    // The encoding does not say what the type does
     ErrUnexpectedEOF       = fmt.Errorf("unexpected end of SSZ")
     ErrOffset              = fmt.Errorf("incorrect offset")
-    ErrInvalidUnionVariant = ErrInvalidValueRange // alias: matches and prints as "invalid value range"
+    ErrListTooBig          = fmt.Errorf("list length is higher than max value")
     ErrVectorLength        = fmt.Errorf("incorrect vector length")
+    ErrInvalidValueRange   = fmt.Errorf("invalid value range")
+    ErrInvalidUnionVariant = ErrInvalidValueRange // alias: matches and prints as "invalid value range"
+    ErrBitlistNotTerminated = ErrInvalidValueRange // alias
+
+    // The value states a size nothing can encode, or this target cannot hold
+    ErrSszSizeExceeded     = fmt.Errorf("ssz size exceeds the maximum encodable size")
+    ErrPlatformOverflow    = fmt.Errorf("value exceeds platform integer range")
+
+    // A hash walk was given something it cannot reduce
+    ErrChunkLimitExceeded  = fmt.Errorf("merkleized more chunks than the limit holds")
+    ErrScopeShapeMismatch  = fmt.Errorf("scope reduced in a shape it was not opened for")
+
+    // The input exceeds a bound the caller set
+    ErrMaxDepthExceeded    = fmt.Errorf("maximum nesting depth exceeded")
+    ErrStreamTooLarge      = fmt.Errorf("ssz stream exceeds maximum size")
+    ErrPayloadTooLarge     = fmt.Errorf("%w", ErrStreamTooLarge)
+    ErrNegativeRead        = fmt.Errorf("reader returned negative byte count")
+
+    // The type cannot be described
+    ErrUnsupportedType     = fmt.Errorf("unsupported type")
+    ErrTypeMismatch        = fmt.Errorf("type mismatch")
+    ErrInvalidTag          = fmt.Errorf("invalid tag")
+    ErrInvalidConstraint   = fmt.Errorf("invalid constraint")
+    ErrExtendedTypeDisabled = fmt.Errorf("extended type not enabled")
+    ErrMissingInterface    = fmt.Errorf("missing interface")
     ErrNotImplemented      = fmt.Errorf("not implemented")
 )
 ```
+
+`ErrSszSizeExceeded` and `ErrChunkLimitExceeded` are new in v1.4.0. Sizes past
+the SSZ size limit previously reported `ErrInvalidValueRange`; a caller matching
+that for an over-size condition matches `ErrSszSizeExceeded` now.
 
 ## Related Documentation
 
