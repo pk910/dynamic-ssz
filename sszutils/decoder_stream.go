@@ -899,7 +899,9 @@ func (e *StreamDecoder) DecodeBytesBuf(l int) ([]byte, error) {
 			return e.DecodeRemaining(-1)
 		}
 		l = e.lastLimit - e.position
-	} else if e.position+l > e.lastLimit {
+	} else if l > e.lastLimit-e.position {
+		// The remainder is what the request is measured against: a sum would
+		// wrap negative for a length near MaxInt and read as inside the region.
 		return nil, e.regionOverrun()
 	}
 
