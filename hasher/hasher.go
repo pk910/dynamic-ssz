@@ -120,11 +120,16 @@ type Hasher struct {
 	jobRingBuf [asyncRingInline]asyncJob // inline backing to avoid heap allocation
 }
 
-// defaultHashFn is the built-in sha256 compression, used where no backend was
-// installed. It draws per-call instances from a pool, so a hasher using it may
-// be gated into async hashing.
+// defaultHash is the built-in sha256 compression, used where no backend was
+// installed. The factory builds a pool of hash instances behind a closure, so
+// one is built for the process: a fresh one per acquisition pools nothing,
+// since no instance outlives the hasher that drew it.
+var defaultHash = NativeHashWrapperFactory(sha256.New)
+
+// defaultHashFn hands out that compression. It draws per-call instances from a
+// pool, so a hasher using it may be gated into async hashing.
 func defaultHashFn() HashFn {
-	return NativeHashWrapperFactory(sha256.New)
+	return defaultHash
 }
 
 // NewHasher creates a new Hasher with the default sha256 hash function. The
