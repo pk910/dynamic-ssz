@@ -395,6 +395,46 @@ func TestErrorWithPathLinear(t *testing.T) {
 	}
 }
 
+// Every integer type a size or a count is carried in states its width, so the
+// value alone decides which limit is reported. A value of no integer type
+// states no width to weigh, and a negative one states none past any limit.
+func TestErrPlatformOverflowFnReadsEveryIntegerWidth(t *testing.T) {
+	pastSsz := uint64(math.MaxUint32) + 1
+
+	for _, tt := range []struct {
+		name  string
+		value any
+		want  error
+	}{
+		{"uint", uint(math.MaxUint32), ErrPlatformOverflow},
+		{"uint8", uint8(math.MaxUint8), ErrPlatformOverflow},
+		{"uint16", uint16(math.MaxUint16), ErrPlatformOverflow},
+		{"uint32", uint32(math.MaxUint32), ErrPlatformOverflow},
+		{"uint64", pastSsz, ErrSszSizeExceeded},
+		{"int", math.MaxInt32, ErrPlatformOverflow},
+		{"int8", int8(-1), ErrPlatformOverflow},
+		{"int16", int16(math.MaxInt16), ErrPlatformOverflow},
+		{"int32", int32(math.MaxInt32), ErrPlatformOverflow},
+		{"int64", int64(pastSsz), ErrSszSizeExceeded},
+		{"a value of no integer type", "a list of lists", ErrPlatformOverflow},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ErrPlatformOverflowFn("count", tt.value)
+
+			other := ErrPlatformOverflow
+			if tt.want == ErrPlatformOverflow {
+				other = ErrSszSizeExceeded
+			}
+			if !errors.Is(err, tt.want) {
+				t.Errorf("err = %v, want %v", err, tt.want)
+			}
+			if errors.Is(err, other) {
+				t.Errorf("err = %v, must not also report %v", err, other)
+			}
+		})
+	}
+}
+
 // A size no target can encode is the SSZ size limit; a size only this target
 // cannot hold, which one with a wider int would, is the platform's range. The
 // two are exclusive, so each case names one and denies the other.
