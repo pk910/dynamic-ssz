@@ -203,9 +203,14 @@ func (ctx *sizeContext) getIndexVar() string {
 const sizeAccumulator = "size"
 
 // emitSizeReturn closes a generated sizer: one bound, then the narrowing.
+//
+// The bound reads the accumulator unsigned, so the one comparison also holds
+// for a total that left the range it is summed in: a product of a length no
+// allocation can reach wraps negative, and a negative reads as a size far past
+// the limit rather than as a size to narrow and return.
 func emitSizeReturn(typePrinter *TypePrinter) string {
 	sszutilsAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz/sszutils", "sszutils")
-	return fmt.Sprintf("if %s > %s.MaxSszSize {\n\treturn -1\n}\nreturn int(%s)\n", sizeAccumulator, sszutilsAlias, sizeAccumulator)
+	return fmt.Sprintf("if uint64(%s) > %s.MaxSszSize {\n\treturn -1\n}\nreturn int(%s)\n", sizeAccumulator, sszutilsAlias, sizeAccumulator)
 }
 
 func (ctx *sizeContext) getSizeVar() string {

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math"
 	"testing"
+	"unsafe"
 
 	dynssz "github.com/pk910/dynamic-ssz"
 	"github.com/pk910/dynamic-ssz/sszutils"
@@ -195,5 +196,50 @@ func TestGeneratedSizeOfAWideListRefusesAnUnrepresentableTotal(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+// sliceHeader is the shape of a slice value, used to give one a length no
+// allocation can reach. unsafe.Slice refuses such a length, and the sizer only
+// reads the length: the elements are never addressed, and the element type
+// holds no pointer, so nothing walks the array the length claims.
+type sliceHeader struct {
+	data unsafe.Pointer
+	len  int
+	cap  int
+}
+
+// A total that left the range it is summed in is refused, not narrowed and
+// returned. The accumulator is an int64 and every bound is on its terms, so a
+// product of an element count no allocation can reach wraps it negative; the
+// terminal bound reads the accumulator unsigned, where a negative lies far
+// past the limit.
+func TestGeneratedSizerRefusesAWrappedTotal(t *testing.T) {
+	t.Parallel()
+
+	if math.MaxInt <= math.MaxInt32 {
+		// The product is formed in an int64 from an int length, which cannot
+		// leave the int64 range on a target of narrower ints.
+		t.Skip("requires a 64-bit platform")
+	}
+
+	// BulkElems sums its first field as len(A) * 32.
+	const count = math.MaxInt/32 + 1
+
+	var elem [48]byte
+	value := &BulkElems{}
+	*(*sliceHeader)(unsafe.Pointer(&value.A)) = sliceHeader{
+		data: unsafe.Pointer(&elem),
+		len:  count,
+		cap:  count,
+	}
+
+	sizer, generated := any(value).(sizeSSZ)
+	if !generated {
+		t.Skip("generated methods are not present in this checkout")
+	}
+
+	if got := sizer.SizeSSZ(); got != -1 {
+		t.Errorf("SizeSSZ = %d for a total that wrapped, want -1", got)
 	}
 }
