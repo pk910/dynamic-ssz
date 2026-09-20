@@ -6797,11 +6797,13 @@ func TestValidateUnionCarrier(t *testing.T) {
 		accepted bool
 	}{
 		{"a selector and a data field", reflect.TypeOf(carrier{}), true},
-		{"a wider selector", reflect.TypeOf(wideSelector{}), true},
 		{"through a pointer", reflect.TypeOf(&carrier{}), true},
 		{"not a struct", reflect.TypeOf(uint32(0)), false},
 		{"no data field", reflect.TypeOf(selectorOnly{}), false},
 		{"a signed selector", reflect.TypeOf(signedSelector{}), false},
+		// A wider selector carries bits the walks drop when they narrow
+		// field 0 to a uint8, so the carrier never holds one.
+		{"a wider selector", reflect.TypeOf(wideSelector{}), false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			err := validateUnionCarrier(tt.typ, "union")

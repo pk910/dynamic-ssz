@@ -1834,6 +1834,11 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 // size, marshal and hash paths take the selector from field 0 and the data from
 // field 1, which a tag plus a GetDescriptorType method is enough to reach
 // without being the generic carrier those paths assume.
+//
+// A selector is one byte on the wire and those paths narrow field 0 to a
+// uint8, so a wider field would carry bits they drop: a selector of 256 reads
+// as 0 and answers as that variant. The carrier holds it in a uint8, which is
+// also what the codegen front end accepts.
 func validateUnionCarrier(runtimeType reflect.Type, kind string) error {
 	carrier := runtimeType
 	if carrier.Kind() == reflect.Ptr {
@@ -1843,10 +1848,9 @@ func validateUnionCarrier(runtimeType reflect.Type, kind string) error {
 		return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint,
 			"%s carrier %v must be a struct of a selector and a data field", kind, runtimeType)
 	}
-	if k := carrier.Field(0).Type.Kind(); k != reflect.Uint8 && k != reflect.Uint16 &&
-		k != reflect.Uint32 && k != reflect.Uint64 && k != reflect.Uint {
+	if k := carrier.Field(0).Type.Kind(); k != reflect.Uint8 {
 		return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint,
-			"%s carrier %v holds its selector in a %v, which is not an unsigned integer", kind, runtimeType, k)
+			"%s carrier %v holds its selector in a %v, and a selector is one byte", kind, runtimeType, k)
 	}
 
 	return nil

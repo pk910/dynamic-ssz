@@ -1399,3 +1399,46 @@ func TestUnionConstructorStoresVerbatim(t *testing.T) {
 		}
 	})
 }
+
+// wideSelectorUnion is a hand-rolled union carrier that holds its selector in
+// a uint64. The size, marshal and hash walks read the selector as a uint8, so
+// a value past 255 names the variant its low byte names.
+type wideSelectorUnion struct {
+	Selector uint64
+	Data     interface{}
+}
+
+func (wideSelectorUnion) GetDescriptorType() reflect.Type {
+	return reflect.TypeOf(struct {
+		N  None
+		V1 uint64
+	}{})
+}
+
+// A carrier holding its selector in more than a byte is refused, so no
+// operation answers for a variant the dropped bits did not name. Selector 256
+// and 2^32 encoded and hashed as the None at selector 0 before.
+func TestUnionWideSelectorCarrierRefused(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	type holder struct {
+		U wideSelectorUnion `ssz-type:"union"`
+	}
+
+	for _, selector := range []uint64{0, 1, 256, 1 << 32} {
+		v := &holder{U: wideSelectorUnion{Selector: selector}}
+		if selector == 1 {
+			v.U.Data = uint64(7)
+		}
+
+		if _, err := ds.MarshalSSZ(v); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+			t.Errorf("selector %d: marshal err = %v, want the carrier refused", selector, err)
+		}
+		if _, err := ds.SizeSSZ(v); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+			t.Errorf("selector %d: size err = %v, want the carrier refused", selector, err)
+		}
+		if _, err := ds.HashTreeRoot(v); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+			t.Errorf("selector %d: hash err = %v, want the carrier refused", selector, err)
+		}
+	}
+}
