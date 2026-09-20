@@ -1830,6 +1830,28 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 	return nil
 }
 
+// validateUnionCarrier refuses a union carrier the operations cannot read. The
+// size, marshal and hash paths take the selector from field 0 and the data from
+// field 1, which a tag plus a GetDescriptorType method is enough to reach
+// without being the generic carrier those paths assume.
+func validateUnionCarrier(runtimeType reflect.Type, kind string) error {
+	carrier := runtimeType
+	if carrier.Kind() == reflect.Ptr {
+		carrier = carrier.Elem()
+	}
+	if carrier.Kind() != reflect.Struct || carrier.NumField() < 2 {
+		return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint,
+			"%s carrier %v must be a struct of a selector and a data field", kind, runtimeType)
+	}
+	if k := carrier.Field(0).Type.Kind(); k != reflect.Uint8 && k != reflect.Uint16 &&
+		k != reflect.Uint32 && k != reflect.Uint64 && k != reflect.Uint {
+		return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint,
+			"%s carrier %v holds its selector in a %v, which is not an unsigned integer", kind, runtimeType, k)
+	}
+
+	return nil
+}
+
 // buildCompatibleUnionDescriptor builds a descriptor for CompatibleUnion types with runtime/schema pairing.
 //
 // For CompatibleUnion types, the variant types may differ between runtime and schema when using view descriptors.
@@ -1874,6 +1896,10 @@ func (tc *TypeCache) buildCompatibleUnionDescriptor(desc *TypeDescriptor, runtim
 		for _, info := range runtimeVariantInfo {
 			runtimeVariantMap[info.Name] = info.Type
 		}
+	}
+
+	if err := validateUnionCarrier(runtimeType, "compatible-union"); err != nil {
+		return err
 	}
 
 	// Build type descriptors for each variant using schema for layout, runtime for data
@@ -1940,6 +1966,10 @@ func (tc *TypeCache) buildUnionDescriptor(desc *TypeDescriptor, runtimeType, sch
 		for _, info := range runtimeVariantInfo {
 			runtimeVariantMap[info.Name] = info.Type
 		}
+	}
+
+	if err := validateUnionCarrier(runtimeType, "union"); err != nil {
+		return err
 	}
 
 	desc.UnionVariants = make(map[uint8]*TypeDescriptor, len(schemaVariantInfo))

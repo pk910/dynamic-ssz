@@ -5819,6 +5819,36 @@ func TestCustomStaticWithoutSizerErrors(t *testing.T) {
 	}
 }
 
+// staticRefusingCustom is a static custom type whose sizer refuses to state a
+// size. A refusal carries no size, so the type is described as dynamic and the
+// reason is given where a caller asks for the size.
+type staticRefusingCustom struct{}
+
+func (staticRefusingCustom) SizeSSZDyn(sszutils.DynamicSpecs) int { return -1 }
+func (staticRefusingCustom) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return b, nil
+}
+func (staticRefusingCustom) UnmarshalSSZDyn(sszutils.DynamicSpecs, []byte) error { return nil }
+func (staticRefusingCustom) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
+var _ = sszutils.Annotate[staticRefusingCustom](`ssz-type:"custom" ssz-static:"true"`)
+
+func TestCustomStaticSizerRefusalIsDynamic(t *testing.T) {
+	tc := NewTypeCache(nil)
+	tc.NoDelegation = true
+
+	desc, err := tc.GetTypeDescriptor(reflect.TypeOf(staticRefusingCustom{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if desc.Size != 0 || desc.SszTypeFlags&SszTypeFlagIsDynamic == 0 {
+		t.Errorf("Size=%d dynamic=%v; want a dynamic type of no fixed size",
+			desc.Size, desc.SszTypeFlags&SszTypeFlagIsDynamic != 0)
+	}
+}
+
 // unionBadIdx carries a non-numeric ssz-index selector.
 type unionBadIdx struct {
 	A uint32 `ssz-index:"abc"`
@@ -6706,6 +6736,63 @@ func TestParseTagsFastsszTag(t *testing.T) {
 
 	if _, _, _, err := ParseTags(`ssz:"bitlist" ssz-type:"bitvector"`); !errors.Is(err, sszutils.ErrInvalidTag) {
 		t.Errorf("two different types: err = %v, want the tags refused", err)
+	}
+
+	// Either tag naming no type is refused for what it names, not for
+	// disagreeing with the other.
+	for _, tag := range []string{
+		`ssz:"bitlist" ssz-type:"nonsense"`,
+		`ssz:"nonsense" ssz-type:"bitlist"`,
+	} {
+		if _, _, _, err := ParseTags(tag); !errors.Is(err, sszutils.ErrInvalidTag) {
+			t.Errorf("%s: err = %v, want the tag refused", tag, err)
+		}
+	}
+}
+
+// The union carrier is what the size, marshal and hash paths read the selector
+// and the data from, so a shape those paths cannot read is refused here.
+func TestValidateUnionCarrier(t *testing.T) {
+	type carrier struct {
+		Selector uint8
+		Data     any
+	}
+	type wideSelector struct {
+		Selector uint64
+		Data     any
+	}
+	type signedSelector struct {
+		Selector int8
+		Data     any
+	}
+	type selectorOnly struct {
+		Selector uint8
+	}
+
+	for _, tt := range []struct {
+		name     string
+		typ      reflect.Type
+		accepted bool
+	}{
+		{"a selector and a data field", reflect.TypeOf(carrier{}), true},
+		{"a wider selector", reflect.TypeOf(wideSelector{}), true},
+		{"through a pointer", reflect.TypeOf(&carrier{}), true},
+		{"not a struct", reflect.TypeOf(uint32(0)), false},
+		{"no data field", reflect.TypeOf(selectorOnly{}), false},
+		{"a signed selector", reflect.TypeOf(signedSelector{}), false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateUnionCarrier(tt.typ, "union")
+			if tt.accepted {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, sszutils.ErrInvalidConstraint) {
+				t.Fatalf("err = %v, want the carrier refused", err)
+			}
+		})
 	}
 }
 
