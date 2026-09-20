@@ -620,7 +620,7 @@ func (h *Hasher) CurrentIndex() int {
 // a scope over its limit reduces at the depth its chunks need either way. The
 // one shape it could move -- a scope opened progressive and reduced as binary,
 // where the hint decides whether progressive groups or raw chunks are reduced
-// -- is refused instead, through ErrProgressiveScopeClosedBinary.
+// -- is refused instead, through ErrScopeShapeMismatch.
 func (h *Hasher) Collapse() {
 	if h.layerCount < 0 {
 		return
