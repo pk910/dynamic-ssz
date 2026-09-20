@@ -65,6 +65,11 @@ dynamic or streaming surface is preferred over its static one whenever a
 spec-aware call is allowed, since a static method may bake in preset values.
 A static build reaches it through its static surface or fails.
 
+Being opaque also exempts it from the rule that a method promoted from an
+embedded field never stands for the outer type. A custom type whose surface is
+entirely promoted delegates to it, so the embedded value is what gets encoded
+and hashed and the outer type's other fields do not appear.
+
 ## Options that change the rule
 
 - `WithNoFastSsz` removes the static surface from consideration for every
@@ -84,3 +89,34 @@ only with `-legacy`; each forwards to the type's own dynamic method with the
 global instance's specs. A spec-free generation emits real static bodies.
 The `ds.*` entry points are the supported way in; calling a child's generated
 method directly bypasses the rule and the recursion bound.
+
+## What is checked, and what is trusted
+
+A delegate's output is trusted. The engines call the method and use what comes
+back; checking every delegate on every call would cost more than delegating
+saves.
+
+Two things are enforced, because the entry points have already paid for them:
+
+| Check | Where |
+|---|---|
+| a delegated size is neither negative nor past the SSZ size limit | every `ds.*` entry point that sizes |
+| the encoded length equals the size the sizing pass computed | `ds.MarshalSSZ`, `ds.MarshalSSZTo`, `ds.MarshalSSZWriter` |
+
+The rest is the delegate's contract:
+
+- `MarshalSSZTo` and `MarshalSSZDyn` append to the buffer they are given and
+  return it. One that returns a buffer of its own moves the encoder back, and
+  the offset write that follows panics.
+- `SizeSSZ` and `SizeSSZDyn` report the exact byte count the marshal writes.
+  Two size errors that cancel pass the length check and encode a wrong value.
+- `HashTreeRootWith` and `HashTreeRootWithDyn` leave one scope's root on the
+  walker. A delegate that reads a root back with `Hash` keeps it only while
+  `HashErr`, read after `Hash`, is nil.
+- Nothing compares the bytes or the root a delegate produces against the
+  schema.
+
+Generated code keeps these rules by construction: a generated method that
+breaks one is a bug in the generator, and worth reporting. A hand-written
+delegate that breaks one encodes a wrong value, answers a wrong root, or
+panics, and no error says so.
