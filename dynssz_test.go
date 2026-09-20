@@ -296,6 +296,28 @@ func TestDefaultLogUsesStructuredLogging(t *testing.T) {
 	}
 }
 
+// A nil log callback reads as no callback: the default sink answers it, so
+// verbose logging has something to call.
+func TestNilLogCallbackFallsBackToTheDefaultSink(t *testing.T) {
+	var buf bytes.Buffer
+	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(oldLogger)
+
+	ds := NewDynSsz(nil, WithVerbose(), WithLogCb(nil))
+	if ds.options.LogCb == nil {
+		t.Fatal("a nil log callback was kept")
+	}
+
+	if _, err := ds.MarshalSSZ(&struct{ V uint64 }{V: 1}); err != nil {
+		t.Fatalf("verbose marshal with a nil log callback: %v", err)
+	}
+	if buf.Len() == 0 {
+		t.Fatal("verbose logging reached no sink")
+	}
+}
+
 func TestWithOptions(t *testing.T) {
 	ds := NewDynSsz(nil,
 		WithNoFastSsz(),

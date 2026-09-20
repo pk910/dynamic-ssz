@@ -6750,6 +6750,28 @@ func TestParseTagsFastsszTag(t *testing.T) {
 	}
 }
 
+// testBadCarrierUnion names a valid variant descriptor from a carrier the union
+// operations cannot read: nothing holds the data beside the selector.
+type testBadCarrierUnion struct {
+	Variant uint8
+}
+
+func (u *testBadCarrierUnion) GetDescriptorType() reflect.Type {
+	return reflect.TypeOf(testUnionDescriptor{})
+}
+
+// Both union builders read the selector and the data by field position, so both
+// refuse a carrier that does not hold them, whichever tag forced the type.
+func TestTypeCacheRefusesUnionCarrierOnBothBuilders(t *testing.T) {
+	for _, hint := range []SszTypeHint{{Type: SszCompatibleUnionType}, {Type: SszUnionType}} {
+		cache := NewTypeCache(&dummyDynamicSpecs{})
+		_, err := cache.GetTypeDescriptor(reflect.TypeOf(testBadCarrierUnion{}), nil, nil, []SszTypeHint{hint})
+		if !errors.Is(err, sszutils.ErrInvalidConstraint) {
+			t.Errorf("%v: err = %v, want the carrier refused", hint.Type, err)
+		}
+	}
+}
+
 // The union carrier is what the size, marshal and hash paths read the selector
 // and the data from, so a shape those paths cannot read is refused here.
 func TestValidateUnionCarrier(t *testing.T) {

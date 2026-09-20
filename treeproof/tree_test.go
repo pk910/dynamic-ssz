@@ -1897,6 +1897,22 @@ func TestTreeFromNodesProgressiveWithActiveFieldsInjectedError(t *testing.T) {
 	}
 }
 
+// The bitvector is built after the tree, so its own failure is reported from
+// there. An empty leaf set reduces without the injected builder, which leaves
+// the bitvector as the only caller of it.
+func TestTreeFromNodesProgressiveWithActiveFieldsBitvectorError(t *testing.T) {
+	injected := errors.New("injected")
+	treeFromNodesToDepthFn = func([]*Node, int) (*Node, error) {
+		return nil, injected
+	}
+	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
+
+	_, err := TreeFromNodesProgressiveWithActiveFields(nil, make([]byte, 65))
+	if !errors.Is(err, injected) {
+		t.Fatalf("expected injected error, got: %v", err)
+	}
+}
+
 // TestTreeFromNodes64EdgeCases covers the zero-capacity, excess-leaf, non-pow2
 // and depth-boundary branches of the uint64 tree builders and their int
 // forwards.
