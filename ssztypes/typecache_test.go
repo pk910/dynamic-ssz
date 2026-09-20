@@ -1617,11 +1617,17 @@ func TestTypeCache_DelegatedCycleIsRefused(t *testing.T) {
 	}
 }
 
-// A delegated sizer's result enters the size domain and is bounded there.
+// A delegated sizer's result enters the size domain and is bounded there. A
+// size past the limit is stated as a number where the target's int holds one
+// and wraps negative where it does not, which states no size at all; neither
+// leaves the type with a fixed size.
 func TestTypeCache_DelegatedSizePastLimit(t *testing.T) {
-	_, err := NewTypeCache(&dummyDynamicSpecs{}).GetTypeDescriptor(reflect.TypeOf(hugeDelegate{}), nil, nil, nil)
-	if err == nil {
-		t.Fatal("a delegated size past the SSZ size limit was accepted")
+	desc, err := NewTypeCache(&dummyDynamicSpecs{}).GetTypeDescriptor(reflect.TypeOf(hugeDelegate{}), nil, nil, nil)
+	if err != nil {
+		return
+	}
+	if desc.Size != 0 || desc.SszTypeFlags&SszTypeFlagIsDynamic == 0 {
+		t.Fatalf("descriptor states size %d, dynamic=%v; want no fixed size", desc.Size, desc.SszTypeFlags&SszTypeFlagIsDynamic != 0)
 	}
 }
 

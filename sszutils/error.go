@@ -658,8 +658,15 @@ func ErrMaxDepthExceededFn(maxDepth any) error {
 // SSZ size limit is past every target's reach, not only this one's, so it is
 // reported as the size limit instead.
 func ErrPlatformOverflowFn(description string, value uint64) error {
+	if value > math.MaxUint32 {
+		return &sszError{
+			err:     ErrSszSizeExceeded,
+			message: fmt.Sprintf("%s %d exceeds the SSZ size limit", description, value),
+		}
+	}
+
 	return &sszError{
-		err:     SizeLimitSentinel(value),
+		err:     ErrPlatformOverflow,
 		message: fmt.Sprintf("%s %d exceeds platform int max", description, value),
 	}
 }
