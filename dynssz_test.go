@@ -3674,12 +3674,35 @@ func TestFastsszSszTagHonored(t *testing.T) {
 		}
 	})
 
-	t.Run("BothTagsRejected", func(t *testing.T) {
+	// Joining a field's tag with its type's annotation can state the type
+	// through either key, so both together are the type where they agree and
+	// no type at all where they do not.
+	t.Run("BothTagsAgreeing", func(t *testing.T) {
 		type both struct {
 			B []byte `ssz:"bitlist" ssz-type:"bitlist" ssz-max:"16"`
 		}
-		if _, err := ds.HashTreeRoot(&both{B: []byte{0x01}}); err == nil {
-			t.Fatal("setting both 'ssz' and 'ssz-type' should be rejected")
+		type one struct {
+			B []byte `ssz-type:"bitlist" ssz-max:"16"`
+		}
+		agreed, err := ds.HashTreeRoot(&both{B: []byte{0x01}})
+		if err != nil {
+			t.Fatalf("both tags naming one type: %v", err)
+		}
+		single, err := ds.HashTreeRoot(&one{B: []byte{0x01}})
+		if err != nil {
+			t.Fatalf(`ssz-type:"bitlist": %v`, err)
+		}
+		if agreed != single {
+			t.Fatalf("both tags root %x != single tag root %x", agreed, single)
+		}
+	})
+
+	t.Run("BothTagsDisagreeing", func(t *testing.T) {
+		type both struct {
+			B []byte `ssz:"bitlist" ssz-type:"bitvector" ssz-max:"16"`
+		}
+		if _, err := ds.HashTreeRoot(&both{B: []byte{0x01}}); !errors.Is(err, sszutils.ErrInvalidTag) {
+			t.Fatalf("err = %v, want the two types refused", err)
 		}
 	})
 }

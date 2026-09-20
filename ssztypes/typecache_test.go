@@ -10,6 +10,7 @@ import (
 	"math"
 	"math/big"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -3726,7 +3727,7 @@ func TestParseTags_Comprehensive(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error for invalid ssz-type")
 		}
-		if !strings.Contains(err.Error(), "error parsing ssz-type tag") {
+		if !errors.Is(err, sszutils.ErrInvalidTag) || !strings.Contains(err.Error(), "invalidtype") {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
@@ -6654,7 +6655,9 @@ func TestLargeUintViewPairs(t *testing.T) {
 }
 
 // ParseTags reads the plain fastssz `ssz` tag as ssz-type when no ssz-type is
-// given and rejects the two together, as the struct-field reader does.
+// given, as the struct-field reader does. A tag carrying both names one type
+// twice where they agree -- which is what joining a field tag with its type's
+// annotation produces -- and no single type where they do not.
 func TestParseTagsFastsszTag(t *testing.T) {
 	typeHints, _, maxHints, err := ParseTags(`ssz:"bitlist" ssz-max:"16"`)
 	if err != nil {
@@ -6663,8 +6666,28 @@ func TestParseTagsFastsszTag(t *testing.T) {
 	if len(typeHints) != 1 || typeHints[0].Type != SszBitlistType || len(maxHints) != 1 || maxHints[0].Size != 16 {
 		t.Fatalf("ssz tag: hints %+v / %+v", typeHints, maxHints)
 	}
-	if _, _, _, err := ParseTags(`ssz:"bitlist" ssz-type:"bitlist"`); err == nil {
-		t.Fatal("both tags accepted")
+
+	for _, tag := range []string{
+		`ssz:"bitlist" ssz-type:"bitlist"`,
+		`ssz:"?,uint64" ssz-type:" ? , uint64 "`,
+		`ssz:"auto" ssz-type:"?"`,
+	} {
+		hints, _, _, err := ParseTags(tag)
+		if err != nil {
+			t.Errorf("%s: %v", tag, err)
+			continue
+		}
+		want, _, _, err := ParseTags(strings.ReplaceAll(tag, `ssz:`, `unused:`))
+		if err != nil {
+			t.Fatalf("%s: reference parse: %v", tag, err)
+		}
+		if !slices.Equal(hints, want) {
+			t.Errorf("%s: hints %+v, want %+v", tag, hints, want)
+		}
+	}
+
+	if _, _, _, err := ParseTags(`ssz:"bitlist" ssz-type:"bitvector"`); !errors.Is(err, sszutils.ErrInvalidTag) {
+		t.Errorf("two different types: err = %v, want the tags refused", err)
 	}
 }
 
