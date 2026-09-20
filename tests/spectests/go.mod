@@ -19,7 +19,7 @@ require (
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/huandu/go-clone v1.7.3 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
-	github.com/pk910/hashtree-bindings v0.2.5 // indirect
+	github.com/pk910/hashtree-bindings v0.2.6 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	golang.org/x/crypto v0.52.0 // indirect
