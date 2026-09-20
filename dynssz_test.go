@@ -8864,3 +8864,44 @@ func TestInstalledHashBackendReachesRootAndTree(t *testing.T) {
 		t.Errorf("GetTree root %x disagrees with HashTreeRoot %x: the two reached different backends", got, root)
 	}
 }
+
+// b03Value is hashed through both entry points with a backend installed on the
+// pool WithNoFastHash selects.
+type b03Value struct {
+	A uint64
+	B []byte `ssz-max:"32"`
+}
+
+// A backend a caller installs reaches every entry point, or none: one value
+// gives one root whether it is asked for as a root or as a tree. The pool is
+// process-wide, so this test does not run in parallel with others that hash.
+func TestInstalledBackendReachesEveryEntryPoint(t *testing.T) {
+	marked := func(dst, input []byte) error {
+		for i := 0; i+64 <= len(input); i += 64 {
+			sum := sha256.Sum256(input[i : i+64])
+			sum[0] ^= 0xff // distinguishable from the built-in compression
+			copy(dst[i/2:], sum[:])
+		}
+
+		return nil
+	}
+
+	restore := hasher.DefaultHasherPool.HashFn
+	hasher.DefaultHasherPool.HashFn = marked
+	defer func() { hasher.DefaultHasherPool.HashFn = restore }()
+
+	ds := NewDynSsz(nil, WithNoFastHash())
+	value := &b03Value{A: 7, B: []byte{1, 2, 3}}
+
+	root, err := ds.HashTreeRoot(value)
+	if err != nil {
+		t.Fatalf("hash tree root: %v", err)
+	}
+	tree, err := ds.GetTree(value)
+	if err != nil {
+		t.Fatalf("get tree: %v", err)
+	}
+	if !bytes.Equal(tree.Hash(), root[:]) {
+		t.Errorf("the tree answers %x where the root is %x", tree.Hash()[:8], root[:8])
+	}
+}

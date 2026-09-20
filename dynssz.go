@@ -6,7 +6,6 @@
 package dynssz
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1074,13 +1073,7 @@ func (d *DynSsz) HashTreeRoot(source any, opts ...CallOption) ([32]byte, error) 
 	if source == nil {
 		return [32]byte{}, sszutils.NewSszError(sszutils.ErrInvalidValueRange, "source must not be nil")
 	}
-	var pool *hasher.HasherPool
-	if d.options.NoFastHash {
-		pool = &hasher.DefaultHasherPool
-	} else {
-		pool = &hasher.FastHasherPool
-	}
-
+	pool := d.hasherPool()
 	hh := pool.Get()
 	defer func() {
 		pool.Put(hh)
@@ -1251,7 +1244,9 @@ func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error
 	if source == nil {
 		return nil, sszutils.NewSszError(sszutils.ErrInvalidValueRange, "source must not be nil")
 	}
-	w := treeproof.NewWrapper()
+	// The tree is compressed with the function this instance hashes with, so
+	// one value gives one root whichever entry point a caller reaches for.
+	w := treeproof.NewWrapperWithHashFn(d.hasherPool().CurrentHashFn())
 
 	if err := d.HashTreeRootWith(source, w, opts...); err != nil {
 		return nil, err
@@ -1265,20 +1260,23 @@ func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error
 	if err != nil {
 		return nil, err
 	}
-	finalizeOpts := make([]treeproof.FinalizeOption, 0, 1)
-	if d.options.NoFastHash {
-		finalizeOpts = append(finalizeOpts, treeproof.WithHashFn(nativeBatchHashFn))
-	}
 	// On a finalization error the partially finalized tree is returned
 	// alongside the error; every hash cached in it is valid.
-	finalizeErr := node.Finalize(finalizeOpts...)
+	finalizeErr := node.Finalize(treeproof.WithHashFn(d.hasherPool().CurrentHashFn()))
 
 	return node, finalizeErr
 }
 
-// nativeBatchHashFn hashes with the standard library sha256, serving tree
-// finalization for instances configured with WithNoFastHash.
-var nativeBatchHashFn = hasher.NativeHashWrapperFactory(sha256.New)
+// hasherPool is the pool this instance hashes from: the accelerated one, or
+// the built-in sha256 where WithNoFastHash asked for it. Every entry point
+// draws from the same one, so a backend installed on it reaches all of them.
+func (d *DynSsz) hasherPool() *hasher.HasherPool {
+	if d.options.NoFastHash {
+		return &hasher.DefaultHasherPool
+	}
+
+	return &hasher.FastHasherPool
+}
 
 // ValidateType validates whether a given type is compatible with SSZ encoding/decoding.
 //

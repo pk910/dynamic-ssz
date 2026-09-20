@@ -6,6 +6,7 @@ package treeproof
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"math"
@@ -1838,5 +1839,63 @@ func TestWrapperPackedScope(t *testing.T) {
 	// bytes, so the closed scope no longer packs.
 	if len(w.buf) != 64 {
 		t.Fatalf("closed packed scope buffered %d bytes, want a whole chunk", len(w.buf))
+	}
+}
+
+// A caller-installed backend may refuse. Completing the tree with the fallback
+// compression would mix two of them in one root, so both paths that finalize a
+// subtree -- the root, and the chunk a cached scope reads through Hash --
+// report the refusal instead of answering.
+func TestWrapperRefusedBackendIsReported(t *testing.T) {
+	refused := errors.New("backend refused")
+	// Succeeds n times, then refuses, and marks its output so a mixed root
+	// would be neither walker's.
+	flaky := func(n int) hasher.HashFn {
+		calls := 0
+		return func(dst, input []byte) error {
+			for i := 0; i+64 <= len(input); i += 64 {
+				if calls >= n {
+					return refused
+				}
+				calls++
+				sum := sha256.Sum256(input[i : i+64])
+				sum[0] ^= 0xff
+				copy(dst[i/2:], sum[:])
+			}
+
+			return nil
+		}
+	}
+
+	build := func(w *Wrapper) {
+		idx := w.StartTree(sszutils.TreeTypeBinary)
+		for i := range 8 {
+			w.AppendBytes32([]byte{byte(i + 1)})
+		}
+		w.Merkleize(idx)
+	}
+
+	for _, n := range []int{0, 1, 2, 4} {
+		restore := batchHashFn
+		batchHashFn = flaky(n)
+
+		w := NewWrapper()
+		build(w)
+		_, rootErr := w.HashRoot()
+		rootWalkErr := w.HashErr()
+
+		cached := NewWrapper()
+		build(cached)
+		cached.Hash()
+		cachedErr := cached.HashErr()
+
+		batchHashFn = restore
+
+		if !errors.Is(rootErr, refused) || !errors.Is(rootWalkErr, refused) {
+			t.Errorf("%d calls before the refusal: HashRoot err = %v, HashErr = %v", n, rootErr, rootWalkErr)
+		}
+		if !errors.Is(cachedErr, refused) {
+			t.Errorf("%d calls before the refusal: a cached scope read a root with HashErr = %v", n, cachedErr)
+		}
 	}
 }
