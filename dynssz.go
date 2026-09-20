@@ -431,7 +431,7 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 	// is no wider is the whole int range: the bytes already in buf then take
 	// the sum past it.
 	if size > int64(math.MaxInt)-int64(len(buf)) {
-		return nil, sszutils.ErrPlatformOverflowFn("SSZ size", uint64(size))
+		return nil, sszutils.ErrPlatformOverflowFn("SSZ size", size)
 	}
 	needed := len(buf) + int(size)
 	if cap(buf) < needed {

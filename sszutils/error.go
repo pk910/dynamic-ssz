@@ -656,17 +656,47 @@ func ErrMaxDepthExceededFn(maxDepth any) error {
 // ErrPlatformOverflowFn is returned when a SSZ size or count exceeds the
 // platform's integer range (e.g. >31 bits on 32-bit systems). A value past the
 // SSZ size limit is past every target's reach, not only this one's, so it is
-// reported as the size limit instead.
-func ErrPlatformOverflowFn(description string, value uint64) error {
-	if value > math.MaxUint32 {
+// reported as the size limit instead. A value of no integer type states no
+// width to weigh, so it is reported against the platform's range.
+func ErrPlatformOverflowFn(description string, value any) error {
+	if width, ok := unsignedWidth(value); ok && width > math.MaxUint32 {
 		return &sszError{
 			err:     ErrSszSizeExceeded,
-			message: fmt.Sprintf("%s %d exceeds the SSZ size limit", description, value),
+			message: fmt.Sprintf("%s %v exceeds the SSZ size limit", description, value),
 		}
 	}
 
 	return &sszError{
 		err:     ErrPlatformOverflow,
-		message: fmt.Sprintf("%s %d exceeds platform int max", description, value),
+		message: fmt.Sprintf("%s %v exceeds platform int max", description, value),
 	}
+}
+
+// unsignedWidth reads the width a value states, for the integer types a size or
+// a count is carried in. A negative one states no width past any limit.
+func unsignedWidth(value any) (uint64, bool) {
+	switch n := value.(type) {
+	case uint:
+		return uint64(n), true
+	case uint8:
+		return uint64(n), true
+	case uint16:
+		return uint64(n), true
+	case uint32:
+		return uint64(n), true
+	case uint64:
+		return n, true
+	case int:
+		return uint64(max(n, 0)), true
+	case int8:
+		return uint64(max(n, 0)), true
+	case int16:
+		return uint64(max(n, 0)), true
+	case int32:
+		return uint64(max(n, 0)), true
+	case int64:
+		return uint64(max(n, 0)), true
+	}
+
+	return 0, false
 }
