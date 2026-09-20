@@ -1657,6 +1657,10 @@ func (h *Hasher) merkleizeProgressiveImpl(dst, chunks []byte, depth uint8) []byt
 // background reductions are awaited only when their hole can overlap the
 // tail; holes below it are left to fill in the background. The returned
 // slice is only valid until the next hasher operation.
+//
+// The flush performs the scope's reduction, so the backend can refuse it here
+// and at no earlier call: the tail is a root only while HashErr, read after
+// Hash, is nil.
 func (h *Hasher) Hash() []byte {
 	if h.layerCount >= 0 {
 		layer := &h.layers[h.layerCount]

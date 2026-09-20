@@ -8887,6 +8887,114 @@ func TestInstalledHashBackendReachesRootAndTree(t *testing.T) {
 	}
 }
 
+// cachedWrapperValue is the caching delegate examples/htr-caching documents.
+type cachedWrapperValue struct {
+	Data cachedWrapperInner
+	Root *[32]byte `ssz-type:"-"`
+}
+
+type cachedWrapperInner struct {
+	A uint64
+	B uint64
+}
+
+var _ = sszutils.Annotate[cachedWrapperValue](`ssz-type:"wrapper"`)
+var _ sszutils.DynamicHashRoot = (*cachedWrapperValue)(nil)
+
+func (v *cachedWrapperValue) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	if v.Root != nil {
+		hh.PutBytes(v.Root[:])
+		return nil
+	}
+
+	d, ok := ds.(*DynSsz)
+	if !ok {
+		return fmt.Errorf("expected *DynSsz, got %T", ds)
+	}
+	if err := d.HashTreeRootWith(v.Data, hh); err != nil {
+		return err
+	}
+
+	var root [32]byte
+	copy(root[:], hh.Hash())
+	if err := hh.HashErr(); err != nil {
+		return err
+	}
+	v.Root = &root
+
+	return nil
+}
+
+type cachedWrapperList struct {
+	Vals []*cachedWrapperValue `ssz-max:"1024"`
+}
+
+// A delegate that reads HashErr after capturing a scope's root keeps nothing a
+// refusing backend did not produce, on either walker.
+func TestCachingDelegateKeepsNoRootARefusingBackendDidNotProduce(t *testing.T) {
+	refused := errors.New("backend refused")
+	var refuse bool
+	installed := func(dst, input []byte) error {
+		if refuse {
+			return refused
+		}
+		for i := 0; i+64 <= len(input); i += 64 {
+			sum := sha256.Sum256(input[i : i+64])
+			sum[0] ^= 0xff
+			copy(dst[i/2:i/2+32], sum[:])
+		}
+		return nil
+	}
+
+	original := hasher.FastHasherPool.HashFn
+	defer func() { hasher.FastHasherPool.HashFn = original }()
+	hasher.FastHasherPool.HashFn = installed
+
+	ds := NewDynSsz(nil)
+	build := func() *cachedWrapperList {
+		return &cachedWrapperList{Vals: []*cachedWrapperValue{
+			{Data: cachedWrapperInner{A: 1, B: 2}},
+			{Data: cachedWrapperInner{A: 3, B: 4}},
+		}}
+	}
+
+	want, err := ds.HashTreeRoot(build())
+	if err != nil {
+		t.Fatalf("reference HashTreeRoot: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		hash func(*cachedWrapperList) error
+	}{
+		{"HashTreeRoot", func(v *cachedWrapperList) error { _, err := ds.HashTreeRoot(v); return err }},
+		{"GetTree", func(v *cachedWrapperList) error { _, err := ds.GetTree(v); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := build()
+
+			refuse = true
+			if err := tc.hash(v); !errors.Is(err, refused) {
+				t.Fatalf("err = %v, want the refusal", err)
+			}
+			for i, elem := range v.Vals {
+				if elem.Root != nil {
+					t.Errorf("element %d kept %x from the refused walk", i, *elem.Root)
+				}
+			}
+
+			refuse = false
+			got, err := ds.HashTreeRoot(v)
+			if err != nil {
+				t.Fatalf("HashTreeRoot after the backend recovered: %v", err)
+			}
+			if got != want {
+				t.Errorf("root %x after the backend recovered, want %x", got, want)
+			}
+		})
+	}
+}
+
 // b03Value is hashed through both entry points with a backend installed on the
 // pool WithNoFastHash selects.
 type b03Value struct {

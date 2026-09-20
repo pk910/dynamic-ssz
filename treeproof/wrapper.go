@@ -728,6 +728,10 @@ func (w *Wrapper) HashRoot() ([32]byte, error) {
 // Hash returns the last chunk of the walker's state -- the latest reduction
 // result, or the bytes appended since -- as hasher.Hasher.Hash does. The
 // returned slice is only valid until the next walker operation.
+//
+// Materializing the chunk performs the subtree's reduction, so the backend can
+// refuse it here and at no earlier call: the chunk is a root only while
+// HashErr, read after Hash, is nil.
 func (w *Wrapper) Hash() []byte {
 	start := 0
 	if len(w.buf) > 32 {

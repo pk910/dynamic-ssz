@@ -2357,6 +2357,49 @@ func TestHashRootReportsHashFnError(t *testing.T) {
 	}
 }
 
+// Hash performs the pending reduction, so HashErr is nil before it and reports
+// a refusal after, and the bytes it returned are then not the root.
+func TestHashReportsARefusalNoEarlierCallCould(t *testing.T) {
+	refused := errors.New("hash backend unavailable")
+	good := NativeHashWrapperFactory(sha256.New)
+	var refuse bool
+	hh := NewHasherWithHashFn(func(dst, src []byte) error {
+		if refuse {
+			return refused
+		}
+		return good(dst, src)
+	})
+
+	// A scope nested in an open one leaves its reduction pending for Hash.
+	fill := func() {
+		outer := hh.Index()
+		inner := hh.Index()
+		hh.PutUint64(1)
+		hh.FillUpTo32()
+		hh.PutUint64(2)
+		hh.FillUpTo32()
+		hh.Merkleize(inner)
+		_ = outer
+	}
+
+	fill()
+	want := bytes.Clone(hh.Hash())
+
+	hh.Reset()
+	refuse = true
+	fill()
+	if err := hh.HashErr(); err != nil {
+		t.Fatalf("HashErr before Hash = %v, want nil", err)
+	}
+	got := bytes.Clone(hh.Hash())
+	if err := hh.HashErr(); !errors.Is(err, refused) {
+		t.Errorf("HashErr after Hash = %v, want the refusal", err)
+	}
+	if bytes.Equal(got, want) {
+		t.Errorf("Hash returned the root %x under a refusing backend", got)
+	}
+}
+
 // Reset clears the hash error, so a pooled hasher never reports the failure
 // its predecessor hit.
 func TestResetClearsHashFnError(t *testing.T) {
