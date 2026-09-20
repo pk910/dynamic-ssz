@@ -1,6 +1,6 @@
 # Getting Started
 
-Dynamic SSZ is a Go library for [SSZ](https://github.com/ethereum/consensus-specs/blob/master/ssz/simple-serialize.md) (Simple Serialize) encoding, decoding, and hash tree root computation. It supports runtime-configurable field sizes, making it suitable for Ethereum consensus types that vary across network presets.
+Dynamic SSZ is a Go library for [SSZ](https://github.com/ethereum/ssz-specs) (Simple Serialize) encoding, decoding, and hash tree root computation. It supports runtime-configurable field sizes, making it suitable for Ethereum consensus types that vary across network presets.
 
 ## Installation
 
