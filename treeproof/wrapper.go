@@ -79,6 +79,13 @@ type wScope struct {
 }
 
 // NewWrapper creates a new Wrapper ready to construct a Merkle tree.
+//
+// It names no backend, so its trees compress with whatever
+// hasher.FastHasherPool holds at the time -- the built-in compression unless a
+// caller installed one. hasher.NewHasher takes the built-in whatever the pool
+// holds, so a caller who installs a non-sha256 backend on the pool and reads
+// one walker against the other names it on both: NewWrapperWithHashFn here,
+// hasher.NewHasherWithHashFn there.
 func NewWrapper() *Wrapper {
 	return &Wrapper{
 		buf: make([]byte, 0),

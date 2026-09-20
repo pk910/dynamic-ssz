@@ -135,6 +135,12 @@ func defaultHashFn() HashFn {
 // NewHasher creates a new Hasher with the default sha256 hash function. The
 // hash function draws per-call instances from a pool, so the hasher may be
 // gated into async hashing.
+//
+// It takes the built-in compression whatever FastHasherPool holds, so a
+// caller who installed a backend there names it here too, with
+// NewHasherWithHashFn, or draws the hasher from the pool with Get. A tree
+// built by treeproof.NewWrapper reads the pool instead, so the two answer
+// differently for the same value while only one of them is told.
 func NewHasher() *Hasher {
 	return NewHasherWithHashFn(defaultHashFn())
 }
