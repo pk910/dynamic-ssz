@@ -534,10 +534,15 @@ func (w *Wrapper) materializeOne(i int) {
 	if w.nodes[i].filled || w.nodes[i].node == nil {
 		return
 	}
-	// Node.Hash completes a subtree the backend refused with the fallback
-	// compression, mixing two of them in one root, so the refusal is recorded
-	// here where the walk can report it.
-	w.setWalkErr(w.nodes[i].node.finalize(finalizeConfig{fn: w.hashFn}))
+	// A subtree the backend refused has no root to write, so the refusal is
+	// recorded here where the walk can report it and the chunk is left
+	// unfilled: nothing was cached, so a later call answers it once the
+	// backend does.
+	if err := w.nodes[i].node.finalize(finalizeConfig{fn: w.hashFn}); err != nil {
+		w.setWalkErr(err)
+
+		return
+	}
 	copy(w.buf[w.nodes[i].off:w.nodes[i].off+32], w.nodes[i].node.Hash())
 	w.nodes[i].filled = true
 }

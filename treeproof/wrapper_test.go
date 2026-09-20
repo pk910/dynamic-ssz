@@ -1899,3 +1899,55 @@ func TestWrapperRefusedBackendIsReported(t *testing.T) {
 		}
 	}
 }
+
+// A subtree the backend refused leaves its chunk unfilled. Nothing is cached,
+// so the walker never answers with the root the fallback compression would
+// have produced, and it answers correctly once the backend does.
+func TestWrapperRefusedBackendLeavesChunkUnfilled(t *testing.T) {
+	refused := errors.New("backend refused")
+	var refuse bool
+	// Answers differently from the built-in compression, so the fallback root
+	// is recognisable.
+	backend := func(dst, input []byte) error {
+		if refuse {
+			return refused
+		}
+		for i := 0; i+64 <= len(input); i += 64 {
+			sum := sha256.Sum256(input[i : i+64])
+			sum[0] ^= 0xff
+			copy(dst[i/2:], sum[:])
+		}
+
+		return nil
+	}
+
+	build := func(w *Wrapper) *Wrapper {
+		idx := w.StartTree(sszutils.TreeTypeBinary)
+		for i := range 8 {
+			w.AppendBytes32([]byte{byte(i + 1)})
+		}
+		w.Merkleize(idx)
+
+		return w
+	}
+
+	want := bytes.Clone(build(NewWrapperWithHashFn(backend)).Hash())
+	fallback := bytes.Clone(build(NewWrapper()).Hash())
+	if bytes.Equal(want, fallback) {
+		t.Fatal("the backend answers the same as the fallback compression")
+	}
+
+	w := build(NewWrapperWithHashFn(backend))
+	refuse = true
+	if got := w.Hash(); bytes.Equal(got, fallback) {
+		t.Errorf("the refused chunk read the fallback root %x", got)
+	}
+	if err := w.HashErr(); !errors.Is(err, refused) {
+		t.Errorf("HashErr = %v, want the refusal", err)
+	}
+
+	refuse = false
+	if got := w.Hash(); !bytes.Equal(got, want) {
+		t.Errorf("the walker answered %x once the backend recovered, want %x", got, want)
+	}
+}

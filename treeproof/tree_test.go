@@ -2799,6 +2799,58 @@ func TestFinalizeWithHashFnSmallTree(t *testing.T) {
 	assertAllBranchesHashed(t, failing)
 }
 
+// Hash finalizes an unfinalized tree, and hashNode caches every branch it
+// computes, so a backend refusal has to stop it: completing the tree behind
+// the refusing backend would cache -- and from then on answer with -- a root
+// that backend never produced. It returns no root instead, and the tree stays
+// resumable.
+func TestHashAfterRefusedBackendCachesNothing(t *testing.T) {
+	// A backend that answers differently from the built-in compression, so a
+	// root it did not produce is recognisable, and refuses while refuse is set.
+	var refuse bool
+	backend := func(dst, input []byte) error {
+		if refuse {
+			return errors.New("backend failure")
+		}
+		if err := hasher.NativeHashWrapperFactory(sha256.New)(dst, input); err != nil {
+			return err
+		}
+		dst[0] ^= 0xff
+
+		return nil
+	}
+
+	original := hasher.FastHasherPool.HashFn
+	defer func() { hasher.FastHasherPool.HashFn = original }()
+	hasher.FastHasherPool.HashFn = backend
+
+	chunks := finalizeTestChunks(8)
+	build := func() *Node {
+		tree, err := TreeFromChunks(chunks)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return tree
+	}
+
+	want := bytes.Clone(build().Hash())
+	if want == nil {
+		t.Fatal("the reference tree has no root")
+	}
+
+	tree := build()
+	refuse = true
+	if got := tree.Hash(); got != nil {
+		t.Errorf("Hash under a refusing backend = %x, want no root", got)
+	}
+
+	refuse = false
+	if got := tree.Hash(); !bytes.Equal(got, want) {
+		t.Errorf("resumed root %x, want %x", got, want)
+	}
+}
+
 // The cross-batch alias case: the shared branch's first occurrence is
 // hashed by an earlier mid-walk flush before the walk meets the alias, so
 // the revisit sees a cached value and batching continues without an abort.
