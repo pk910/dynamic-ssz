@@ -13,6 +13,8 @@
 package reflection
 
 import (
+	"fmt"
+	"log/slog"
 	"math"
 	"reflect"
 
@@ -75,11 +77,17 @@ type reflectionDepth struct {
 // stay under 20) while costing well under a megabyte of stack.
 const defaultMaxNestingDepth = 1024
 
+// defaultLogCb is where verbose logging goes when a caller names no sink.
+func defaultLogCb(format string, args ...any) {
+	slog.Debug(fmt.Sprintf(format, args...))
+}
+
 // NewReflectionCtx creates a new ReflectionCtx with the given configuration.
 //
 // Parameters:
 //   - ds: provides dynamic specification values for resolving field sizes
-//   - logCb: callback for debug logging (may be nil)
+//   - logCb: callback for debug logging; nil names no sink, and the default
+//     one answers for it
 //   - verbose: enables verbose logging output
 //   - noFastSsz: when true, disables fastssz fallback for types that implement
 //     fastssz interfaces, forcing all operations through reflection
@@ -93,6 +101,9 @@ const defaultMaxNestingDepth = 1024
 func NewReflectionCtx(ds sszutils.DynamicSpecs, logCb func(format string, args ...any), verbose, noFastSsz, noDelegation bool, maxDepth int) *ReflectionCtx {
 	if maxDepth <= 0 {
 		maxDepth = defaultMaxNestingDepth
+	}
+	if logCb == nil {
+		logCb = defaultLogCb
 	}
 
 	return &ReflectionCtx{
