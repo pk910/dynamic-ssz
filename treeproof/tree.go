@@ -547,9 +547,14 @@ func treeFromNodesProgressiveImpl(leaves []*Node, depth int) (*Node, error) {
 // element count as a right sibling of the root. This is the standard SSZ
 // merkleization for lists, where the tree root is hash(merkle_root || length).
 // The limit is rounded up to the next power of two if not already one.
+//
+// More leaves than the limit holds is refused with sszutils.ErrChunkLimitFn's
+// error: no spec root exists for a list over its capacity, and a tree deep
+// enough to hold the leaves is not the one the limit describes. A limit of 0,
+// which a negative one reads as, is no limit and refuses nothing.
 func TreeFromNodesWithMixin(leaves []*Node, num, limit int) (*Node, error) {
 	if limit < 0 {
-		// int-overflow artifact (32-bit): treat as an empty capacity.
+		// int-overflow artifact (32-bit): reads as no limit, like 0.
 		limit = 0
 	}
 	if num < 0 {
@@ -561,7 +566,12 @@ func TreeFromNodesWithMixin(leaves []*Node, num, limit int) (*Node, error) {
 // TreeFromNodesWithMixin64 is the uint64 form of TreeFromNodesWithMixin and
 // carries the canonical logic: it builds the list tree padded to `limit` chunks
 // (rounded up to a power of two via the tree depth) and mixes in the element
-// count as the right sibling of the root.
+// count as the right sibling of the root. A limit of 0 is no limit, and the
+// tree is as deep as the leaves require.
+//
+// More leaves than a non-zero limit holds is refused with
+// sszutils.ErrChunkLimitFn's error, for the reason given on
+// TreeFromNodesWithMixin.
 func TreeFromNodesWithMixin64(leaves []*Node, num, limit uint64) (*Node, error) {
 	if count := uint64(len(leaves)); limit > 0 && count > limit {
 		return nil, sszutils.ErrChunkLimitFn(count, limit)
