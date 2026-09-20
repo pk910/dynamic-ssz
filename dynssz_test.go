@@ -8905,3 +8905,53 @@ func TestInstalledBackendReachesEveryEntryPoint(t *testing.T) {
 		t.Errorf("the tree answers %x where the root is %x", tree.Hash()[:8], root[:8])
 	}
 }
+
+// emptyPartialDelegate serves one operation and is walked for the rest, so it
+// uses the container layout -- and a container with no fields is illegal.
+type emptyPartialDelegate struct{}
+
+func (emptyPartialDelegate) MarshalSSZTo(buf []byte) ([]byte, error) { return append(buf, 1), nil }
+
+type emptyPartialHolder struct {
+	A emptyPartialDelegate
+}
+
+// emptyFullDelegate serves every operation through its own methods, so it never
+// uses the container layout and a shell with no fields stands for it.
+type emptyFullDelegate struct{}
+
+func (emptyFullDelegate) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, 1), nil
+}
+func (emptyFullDelegate) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (emptyFullDelegate) SizeSSZDyn(_ sszutils.DynamicSpecs) int                  { return 1 }
+func (emptyFullDelegate) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint8(1)
+
+	return nil
+}
+
+type emptyFullHolder struct {
+	A emptyFullDelegate `ssz-type:"custom"`
+}
+
+// A container with no fields is illegal, and only a type that serves every
+// operation itself is exempt: one delegation method leaves the rest of the
+// type walked. Which methods an instance is allowed to call must not decide
+// whether the schema is legal, so both options answer alike.
+func TestEmptyContainerNeedsACompleteDelegateSurface(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ds   *DynSsz
+	}{
+		{"delegating", NewDynSsz(nil)},
+		{"no fastssz", NewDynSsz(nil, WithNoFastSsz())},
+	} {
+		if _, err := tc.ds.MarshalSSZ(&emptyPartialHolder{}); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+			t.Errorf("%s: a one-method shell was accepted: err = %v", tc.name, err)
+		}
+		if _, err := tc.ds.MarshalSSZ(&emptyFullHolder{}); err != nil {
+			t.Errorf("%s: a complete delegate was refused: %v", tc.name, err)
+		}
+	}
+}

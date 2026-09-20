@@ -3361,11 +3361,11 @@ func TestGetSszMaxSizeTagDynSszMaxExtraDimension(t *testing.T) {
 
 // TypeWrapper descriptor tests
 
-type testWrapperNoReturn struct{}
+type testWrapperNoReturn struct{ V uint64 }
 
 func (t *testWrapperNoReturn) GetDescriptorType() {}
 
-type testWrapperWrongReturn struct{}
+type testWrapperWrongReturn struct{ V uint64 }
 
 func (t *testWrapperWrongReturn) GetDescriptorType() string { return "not a type" }
 
@@ -4019,7 +4019,7 @@ func (t *testFastsszMarshaler) HashTreeRoot() ([32]byte, error) {
 }
 
 // testHashTreeRootWith implements HashTreeRootWith(hasher) error
-type testHashTreeRootWith struct{}
+type testHashTreeRootWith struct{ V uint64 }
 
 func (t *testHashTreeRootWith) HashTreeRootWith(hh interface{}) error {
 	return nil
@@ -4063,40 +4063,40 @@ func TestTypeCache_FastSSZInterfaceCompat(t *testing.T) {
 // --- Dynamic interface compatibility tests ---
 
 // testDynamicMarshaler implements DynamicMarshaler
-type testDynamicMarshaler struct{}
+type testDynamicMarshaler struct{ V uint64 }
 
 func (t *testDynamicMarshaler) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
 	return buf, nil
 }
 
 // testDynamicUnmarshaler implements DynamicUnmarshaler
-type testDynamicUnmarshaler struct{}
+type testDynamicUnmarshaler struct{ V uint64 }
 
 func (t *testDynamicUnmarshaler) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) error {
 	return nil
 }
 
 // testDynamicEncoder implements DynamicEncoder
-type testDynamicEncoder struct{}
+type testDynamicEncoder struct{ V uint64 }
 
 func (t *testDynamicEncoder) MarshalSSZEncoder(ds sszutils.DynamicSpecs, encoder sszutils.Encoder) error {
 	return nil
 }
 
 // testDynamicDecoder implements DynamicDecoder
-type testDynamicDecoder struct{}
+type testDynamicDecoder struct{ V uint64 }
 
 func (t *testDynamicDecoder) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, decoder sszutils.Decoder) error {
 	return nil
 }
 
 // testDynamicSizer implements DynamicSizer
-type testDynamicSizer struct{}
+type testDynamicSizer struct{ V uint64 }
 
 func (t *testDynamicSizer) SizeSSZDyn(ds sszutils.DynamicSpecs) int { return 0 }
 
 // testDynamicHashRoot implements DynamicHashRoot
-type testDynamicHashRoot struct{}
+type testDynamicHashRoot struct{ V uint64 }
 
 func (t *testDynamicHashRoot) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
 	return nil
@@ -4170,42 +4170,42 @@ func TestTypeCache_DynamicInterfaceCompat(t *testing.T) {
 // --- Dynamic View interface compatibility tests ---
 
 // testDynViewMarshaler implements DynamicViewMarshaler
-type testDynViewMarshaler struct{}
+type testDynViewMarshaler struct{ V uint64 }
 
 func (t *testDynViewMarshaler) MarshalSSZDynView(view any) func(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
 	return nil
 }
 
 // testDynViewUnmarshaler implements DynamicViewUnmarshaler
-type testDynViewUnmarshaler struct{}
+type testDynViewUnmarshaler struct{ V uint64 }
 
 func (t *testDynViewUnmarshaler) UnmarshalSSZDynView(view any) func(ds sszutils.DynamicSpecs, buf []byte) error {
 	return nil
 }
 
 // testDynViewEncoder implements DynamicViewEncoder
-type testDynViewEncoder struct{}
+type testDynViewEncoder struct{ V uint64 }
 
 func (t *testDynViewEncoder) MarshalSSZEncoderView(view any) func(ds sszutils.DynamicSpecs, encoder sszutils.Encoder) error {
 	return nil
 }
 
 // testDynViewDecoder implements DynamicViewDecoder
-type testDynViewDecoder struct{}
+type testDynViewDecoder struct{ V uint64 }
 
 func (t *testDynViewDecoder) UnmarshalSSZDecoderView(view any) func(ds sszutils.DynamicSpecs, decoder sszutils.Decoder) error {
 	return nil
 }
 
 // testDynViewSizer implements DynamicViewSizer
-type testDynViewSizer struct{}
+type testDynViewSizer struct{ V uint64 }
 
 func (t *testDynViewSizer) SizeSSZDynView(view any) func(ds sszutils.DynamicSpecs) int {
 	return nil
 }
 
 // testDynViewHashRoot implements DynamicViewHashRoot
-type testDynViewHashRoot struct{}
+type testDynViewHashRoot struct{ V uint64 }
 
 func (t *testDynViewHashRoot) HashTreeRootWithDynView(view any) func(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
 	return nil
@@ -4535,7 +4535,7 @@ func TestTypeCache_CompatibleUnionMissingVariant(t *testing.T) {
 // --- extractGenericTypeParameter tests (tested indirectly) ---
 
 // testNoGetDescriptorType has no GetDescriptorType method
-type testNoGetDescriptorType struct{}
+type testNoGetDescriptorType struct{ V uint64 }
 
 func TestTypeCache_ExtractGenericTypeParameterNoMethod(t *testing.T) {
 	cache := NewTypeCache(&dummyDynamicSpecs{})
@@ -4846,7 +4846,7 @@ func TestTypeCache_BuildUintDescriptorSuccess(t *testing.T) {
 // --- CustomType with size hint ---
 
 // testCustomWithSize implements fastssz marshaler + unmarshaler + hasher
-type testCustomWithSize struct{}
+type testCustomWithSize struct{ V uint64 }
 
 func (t *testCustomWithSize) MarshalSSZTo(dst []byte) ([]byte, error) {
 	return append(dst, make([]byte, 8)...), nil
@@ -4957,11 +4957,11 @@ func TestTypeCache_TypeWrapperWrappedDescBuildError(t *testing.T) {
 
 // --- TypeWrapper view: GetDescriptorType returns no results / wrong type ---
 
-type testWrapperNoReturnSchema struct{}
+type testWrapperNoReturnSchema struct{ V uint64 }
 
 func (t *testWrapperNoReturnSchema) GetDescriptorType() {}
 
-type testWrapperWrongReturnSchema struct{}
+type testWrapperWrongReturnSchema struct{ V uint64 }
 
 func (t *testWrapperWrongReturnSchema) GetDescriptorType() string { return "bad" }
 

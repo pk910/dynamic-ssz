@@ -1165,7 +1165,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 	// SSZ methods (any compat flag set) are exempt: they do not use the plain
 	// container layout, so a zero-field struct shell is legitimate for them.
 	if desc.SszType == SszContainerType || desc.SszType == SszProgressiveContainerType {
-		if desc.SszCompatFlags == 0 && desc.ContainerDesc != nil && len(desc.ContainerDesc.Fields) == 0 {
+		if len(missingDelegatedOperations(desc.SszCompatFlags)) > 0 && desc.ContainerDesc != nil && len(desc.ContainerDesc.Fields) == 0 {
 			return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "container type %v has no SSZ fields, which is invalid per the SSZ spec", schemaType)
 		}
 	}
@@ -1175,21 +1175,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		// operation may be served by either the fastssz-style method or the dynssz
 		// (Dynamic*) equivalent, but at least one implementation per operation is
 		// required. Marshalling accepts either fastssz-style marshal method.
-		f := desc.SszCompatFlags
-		var missing []string
-		if f&(SszCompatFlagFastsszBufferMarshaler|SszCompatFlagFastsszValueMarshaler|SszCompatFlagDynamicMarshaler|SszCompatFlagDynamicEncoder) == 0 {
-			missing = append(missing, "marshaler")
-		}
-		if f&(SszCompatFlagFastsszUnmarshaler|SszCompatFlagDynamicUnmarshaler|SszCompatFlagDynamicDecoder) == 0 {
-			missing = append(missing, "unmarshaler")
-		}
-		if f&(SszCompatFlagFastsszSizer|SszCompatFlagDynamicSizer) == 0 {
-			missing = append(missing, "sizer")
-		}
-		if f&(SszCompatFlagFastsszHashRoot|SszCompatFlagFastsszHashRootWith|SszCompatFlagDynamicHashRoot) == 0 {
-			missing = append(missing, "hasher")
-		}
-		if len(missing) > 0 {
+		if missing := missingDelegatedOperations(desc.SszCompatFlags); len(missing) > 0 {
 			return sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "custom ssz type %v is missing a fastssz or dynssz %s implementation", schemaType, strings.Join(missing, ", "))
 		}
 	}
@@ -1197,6 +1183,32 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 	desc.SetMinSize()
 
 	return nil
+}
+
+// missingDelegatedOperations names the SSZ operations a set of compatibility
+// flags cannot serve. Each may be served by either the fastssz-style method or
+// the dynssz equivalent, and marshalling accepts either fastssz-style marshal
+// method, so a type serves an operation when it has any one of them.
+//
+// A type that serves every operation never uses the container layout, which is
+// what lets a zero-field shell stand for it; one method is not evidence of
+// that, since a type with a single marshaller is still walked for the rest.
+func missingDelegatedOperations(f SszCompatFlag) []string {
+	var missing []string
+	if f&(SszCompatFlagFastsszBufferMarshaler|SszCompatFlagFastsszValueMarshaler|SszCompatFlagDynamicMarshaler|SszCompatFlagDynamicEncoder) == 0 {
+		missing = append(missing, "marshaler")
+	}
+	if f&(SszCompatFlagFastsszUnmarshaler|SszCompatFlagDynamicUnmarshaler|SszCompatFlagDynamicDecoder) == 0 {
+		missing = append(missing, "unmarshaler")
+	}
+	if f&(SszCompatFlagFastsszSizer|SszCompatFlagDynamicSizer) == 0 {
+		missing = append(missing, "sizer")
+	}
+	if f&(SszCompatFlagFastsszHashRoot|SszCompatFlagFastsszHashRootWith|SszCompatFlagDynamicHashRoot) == 0 {
+		missing = append(missing, "hasher")
+	}
+
+	return missing
 }
 
 // unresolvedReason says why an expression produced no usable value, so the
