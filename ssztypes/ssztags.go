@@ -6,7 +6,9 @@ package ssztypes
 
 import (
 	"fmt"
+	"math"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -83,6 +85,60 @@ const (
 // Multiple hints may be present for nested types (e.g., a list of vectors).
 type SszTypeHint struct {
 	Type SszType
+}
+
+// resolveTypeHints reads the type hints a tag states. The plain fastssz `ssz`
+// tag stands in for `ssz-type` where no `ssz-type` is given, so the reflection
+// engine agrees with fastssz delegation and generated code instead of silently
+// ignoring it (e.g. `ssz:"bitlist"`).
+//
+// A tag can carry both, since a field's own tag is joined with its type's
+// annotation and either may state the type. They are compared as the types
+// they name rather than as text, so synonyms agree: stating the same type
+// twice is the type, and stating two is a field with no single answer.
+func resolveTypeHints(structTag reflect.StructTag) ([]SszTypeHint, error) {
+	sszTypeStr, hasSszType := structTag.Lookup("ssz-type")
+	sszStr, hasSsz := structTag.Lookup("ssz")
+
+	switch {
+	case !hasSszType && !hasSsz:
+		return nil, nil
+	case !hasSsz:
+		return parseTypeHintList(sszTypeStr)
+	case !hasSszType:
+		return parseTypeHintList(sszStr)
+	}
+
+	typeHints, err := parseTypeHintList(sszTypeStr)
+	if err != nil {
+		return nil, err
+	}
+	sszHints, err := parseTypeHintList(sszStr)
+	if err != nil {
+		return nil, err
+	}
+	if !slices.Equal(typeHints, sszHints) {
+		return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag,
+			"'ssz' and 'ssz-type' tags name different types (%q and %q); use only one", sszStr, sszTypeStr)
+	}
+
+	return typeHints, nil
+}
+
+// parseTypeHintList reads the comma-separated type names of one tag value,
+// one hint per nesting level.
+func parseTypeHintList(value string) ([]SszTypeHint, error) {
+	parts := strings.Split(value, ",")
+	hints := make([]SszTypeHint, 0, len(parts))
+	for _, typeStr := range parts {
+		sszType, err := ParseSszType(strings.TrimSpace(typeStr))
+		if err != nil {
+			return nil, err
+		}
+		hints = append(hints, SszTypeHint{Type: sszType})
+	}
+
+	return hints, nil
 }
 
 // ParseSszType converts an ssz-type tag string value (e.g., "container",
@@ -178,37 +234,12 @@ func IsSszExcluded(tag reflect.StructTag) bool {
 }
 
 func getSszTypeTag(field *reflect.StructField) ([]SszTypeHint, error) {
-	// parse `ssz-type`
-	sszTypeHints := []SszTypeHint{}
-
-	fieldSszTypeStr, fieldHasSszType := field.Tag.Lookup("ssz-type")
-	fieldSszStr, fieldHasSsz := field.Tag.Lookup("ssz")
-
-	// Honor the plain fastssz `ssz` tag as an ssz-type when no ssz-type is given,
-	// so the reflection engine agrees with fastssz delegation and generated code
-	// instead of silently ignoring it (e.g. `ssz:"bitlist"`). Setting both is
-	// ambiguous — reject it.
-	switch {
-	case fieldHasSszType && fieldHasSsz:
-		return sszTypeHints, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "field %q sets both 'ssz' and 'ssz-type' tags; use only one", field.Name)
-	case !fieldHasSszType && fieldHasSsz:
-		fieldSszTypeStr, fieldHasSszType = fieldSszStr, true
+	hints, err := resolveTypeHints(field.Tag)
+	if err != nil {
+		return nil, sszutils.ErrorWithPath(err, field.Name)
 	}
 
-	if fieldHasSszType {
-		for _, sszTypeStr := range strings.Split(fieldSszTypeStr, ",") {
-			sszType, err := ParseSszType(strings.TrimSpace(sszTypeStr))
-			if err != nil {
-				return sszTypeHints, sszutils.ErrorWithPath(err, field.Name)
-			}
-
-			sszTypeHints = append(sszTypeHints, SszTypeHint{
-				Type: sszType,
-			})
-		}
-	}
-
-	return sszTypeHints, nil
+	return hints, nil
 }
 
 // SszSizeHint encapsulates size information for SSZ encoding and decoding, derived from 'ssz-size' and 'dynssz-size' tag annotations.
@@ -382,8 +413,8 @@ func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszS
 				isExpr = true
 				if ok {
 					// dynamic value from spec
-					if exceedsSizeLimit(specVal, sszSize.Bits) {
-						return sszSizes, sszutils.ErrPlatformOverflowFn(fmt.Sprintf("dynssz-size value for field %q", field.Name), specVal)
+					if specVal > math.MaxInt64 || exceedsSizeLimit(specVal, sszSize.Bits) {
+						return sszSizes, sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(specVal), "dynssz-size value for field %q resolves to %d, past the SSZ size limit", field.Name, specVal)
 					}
 					if specVal == 0 {
 						// A dynssz-size that resolves to 0 would form a zero-length
@@ -670,28 +701,10 @@ func ParseTags(tag string) (typeHints []SszTypeHint, sizeHints []SszSizeHint, ma
 
 	structTag := reflect.StructTag(tag)
 
-	// Parse type hints. The plain fastssz `ssz` tag stands in for ssz-type
-	// when no ssz-type is given, as it does for struct fields (getSszTypeTag);
-	// setting both is ambiguous and rejected.
-	sszType, hasSszType := structTag.Lookup("ssz-type")
-	if sszStr, hasSsz := structTag.Lookup("ssz"); hasSsz {
-		if hasSszType {
-			return nil, nil, nil, fmt.Errorf("both 'ssz' and 'ssz-type' tags are set; use only one")
-		}
-		sszType, hasSszType = sszStr, true
-	}
-	if hasSszType {
-		for _, typeStr := range strings.Split(sszType, ",") {
-			typeStr = strings.TrimSpace(typeStr)
-			hint := SszTypeHint{}
-
-			hint.Type, err = ParseSszType(typeStr)
-			if err != nil {
-				return nil, nil, nil, fmt.Errorf("error parsing ssz-type tag: %v", err)
-			}
-
-			typeHints = append(typeHints, hint)
-		}
+	// Parse type hints, by the rule struct fields are read with.
+	typeHints, err = resolveTypeHints(structTag)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 
 	// Parse size hints

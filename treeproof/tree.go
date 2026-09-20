@@ -558,24 +558,29 @@ func TreeFromNodesWithMixin(leaves []*Node, num, limit int) (*Node, error) {
 // (rounded up to a power of two via the tree depth) and mixes in the element
 // count as the right sibling of the root.
 func TreeFromNodesWithMixin64(leaves []*Node, num, limit uint64) (*Node, error) {
+	if count := uint64(len(leaves)); limit > 0 && count > limit {
+		return nil, sszutils.ErrChunkLimitFn(count, limit)
+	}
+
+	return treeFromNodesWithMixin64(leaves, num, limit)
+}
+
+// treeFromNodesWithMixin64 builds the tree for a leaf count the limit does not
+// hold by taking the depth the leaves need, as hasher.Hasher takes it, so every
+// leaf reaches the root and no two values that differ share one. The walkers
+// reduce through this so a refused scope still produces the root they agree on;
+// the exported form above refuses the limit instead.
+func treeFromNodesWithMixin64(leaves []*Node, num, limit uint64) (*Node, error) {
 	count := uint64(len(leaves))
 	if limit == 0 {
 		// No limit: the tree is exactly as deep as the leaves require.
 		limit = count
 	}
-
-	// A limit below the leaf count describes a value that overflows its own
-	// type. The Hasher keeps the depth the limit asks for and lets the surplus
-	// chunks fall outside the tree, which leaves the root of the leaves that do
-	// fit; the Wrapper does the same so both walkers produce the same root for
-	// the same call sequence. Only a hash method that leaves more than one leaf
-	// per value can get here; keeping to one leaf is that method's contract.
-	depth := chunkLimitDepth(limit)
-	if depth < 63 {
-		if capacity := uint64(1) << uint(depth); count > capacity {
-			leaves = leaves[:capacity]
-		}
+	if count > limit {
+		limit = count
 	}
+
+	depth := chunkLimitDepth(limit)
 
 	mainTree, err := treeFromNodesToDepthFn(leaves, depth)
 	if err != nil {
@@ -619,10 +624,34 @@ func TreeFromNodesProgressiveWithActiveFields(leaves []*Node, activeFields []byt
 		return nil, err
 	}
 
-	// Mixin active fields bitvector (convert to 32-byte padded leaf)
-	activeFieldsLeaf := LeafFromBytes(activeFields)
+	activeFieldsLeaf, err := activeFieldsNode(activeFields)
+	if err != nil {
+		return nil, err
+	}
+
 	node := NewNodeWithLR(mainTree, activeFieldsLeaf)
 	return node, nil
+}
+
+// activeFieldsNode turns an active-fields bitvector into the single node that is
+// mixed in beside the tree, as hasher.Hasher does: up to 256 bits are one chunk,
+// and a wider bitvector is merkleized to its root first so the fields past the
+// first chunk still reach the tree.
+func activeFieldsNode(activeFields []byte) (*Node, error) {
+	if len(activeFields) <= 32 {
+		return LeafFromBytes(activeFields), nil
+	}
+
+	chunks := make([]*Node, 0, (len(activeFields)+31)/32)
+	for off := 0; off < len(activeFields); off += 32 {
+		end := off + 32
+		if end > len(activeFields) {
+			end = len(activeFields)
+		}
+		chunks = append(chunks, LeafFromBytes(activeFields[off:end]))
+	}
+
+	return treeFromNodesToDepthFn(chunks, chunkLimitDepth(uint64(len(chunks))))
 }
 
 // emptyChild returns the zero-padding child one level below an empty node.
@@ -767,7 +796,14 @@ func getEmptyNode(depth int) *Node {
 // batchHashFn compresses a packed sequence of 64-byte sibling pairs into
 // 32-byte parent hashes in a single call, using the vectorized hashtree
 // backend when available.
-var batchHashFn = hasher.FastHasherPool.HashFn
+//
+// The pool's function is read here rather than captured once: package
+// initialisation runs before a caller can install a backend, so a captured one
+// would be the built-in for the life of the process and a tree would hash with
+// a different function than a root does.
+var batchHashFn hasher.HashFn = func(dst, input []byte) error {
+	return hasher.FastHasherPool.CurrentHashFn()(dst, input)
+}
 
 // finalizeThreshold is the unhashed-branch count below which finalize hashes
 // recursively: tiny batches pay more in buffer setup and per-batch backend

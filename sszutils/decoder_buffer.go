@@ -17,6 +17,7 @@ type BufferDecoder struct {
 	lastLimit int
 	bufferLen int
 	position  int
+	malformed bool
 }
 
 var _ Decoder = (*BufferDecoder)(nil)
@@ -71,6 +72,9 @@ func (e *BufferDecoder) Available() int {
 // More reports whether the current region holds at least one more byte.
 // It never fails for a buffer-backed decoder.
 func (e *BufferDecoder) More() (bool, error) {
+	if e.malformed {
+		return false, ErrUnexpectedEOF
+	}
 	return e.lastLimit-e.position > 0, nil
 }
 
@@ -78,6 +82,9 @@ func (e *BufferDecoder) More() (bool, error) {
 // newly allocated slice. If maxLen is non-negative and the region is larger, the
 // call fails without allocating.
 func (e *BufferDecoder) DecodeRemaining(maxLen int) ([]byte, error) {
+	if e.malformed {
+		return nil, ErrUnexpectedEOF
+	}
 	length := e.lastLimit - e.position
 	if length < 0 {
 		length = 0
@@ -101,6 +108,9 @@ func (e *BufferDecoder) PushOpenLimit() {
 // FinishRegion pops the current region, asserting it was fully consumed. A
 // buffer-backed decoder always knows its length, so no probing is needed.
 func (e *BufferDecoder) FinishRegion() error {
+	if e.malformed {
+		return ErrUnexpectedEOF
+	}
 	if diff := e.PopLimit(); diff != 0 {
 		return ErrTrailingDataFn(diff)
 	}
@@ -114,11 +124,17 @@ func (e *BufferDecoder) PushLimit(limit int) {
 	if limit < 0 {
 		limit = 0
 	}
-	// Guard the addition: a huge limit must clamp to the enclosing region,
-	// not wrap around the integer range.
-	limitPos := e.lastLimit
-	if limit < e.lastLimit-e.position {
+	// The whole input is in hand, so a region declaring more than its parent
+	// holds is not a region this payload could have: it is refused here rather
+	// than silently read as the smaller one the bytes would allow. The region
+	// is pushed empty, so the bounds check every read already performs fails
+	// it, and the addition below cannot wrap because it only runs for a limit
+	// that fits.
+	limitPos := e.position
+	if limit <= e.lastLimit-e.position {
 		limitPos = e.position + limit
+	} else {
+		e.malformed = true
 	}
 
 	e.limits = append(e.limits, limitPos)
@@ -133,9 +149,15 @@ func (e *BufferDecoder) PopLimit() int {
 		return 0
 	}
 	limit := e.limits[limitsLen-1]
-	if limitsLen <= 1 {
+	switch {
+	case e.malformed:
+		// Nothing after an impossible declaration is decodable: leaving the
+		// region empty keeps every later read failing through the same bounds
+		// check, at no cost to the ones that read a well-formed payload.
+		e.lastLimit = e.position
+	case limitsLen <= 1:
 		e.lastLimit = e.bufferLen
-	} else {
+	default:
 		e.lastLimit = e.limits[limitsLen-2]
 	}
 	e.limits = e.limits[:limitsLen-1]
@@ -204,6 +226,9 @@ func (e *BufferDecoder) DecodeUint64() (uint64, error) {
 // DecodeBytes reads len(buf) bytes into the provided buffer and returns the
 // filled slice. Returns ErrUnexpectedEOF if fewer bytes remain than requested.
 func (e *BufferDecoder) DecodeBytes(buf []byte) ([]byte, error) {
+	if e.malformed {
+		return nil, ErrUnexpectedEOF
+	}
 	if e.GetLength() < len(buf) {
 		return nil, ErrUnexpectedEOF
 	}
@@ -222,6 +247,9 @@ func (e *BufferDecoder) DecodeBytes(buf []byte) ([]byte, error) {
 // negative length). The returned slice aliases the decoder's input buffer and
 // must be treated as read-only; callers that keep or mutate it must copy.
 func (e *BufferDecoder) DecodeBytesBuf(length int) ([]byte, error) {
+	if e.malformed {
+		return nil, ErrUnexpectedEOF
+	}
 	limit := e.lastLimit
 	if length < 0 {
 		length = limit - e.position

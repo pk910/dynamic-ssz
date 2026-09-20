@@ -6,12 +6,11 @@
 package dynssz
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"math"
+	"math/big"
 	"reflect"
 	"sync"
 
@@ -60,6 +59,11 @@ type DynSsz struct {
 	options        *DynSszOptions
 }
 
+// defaultLogCb is where verbose logging goes when a caller names no sink.
+func defaultLogCb(format string, args ...any) {
+	slog.Debug(fmt.Sprintf(format, args...))
+}
+
 // NewDynSsz creates a new instance of the DynSsz encoder/decoder.
 //
 // The specs map contains dynamic properties and configurations that control SSZ serialization
@@ -99,17 +103,17 @@ func NewDynSsz(specs map[string]any, options ...DynSszOption) *DynSsz {
 		specs = map[string]any{}
 	}
 
-	opts := &DynSszOptions{
-		LogCb: func(format string, args ...any) {
-			slog.Debug(fmt.Sprintf(format, args...))
-		},
-	}
+	opts := &DynSszOptions{LogCb: defaultLogCb}
 
 	for _, option := range options {
 		if option == nil {
 			continue
 		}
 		option(opts)
+	}
+
+	if opts.LogCb == nil {
+		opts.LogCb = defaultLogCb
 	}
 
 	if opts.AsyncHashing && opts.AsyncHashingWorkers > 0 {
@@ -124,9 +128,17 @@ func NewDynSsz(specs map[string]any, options ...DynSszOption) *DynSsz {
 
 	// The caller keeps its map and may go on writing to it; a concurrent read
 	// of a map being written is fatal in Go, and this type is safe to use from
-	// several goroutines, so the library reads a copy nobody else holds.
+	// several goroutines, so the library reads a copy nobody else holds. A
+	// big.Int is the one spec value that is a pointer to something the caller
+	// can still change, so it is copied too: every other accepted value is
+	// immutable once handed over.
 	ownSpecs := make(map[string]any, len(specs))
-	maps.Copy(ownSpecs, specs)
+	for name, value := range specs {
+		if n, ok := value.(*big.Int); ok && n != nil {
+			value = new(big.Int).Set(n)
+		}
+		ownSpecs[name] = value
+	}
 
 	dynssz := &DynSsz{
 		specValues:     ownSpecs,
@@ -224,7 +236,7 @@ func (d *DynSsz) delegable(v any, method string) bool {
 //   - Arrays and slices of supported types
 //   - Structs with appropriate SSZ tags
 //   - Pointers to supported types
-//   - Types implementing fastssz.Marshaler interface
+//   - Types implementing any of the fastssz marshalling interfaces
 //
 // Example:
 //
@@ -336,10 +348,10 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 // size limit is a size no encoding can refer to.
 func checkDelegatedSize(source any, size int) error {
 	if size < 0 {
-		return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer of %T returned negative size %d", source, size)
+		return sszutils.NewSszErrorf(sszutils.ErrSszSizeExceeded, "sizer of %T returned %d: no size it can represent", source, size)
 	}
 	if size > sszutils.MaxSszSize {
-		return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer of %T returned size %d, past the SSZ size limit", source, size)
+		return sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(uint64(size)), "sizer of %T returned size %d, past the SSZ size limit", source, size)
 	}
 	return nil
 }
@@ -423,7 +435,7 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 	// is no wider is the whole int range: the bytes already in buf then take
 	// the sum past it.
 	if size > int64(math.MaxInt)-int64(len(buf)) {
-		return nil, sszutils.ErrPlatformOverflowFn("SSZ size", size)
+		return nil, sszutils.ErrPlatformOverflowWidthFn("SSZ size", uint64(size))
 	}
 	needed := len(buf) + int(size)
 	if cap(buf) < needed {
@@ -573,6 +585,12 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 
 	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation, d.options.MaxNestingDepth)
 
+	// The size is computed up front only to weigh the output against it. That
+	// costs a second walk of the value, which streaming would otherwise not
+	// need, and it is paid because the walk and the size pass can disagree:
+	// a type whose own methods answer for a different value than the one being
+	// marshalled produces bytes no decoder accepts, and streaming has already
+	// put them on the wire by the time anything else could notice.
 	size, err := ctx.SizeSSZ(sourceTypeDesc, sourceValue)
 	if err != nil {
 		return err
@@ -588,9 +606,6 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 		return werr
 	}
 
-	// Parity with the buffer path: reject output whose length disagrees with the
-	// precomputed size (e.g. a nested delegated marshaler whose SizeSSZ contradicts
-	// the bytes it writes), which would otherwise stream malformed SSZ silently.
 	if int64(encoder.GetPosition()) != size {
 		return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "ssz length does not match expected length (expected: %v, got: %v)", size, encoder.GetPosition())
 	}
@@ -619,11 +634,12 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 // produces, and both engines agree on it.
 //
 // For a value that does not encode -- a union holding data that does not match
-// its selector, say -- the number means nothing, and what comes back depends on
-// which engine ran. A type with generated code sizes itself through
-// DynamicSizer, which returns a bare int and so cannot report the problem; it
-// yields 0, which is indistinguishable from a value that really is zero bytes
-// long. The reflection engine returns an error instead.
+// its selector, or a list past its limit, say -- the number means nothing, and
+// what comes back depends on which engine ran. A type with generated code sizes
+// itself through DynamicSizer, which returns a bare int and so cannot report the
+// problem: it answers with whatever the shape adds up to, a plausible number
+// that no encoding of the value will ever match, or with 0 where the shape
+// itself is refused. The reflection engine returns an error instead.
 //
 // So use this to size a buffer, not to decide whether a value is encodable.
 // MarshalSSZ rejects such a value in either engine.
@@ -686,8 +702,9 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
 		return 0, err
 	}
 
-	// The type cache bounds every static size to the platform int at analysis
-	// and a delegated sizer speaks int, so the size fits.
+	// Every size is bounded to the SSZ size limit where it enters the size
+	// domain, and that limit is the platform int where the int is narrower, so
+	// the value fits: min(MaxUint32, MaxInt) can never exceed MaxInt.
 	return int(size), nil
 }
 
@@ -1061,13 +1078,7 @@ func (d *DynSsz) HashTreeRoot(source any, opts ...CallOption) ([32]byte, error) 
 	if source == nil {
 		return [32]byte{}, sszutils.NewSszError(sszutils.ErrInvalidValueRange, "source must not be nil")
 	}
-	var pool *hasher.HasherPool
-	if d.options.NoFastHash {
-		pool = &hasher.DefaultHasherPool
-	} else {
-		pool = &hasher.FastHasherPool
-	}
-
+	pool := d.hasherPool()
 	hh := pool.Get()
 	defer func() {
 		pool.Put(hh)
@@ -1144,7 +1155,7 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 			// A delegate may leave only the packed bytes of its value; the
 			// root is one leaf.
 			hh.FillUpTo32()
-			return nil
+			return hh.HashErr()
 		}
 	} else if viewHasher, ok := source.(sszutils.DynamicViewHashRoot); ok && !d.options.NoDelegation && d.delegable(source, "HashTreeRootWithDynView") {
 		if hashFn := viewHasher.HashTreeRootWithDynView(cfg.viewDescriptor); hashFn != nil {
@@ -1153,7 +1164,7 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 				return err
 			}
 			hh.FillUpTo32()
-			return nil
+			return hh.HashErr()
 		}
 	}
 
@@ -1175,7 +1186,7 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 		return err
 	}
 
-	return nil
+	return hh.HashErr()
 }
 
 // GetTree builds and returns the complete Merkle tree for the given value.
@@ -1238,7 +1249,9 @@ func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error
 	if source == nil {
 		return nil, sszutils.NewSszError(sszutils.ErrInvalidValueRange, "source must not be nil")
 	}
-	w := treeproof.NewWrapper()
+	// The tree is compressed with the function this instance hashes with, so
+	// one value gives one root whichever entry point a caller reaches for.
+	w := treeproof.NewWrapperWithHashFn(d.hasherPool().CurrentHashFn())
 
 	if err := d.HashTreeRootWith(source, w, opts...); err != nil {
 		return nil, err
@@ -1252,20 +1265,23 @@ func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error
 	if err != nil {
 		return nil, err
 	}
-	finalizeOpts := make([]treeproof.FinalizeOption, 0, 1)
-	if d.options.NoFastHash {
-		finalizeOpts = append(finalizeOpts, treeproof.WithHashFn(nativeBatchHashFn))
-	}
 	// On a finalization error the partially finalized tree is returned
 	// alongside the error; every hash cached in it is valid.
-	finalizeErr := node.Finalize(finalizeOpts...)
+	finalizeErr := node.Finalize(treeproof.WithHashFn(d.hasherPool().CurrentHashFn()))
 
 	return node, finalizeErr
 }
 
-// nativeBatchHashFn hashes with the standard library sha256, serving tree
-// finalization for instances configured with WithNoFastHash.
-var nativeBatchHashFn = hasher.NativeHashWrapperFactory(sha256.New)
+// hasherPool is the pool this instance hashes from: the accelerated one, or
+// the built-in sha256 where WithNoFastHash asked for it. Every entry point
+// draws from the same one, so a backend installed on it reaches all of them.
+func (d *DynSsz) hasherPool() *hasher.HasherPool {
+	if d.options.NoFastHash {
+		return &hasher.DefaultHasherPool
+	}
+
+	return &hasher.FastHasherPool
+}
 
 // ValidateType validates whether a given type is compatible with SSZ encoding/decoding.
 //

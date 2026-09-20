@@ -27,14 +27,15 @@ import (
 //   - usedDynSpecs: Flag tracking whether generated code uses dynamic SSZ functionality
 //   - valVarCounter: Counter for generating unique variable names during code generation
 type hashTreeRootContext struct {
-	appendCode    func(indent int, code string, args ...any)
-	typePrinter   *TypePrinter
-	options       *CodeGeneratorOptions
-	exprVars      *exprVarGenerator
-	usedDynSpecs  bool
-	valVarCounter int
-	indexCounter  int
-	recursion     *recursionBound
+	appendCode     func(indent int, code string, args ...any)
+	typePrinter    *TypePrinter
+	options        *CodeGeneratorOptions
+	exprVars       *exprVarGenerator
+	staticSizeVars *staticSizeVarGenerator
+	usedDynSpecs   bool
+	valVarCounter  int
+	indexCounter   int
+	recursion      *recursionBound
 	// depthAware is set while emitting a type that lies on a recursive cycle,
 	// where the body runs inside a depth-carrying method and can pass the depth
 	// on to a cyclic child.
@@ -75,6 +76,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 		options:     options,
 		exprVars:    newExprVarGenerator("expr", typePrinter, options),
 	}
+	ctx.staticSizeVars = newStaticSizeVarGenerator(typePrinter, options, ctx.exprVars)
 	ctx.recursion = newRecursionBound(rootTypeDesc, options)
 	ctx.depthAware = ctx.recursion.threads(rootTypeDesc)
 
@@ -121,7 +123,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 			// what emits the depth twin those references resolve against.
 			appendCode(codeBuilder, 0, "// HashTreeRootWith computes the SSZ hash tree root of the %s using the given hash walker.\n", typeName)
 			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "HashTreeRootWith", "hh sszutils.HashWalker", "hh", "error", depthFailErr(ctx.recursion), false)
-			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
+			emitPreludes(codeBuilder, ctx.exprVars, ctx.staticSizeVars)
 			appendCode(codeBuilder, 1, codeBuf.String())
 			appendCode(codeBuilder, 1, "return nil\n")
 			appendCode(codeBuilder, 0, "}\n\n")
@@ -160,7 +162,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 				appendCode(codeBuilder, 0, "// HashTreeRootWithDyn computes the SSZ hash tree root of the %s using dynamic specifications and the given hash walker.\n", typeName)
 			}
 			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, hh sszutils.HashWalker", "ds, hh", "error", depthFailErr(ctx.recursion), false)
-			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
+			emitPreludes(codeBuilder, ctx.exprVars, ctx.staticSizeVars)
 			appendCode(codeBuilder, 1, codeBuf.String())
 			appendCode(codeBuilder, 1, "return nil\n")
 			appendCode(codeBuilder, 0, "}\n\n")
@@ -238,8 +240,8 @@ func (ctx *hashTreeRootContext) getPtrPrefix(desc *ssztypes.TypeDescriptor, pref
 // inlined. Under WithoutDynamicExpressions the static method is used even when
 // fastssz delegation is otherwise disabled, because the dynamic path is forbidden.
 func (ctx *hashTreeRootContext) hashUsesFastSsz(desc *ssztypes.TypeDescriptor, isRoot bool) bool {
-	isFastsszHasher := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
-	isFastsszHashWith := desc.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0
+	isFastsszHasher := desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszHashRoot != 0
+	isFastsszHashWith := desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszHashRootWith != 0
 	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
 	hasDynamicMax := desc.SszTypeFlags&ssztypes.SszTypeFlagHasMaxExpr != 0 && !ctx.options.WithoutDynamicExpressions
 
@@ -283,7 +285,7 @@ func (ctx *hashTreeRootContext) hashDelegated(desc *ssztypes.TypeDescriptor, var
 		}
 	}
 
-	isFastsszHashWith := desc.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0
+	isFastsszHashWith := desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszHashRootWith != 0
 	useFastSsz := ctx.hashUsesFastSsz(desc, isRoot)
 
 	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 && !isRoot && !isView {
@@ -536,11 +538,10 @@ func (ctx *hashTreeRootContext) hashOptional(desc *ssztypes.TypeDescriptor, varN
 func (ctx *hashTreeRootContext) hashBigInt(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	// Enforce a static ssz-max (payload = sign byte + magnitude), matching the
 	// buffer marshaller so HashTreeRoot does not produce a root for a value that
-	// cannot be serialized. Dynamic (dynssz-max expression) limits stay unchecked
-	// to keep generated code consistent with the reflection engine.
-	if desc.MaxExpression == nil && desc.Limit > 0 {
-		errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", uint64(1+len(%s.Bytes())), %s)", varName, uintLitArg(fmt.Sprintf("%d", desc.Limit)))
-		ctx.appendCode(indent, "if uint64(1+len(%s.Bytes())) > %d {\n\treturn %s\n}\n", varName, desc.Limit, typePath.getErrorWith(errCode))
+	// cannot be serialized, whether the limit is static or resolved.
+	if limit := bigIntLimit(desc, ctx.exprVars, ctx.options); limit != "" {
+		errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", uint64(1+len(%s.Bytes())), %s)", varName, uintLitArg(limit))
+		ctx.appendCode(indent, "if uint64(1+len(%s.Bytes())) > %s {\n\treturn %s\n}\n", varName, limit, typePath.getErrorWith(errCode))
 	}
 	// Hash the payload byte length, then the sign byte and big-endian magnitude.
 	// Prepending the length keeps it ahead of the trailing-zero chunk padding so
@@ -560,6 +561,20 @@ func (ctx *hashTreeRootContext) hashBigInt(desc *ssztypes.TypeDescriptor, varNam
 
 // hashContainer generates hash tree root code for SSZ container (struct) types.
 func (ctx *hashTreeRootContext) hashContainer(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
+	// A container whose declared fixed section the target's int cannot hold has
+	// no serialization there, and so no root: it is refused here as the encode
+	// and decode paths refuse it, rather than being hashed field by field until
+	// one of them exhausts the address space.
+	staticSize := 0
+	for _, field := range desc.ContainerDesc.Fields {
+		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+			staticSize += 4
+		} else if field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr == 0 || ctx.options.WithoutDynamicExpressions {
+			staticSize += int(field.Type.Size)
+		}
+	}
+	platformGuard(ctx.appendCode, indent, ctx.typePrinter, uint64(staticSize), false, "return "+typePath.getErrorWith(fmt.Sprintf("sszutils.ErrPlatformOverflowFn(\"container size\", uint64(%d))", staticSize)))
+
 	// Start container merkleization
 	ctx.appendCode(indent, "idx := hh.StartTree(sszutils.TreeTypeNone)\n")
 
@@ -676,16 +691,10 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 	intLimit := ""
 	bitlimitVar := ""
 	if sizeExpression != nil {
-		defaultValue := uint64(desc.Len)
-		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
-			if desc.BitSize > 0 {
-				defaultValue = uint64(desc.BitSize)
-			} else {
-				defaultValue = uint64(desc.Len) * 8
-			}
+		exprVar, lenErr := vectorLenVar(desc, ctx.exprVars, ctx.staticSizeVars, sizeExpression)
+		if lenErr != nil {
+			return lenErr
 		}
-
-		exprVar := ctx.exprVars.getVectorLenExprVar(*sizeExpression, defaultValue, desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0, desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0)
 
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 			bitlimitVar = exprVar
@@ -933,7 +942,7 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 
 		// Bulk uint64 list hashing; an element with a hash method of its own is
 		// walked one by one so the method is called.
-		hashMethods := ssztypes.SszCompatFlagDynamicHashRoot | ssztypes.SszCompatFlagDynamicViewHashRoot | ssztypes.SszCompatFlagFastSSZHasher | ssztypes.SszCompatFlagHashTreeRootWith
+		hashMethods := ssztypes.SszCompatFlagDynamicHashRoot | ssztypes.SszCompatFlagDynamicViewHashRoot | ssztypes.SszCompatFlagFastsszHashRoot | ssztypes.SszCompatFlagFastsszHashRootWith
 		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.Kind == reflect.Uint64 && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0 && desc.ElemDesc.SszCompatFlags&hashMethods == 0 {
 			ctx.appendCode(indent, "sszutils.HashUint64Slice(hh, %s)\n", getValueVar(true, ""))
 		} else {

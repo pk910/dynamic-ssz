@@ -511,14 +511,27 @@ func dataCompatFlags(opts *CodeGeneratorOptions) ssztypes.SszCompatFlag {
 		flags |= ssztypes.SszCompatFlagDynamicDecoder
 	}
 
-	if !opts.NoMarshalSSZ && !opts.NoUnmarshalSSZ && !opts.NoSizeSSZ && (opts.CreateLegacyFn || opts.WithoutDynamicExpressions) {
-		flags |= ssztypes.SszCompatFlagFastSSZMarshaler
+	// The static methods share one emission condition, so each flag follows it
+	// together with the switch that suppresses its own method.
+	if opts.CreateLegacyFn || opts.WithoutDynamicExpressions {
+		if !opts.NoMarshalSSZ {
+			flags |= ssztypes.SszCompatFlagFastsszBufferMarshaler
+			if opts.CreateLegacyFn {
+				flags |= ssztypes.SszCompatFlagFastsszValueMarshaler
+			}
+		}
+		if !opts.NoUnmarshalSSZ {
+			flags |= ssztypes.SszCompatFlagFastsszUnmarshaler
+		}
+		if !opts.NoSizeSSZ {
+			flags |= ssztypes.SszCompatFlagFastsszSizer
+		}
 	}
 	if !opts.NoHashTreeRoot && (opts.CreateLegacyFn || opts.WithoutDynamicExpressions) {
 		if opts.CreateLegacyFn {
-			flags |= ssztypes.SszCompatFlagFastSSZHasher
+			flags |= ssztypes.SszCompatFlagFastsszHashRoot
 		}
-		flags |= ssztypes.SszCompatFlagHashTreeRootWith
+		flags |= ssztypes.SszCompatFlagFastsszHashRootWith
 	}
 	return flags
 }
@@ -968,7 +981,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 {
 				return "t.MarshalSSZDyn"
 			}
-			if dataType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0 {
+			if dataType.SszCompatFlags&ssztypes.SszCompatFlagFastsszBufferMarshaler != 0 {
 				return "func(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {\n\treturn t.MarshalSSZTo(buf)\n\t}"
 			}
 			return ""
@@ -1005,7 +1018,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
 				return "t.UnmarshalSSZDyn"
 			}
-			if dataType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0 {
+			if dataType.SszCompatFlags&ssztypes.SszCompatFlagFastsszUnmarshaler != 0 {
 				return "func(_ sszutils.DynamicSpecs, buf []byte) error {\n\treturn t.UnmarshalSSZ(buf)\n\t}"
 			}
 			return ""
@@ -1042,7 +1055,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 {
 				return "t.SizeSSZDyn"
 			}
-			if dataType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0 {
+			if dataType.SszCompatFlags&ssztypes.SszCompatFlagFastsszSizer != 0 {
 				return "func(_ sszutils.DynamicSpecs) int {\n\treturn t.SizeSSZ()\n\t}"
 			}
 			return ""
@@ -1062,8 +1075,8 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 {
 				return "t.HashTreeRootWithDyn"
 			}
-			if dataType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0 {
-				if dataType.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0 {
+			if dataType.SszCompatFlags&ssztypes.SszCompatFlagFastsszHashRoot != 0 {
+				if dataType.SszCompatFlags&ssztypes.SszCompatFlagFastsszHashRootWith != 0 {
 					return "func(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n\treturn t.HashTreeRootWith(hh)\n\t}"
 				}
 				return "func(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n\tif root, err := t.HashTreeRoot(); err != nil {\n\t\treturn err\n\t} else {\n\t\thh.AppendBytes32(root[:])\n\t}\n\treturn nil\n\t}"

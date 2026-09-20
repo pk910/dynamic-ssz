@@ -1,0 +1,16 @@
+# Every fixture the size-guard matrix drives, with the streaming methods, so
+# each generated path the matrix names exists to be called.
+package: github.com/pk910/dynamic-ssz/tests/sizeguard
+output: gen_ssz.go
+with-streaming: true
+with-extended-types: true
+
+types:
+  - name: WideContainer
+  - name: WideVectorElem
+  - name: WideListHolder
+  - name: GiBList
+  - name: SpecVector
+  - name: SpecProduct
+  - name: BigIntMax
+  - name: NegSizeHolder

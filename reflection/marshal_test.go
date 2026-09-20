@@ -1053,7 +1053,7 @@ func TestSizeSSZFastSszFallback(t *testing.T) {
 	dynssz.GetTypeCache().RemoveAllTypes()
 
 	// Set compat flag for a type that doesn't actually implement FastSSZ
-	dynssz.GetTypeCache().CompatFlags["struct { Field0 uint64 }"] = ssztypes.SszCompatFlagFastSSZMarshaler
+	dynssz.GetTypeCache().CompatFlags["struct { Field0 uint64 }"] = ssztypes.SszCompatFlagFastsszSurface
 
 	// Test with type that has CompatFlag but doesn't implement the interface
 	input := struct {

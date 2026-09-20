@@ -7,6 +7,7 @@ package hasher
 import (
 	"encoding/binary"
 	"fmt"
+	"math/bits"
 	"sync"
 	"testing"
 
@@ -695,6 +696,19 @@ type veryLargeReferenceEntry struct {
 	err  error
 }
 
+// parallelUnlessNarrowAddressSpace runs the very large cases concurrently only
+// where the address space holds them. Each builds a buffer of total*32 bytes and
+// grows it while reducing, so a handful in parallel exhausts the four gigabytes
+// a 32-bit process can address, which shows up as an out-of-memory fault that
+// depends on collector timing rather than on anything under test. Run there,
+// they simply take their turn.
+func parallelUnlessNarrowAddressSpace(t *testing.T) {
+	t.Helper()
+	if bits.UintSize >= 64 {
+		t.Parallel()
+	}
+}
+
 func veryLargeReferenceRoot(t *testing.T, kind string, total int, merkleize func(h *Hasher, idx int)) [32]byte {
 	t.Helper()
 	key := fmt.Sprintf("%s/%d", kind, total)
@@ -755,7 +769,7 @@ func TestIncrementalBinaryVeryLarge(t *testing.T) {
 		{"3M_every128", 3_000_000, 128},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+			parallelUnlessNarrowAddressSpace(t)
 			hRef := FastHasherPool.Get()
 			defer FastHasherPool.Put(hRef)
 
@@ -798,7 +812,7 @@ func TestProgressiveVeryLarge(t *testing.T) {
 		{"3M_every128", 3_000_000, 128},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+			parallelUnlessNarrowAddressSpace(t)
 			hRef := FastHasherPool.Get()
 			defer FastHasherPool.Put(hRef)
 
@@ -845,7 +859,7 @@ func TestIncrementalBinaryVeryLargeOdd(t *testing.T) {
 		{"2000003_every17", 2_000_003, 17}, // prime total, prime interval
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+			parallelUnlessNarrowAddressSpace(t)
 			hRef := FastHasherPool.Get()
 			defer FastHasherPool.Put(hRef)
 
@@ -889,7 +903,7 @@ func TestProgressiveVeryLargeOdd(t *testing.T) {
 		{"3000001_every128", 3_000_001, 128},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+			parallelUnlessNarrowAddressSpace(t)
 			hRef := FastHasherPool.Get()
 			defer FastHasherPool.Put(hRef)
 

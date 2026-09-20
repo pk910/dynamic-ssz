@@ -35,7 +35,7 @@ import (
 //
 // The function handles:
 //   - Automatic nil pointer dereferencing
-//   - FastSSZ delegation for compatible types (HashTreeRootWith or HashTreeRoot methods)
+//   - Delegation to a type's own HashTreeRootWith or HashTreeRoot
 //   - Special handling for Bitlist types
 //   - Primitive type hashing (bool, uint8, uint16, uint32, uint64)
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
@@ -64,7 +64,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 	}
 
 	if ctx.verbose {
-		isFastsszHasher := sourceType.SszCompatFlags&(ssztypes.SszCompatFlagFastSSZHasher|ssztypes.SszCompatFlagHashTreeRootWith) != 0
+		isFastsszHasher := sourceType.SszCompatFlags&(ssztypes.SszCompatFlagFastsszHashRoot|ssztypes.SszCompatFlagFastsszHashRootWith) != 0
 		hasDynamicSize := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
 		hasDynamicMax := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicMax != 0
 		useFastSsz := !ctx.noFastSsz && isFastsszHasher && !hasDynamicSize && !hasDynamicMax
@@ -112,7 +112,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 		}
 	} else if sourceType.SszCompatFlags != 0 || sourceType.SszType == ssztypes.SszCustomType {
 		// Fast path: skip compat interface checks for types that don't implement any
-		isFastsszHasher := sourceType.SszCompatFlags&(ssztypes.SszCompatFlagFastSSZHasher|ssztypes.SszCompatFlagHashTreeRootWith) != 0
+		isFastsszHasher := sourceType.SszCompatFlags&(ssztypes.SszCompatFlagFastsszHashRoot|ssztypes.SszCompatFlagFastsszHashRootWith) != 0
 		useDynamicHashRoot := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0
 		hasDynamicSize := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
 		hasDynamicMax := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicMax != 0
@@ -132,7 +132,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 		if useFastSsz {
 			sourceValuePtr := getPtr(sourceValue)
 
-			if sourceType.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0 && sourceType.HashTreeRootWithMethod != nil {
+			if sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastsszHashRootWith != 0 && sourceType.HashTreeRootWithMethod != nil {
 				results := sourceType.HashTreeRootWithMethod.Func.Call([]reflect.Value{sourceValuePtr, reflect.ValueOf(hh)})
 				if len(results) > 0 && !results[0].IsNil() {
 					// The compat gate only admits methods whose return type is
@@ -655,7 +655,7 @@ func (ctx *ReflectionCtx) buildRootFromUnion(sourceType *ssztypes.TypeDescriptor
 func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, depth reflectionDepth) error {
 	vecLen := sourceType.Len
 	if vecLen > math.MaxInt {
-		return sszutils.ErrPlatformOverflowFn("vector length", sourceType.Len)
+		return sszutils.ErrPlatformOverflowWidthFn("vector length", uint64(sourceType.Len))
 	}
 
 	packed := packedElemSize(sourceType.ElemDesc) > 0

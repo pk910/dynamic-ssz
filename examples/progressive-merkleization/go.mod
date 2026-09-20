@@ -7,8 +7,7 @@ replace github.com/pk910/dynamic-ssz => ../..
 require github.com/pk910/dynamic-ssz v1.3.2
 
 require (
-	github.com/casbin/govaluate v1.10.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
-	github.com/pk910/hashtree-bindings v0.2.5 // indirect
+	github.com/pk910/hashtree-bindings v0.2.6 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 )

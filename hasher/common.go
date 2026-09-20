@@ -163,17 +163,24 @@ type HasherPool struct {
 	pool   sync.Pool
 }
 
+// CurrentHashFn reports the function the pool hands its hashers, which is the
+// built-in when none was installed. Callers that hash outside a pooled Hasher
+// use it so they compress with the same function a root does.
+func (hh *HasherPool) CurrentHashFn() HashFn {
+	if hh.HashFn != nil {
+		return hh.HashFn
+	}
+	return defaultHashFn()
+}
+
 // Get acquires a Hasher from the pool.
 func (hh *HasherPool) Get() *Hasher {
 	h := hh.pool.Get()
 	if h == nil {
-		if hh.HashFn == nil {
-			return NewHasher()
-		} else {
-			return NewHasherWithHashFn(hh.HashFn)
-		}
+		return NewHasherWithHashFn(hh.CurrentHashFn())
 	}
 	hasher, _ := h.(*Hasher)
+	hasher.hash = hh.CurrentHashFn()
 	return hasher
 }
 

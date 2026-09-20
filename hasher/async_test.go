@@ -6,6 +6,7 @@ package hasher
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/rand"
 	"sync/atomic"
@@ -1056,5 +1057,70 @@ func TestAsyncHashSkipsDrainBelowTail(t *testing.T) {
 	hh.MerkleizeWithMixin(listIdx, uint64(batchElems)+1, 1<<40)
 	if _, err := hh.HashRoot(); err != nil {
 		t.Fatalf("HashRoot: %v", err)
+	}
+}
+
+// A hash function that fails inside a background reduction fails the hasher's
+// caller, as a synchronous reduction would, instead of handing back a root
+// built from bytes the hash function never produced. Reset clears the failure
+// so a pooled hasher does not carry it to its next user.
+func TestAsyncHashErrorReachesCaller(t *testing.T) {
+	EnableAsyncHashing(2)
+	defer DisableAsyncHashing()
+
+	errBackend := errors.New("hash backend unavailable")
+	var failing atomic.Bool
+	var jobs atomic.Int64
+	hh := NewHasherWithHashFn(func(dst, src []byte) error {
+		// Small reductions run synchronously on the caller; only a job-sized
+		// reduction fails, so the error originates in a runner.
+		if failing.Load() && len(src) >= 1024*32 {
+			jobs.Add(1)
+			return errBackend
+		}
+		return hashtree.HashByteSlice(dst, src)
+	})
+	failing.Store(true)
+
+	seq := asyncSequence{elemChunks: 8, n: 8192, cadence: 256, limit: 1 << 40}
+	drive := func() ([32]byte, error) {
+		hh.SetAsyncHashing(true)
+		chunk := make([]byte, 32)
+		fill := seqFiller(42, chunk)
+		idx := hh.StartTree(sszutils.TreeTypeBinary)
+		for i := 0; i < seq.n; i++ {
+			ci := hh.StartTree(sszutils.TreeTypeNone)
+			for c := 0; c < seq.elemChunks; c++ {
+				fill()
+				hh.Append(chunk)
+			}
+			hh.Merkleize(ci)
+			if (i+1)%seq.cadence == 0 {
+				hh.Collapse()
+			}
+		}
+		hh.MerkleizeWithMixin(idx, uint64(seq.n), seq.limit)
+		return hh.HashRoot()
+	}
+
+	if _, err := drive(); !errors.Is(err, errBackend) {
+		t.Fatalf("HashRoot err = %v, want %v", err, errBackend)
+	}
+	if jobs.Load() == 0 {
+		t.Fatal("no job-sized reduction ran; the sequence did not exercise the runner")
+	}
+
+	failing.Store(false)
+	hh.Reset()
+
+	got, err := drive()
+	if err != nil {
+		t.Fatalf("HashRoot after Reset: %v", err)
+	}
+	hh.Reset()
+
+	want := runAsyncSequence(t, NewHasher(), seq, 42, false)
+	if got != want {
+		t.Errorf("root after Reset %x, want %x", got, want)
 	}
 }

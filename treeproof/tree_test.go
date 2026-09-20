@@ -1233,41 +1233,46 @@ func TestTreeFromNodesWithMixinZeroLimit(t *testing.T) {
 	}
 }
 
-// A limit below the leaf count overflows the type it declares, so the tree
-// keeps the depth the limit asks for and the surplus leaves fall outside it --
-// the root is the one the leaves that fit produce. The Hasher does the same,
-// and so does fastssz, which is what a foreign type's HashTreeRootWith is
-// measured against.
+// A limit below the leaf count overflows the type it declares. The exported
+// form refuses it; the form the walkers reduce through takes the depth the
+// leaves need, as hasher.Hasher does, so every leaf reaches the root and two
+// values that differ cannot share one.
 func TestTreeFromNodesWithMixinLimitBelowCount(t *testing.T) {
 	nodes := make([]*Node, 8)
 	for i := range nodes {
 		nodes[i] = NewNodeWithValue([]byte{byte(i + 1)})
 	}
 
-	tree, err := TreeFromNodesWithMixin(nodes, 8, 2)
+	if _, err := TreeFromNodesWithMixin(nodes, 8, 2); !errors.Is(err, sszutils.ErrChunkLimitExceeded) {
+		t.Fatalf("a limit below the leaf count was accepted: %v", err)
+	}
+
+	tree, err := treeFromNodesWithMixin64(nodes, 8, 2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Only the first two leaves fit under a limit of 2.
-	reference, err := TreeFromNodesWithMixin(nodes[:2], 8, 2)
+	// No depth holds more leaves than the limit allows, so the tree takes the
+	// depth the leaves need and every one of them reaches the root.
+	reference, err := TreeFromNodesWithMixin(nodes, 8, 8)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !bytes.Equal(tree.Hash(), reference.Hash()) {
-		t.Errorf("over-capacity root mismatch: %x != %x", tree.Hash(), reference.Hash())
+		t.Errorf("over-capacity root %x, want the root of every leaf %x", tree.Hash(), reference.Hash())
 	}
 
-	// The leaves that do not fit make no difference to the root.
+	// A leaf past the limit is part of the value, so it moves the root: two
+	// values that differ there cannot share one.
 	altered := make([]*Node, len(nodes))
 	copy(altered, nodes)
 	altered[7] = NewNodeWithValue([]byte{0xff})
-	alt, err := TreeFromNodesWithMixin(altered, 8, 2)
+	alt, err := treeFromNodesWithMixin64(altered, 8, 2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !bytes.Equal(tree.Hash(), alt.Hash()) {
-		t.Errorf("a leaf outside the limit changed the root")
+	if bytes.Equal(tree.Hash(), alt.Hash()) {
+		t.Errorf("a leaf past the limit left the root unchanged")
 	}
 }
 
@@ -1298,6 +1303,31 @@ func TestTreeFromNodesProgressiveWithActiveFieldsEmpty(t *testing.T) {
 	}
 	if tree == nil {
 		t.Fatal("expected non-nil tree")
+	}
+}
+
+// A bitvector wider than one chunk is merkleized to its root before the mixin,
+// as hasher.Hasher does, so the fields past the first chunk reach the tree.
+func TestTreeFromNodesProgressiveWithActiveFieldsWide(t *testing.T) {
+	leaves := []*Node{LeafFromUint64(1), LeafFromUint64(2)}
+
+	activeFields := make([]byte, 65)
+	activeFields[0] = 0x03
+	tree, err := TreeFromNodesProgressiveWithActiveFields(leaves, activeFields)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	altered := make([]byte, len(activeFields))
+	copy(altered, activeFields)
+	altered[64] = 0x01
+	alt, err := TreeFromNodesProgressiveWithActiveFields(leaves, altered)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if bytes.Equal(tree.Hash(), alt.Hash()) {
+		t.Fatal("a field past the first chunk did not reach the root")
 	}
 }
 
@@ -1862,6 +1892,22 @@ func TestTreeFromNodesProgressiveWithActiveFieldsInjectedError(t *testing.T) {
 	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
 
 	_, err := TreeFromNodesProgressiveWithActiveFields([]*Node{LeafFromUint64(1)}, []byte{0x01})
+	if !errors.Is(err, injected) {
+		t.Fatalf("expected injected error, got: %v", err)
+	}
+}
+
+// The bitvector is built after the tree, so its own failure is reported from
+// there. An empty leaf set reduces without the injected builder, which leaves
+// the bitvector as the only caller of it.
+func TestTreeFromNodesProgressiveWithActiveFieldsBitvectorError(t *testing.T) {
+	injected := errors.New("injected")
+	treeFromNodesToDepthFn = func([]*Node, int) (*Node, error) {
+		return nil, injected
+	}
+	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
+
+	_, err := TreeFromNodesProgressiveWithActiveFields(nil, make([]byte, 65))
 	if !errors.Is(err, injected) {
 		t.Fatalf("expected injected error, got: %v", err)
 	}
@@ -3244,5 +3290,38 @@ func TestLeafEmptyOnlyForPadding(t *testing.T) {
 	}
 	if _, err := root.Prove(2); err != nil {
 		t.Fatalf("proof of the zero-valued leaf: %v", err)
+	}
+}
+
+// Both walkers refuse a failing hash function. The walkers are required to
+// agree, and a root one of them builds from bytes the hash function never
+// produced would be a silent disagreement: the tree reports the failure, so
+// the hasher does too.
+func TestBothWalkersRefuseAFailingHashFn(t *testing.T) {
+	backend := errors.New("hash backend unavailable")
+	failing := func(_, _ []byte) error { return backend }
+
+	fill := func(w sszutils.HashWalker) {
+		idx := w.Index()
+		for i := 0; i < 32; i++ {
+			w.PutUint64(uint64(i))
+		}
+		w.Merkleize(idx)
+	}
+
+	hh := hasher.NewHasherWithHashFn(failing)
+	fill(hh)
+	if _, err := hh.HashRoot(); !errors.Is(err, backend) {
+		t.Fatalf("hasher.HashRoot err = %v, want %v", err, backend)
+	}
+
+	w := NewWrapper()
+	fill(w)
+	root, err := w.Root()
+	if err != nil {
+		t.Fatalf("Root: %v", err)
+	}
+	if err := root.Finalize(WithHashFn(failing)); !errors.Is(err, backend) {
+		t.Fatalf("Finalize err = %v, want %v", err, backend)
 	}
 }

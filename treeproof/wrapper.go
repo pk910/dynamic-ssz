@@ -50,6 +50,15 @@ type Wrapper struct {
 	// scopes holds one entry per open scope, in the order they were opened.
 	scopes []wScope
 	tmp    []byte
+	// hashFn compresses this tree, where a caller gave one; the package
+	// default serves the rest.
+	hashFn hasher.HashFn
+
+	// walkErr records the first failure of the walk: a scope reduced in a
+	// shape it was not opened for, a reduction handed more chunks than its
+	// limit holds, or a hash function that refused. The
+	// walkers have to answer alike, and hasher.Hasher refuses the same thing.
+	walkErr error
 }
 
 // nodeRef is a subtree root and the 32 bytes of buf it occupies.
@@ -60,11 +69,13 @@ type nodeRef struct {
 	filled bool
 }
 
-// wScope is an open scope: where its content begins, and whether it packs
-// basic values.
+// wScope is an open scope: where its content begins, whether it packs basic
+// values, and whether it was opened for the progressive tree shape.
 type wScope struct {
-	off    int
-	packed bool
+	off         int
+	packed      bool
+	declared    bool
+	progressive bool
 }
 
 // NewWrapper creates a new Wrapper ready to construct a Merkle tree.
@@ -73,6 +84,16 @@ func NewWrapper() *Wrapper {
 		buf: make([]byte, 0),
 		tmp: make([]byte, 64),
 	}
+}
+
+// NewWrapperWithHashFn returns a Wrapper that compresses with fn, so a tree
+// answers with the same root the hasher gives for the same value: a caller
+// that installs a backend installs it for both walkers or for neither.
+func NewWrapperWithHashFn(fn hasher.HashFn) *Wrapper {
+	w := NewWrapper()
+	w.hashFn = fn
+
+	return w
 }
 
 // --- Wrapper implements the HashWalker interface ---
@@ -95,8 +116,10 @@ func (w *Wrapper) Index() int {
 // instead of a chunk of its own.
 func (w *Wrapper) StartTree(treeType sszutils.TreeType) int {
 	w.scopes = append(w.scopes, wScope{
-		off:    len(w.buf),
-		packed: treeType&sszutils.TreeTypePacked != 0,
+		off:         len(w.buf),
+		packed:      treeType&sszutils.TreeTypePacked != 0,
+		declared:    treeType&^sszutils.TreeTypePacked != sszutils.TreeTypeNone,
+		progressive: treeType&^sszutils.TreeTypePacked == sszutils.TreeTypeProgressive,
 	})
 	return len(w.buf)
 }
@@ -104,6 +127,47 @@ func (w *Wrapper) StartTree(treeType sszutils.TreeType) int {
 // CurrentIndex returns the current buffer position.
 func (w *Wrapper) CurrentIndex() int {
 	return len(w.buf)
+}
+
+// HashErr reports the first failure the walker recorded: a scope reduced in a
+// shape it was not opened for, or a reduction handed more chunks than its
+// limit holds. The walk continues after such a refusal so the caller sees one
+// error rather than a cascade, which leaves the state it built unusable.
+func (w *Wrapper) HashErr() error {
+	return w.walkErr
+}
+
+// setWalkErr records the first failure of the walk. Later ones are dropped:
+// the first is the failure the caller has to act on, and what followed ran
+// over bytes it never properly produced.
+func (w *Wrapper) setWalkErr(err error) {
+	if err != nil && w.walkErr == nil {
+		w.walkErr = err
+	}
+}
+
+// checkChunkLimit records a reduction handed more chunks than its limit holds.
+// A limit of zero states none, which an unbounded list asks for. The reduction
+// still runs, over a tree deep enough for the chunks, so the walker keeps
+// answering as hasher.Hasher does; the root is refused.
+func (w *Wrapper) checkChunkLimit(count, limit uint64) {
+	if limit == 0 || count <= limit || w.walkErr != nil {
+		return
+	}
+	w.walkErr = sszutils.ErrChunkLimitFn(count, limit)
+}
+
+// checkShape records a scope reduced in a shape it was not opened for. A
+// scope that declared no shape accepts either reduction. The reduction still
+// runs; the root is refused.
+func (w *Wrapper) checkShape(indx int, progressive bool) {
+	n := len(w.scopes)
+	if n == 0 || w.scopes[n-1].off != indx || w.walkErr != nil {
+		return
+	}
+	if scope := w.scopes[n-1]; scope.declared && scope.progressive != progressive {
+		w.walkErr = sszutils.ErrScopeShapeMismatch
+	}
 }
 
 // closeScope drops the innermost scope when it is the one being reduced, as
@@ -305,6 +369,7 @@ func (w *Wrapper) PutProgressiveBitlist(bb []byte) {
 // Merkleize reduces the region that began at indx into one subtree.
 func (w *Wrapper) Merkleize(indx int) {
 	indx = w.clampIndex(indx)
+	w.checkShape(indx, false)
 	w.closeScope(indx)
 	w.reduceBinary(indx)
 }
@@ -314,6 +379,7 @@ func (w *Wrapper) Merkleize(indx int) {
 // capacity above the platform int range hashes correctly instead of panicking.
 func (w *Wrapper) MerkleizeWithMixin(indx int, num, limit uint64) {
 	indx = w.clampIndex(indx)
+	w.checkShape(indx, false)
 	w.closeScope(indx)
 	w.reduceBinaryWithMixin(indx, num, limit)
 }
@@ -322,6 +388,7 @@ func (w *Wrapper) MerkleizeWithMixin(indx int, num, limit uint64) {
 // progressive algorithm.
 func (w *Wrapper) MerkleizeProgressive(indx int) {
 	indx = w.clampIndex(indx)
+	w.checkShape(indx, true)
 	w.closeScope(indx)
 	w.reduceProgressive(indx)
 }
@@ -330,6 +397,7 @@ func (w *Wrapper) MerkleizeProgressive(indx int) {
 // mixin.
 func (w *Wrapper) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 	indx = w.clampIndex(indx)
+	w.checkShape(indx, true)
 	w.closeScope(indx)
 	w.reduceProgressiveWithMixin(indx, num)
 }
@@ -338,6 +406,7 @@ func (w *Wrapper) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 // mixes in an active-fields bitvector.
 func (w *Wrapper) MerkleizeProgressiveWithActiveFields(indx int, activeFields []byte) {
 	indx = w.clampIndex(indx)
+	w.checkShape(indx, true)
 	w.closeScope(indx)
 	leaves := w.regionLeaves(indx)
 	res, err := TreeFromNodesProgressiveWithActiveFields(leaves, activeFields)
@@ -401,7 +470,8 @@ func (w *Wrapper) reduceBinary(indx int) {
 
 func (w *Wrapper) reduceBinaryWithMixin(indx int, num, limit uint64) {
 	leaves := w.regionLeaves(indx)
-	res, err := TreeFromNodesWithMixin64(leaves, num, limit)
+	w.checkChunkLimit(uint64(len(leaves)), limit)
+	res, err := treeFromNodesWithMixin64(leaves, num, limit)
 	if err != nil {
 		panic(err)
 	}
@@ -464,6 +534,10 @@ func (w *Wrapper) materializeOne(i int) {
 	if w.nodes[i].filled || w.nodes[i].node == nil {
 		return
 	}
+	// Node.Hash completes a subtree the backend refused with the fallback
+	// compression, mixing two of them in one root, so the refusal is recorded
+	// here where the walk can report it.
+	w.setWalkErr(w.nodes[i].node.finalize(finalizeConfig{fn: w.hashFn}))
 	copy(w.buf[w.nodes[i].off:w.nodes[i].off+32], w.nodes[i].node.Hash())
 	w.nodes[i].filled = true
 }
@@ -525,11 +599,12 @@ func (w *Wrapper) AddUint8(i uint8) {
 }
 
 // AddBytes adds a byte slice as a leaf node (<=32 bytes) or as a subtree of
-// its chunks. An empty value contributes nothing, as in hasher.Hasher.
+// its chunks. An empty value is a leaf of zeros, the meaning this method has
+// carried since v1: it builds a tree from values, so every value it is given
+// takes a place in the leaf order. PutBytes, the walker operation, is the one
+// that contributes nothing for an empty value, because there the value writes
+// bytes into a region.
 func (w *Wrapper) AddBytes(b []byte) {
-	if len(b) == 0 {
-		return
-	}
 	if len(b) <= 32 {
 		w.AddNode(LeafFromBytes(b))
 		return
@@ -593,6 +668,9 @@ func (w *Wrapper) AddEmpty() { w.addEmpty() }
 // what is missing. The conditions are hasher.Hasher's: no scope may be open
 // and the buffer must hold exactly one chunk.
 func (w *Wrapper) rootNode() (*Node, error) {
+	if w.walkErr != nil {
+		return nil, w.walkErr
+	}
 	if len(w.scopes) > 0 {
 		return nil, fmt.Errorf("unfinished hashing scopes")
 	}
@@ -626,6 +704,12 @@ func (w *Wrapper) HashRoot() ([32]byte, error) {
 	if err != nil {
 		return [32]byte{}, err
 	}
+	if err := n.finalize(finalizeConfig{fn: w.hashFn}); err != nil {
+		w.setWalkErr(err)
+
+		return [32]byte{}, err
+	}
+
 	return [32]byte(n.Hash()), nil
 }
 

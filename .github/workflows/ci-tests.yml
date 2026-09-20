@@ -39,15 +39,15 @@ jobs:
     - name: Get spec tests version
       id: spec-version
       run: |
-        # Get latest non-prerelease version
-        VERSION=$(curl -s https://api.github.com/repos/ethereum/consensus-spec-tests/releases | \
-          jq -r '.[] | select(.prerelease == false and .draft == false) | .tag_name' | \
-          grep -v -E '(alpha|beta|rc|pre)' | \
+        # Latest release, drafts excluded and pre-releases included: a new fork's
+        # vectors land in a beta long before the stable release
+        VERSION=$(curl -s https://api.github.com/repos/ethereum/consensus-specs/releases | \
+          jq -r '.[] | select(.draft == false) | .tag_name' | \
           head -1)
 
         # Fallback if no version found
         if [ -z "$VERSION" ]; then
-          VERSION="v1.5.0"
+          VERSION="v1.7.0-beta.0"
         fi
 
         echo "Spec tests version: ${VERSION}"

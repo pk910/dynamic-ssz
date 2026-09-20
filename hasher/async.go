@@ -172,6 +172,10 @@ type asyncJob struct {
 	// that drains the job, where it is raised again on the caller's
 	// goroutine as a synchronous reduction would have raised it.
 	panicked any
+	// err carries an error fn returned inside the runner to the hasher that
+	// drains the job, where it becomes that hasher's hash error as a
+	// synchronous reduction's would have.
+	err error
 }
 
 // asyncHandoff passes fully-prepared job slots to the persistent runner
@@ -229,7 +233,9 @@ func asyncJobRunner() {
 
 // reduceAsyncJob runs one job's reductions. A panic in the hash function is
 // recovered and recorded on the slot so the runner survives and the waiting
-// hasher can raise it on its own goroutine.
+// hasher can raise it on its own goroutine; an error it returns is recorded
+// the same way and ends the job, since every further level would reduce
+// bytes the hash function never produced.
 func reduceAsyncJob(slot *asyncJob) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -239,7 +245,10 @@ func reduceAsyncJob(slot *asyncJob) {
 	in := slot.in
 	outChunks := slot.outLen / 32
 	for w := len(in) / 32; w > outChunks; w /= 2 {
-		_ = slot.fn(in[:w/2*32], in[:w*32])
+		if err := slot.fn(in[:w/2*32], in[:w*32]); err != nil {
+			slot.err = err
+			return
+		}
 	}
 }
 
@@ -293,8 +302,8 @@ func (h *Hasher) claimJobSlot(st *asyncShared) *asyncJob {
 }
 
 // finishOldestJob waits for the ring's oldest job, optionally copies its
-// result into the hole it was carved from, and restores the job's free-list
-// token if it holds one: pre-sized buffers are returned for reuse, anything
+// result into the hole it was carved from, takes over a hash error it
+// recorded, and restores the job's free-list token if it holds one: pre-sized buffers are returned for reuse, anything
 // else becomes a nil token. Tokenless buffers (taken when every token was
 // held by other hashers) are simply dropped.
 func (h *Hasher) finishOldestJob(copyResult bool) {
@@ -302,6 +311,11 @@ func (h *Hasher) finishOldestJob(copyResult bool) {
 	<-slot.done
 	panicked := slot.panicked
 	slot.panicked = nil
+	jobErr := slot.err
+	slot.err = nil
+	if copyResult {
+		h.setHashErr(jobErr)
+	}
 	if copyResult && panicked == nil {
 		// The destination is expected to exist: every path that shrinks the
 		// buffer below a hole drains or discards first, so an out-of-range
@@ -358,8 +372,21 @@ func (h *Hasher) discardJobs() {
 // hole end, so scopes that operate entirely above it — every child scope
 // opened after its parents' flushes — skip the wait and keep the background
 // reductions overlapped with the walk.
+//
+// The overlap test is split out to keep this inlinable: it runs at every scope
+// boundary, and a hash that never went async has no jobs to wait for.
 func (h *Hasher) drainJobsFor(indx int) {
-	if h.jobCount > 0 && indx < h.jobMaxEnd {
+	if h.jobCount > 0 {
+		h.drainJobsOverlapping(indx)
+	}
+}
+
+// drainJobsOverlapping drains when the region starting at indx reaches below the
+// highest outstanding hole end. Kept out of line to keep drainJobsFor inlinable.
+//
+//go:noinline
+func (h *Hasher) drainJobsOverlapping(indx int) {
+	if indx < h.jobMaxEnd {
 		h.drainJobs()
 	}
 }

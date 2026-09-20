@@ -6,6 +6,7 @@ package treeproof
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"math"
@@ -556,11 +557,42 @@ func TestWrapperAddMethods(t *testing.T) {
 	})
 
 	t.Run("AddBytesEmpty", func(t *testing.T) {
-		// An empty value contributes nothing, as in hasher.Hasher.
+		// A value added through this API takes a place in the leaf order, an
+		// empty one included: it is a leaf of zeros, as it has been since v1.
 		w := NewWrapper()
 		w.AddBytes(nil)
-		if nodeCount(w) != 0 || len(w.buf) != 0 {
-			t.Errorf("empty AddBytes left %d chunks and %d bytes, want none", nodeCount(w), len(w.buf))
+		root, err := w.Root()
+		if err != nil {
+			t.Fatalf("empty AddBytes: %v", err)
+		}
+		if !bytes.Equal(root.Hash(), make([]byte, 32)) {
+			t.Errorf("empty AddBytes gave %x, want a leaf of zeros", root.Hash())
+		}
+
+		// Among siblings it keeps its position rather than shifting the rest.
+		w2 := NewWrapper()
+		idx := w2.Index()
+		w2.AddUint64(1)
+		w2.AddBytes(nil)
+		w2.AddUint64(2)
+		w2.Merkleize(idx)
+		with, err := w2.Root()
+		if err != nil {
+			t.Fatalf("with the empty value: %v", err)
+		}
+
+		w3 := NewWrapper()
+		idx = w3.Index()
+		w3.AddUint64(1)
+		w3.AddNode(LeafFromBytes(nil))
+		w3.AddUint64(2)
+		w3.Merkleize(idx)
+		spelled, err := w3.Root()
+		if err != nil {
+			t.Fatalf("with the leaf spelled out: %v", err)
+		}
+		if !bytes.Equal(with.Hash(), spelled.Hash()) {
+			t.Errorf("root = %x, want the same as an explicit zero leaf %x", with.Hash(), spelled.Hash())
 		}
 	})
 
@@ -1201,8 +1233,10 @@ func TestWrapperPutBitlistZeroMaxMatchesHasher(t *testing.T) {
 	}
 }
 
-// Wrapper.MerkleizeWithMixin with a limit below the chunk count must clamp
-// the limit up to the count like Hasher does (a root, not a panic).
+// Wrapper.MerkleizeWithMixin with a limit below the chunk count clamps the
+// limit up to the count like Hasher does, so the two produce the same bytes,
+// and both report the reduction that was handed more chunks than its limit
+// holds rather than panicking or answering with a root.
 func TestWrapperMixinLimitBelowChunksMatchesHasher(t *testing.T) {
 	var wRoot []byte
 	func() {
@@ -1226,12 +1260,12 @@ func TestWrapperMixinLimitBelowChunksMatchesHasher(t *testing.T) {
 		hh.PutUint64(uint64(i))
 	}
 	hh.MerkleizeWithMixin(hidx, 8, 2)
-	hRoot, err := hh.HashRoot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(wRoot, hRoot[:]) {
+	hRoot := hh.Hash()
+	if !bytes.Equal(wRoot, hRoot) {
 		t.Errorf("mixin limit below chunks: wrapper=%x hasher=%x", wRoot[:8], hRoot[:8])
+	}
+	if _, err := hh.HashRoot(); !errors.Is(err, sszutils.ErrChunkLimitExceeded) {
+		t.Errorf("hasher root: err = %v, want the chunk limit reported", err)
 	}
 
 	// The same sequence through the public convenience API.
@@ -1249,12 +1283,38 @@ func TestWrapperMixinLimitBelowChunksMatchesHasher(t *testing.T) {
 
 	hh2 := hasher.NewHasher()
 	hh2.PutUint64Array(make([]uint64, 100), 8)
-	h2Root, err := hh2.HashRoot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(w2Root, h2Root[:]) {
+	h2Root := hh2.Hash()
+	if !bytes.Equal(w2Root, h2Root) {
 		t.Errorf("PutUint64Array cap overflow: wrapper=%x hasher=%x", w2Root[:8], h2Root[:8])
+	}
+	if _, err := hh2.HashRoot(); !errors.Is(err, sszutils.ErrChunkLimitExceeded) {
+		t.Errorf("hasher root: err = %v, want the chunk limit reported", err)
+	}
+
+	// Both engines collapse a scope every 256 elements, which reduces it by a
+	// different path. A hint is optional, so it cannot decide whether the walk
+	// is refused: the two walkers answer alike on either side of that size.
+	collapsed := func(w sszutils.HashWalker, n int) ([]byte, error) {
+		idx := w.StartTree(sszutils.TreeTypeBinary)
+		for i := range n {
+			w.AppendBytes32([]byte{byte(i), byte(i >> 8)})
+			if (i+1)%256 == 0 {
+				w.Collapse()
+			}
+		}
+		w.MerkleizeWithMixin(idx, uint64(n), 1)
+
+		return w.Hash(), w.HashErr()
+	}
+	for _, n := range []int{255, 256, 257, 600} {
+		wRoot, wErr := collapsed(NewWrapper(), n)
+		hRoot, hErr := collapsed(hasher.NewHasher(), n)
+		if !errors.Is(wErr, sszutils.ErrChunkLimitExceeded) || !errors.Is(hErr, sszutils.ErrChunkLimitExceeded) {
+			t.Errorf("%d chunks against a limit of 1: wrapper err = %v, hasher err = %v", n, wErr, hErr)
+		}
+		if !bytes.Equal(wRoot, hRoot) {
+			t.Errorf("%d chunks collapsed: wrapper=%x hasher=%x", n, wRoot[:8], hRoot[:8])
+		}
 	}
 }
 
@@ -1779,5 +1839,63 @@ func TestWrapperPackedScope(t *testing.T) {
 	// bytes, so the closed scope no longer packs.
 	if len(w.buf) != 64 {
 		t.Fatalf("closed packed scope buffered %d bytes, want a whole chunk", len(w.buf))
+	}
+}
+
+// A caller-installed backend may refuse. Completing the tree with the fallback
+// compression would mix two of them in one root, so both paths that finalize a
+// subtree -- the root, and the chunk a cached scope reads through Hash --
+// report the refusal instead of answering.
+func TestWrapperRefusedBackendIsReported(t *testing.T) {
+	refused := errors.New("backend refused")
+	// Succeeds n times, then refuses, and marks its output so a mixed root
+	// would be neither walker's.
+	flaky := func(n int) hasher.HashFn {
+		calls := 0
+		return func(dst, input []byte) error {
+			for i := 0; i+64 <= len(input); i += 64 {
+				if calls >= n {
+					return refused
+				}
+				calls++
+				sum := sha256.Sum256(input[i : i+64])
+				sum[0] ^= 0xff
+				copy(dst[i/2:], sum[:])
+			}
+
+			return nil
+		}
+	}
+
+	build := func(w *Wrapper) {
+		idx := w.StartTree(sszutils.TreeTypeBinary)
+		for i := range 8 {
+			w.AppendBytes32([]byte{byte(i + 1)})
+		}
+		w.Merkleize(idx)
+	}
+
+	for _, n := range []int{0, 1, 2, 4} {
+		restore := batchHashFn
+		batchHashFn = flaky(n)
+
+		w := NewWrapper()
+		build(w)
+		_, rootErr := w.HashRoot()
+		rootWalkErr := w.HashErr()
+
+		cached := NewWrapper()
+		build(cached)
+		cached.Hash()
+		cachedErr := cached.HashErr()
+
+		batchHashFn = restore
+
+		if !errors.Is(rootErr, refused) || !errors.Is(rootWalkErr, refused) {
+			t.Errorf("%d calls before the refusal: HashRoot err = %v, HashErr = %v", n, rootErr, rootWalkErr)
+		}
+		if !errors.Is(cachedErr, refused) {
+			t.Errorf("%d calls before the refusal: a cached scope read a root with HashErr = %v", n, cachedErr)
+		}
 	}
 }

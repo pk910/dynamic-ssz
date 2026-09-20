@@ -402,31 +402,45 @@ func goKind(t types.Type) reflect.Kind {
 // front end, so neither applies the representability and extended-type rules
 // that a traversed type passes; its own methods own its encoding, and the
 // shape only says how a scope packs and pads it.
-func (p *Parser) delegateShape(annotation string, t types.Type) (reflect.Kind, ssztypes.SszType, int64, error) {
+func (p *Parser) delegateShape(annotation string, t types.Type) (shallowShape, error) {
 	kind, sszType, size := basicShape(t, true)
+	shape := shallowShape{kind: kind, sszType: sszType, size: size}
 	typeHints, sizeHints, _, err := ssztypes.ParseTags(annotation)
 	if err != nil {
-		return kind, sszType, size, err
+		return shape, err
 	}
+	shape.sizeExpr = len(sizeHints) > 0 && sizeHints[0].Expr != ""
 	if len(typeHints) == 0 || typeHints[0].Type == ssztypes.SszUnspecifiedType {
-		return kind, sszType, size, nil
+		return shape, nil
 	}
-	if kind == reflect.Invalid {
-		kind = goKind(t)
+	if shape.kind == reflect.Invalid {
+		shape.kind = goKind(t)
 	}
-	declared := typeHints[0].Type
-	if width := sszBasicWidth(declared, true); width > 0 {
-		return kind, declared, width, nil
+	shape.sszType = typeHints[0].Type
+	if width := sszBasicWidth(shape.sszType, true); width > 0 {
+		shape.size = width
+		return shape, nil
 	}
 	// Any other declared type keeps its identity: a custom type packs like the
 	// basic type its width matches, which the emitters decide from that width.
 	// The reflection type cache reads the width from an ssz-size annotation
 	// when there is one and from the type's own sizer otherwise; only the
 	// annotation is available here.
+	shape.size = 0
 	if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
-		return kind, declared, sizeHints[0].Size, nil
+		shape.size = sizeHints[0].Size
 	}
-	return kind, declared, 0, nil
+	return shape, nil
+}
+
+// shallowShape is what a delegated type's annotation says about the value:
+// its Go kind, the SSZ type it declares, the width it declares, and whether
+// that width comes from a spec expression rather than a literal.
+type shallowShape struct {
+	kind     reflect.Kind
+	sszType  ssztypes.SszType
+	size     int64
+	sizeExpr bool
 }
 
 // derefGoType strips aliases and pointers from t.
@@ -591,15 +605,15 @@ func (p *Parser) detectCompatFlags(desc *ssztypes.TypeDescriptor, originalType, 
 		otherType = types.NewPointer(otherType)
 	}
 
-	if (desc.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize == 0 || desc.SszType == ssztypes.SszCustomType) && (p.getFastsszConvertCompatibility(originalType) || p.getFastsszConvertCompatibility(otherType)) {
-		desc.SszCompatFlags |= ssztypes.SszCompatFlagFastSSZMarshaler
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize == 0 || desc.SszType == ssztypes.SszCustomType {
+		desc.SszCompatFlags |= p.getFastsszCompatFlags(originalType) | p.getFastsszCompatFlags(otherType)
 	}
 	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicMax == 0 || desc.SszType == ssztypes.SszCustomType {
 		if p.getFastsszHashCompatibility(originalType) || p.getFastsszHashCompatibility(otherType) {
-			desc.SszCompatFlags |= ssztypes.SszCompatFlagFastSSZHasher
+			desc.SszCompatFlags |= ssztypes.SszCompatFlagFastsszHashRoot
 		}
 		if p.getHashTreeRootWithCompatibility(originalType) || p.getHashTreeRootWithCompatibility(otherType) {
-			desc.SszCompatFlags |= ssztypes.SszCompatFlagHashTreeRootWith
+			desc.SszCompatFlags |= ssztypes.SszCompatFlagFastsszHashRootWith
 		}
 	}
 
@@ -902,18 +916,24 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 				// resolves its exact size at runtime via its own sizer, so
 				// sizing and offsets are driven at runtime rather than from a
 				// (here unknown) compile-time constant.
-				kind, sszType, size, shapeErr := p.delegateShape(annotation, innerDataType)
+				shape, shapeErr := p.delegateShape(annotation, innerDataType)
 				if shapeErr != nil {
 					return nil, fmt.Errorf("failed to parse annotation for type %v: %v", originalType, shapeErr)
 				}
-				desc.Kind = kind
-				if sszType != ssztypes.SszUnspecifiedType {
-					desc.SszType = sszType
+				desc.Kind = shape.kind
+				if shape.sszType != ssztypes.SszUnspecifiedType {
+					desc.SszType = shape.sszType
 				}
 				switch {
-				case size > 0:
-					desc.Size = size
-				case sszType == ssztypes.SszCustomType:
+				case shape.sizeExpr && !shape.sszType.IsBasic():
+					// A width a spec supplies is read at run time from the
+					// type's own sizer. Both engines decide packing from the
+					// absence of a size expression, so the value takes a leaf
+					// of its own rather than packing with its neighbours.
+					desc.SszTypeFlags |= ssztypes.SszTypeFlagHasSizeExpr
+				case shape.size > 0:
+					desc.Size = shape.size
+				case shape.sszType == ssztypes.SszCustomType:
 					// Without a width the emitters cannot tell whether such a
 					// type packs with its neighbours, and would frame it as a
 					// composite where the reflection engine packs it.
@@ -928,7 +948,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			}
 			p.detectCompatFlags(desc, originalType, innerDataType, innerSchemaType)
 			// Delegate through the spec-aware dynamic methods, not the fastssz ones.
-			desc.SszCompatFlags &^= ssztypes.SszCompatFlagFastSSZMarshaler | ssztypes.SszCompatFlagFastSSZHasher | ssztypes.SszCompatFlagHashTreeRootWith
+			desc.SszCompatFlags &^= ssztypes.SszCompatFlagFastsszSurface | ssztypes.SszCompatFlagFastsszHashRoot | ssztypes.SszCompatFlagFastsszHashRootWith
 			// A shallow descriptor must not be cached as the type's full descriptor.
 			if cacheable {
 				delete(p.cache, typeKey)
@@ -1451,9 +1471,9 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			ssztypes.SszCompatFlagDynamicHashRoot |
 			ssztypes.SszCompatFlagDynamicEncoder |
 			ssztypes.SszCompatFlagDynamicDecoder |
-			ssztypes.SszCompatFlagFastSSZMarshaler |
-			ssztypes.SszCompatFlagFastSSZHasher |
-			ssztypes.SszCompatFlagHashTreeRootWith
+			ssztypes.SszCompatFlagFastsszSurface |
+			ssztypes.SszCompatFlagFastsszHashRoot |
+			ssztypes.SszCompatFlagFastsszHashRootWith
 	}
 
 	// Optional and optional-list reshape the encoding around the inner type
@@ -1467,9 +1487,9 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			ssztypes.SszCompatFlagDynamicHashRoot |
 			ssztypes.SszCompatFlagDynamicEncoder |
 			ssztypes.SszCompatFlagDynamicDecoder |
-			ssztypes.SszCompatFlagFastSSZMarshaler |
-			ssztypes.SszCompatFlagFastSSZHasher |
-			ssztypes.SszCompatFlagHashTreeRootWith
+			ssztypes.SszCompatFlagFastsszSurface |
+			ssztypes.SszCompatFlagFastsszHashRoot |
+			ssztypes.SszCompatFlagFastsszHashRootWith
 	}
 
 	// Per the SSZ spec, containers (including progressive containers) must have
@@ -1485,22 +1505,22 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 
 	if desc.SszType == ssztypes.SszCustomType {
 		// A custom type delegates every SSZ operation to its own methods. Each
-		// operation may be served by either the fastssz method or the dynssz
-		// (Dynamic*) equivalent, but at least one implementation per operation
-		// is required. The fastssz marshaler interface bundles marshal,
-		// unmarshal and size; the fastssz hasher covers the hash tree root.
+		// operation may be served by either the fastssz-style method or the
+		// dynssz (Dynamic*) equivalent, but at least one implementation per
+		// operation is required. Marshalling accepts either fastssz-style
+		// marshal method.
 		f := desc.SszCompatFlags
 		var missing []string
-		if f&(ssztypes.SszCompatFlagFastSSZMarshaler|ssztypes.SszCompatFlagDynamicMarshaler|ssztypes.SszCompatFlagDynamicEncoder) == 0 {
+		if f&(ssztypes.SszCompatFlagFastsszBufferMarshaler|ssztypes.SszCompatFlagFastsszValueMarshaler|ssztypes.SszCompatFlagDynamicMarshaler|ssztypes.SszCompatFlagDynamicEncoder) == 0 {
 			missing = append(missing, "marshaler")
 		}
-		if f&(ssztypes.SszCompatFlagFastSSZMarshaler|ssztypes.SszCompatFlagDynamicUnmarshaler|ssztypes.SszCompatFlagDynamicDecoder) == 0 {
+		if f&(ssztypes.SszCompatFlagFastsszUnmarshaler|ssztypes.SszCompatFlagDynamicUnmarshaler|ssztypes.SszCompatFlagDynamicDecoder) == 0 {
 			missing = append(missing, "unmarshaler")
 		}
-		if f&(ssztypes.SszCompatFlagFastSSZMarshaler|ssztypes.SszCompatFlagDynamicSizer) == 0 {
+		if f&(ssztypes.SszCompatFlagFastsszSizer|ssztypes.SszCompatFlagDynamicSizer) == 0 {
 			missing = append(missing, "sizer")
 		}
-		if f&(ssztypes.SszCompatFlagFastSSZHasher|ssztypes.SszCompatFlagHashTreeRootWith|ssztypes.SszCompatFlagDynamicHashRoot) == 0 {
+		if f&(ssztypes.SszCompatFlagFastsszHashRoot|ssztypes.SszCompatFlagFastsszHashRootWith|ssztypes.SszCompatFlagDynamicHashRoot) == 0 {
 			missing = append(missing, "hasher")
 		}
 		if len(missing) > 0 {
@@ -2576,11 +2596,27 @@ func (p *Parser) getTypeKindString(typ types.Type) string {
 
 // Interface compatibility checks using proper go/types interface implementation checking
 
-func (p *Parser) getFastsszConvertCompatibility(typ types.Type) bool {
+// getFastsszCompatFlags returns the flag set naming each fastssz-style
+// method the type provides. Each is probed on its own, as the reflection type
+// cache probes them, so a type is delegated to for the operations it can serve.
+func (p *Parser) getFastsszCompatFlags(typ types.Type) ssztypes.SszCompatFlag {
 	methodSet := types.NewMethodSet(typ)
-	return (p.hasMethodWithSignature(methodSet, "MarshalSSZTo", []string{typeNameByteSlice}, []string{typeNameByteSlice, "error"}) &&
-		p.hasMethodWithSignature(methodSet, "SizeSSZ", []string{}, []string{"int"}) &&
-		p.hasMethodWithSignature(methodSet, "UnmarshalSSZ", []string{typeNameByteSlice}, []string{"error"}))
+
+	var flags ssztypes.SszCompatFlag
+	if p.hasMethodWithSignature(methodSet, "MarshalSSZ", []string{}, []string{typeNameByteSlice, "error"}) {
+		flags |= ssztypes.SszCompatFlagFastsszValueMarshaler
+	}
+	if p.hasMethodWithSignature(methodSet, "MarshalSSZTo", []string{typeNameByteSlice}, []string{typeNameByteSlice, "error"}) {
+		flags |= ssztypes.SszCompatFlagFastsszBufferMarshaler
+	}
+	if p.hasMethodWithSignature(methodSet, "SizeSSZ", []string{}, []string{"int"}) {
+		flags |= ssztypes.SszCompatFlagFastsszSizer
+	}
+	if p.hasMethodWithSignature(methodSet, "UnmarshalSSZ", []string{typeNameByteSlice}, []string{"error"}) {
+		flags |= ssztypes.SszCompatFlagFastsszUnmarshaler
+	}
+
+	return flags
 }
 
 func (p *Parser) getFastsszHashCompatibility(typ types.Type) bool {

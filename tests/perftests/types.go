@@ -271,3 +271,14 @@ type BeaconState struct {
 	NextWithdrawalValidatorIndex ValidatorIndex
 	HistoricalSummaries          []*HistoricalSummary `dynssz-max:"HISTORICAL_ROOTS_LIMIT" ssz-max:"16777216"`
 }
+
+// SliceVectorBundle is dense in vectors declared as Go slices rather than
+// arrays: every inner []byte is one reservation at decode time. The consensus
+// fixtures reach that shape only twice, so its per-vector cost is invisible
+// there.
+type SliceVectorBundle struct {
+	Roots      [][]byte `ssz-size:"4096,32"`
+	Pubkeys    [][]byte `ssz-size:"2048,48"`
+	Signatures [][]byte `ssz-size:"512,96"`
+	Graffiti   []byte   `ssz-size:"32"`
+}

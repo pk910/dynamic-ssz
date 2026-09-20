@@ -7,8 +7,10 @@ package sszutils
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"math"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -857,9 +859,11 @@ func TestStreamDecoder_SkipBytes_NotSupported(t *testing.T) {
 	}
 }
 
-// A region declared past an established bound keeps its declared extent and
-// marks the input truncated: the bytes it promises do not exist, so every
-// read of it fails instead of shrinking to what is left.
+// An established bound is the extent of the input itself, so a region declared
+// past it cannot be what it says it is. It is refused: the region holds
+// nothing, and the input stays marked so no later read succeeds either. This
+// is what BufferDecoder does with the same declaration, which it can always
+// prove impossible.
 func TestStreamDecoder_PushLimit_PastEstablishedBound(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -877,8 +881,8 @@ func TestStreamDecoder_PushLimit_PastEstablishedBound(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dec := tc.mk()
 			dec.PushLimit(20)
-			if dec.GetLength() != 20 {
-				t.Fatalf("declared length = %d, want 20", dec.GetLength())
+			if got := dec.GetLength(); got != 0 {
+				t.Fatalf("length inside a refused region = %d, want 0", got)
 			}
 			if _, err := dec.More(); !errors.Is(err, ErrUnexpectedEOF) {
 				t.Fatalf("More err = %v, want ErrUnexpectedEOF", err)
@@ -2793,5 +2797,81 @@ func TestStreamEncoderFlushBeforeBoolAndOffset(t *testing.T) {
 	want = []byte{8, 7, 6, 5, 4, 3, 2, 1, 0x44, 0x33, 0x22, 0x11}
 	if !bytes.Equal(buf.Bytes(), want) {
 		t.Fatalf("encoded % x, want % x", buf.Bytes(), want)
+	}
+}
+
+// A region an offset declared inside a stream of unknown extent states how much
+// it holds; only the sender's bytes prove it. Reading its remainder must cost
+// what arrives, not what it claims.
+func TestStreamDecoderRemainderOfAnUnverifiedRegion(t *testing.T) {
+	const declared = 256 << 20
+
+	dec := NewUnknownStreamDecoder(bytes.NewReader([]byte{1, 2, 3, 4}), 1<<10, 0)
+	dec.PushLimit(declared)
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	buf, err := dec.DecodeBytesBuf(-1)
+	runtime.ReadMemStats(&after)
+
+	if err == nil && len(buf) == declared {
+		t.Fatalf("four bytes satisfied a %d byte region", declared)
+	}
+	if reserved := after.TotalAlloc - before.TotalAlloc; reserved > 8<<20 {
+		t.Errorf("reserved %d bytes for four delivered bytes", reserved)
+	}
+}
+
+// A region declaring its end past the bytes the input holds cannot be the
+// region it says it is, so both decoders refuse it and stay refused. They have
+// to say so through every method that answers for a region, not only through a
+// sized read: one reporting "nothing left, no error" where the other reports
+// the truncation lets a caller close a value the decoder already rejected, and
+// lets the two engines accept different inputs.
+func TestRefusedRegionAnswersAlikeOnBothDecoders(t *testing.T) {
+	const declared = 32
+	payload := []byte{1, 2, 3, 4, 5, 6} // fewer bytes than the region declares
+
+	probe := func(d Decoder) []string {
+		d.PushLimit(declared)
+
+		errText := func(err error) string {
+			if err == nil {
+				return "<nil>"
+			}
+			return err.Error()
+		}
+
+		out := make([]string, 0, 6)
+		rest, err := d.DecodeRemaining(-1)
+		out = append(out, fmt.Sprintf("DecodeRemaining=%x,%s", rest, errText(err)))
+
+		more, err := d.More()
+		out = append(out, fmt.Sprintf("More=%v,%s", more, errText(err)))
+
+		buf, err := d.DecodeBytesBuf(-1)
+		out = append(out, fmt.Sprintf("DecodeBytesBuf=%x,%s", buf, errText(err)))
+
+		into := make([]byte, 2)
+		read, err := d.DecodeBytes(into)
+		out = append(out,
+			fmt.Sprintf("DecodeBytes=%x,%s", read, errText(err)),
+			fmt.Sprintf("GetLength=%d", d.GetLength()),
+			fmt.Sprintf("FinishRegion=%s", errText(d.FinishRegion())),
+		)
+		return out
+	}
+
+	buffer := probe(NewBufferDecoder(payload))
+	stream := probe(NewStreamDecoder(bytes.NewReader(payload), len(payload), 0))
+
+	for i := range buffer {
+		if buffer[i] != stream[i] {
+			t.Errorf("after a refused region the decoders disagree:\n  buffer %s\n  stream %s", buffer[i], stream[i])
+		}
+	}
+	if buffer[len(buffer)-1] == "FinishRegion=<nil>" {
+		t.Error("FinishRegion reported success on a region the decoder itself refused")
 	}
 }

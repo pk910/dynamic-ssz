@@ -56,7 +56,8 @@ func encodeOffsetAtChecked(encoder sszutils.Encoder, pos int, offset int64) erro
 //
 // The function handles:
 //   - Automatic nil pointer dereferencing
-//   - FastSSZ delegation for compatible types without dynamic sizing
+//   - Delegation to a type's own MarshalSSZTo, or MarshalSSZ where that is all
+//     it has, unless its size depends on the spec
 //   - Primitive type encoding (bool, uint8, uint16, uint32, uint64)
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
 func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth reflectionDepth) error {
@@ -215,7 +216,7 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 // delegate unless ctx.noDelegation is set.
 func (ctx *ReflectionCtx) tryMarshalCompat(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder) (bool, error) {
 	hasDynamicSize := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
-	isFastsszMarshaler := sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+	isFastsszMarshaler := sourceType.SszCompatFlags&(ssztypes.SszCompatFlagFastsszBufferMarshaler|ssztypes.SszCompatFlagFastsszValueMarshaler) != 0
 	useDynamicMarshal := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0
 	useDynamicEncoder := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicEncoder != 0
 	useFastSsz := !ctx.noFastSsz && isFastsszMarshaler && !hasDynamicSize
@@ -233,13 +234,28 @@ func (ctx *ReflectionCtx) tryMarshalCompat(sourceType *ssztypes.TypeDescriptor, 
 	}
 
 	if useFastSsz {
-		if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.FastsszMarshaler); ok {
-			newBuf, err := marshaller.MarshalSSZTo(encoder.GetBuffer())
-			if err != nil {
-				return true, err
+		if sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastsszBufferMarshaler != 0 {
+			if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.FastsszBufferMarshaler); ok {
+				newBuf, err := marshaller.MarshalSSZTo(encoder.GetBuffer())
+				if err != nil {
+					return true, err
+				}
+				encoder.SetBuffer(newBuf)
+				return true, nil
 			}
-			encoder.SetBuffer(newBuf)
-			return true, nil
+		}
+		// A type that only marshals into a buffer of its own is appended to the
+		// encoder's, which costs an allocation and a copy. Reached only where
+		// neither MarshalSSZTo nor a spec-aware method exists.
+		if sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastsszValueMarshaler != 0 {
+			if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.FastsszValueMarshaler); ok {
+				data, err := marshaller.MarshalSSZ()
+				if err != nil {
+					return true, err
+				}
+				encoder.SetBuffer(append(encoder.GetBuffer(), data...))
+				return true, nil
+			}
 		}
 	}
 
@@ -462,11 +478,11 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth reflectionDepth) error {
 	vecLen := sourceType.Len
 	if vecLen > math.MaxInt {
-		return sszutils.ErrPlatformOverflowFn("vector length", sourceType.Len)
+		return sszutils.ErrPlatformOverflowWidthFn("vector length", uint64(sourceType.Len))
 	}
 	vecElemSize := sourceType.ElemDesc.Size
 	if vecElemSize > math.MaxInt {
-		return sszutils.ErrPlatformOverflowFn("element size", sourceType.ElemDesc.Size)
+		return sszutils.ErrPlatformOverflowWidthFn("element size", uint64(sourceType.ElemDesc.Size))
 	}
 
 	sliceLen := sourceValue.Len()
@@ -561,7 +577,7 @@ func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sou
 func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth reflectionDepth) error {
 	dynVecLen := sourceType.Len
 	if dynVecLen > math.MaxInt {
-		return sszutils.ErrPlatformOverflowFn("dynamic vector length", sourceType.Len)
+		return sszutils.ErrPlatformOverflowWidthFn("dynamic vector length", uint64(sourceType.Len))
 	}
 
 	fieldType := sourceType.ElemDesc
@@ -989,12 +1005,11 @@ func (ctx *ReflectionCtx) marshalOptionalList(sourceType *ssztypes.TypeDescripto
 }
 
 // checkBigIntLimit enforces a static ssz-max on a big.Int payload (1 sign byte +
-// magnitude), matching marshalBigInt. Dynamic (dynssz-max expression) limits are
-// left unchecked so the reflection and codegen engines stay consistent, and so
-// SizeSSZ, HashTreeRoot and GetTree agree with MarshalSSZ on which values are
-// serializable instead of committing to a value no decoder can produce.
+// magnitude), matching marshalBigInt. A limit stated through a dynssz-max is
+// resolved when the descriptor is built, so it bounds the value exactly as a
+// static one does: both are the author's declaration of what the type holds.
 func checkBigIntLimit(t *ssztypes.TypeDescriptor, magLen int) error {
-	if t.MaxExpression == nil && t.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
+	if t.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
 		if payloadLen := uint64(1 + magLen); payloadLen > t.Limit {
 			return sszutils.NewSszErrorf(sszutils.ErrListTooBig, "big.Int payload length %d exceeds maximum %d", payloadLen, t.Limit)
 		}
@@ -1006,7 +1021,7 @@ func checkBigIntLimit(t *ssztypes.TypeDescriptor, magLen int) error {
 // magnitude) enforced by checkBigIntLimit, so a decoder can apply it as a read
 // cap instead of validating after the fact.
 func bigIntLimitBytes(t *ssztypes.TypeDescriptor) (int, bool) {
-	if t.MaxExpression != nil || t.SszTypeFlags&ssztypes.SszTypeFlagHasLimit == 0 {
+	if t.SszTypeFlags&ssztypes.SszTypeFlagHasLimit == 0 {
 		return 0, false
 	}
 	if t.Limit > math.MaxInt {

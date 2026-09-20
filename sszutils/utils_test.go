@@ -16,13 +16,38 @@ import (
 // BufferDecoder Tests
 // ============================================================================
 
-func TestBufferDecoder_PushLimit_ClampToLastLimit(t *testing.T) {
+// The whole input is in hand, so a region declaring more than the input holds
+// is not a region this payload could have. It is refused rather than read as
+// the smaller one the bytes would allow, and nothing after it decodes either.
+func TestBufferDecoder_PushLimit_PastTheInputIsRefused(t *testing.T) {
 	dec := NewBufferDecoder(make([]byte, 10))
 
 	dec.PushLimit(20)
 
-	if dec.GetLength() != 10 {
-		t.Errorf("expected length 10, got %d", dec.GetLength())
+	if got := dec.GetLength(); got != 0 {
+		t.Errorf("GetLength inside a refused region = %d, want 0", got)
+	}
+	if _, err := dec.DecodeUint8(); !errors.Is(err, ErrUnexpectedEOF) {
+		t.Errorf("read inside a refused region: err = %v, want %v", err, ErrUnexpectedEOF)
+	}
+
+	dec.PopLimit()
+	if _, err := dec.DecodeUint8(); !errors.Is(err, ErrUnexpectedEOF) {
+		t.Errorf("read after a refused region: err = %v, want %v", err, ErrUnexpectedEOF)
+	}
+}
+
+// A region that fits is pushed as declared.
+func TestBufferDecoder_PushLimit_WithinTheInput(t *testing.T) {
+	dec := NewBufferDecoder(make([]byte, 10))
+
+	dec.PushLimit(10)
+	if got := dec.GetLength(); got != 10 {
+		t.Errorf("GetLength = %d, want the declared 10", got)
+	}
+	dec.PushLimit(4)
+	if got := dec.GetLength(); got != 4 {
+		t.Errorf("GetLength = %d, want the declared 4", got)
 	}
 }
 
@@ -266,6 +291,7 @@ func (m *mockHashWalker) PutProgressiveBitlist(_ []byte)         {}
 func (m *mockHashWalker) PutBool(_ bool)                         {}
 func (m *mockHashWalker) PutBytes(_ []byte)                      {}
 func (m *mockHashWalker) FillUpTo32()                            {}
+func (m *mockHashWalker) HashErr() error                         { return nil }
 func (m *mockHashWalker) Append(i []byte) {
 	m.appendCalled = true
 	m.appendData = append(m.appendData, i...)
@@ -1243,12 +1269,15 @@ func TestDecoderPrimitiveParity(t *testing.T) {
 		}
 	})
 
-	t.Run("push_limit_overflow_clamps", func(t *testing.T) {
+	t.Run("push_limit_past_the_parent_is_refused", func(t *testing.T) {
 		bd := NewBufferDecoder([]byte{1, 2, 3, 4})
 		bd.PushLimit(4)
-		bd.PushLimit(int(^uint(0) >> 1)) // maximum int
-		if got := bd.GetLength(); got != 4 {
-			t.Fatalf("GetLength after huge limit = %d, want the enclosing region's 4", got)
+		bd.PushLimit(int(^uint(0) >> 1)) // maximum int, and no wrap
+		if got := bd.GetLength(); got != 0 {
+			t.Fatalf("GetLength after an impossible limit = %d, want 0: the region holds nothing", got)
+		}
+		if _, err := bd.DecodeUint8(); !errors.Is(err, ErrUnexpectedEOF) {
+			t.Fatalf("read inside a refused region: err = %v, want %v", err, ErrUnexpectedEOF)
 		}
 	})
 }
@@ -1297,4 +1326,51 @@ func TestPrimitiveGuardBranches(t *testing.T) {
 	if _, err := sd3.DecodeBool(); err == nil || sd3.GetPosition() != 0 {
 		t.Fatalf("stream bool past limit: err=%v pos=%d", err, sd3.GetPosition())
 	}
+}
+
+// Both decoders answer a declared region the same way, and what they can know
+// decides the answer. A bound that states the extent of the input -- the whole
+// buffer, a known stream length, a stream whose end EOF has established --
+// makes a longer declaration impossible, and it is refused. A bound that is
+// only an allowance, which is what an open region has, says nothing about the
+// input: bytes past it may simply not have arrived, so the declaration is
+// clamped to it instead.
+func TestPushLimitPastAKnownExtentIsRefusedByBothDecoders(t *testing.T) {
+	const size = 16
+
+	t.Run("buffer", func(t *testing.T) {
+		dec := NewBufferDecoder(make([]byte, size))
+		dec.PushLimit(size * 4)
+		if got := dec.GetLength(); got != 0 {
+			t.Errorf("GetLength = %d, want 0", got)
+		}
+		if _, err := dec.DecodeUint8(); !errors.Is(err, ErrUnexpectedEOF) {
+			t.Errorf("err = %v, want %v", err, ErrUnexpectedEOF)
+		}
+	})
+
+	t.Run("stream with a known length", func(t *testing.T) {
+		dec := NewStreamDecoder(bytes.NewReader(make([]byte, size)), size, 0)
+		dec.PushLimit(size * 4)
+		if got := dec.GetLength(); got != 0 {
+			t.Errorf("GetLength = %d, want 0", got)
+		}
+		if _, err := dec.DecodeUint8(); !errors.Is(err, ErrUnexpectedEOF) {
+			t.Errorf("err = %v, want %v", err, ErrUnexpectedEOF)
+		}
+	})
+
+	// An allowance is not an extent: the declaration is clamped, and the
+	// region is not reported as a known length.
+	t.Run("stream inside an open region", func(t *testing.T) {
+		dec := NewUnknownStreamDecoder(bytes.NewReader(make([]byte, size)), size, 32)
+		dec.PushOpenLimit()
+		dec.PushLimit(size * 400)
+		if got := dec.GetLength(); got != 32 {
+			t.Errorf("GetLength = %d, want the 32-byte allowance", got)
+		}
+		if dec.LengthKnown() {
+			t.Error("a region clamped to the allowance is not a verified length")
+		}
+	})
 }

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/bits"
 	"reflect"
 	"slices"
 	"strings"
@@ -182,7 +183,8 @@ func (tc *TypeCache) DisableSpecResolution() {
 //	if err != nil {
 //	    log.Fatal("Failed to get type descriptor:", err)
 //	}
-//	fmt.Printf("Type size: %d bytes (dynamic: %v)\n", typeDesc.Size, typeDesc.Size < 0)
+//	fmt.Printf("Type size: %d bytes (dynamic: %v)\n", typeDesc.Size,
+//	    typeDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0)
 func (tc *TypeCache) GetTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
 	// When no view descriptor is used, runtime and schema types are the same
 	return tc.GetTypeDescriptorWithSchema(t, t, sizeHints, maxSizeHints, typeHints)
@@ -579,11 +581,8 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 					// A spec value spans the full uint64 range; the size
 					// domain is signed, so the value is narrowed only after
 					// the comparison that shows it fits.
-					if val > math.MaxInt64 {
-						return sszutils.ErrPlatformOverflowFn("ssz-size annotation value", val)
-					}
-					if exceedsSizeLimit(val, sizeHints[i].Bits) {
-						return sszutils.ErrPlatformOverflowFn("ssz-size annotation value", val)
+					if val > math.MaxInt64 || exceedsSizeLimit(val, sizeHints[i].Bits) {
+						return sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(val), "ssz-size annotation value %d exceeds the SSZ size limit", val)
 					}
 
 					sizeHints[i].Size = int64(val)
@@ -807,11 +806,14 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			if partner := tc.cycleWith(runtimeType); partner != nil {
 				return sszutils.NewSszErrorf(sszutils.ErrUnsupportedType, "%v delegates to its own SSZ methods but forms a recursive cycle with %v, which is described here: the members of a cycle must be generated in one run", runtimeType, partner)
 			}
+			size, sized, err := int64(0), false, error(nil)
 			if *staticAnnotation {
-				size, err := tc.delegatedStaticSize(desc, runtimeType)
+				size, sized, err = tc.delegatedStaticSize(desc, runtimeType)
 				if err != nil {
 					return err
 				}
+			}
+			if sized {
 				desc.Size = size
 			} else {
 				desc.SszTypeFlags |= SszTypeFlagIsDynamic
@@ -823,7 +825,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			// only taken for types that delegate through the spec-aware dynamic
 			// (or dynamic view) interfaces, so suppress the fastssz family and let
 			// those handle every operation correctly.
-			desc.SszCompatFlags &^= SszCompatFlagFastSSZMarshaler | SszCompatFlagFastSSZHasher | SszCompatFlagHashTreeRootWith
+			desc.SszCompatFlags &^= SszCompatFlagFastsszSurface | SszCompatFlagFastsszHashRoot | SszCompatFlagFastsszHashRootWith
 			desc.HashTreeRootWithMethod = nil
 			// A shallow descriptor has no traversed subtree: a static one still
 			// knows its size, a dynamic one states no floor.
@@ -960,9 +962,15 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		case len(sizeHints) > 0 && sizeHints[0].Size > 0:
 			desc.Size = sizeHints[0].Size
 		case staticAnnotation != nil && *staticAnnotation:
-			size, err := tc.delegatedStaticSize(desc, runtimeType)
+			size, sized, err := tc.delegatedStaticSize(desc, runtimeType)
 			if err != nil {
 				return err
+			}
+			if !sized {
+				desc.Size = 0
+				desc.SszTypeFlags |= SszTypeFlagIsDynamic
+
+				break
 			}
 			desc.Size = size
 		default:
@@ -1095,16 +1103,26 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			if promoted["UnmarshalSSZDecoderView"] {
 				desc.SszCompatFlags &^= SszCompatFlagDynamicViewDecoder
 			}
-			// The fastssz convert surface spans marshal and unmarshal; a
-			// promoted piece anywhere poisons the whole pair.
-			if promoted["MarshalSSZ"] || promoted["MarshalSSZTo"] || promoted["SizeSSZ"] || promoted["UnmarshalSSZ"] {
-				desc.SszCompatFlags &^= SszCompatFlagFastSSZMarshaler
+			// A promoted method answers for the embedded value, so it is never
+			// the outer type's. A method the type declares itself is, so it
+			// stays: each is cleared on its own.
+			if promoted["MarshalSSZ"] {
+				desc.SszCompatFlags &^= SszCompatFlagFastsszValueMarshaler
+			}
+			if promoted["MarshalSSZTo"] {
+				desc.SszCompatFlags &^= SszCompatFlagFastsszBufferMarshaler
+			}
+			if promoted["SizeSSZ"] {
+				desc.SszCompatFlags &^= SszCompatFlagFastsszSizer
+			}
+			if promoted["UnmarshalSSZ"] {
+				desc.SszCompatFlags &^= SszCompatFlagFastsszUnmarshaler
 			}
 			if promoted["HashTreeRoot"] {
-				desc.SszCompatFlags &^= SszCompatFlagFastSSZHasher
+				desc.SszCompatFlags &^= SszCompatFlagFastsszHashRoot
 			}
 			if promoted["HashTreeRootWith"] {
-				desc.SszCompatFlags &^= SszCompatFlagHashTreeRootWith
+				desc.SszCompatFlags &^= SszCompatFlagFastsszHashRootWith
 				desc.HashTreeRootWithMethod = nil
 			}
 		}
@@ -1120,9 +1138,9 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			SszCompatFlagDynamicHashRoot |
 			SszCompatFlagDynamicEncoder |
 			SszCompatFlagDynamicDecoder |
-			SszCompatFlagFastSSZMarshaler |
-			SszCompatFlagFastSSZHasher |
-			SszCompatFlagHashTreeRootWith
+			SszCompatFlagFastsszSurface |
+			SszCompatFlagFastsszHashRoot |
+			SszCompatFlagFastsszHashRootWith
 	}
 
 	// Optional and optional-list reshape the encoding around the inner type
@@ -1136,9 +1154,9 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			SszCompatFlagDynamicHashRoot |
 			SszCompatFlagDynamicEncoder |
 			SszCompatFlagDynamicDecoder |
-			SszCompatFlagFastSSZMarshaler |
-			SszCompatFlagFastSSZHasher |
-			SszCompatFlagHashTreeRootWith
+			SszCompatFlagFastsszSurface |
+			SszCompatFlagFastsszHashRoot |
+			SszCompatFlagFastsszHashRootWith
 	}
 
 	// Per the SSZ spec, containers (including progressive containers) must have
@@ -1147,32 +1165,17 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 	// SSZ methods (any compat flag set) are exempt: they do not use the plain
 	// container layout, so a zero-field struct shell is legitimate for them.
 	if desc.SszType == SszContainerType || desc.SszType == SszProgressiveContainerType {
-		if desc.SszCompatFlags == 0 && desc.ContainerDesc != nil && len(desc.ContainerDesc.Fields) == 0 {
+		if len(missingDelegatedOperations(desc.SszCompatFlags)) > 0 && desc.ContainerDesc != nil && len(desc.ContainerDesc.Fields) == 0 {
 			return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "container type %v has no SSZ fields, which is invalid per the SSZ spec", schemaType)
 		}
 	}
 
 	if desc.SszType == SszCustomType {
 		// A custom type delegates every SSZ operation to its own methods. Each
-		// operation may be served by either the fastssz method or the dynssz
+		// operation may be served by either the fastssz-style method or the dynssz
 		// (Dynamic*) equivalent, but at least one implementation per operation is
-		// required. The fastssz marshaler interface bundles marshal, unmarshal and
-		// size; the fastssz hasher covers the hash tree root.
-		f := desc.SszCompatFlags
-		var missing []string
-		if f&(SszCompatFlagFastSSZMarshaler|SszCompatFlagDynamicMarshaler|SszCompatFlagDynamicEncoder) == 0 {
-			missing = append(missing, "marshaler")
-		}
-		if f&(SszCompatFlagFastSSZMarshaler|SszCompatFlagDynamicUnmarshaler|SszCompatFlagDynamicDecoder) == 0 {
-			missing = append(missing, "unmarshaler")
-		}
-		if f&(SszCompatFlagFastSSZMarshaler|SszCompatFlagDynamicSizer) == 0 {
-			missing = append(missing, "sizer")
-		}
-		if f&(SszCompatFlagFastSSZHasher|SszCompatFlagHashTreeRootWith|SszCompatFlagDynamicHashRoot) == 0 {
-			missing = append(missing, "hasher")
-		}
-		if len(missing) > 0 {
+		// required. Marshalling accepts either fastssz-style marshal method.
+		if missing := missingDelegatedOperations(desc.SszCompatFlags); len(missing) > 0 {
 			return sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "custom ssz type %v is missing a fastssz or dynssz %s implementation", schemaType, strings.Join(missing, ", "))
 		}
 	}
@@ -1180,6 +1183,32 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 	desc.SetMinSize()
 
 	return nil
+}
+
+// missingDelegatedOperations names the SSZ operations a set of compatibility
+// flags cannot serve. Each may be served by either the fastssz-style method or
+// the dynssz equivalent, and marshalling accepts either fastssz-style marshal
+// method, so a type serves an operation when it has any one of them.
+//
+// A type that serves every operation never uses the container layout, which is
+// what lets a zero-field shell stand for it; one method is not evidence of
+// that, since a type with a single marshaller is still walked for the rest.
+func missingDelegatedOperations(f SszCompatFlag) []string {
+	var missing []string
+	if f&(SszCompatFlagFastsszBufferMarshaler|SszCompatFlagFastsszValueMarshaler|SszCompatFlagDynamicMarshaler|SszCompatFlagDynamicEncoder) == 0 {
+		missing = append(missing, "marshaler")
+	}
+	if f&(SszCompatFlagFastsszUnmarshaler|SszCompatFlagDynamicUnmarshaler|SszCompatFlagDynamicDecoder) == 0 {
+		missing = append(missing, "unmarshaler")
+	}
+	if f&(SszCompatFlagFastsszSizer|SszCompatFlagDynamicSizer) == 0 {
+		missing = append(missing, "sizer")
+	}
+	if f&(SszCompatFlagFastsszHashRoot|SszCompatFlagFastsszHashRootWith|SszCompatFlagDynamicHashRoot) == 0 {
+		missing = append(missing, "hasher")
+	}
+
+	return missing
 }
 
 // unresolvedReason says why an expression produced no usable value, so the
@@ -1232,10 +1261,12 @@ func (td *TypeDescriptor) SetMinSize() {
 		// the element count here, not a byte size.
 		if td.ElemDesc != nil {
 			// An overflowing product would bound the region above the true floor
-			// and refuse valid input, so it states no bound instead.
-			minSize := uint64(td.Len) * (4 + uint64(td.ElemDesc.MinSize))
-			if minSize <= math.MaxInt64 {
-				td.MinSize = int64(minSize)
+			// and refuse valid input, so it states no bound instead. The product
+			// is formed in two words: checking it after it has wrapped would
+			// accept the wrapped value as a floor.
+			hi, lo := bits.Mul64(uint64(td.Len), 4+uint64(td.ElemDesc.MinSize))
+			if hi == 0 && lo <= math.MaxInt64 {
+				td.MinSize = int64(lo)
 			}
 		}
 	default:
@@ -1249,16 +1280,16 @@ func (td *TypeDescriptor) SetMinSize() {
 // and hasher are only flagged when the type does not carry a dynamic size/max,
 // since those use the static fastssz layout.
 func (tc *TypeCache) detectCompatFlags(desc *TypeDescriptor, runtimeType, schemaType reflect.Type) {
-	if desc.SszTypeFlags&SszTypeFlagHasDynamicSize == 0 && getFastsszConvertCompatibility(runtimeType) {
-		desc.SszCompatFlags |= SszCompatFlagFastSSZMarshaler
+	if desc.SszTypeFlags&SszTypeFlagHasDynamicSize == 0 {
+		desc.SszCompatFlags |= getFastsszCompatFlags(runtimeType)
 	}
 	if desc.SszTypeFlags&SszTypeFlagHasDynamicMax == 0 {
 		if getFastsszHashCompatibility(runtimeType) {
-			desc.SszCompatFlags |= SszCompatFlagFastSSZHasher
+			desc.SszCompatFlags |= SszCompatFlagFastsszHashRoot
 		}
 		if method := getHashTreeRootWithCompatibility(runtimeType); method != nil {
 			desc.HashTreeRootWithMethod = method
-			desc.SszCompatFlags |= SszCompatFlagHashTreeRootWith
+			desc.SszCompatFlags |= SszCompatFlagFastsszHashRootWith
 		}
 	}
 
@@ -1342,17 +1373,25 @@ func fullyDelegatesSSZView(runtimeType reflect.Type, promoted map[string]bool) b
 // derives its result from constants and spec values only — never from field data
 // — so a zero value yields the correct size, and spec-dependent fixed sizes are
 // resolved against the cache's specs. View descriptors use the view sizer.
-func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType reflect.Type) (int64, error) {
+func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType reflect.Type) (int64, bool, error) {
 	specs := tc.specs // never nil: NewTypeCache substitutes emptySpecs{}
 	zero := reflect.New(runtimeType).Interface()
 
 	// A sizer returns int; its result enters the size domain here, so it is
-	// bounded to the SSZ size range like every other size.
-	validate := func(n int) (int64, error) {
-		if n < 0 || n > sszutils.MaxSszSize {
-			return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer for static type %v returned out-of-range size %d", runtimeType, n)
+	// bounded to the SSZ size range like every other size. A refusal states no
+	// size at all -- a spec value the cache cannot resolve reads the same as an
+	// over-limit total through that one return -- so the type is described
+	// without a fixed size rather than refused, and the size is asked for again
+	// where a caller can be told why it cannot be given.
+	validate := func(n int) (int64, bool, error) {
+		if n < 0 {
+			return 0, false, nil
 		}
-		return int64(n), nil
+		if n > sszutils.MaxSszSize {
+			return 0, false, sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(uint64(n)), "sizer for static type %v returned out-of-range size %d", runtimeType, n)
+		}
+
+		return int64(n), true, nil
 	}
 
 	if desc.GoTypeFlags&GoTypeFlagIsView != 0 {
@@ -1361,7 +1400,7 @@ func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType refle
 				return validate(sizeFn(specs))
 			}
 		}
-		return 0, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "static view type %v does not provide a usable view sizer", runtimeType)
+		return 0, false, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "static view type %v does not provide a usable view sizer", runtimeType)
 	}
 
 	// Non-view static types may size themselves through either the dynssz sizer
@@ -1370,10 +1409,10 @@ func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType refle
 	if sizer, ok := zero.(sszutils.DynamicSizer); ok {
 		return validate(sizer.SizeSSZDyn(specs))
 	}
-	if marshaler, ok := zero.(sszutils.FastsszMarshaler); ok {
-		return validate(marshaler.SizeSSZ())
+	if sizer, ok := zero.(sszutils.FastsszSizer); ok {
+		return validate(sizer.SizeSSZ())
 	}
-	return 0, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "static type %v provides no usable sizer", runtimeType)
+	return 0, false, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "static type %v provides no usable sizer", runtimeType)
 }
 
 // buildTypeWrapperDescriptor builds a descriptor for TypeWrapper types with runtime/schema pairing.
@@ -1740,7 +1779,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 		// A fixed section is addressed by 32-bit offsets, so it is bounded to
 		// the SSZ size limit like every other size.
 		if totalSize > sszutils.MaxSszSize-sszSize {
-			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "container byte size exceeds the SSZ size limit")
+			return sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(uint64(totalSize)+uint64(sszSize)), "container byte size %d exceeds the SSZ size limit", uint64(totalSize)+uint64(sszSize))
 		}
 		totalSize += sszSize
 		desc.ContainerDesc.Fields[fi] = fieldDesc
@@ -1791,6 +1830,28 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 	return nil
 }
 
+// validateUnionCarrier refuses a union carrier the operations cannot read. The
+// size, marshal and hash paths take the selector from field 0 and the data from
+// field 1, which a tag plus a GetDescriptorType method is enough to reach
+// without being the generic carrier those paths assume.
+func validateUnionCarrier(runtimeType reflect.Type, kind string) error {
+	carrier := runtimeType
+	if carrier.Kind() == reflect.Ptr {
+		carrier = carrier.Elem()
+	}
+	if carrier.Kind() != reflect.Struct || carrier.NumField() < 2 {
+		return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint,
+			"%s carrier %v must be a struct of a selector and a data field", kind, runtimeType)
+	}
+	if k := carrier.Field(0).Type.Kind(); k != reflect.Uint8 && k != reflect.Uint16 &&
+		k != reflect.Uint32 && k != reflect.Uint64 && k != reflect.Uint {
+		return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint,
+			"%s carrier %v holds its selector in a %v, which is not an unsigned integer", kind, runtimeType, k)
+	}
+
+	return nil
+}
+
 // buildCompatibleUnionDescriptor builds a descriptor for CompatibleUnion types with runtime/schema pairing.
 //
 // For CompatibleUnion types, the variant types may differ between runtime and schema when using view descriptors.
@@ -1835,6 +1896,10 @@ func (tc *TypeCache) buildCompatibleUnionDescriptor(desc *TypeDescriptor, runtim
 		for _, info := range runtimeVariantInfo {
 			runtimeVariantMap[info.Name] = info.Type
 		}
+	}
+
+	if err := validateUnionCarrier(runtimeType, "compatible-union"); err != nil {
+		return err
 	}
 
 	// Build type descriptors for each variant using schema for layout, runtime for data
@@ -1901,6 +1966,10 @@ func (tc *TypeCache) buildUnionDescriptor(desc *TypeDescriptor, runtimeType, sch
 		for _, info := range runtimeVariantInfo {
 			runtimeVariantMap[info.Name] = info.Type
 		}
+	}
+
+	if err := validateUnionCarrier(runtimeType, "union"); err != nil {
+		return err
 	}
 
 	desc.UnionVariants = make(map[uint8]*TypeDescriptor, len(schemaVariantInfo))
@@ -2187,11 +2256,11 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 	// A vector's length is a size itself; a vector of variable-size elements
 	// also leads with one 4-byte offset per element inside its fixed section.
 	if desc.Len > sszutils.MaxSszSize {
-		return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "vector length %d exceeds the SSZ size limit", desc.Len)
+		return sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(uint64(desc.Len)), "vector length %d exceeds the SSZ size limit", desc.Len)
 	}
 	if elemDesc.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
 		if desc.Len > sszutils.MaxSszSize/4 {
-			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "vector length %d exceeds the SSZ offset table limit", desc.Len)
+			return sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(uint64(desc.Len)*4), "vector length %d exceeds the SSZ offset table limit", desc.Len)
 		}
 		desc.Size = 0
 		desc.SszTypeFlags |= SszTypeFlagIsDynamic
@@ -2200,7 +2269,7 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 		// other size. The bound is checked by division so the product itself
 		// cannot wrap first.
 		if desc.Len > 0 && elemDesc.Size > sszutils.MaxSszSize/desc.Len {
-			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "vector byte size %d*%d exceeds the SSZ size limit", elemDesc.Size, desc.Len)
+			return sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(uint64(elemDesc.Size)*uint64(desc.Len)), "vector byte size %d*%d exceeds the SSZ size limit", elemDesc.Size, desc.Len)
 		}
 		desc.Size = elemDesc.Size * desc.Len
 	}
@@ -2563,8 +2632,12 @@ func (tc *TypeCache) extractGenericTypeParameter(unionType reflect.Type) (reflec
 // Recursive types form a cyclic descriptor graph that standard JSON
 // marshalling cannot represent; those fall back to a deterministic
 // reference-based serialization so distinct recursive layouts hash to
-// distinct values. Acyclic descriptors keep the plain JSON form and their
-// historical hash values.
+// distinct values. Acyclic descriptors keep the plain JSON form.
+//
+// The hash covers that encoding, not the wire format: encoding/json emits
+// fields in declaration order, so reordering TypeDescriptor moves every hash
+// without changing any serialization. It identifies a layout within one
+// version of this package, not across versions.
 func (td *TypeDescriptor) GetTypeHash() [32]byte {
 	jsonDesc, err := json.Marshal(td)
 	if err != nil {
