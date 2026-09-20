@@ -59,6 +59,11 @@ type DynSsz struct {
 	options        *DynSszOptions
 }
 
+// defaultLogCb is where verbose logging goes when a caller names no sink.
+func defaultLogCb(format string, args ...any) {
+	slog.Debug(fmt.Sprintf(format, args...))
+}
+
 // NewDynSsz creates a new instance of the DynSsz encoder/decoder.
 //
 // The specs map contains dynamic properties and configurations that control SSZ serialization
@@ -98,17 +103,17 @@ func NewDynSsz(specs map[string]any, options ...DynSszOption) *DynSsz {
 		specs = map[string]any{}
 	}
 
-	opts := &DynSszOptions{
-		LogCb: func(format string, args ...any) {
-			slog.Debug(fmt.Sprintf(format, args...))
-		},
-	}
+	opts := &DynSszOptions{LogCb: defaultLogCb}
 
 	for _, option := range options {
 		if option == nil {
 			continue
 		}
 		option(opts)
+	}
+
+	if opts.LogCb == nil {
+		opts.LogCb = defaultLogCb
 	}
 
 	if opts.AsyncHashing && opts.AsyncHashingWorkers > 0 {
