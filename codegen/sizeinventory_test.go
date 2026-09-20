@@ -52,7 +52,9 @@ var sizeEmitterSites = map[string]emitterSites{
 	}},
 	// Three constructs: a container's static size and a declared vector size on
 	// every path, and a list's element size only where a declaration is read.
-	"platformGuard": {counts: map[string]int{
+	// Every generator forms a container static size, so every generator calls
+	// it: a generator that stops is a dropped bound, not a count that moved.
+	"platformGuard": {everyGenerator: true, counts: map[string]int{
 		"gen_common.go": 0, "gen_size.go": 4, "gen_marshal.go": 2, "gen_encoder.go": 2,
 		"gen_unmarshal.go": 3, "gen_decoder.go": 3, "gen_hashtreeroot.go": 2,
 	}},
