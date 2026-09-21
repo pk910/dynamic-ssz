@@ -1899,3 +1899,118 @@ func TestWrapperRefusedBackendIsReported(t *testing.T) {
 		}
 	}
 }
+
+// A subtree the backend refused leaves its chunk unfilled. Nothing is cached,
+// so the walker never answers with the root the fallback compression would
+// have produced, and it answers correctly once the backend does.
+func TestWrapperRefusedBackendLeavesChunkUnfilled(t *testing.T) {
+	refused := errors.New("backend refused")
+	var refuse bool
+	// Answers differently from the built-in compression, so the fallback root
+	// is recognisable.
+	backend := func(dst, input []byte) error {
+		if refuse {
+			return refused
+		}
+		for i := 0; i+64 <= len(input); i += 64 {
+			sum := sha256.Sum256(input[i : i+64])
+			sum[0] ^= 0xff
+			copy(dst[i/2:], sum[:])
+		}
+
+		return nil
+	}
+
+	build := func(w *Wrapper) *Wrapper {
+		idx := w.StartTree(sszutils.TreeTypeBinary)
+		for i := range 8 {
+			w.AppendBytes32([]byte{byte(i + 1)})
+		}
+		w.Merkleize(idx)
+
+		return w
+	}
+
+	want := bytes.Clone(build(NewWrapperWithHashFn(backend)).Hash())
+	fallback := bytes.Clone(build(NewWrapper()).Hash())
+	if bytes.Equal(want, fallback) {
+		t.Fatal("the backend answers the same as the fallback compression")
+	}
+
+	w := build(NewWrapperWithHashFn(backend))
+	refuse = true
+	if got := w.Hash(); bytes.Equal(got, fallback) {
+		t.Errorf("the refused chunk read the fallback root %x", got)
+	}
+	if err := w.HashErr(); !errors.Is(err, refused) {
+		t.Errorf("HashErr = %v, want the refusal", err)
+	}
+
+	refuse = false
+	if got := w.Hash(); !bytes.Equal(got, want) {
+		t.Errorf("the walker answered %x once the backend recovered, want %x", got, want)
+	}
+}
+
+// The two walker constructors resolve their backend differently, which is what
+// their docs now state: a wrapper named without one reads the pool at hashing
+// time, a hasher named without one takes the built-in compression whatever the
+// pool holds. A caller installing a backend has to name it on both.
+func TestWalkerConstructorsResolveTheBackendDifferently(t *testing.T) {
+	// Answers differently from the built-in compression, so which backend
+	// produced a root is readable from the root.
+	installed := func(dst, input []byte) error {
+		for i := 0; i+64 <= len(input); i += 64 {
+			sum := sha256.Sum256(input[i : i+64])
+			sum[0] ^= 0xff
+			copy(dst[i/2:], sum[:])
+		}
+
+		return nil
+	}
+
+	fill := func(w sszutils.HashWalker) {
+		idx := w.Index()
+		for i := range 8 {
+			w.AppendBytes32([]byte{byte(i + 1)})
+		}
+		w.Merkleize(idx)
+	}
+
+	wrapperRoot := func() []byte {
+		w := NewWrapper()
+		fill(w)
+		root, err := w.HashRoot()
+		if err != nil {
+			t.Fatalf("wrapper HashRoot: %v", err)
+		}
+
+		return root[:]
+	}
+	hasherRoot := func() []byte {
+		h := hasher.NewHasher()
+		fill(h)
+		root, err := h.HashRoot()
+		if err != nil {
+			t.Fatalf("hasher HashRoot: %v", err)
+		}
+
+		return bytes.Clone(root[:])
+	}
+
+	builtIn := bytes.Clone(hasherRoot())
+	if !bytes.Equal(wrapperRoot(), builtIn) {
+		t.Fatal("the two walkers disagree with no backend installed")
+	}
+
+	original := hasher.FastHasherPool.HashFn
+	defer func() { hasher.FastHasherPool.HashFn = original }()
+	hasher.FastHasherPool.HashFn = installed
+
+	if got := hasherRoot(); !bytes.Equal(got, builtIn) {
+		t.Errorf("NewHasher answered %x with a backend on the pool, want the built-in root %x", got, builtIn)
+	}
+	if got := wrapperRoot(); bytes.Equal(got, builtIn) {
+		t.Errorf("NewWrapper answered the built-in root %x, want the pool's backend", got)
+	}
+}

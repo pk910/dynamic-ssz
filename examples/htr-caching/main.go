@@ -86,6 +86,13 @@ func (v *CachedValidator) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszut
 
 	var root [32]byte
 	copy(root[:], hh.Hash())
+
+	// hh.Hash() performs the reduction, so a refusal there reaches no earlier
+	// call: the bytes are a root only while HashErr is nil.
+	if err := hh.HashErr(); err != nil {
+		return fmt.Errorf("failed hashing wrapped validator: %w", err)
+	}
+
 	v.Root = &root
 
 	return nil

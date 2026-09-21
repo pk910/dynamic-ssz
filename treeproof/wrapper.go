@@ -79,6 +79,13 @@ type wScope struct {
 }
 
 // NewWrapper creates a new Wrapper ready to construct a Merkle tree.
+//
+// It names no backend, so its trees compress with whatever
+// hasher.FastHasherPool holds at the time -- the built-in compression unless a
+// caller installed one. hasher.NewHasher takes the built-in whatever the pool
+// holds, so a caller who installs a non-sha256 backend on the pool and reads
+// one walker against the other names it on both: NewWrapperWithHashFn here,
+// hasher.NewHasherWithHashFn there.
 func NewWrapper() *Wrapper {
 	return &Wrapper{
 		buf: make([]byte, 0),
@@ -534,10 +541,15 @@ func (w *Wrapper) materializeOne(i int) {
 	if w.nodes[i].filled || w.nodes[i].node == nil {
 		return
 	}
-	// Node.Hash completes a subtree the backend refused with the fallback
-	// compression, mixing two of them in one root, so the refusal is recorded
-	// here where the walk can report it.
-	w.setWalkErr(w.nodes[i].node.finalize(finalizeConfig{fn: w.hashFn}))
+	// A subtree the backend refused has no root to write, so the refusal is
+	// recorded here where the walk can report it and the chunk is left
+	// unfilled: nothing was cached, so a later call answers it once the
+	// backend does.
+	if err := w.nodes[i].node.finalize(finalizeConfig{fn: w.hashFn}); err != nil {
+		w.setWalkErr(err)
+
+		return
+	}
 	copy(w.buf[w.nodes[i].off:w.nodes[i].off+32], w.nodes[i].node.Hash())
 	w.nodes[i].filled = true
 }
@@ -716,6 +728,10 @@ func (w *Wrapper) HashRoot() ([32]byte, error) {
 // Hash returns the last chunk of the walker's state -- the latest reduction
 // result, or the bytes appended since -- as hasher.Hasher.Hash does. The
 // returned slice is only valid until the next walker operation.
+//
+// Materializing the chunk performs the subtree's reduction, so the backend can
+// refuse it here and at no earlier call: the chunk is a root only while
+// HashErr, read after Hash, is nil.
 func (w *Wrapper) Hash() []byte {
 	start := 0
 	if len(w.buf) > 32 {

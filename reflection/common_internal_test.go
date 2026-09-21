@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
@@ -74,6 +75,34 @@ func TestGetPtrWithPointerValue(t *testing.T) {
 	}
 	if result.Pointer() != ptrVal.Pointer() {
 		t.Fatal("expected same pointer to be returned")
+	}
+}
+
+// A nil log callback names no sink, so the default one answers for it and
+// every operation still walks under verbose logging.
+func TestReflectionCtxNilLogCb(t *testing.T) {
+	ctx := NewReflectionCtx(nil, nil, true, true, false, 0)
+
+	tc := ssztypes.NewTypeCache(nil)
+	desc, err := tc.GetTypeDescriptor(reflect.TypeOf(uint64(0)), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("descriptor: %v", err)
+	}
+	val := reflect.ValueOf(uint64(1))
+
+	if _, err := ctx.SizeSSZ(desc, val); err != nil {
+		t.Errorf("SizeSSZ: %v", err)
+	}
+	encoder := sszutils.NewBufferEncoder(nil)
+	if err := ctx.MarshalSSZ(desc, val, encoder); err != nil {
+		t.Errorf("MarshalSSZ: %v", err)
+	}
+	target := reflect.New(reflect.TypeOf(uint64(0))).Elem()
+	if err := ctx.UnmarshalSSZ(desc, target, sszutils.NewBufferDecoder(encoder.GetBuffer())); err != nil {
+		t.Errorf("UnmarshalSSZ: %v", err)
+	}
+	if err := ctx.HashTreeRoot(desc, val, hasher.NewHasher()); err != nil {
+		t.Errorf("HashTreeRoot: %v", err)
 	}
 }
 

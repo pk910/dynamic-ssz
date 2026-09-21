@@ -8,7 +8,7 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/pk910/dynamic-ssz)](go.mod)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-Dynamic SSZ is a production-ready Go library for [SSZ](https://github.com/ethereum/consensus-specs/blob/dev/ssz/simple-serialize.md) serialization, hashing, and Merkle proofs. Its distinguishing feature is support for **runtime-determined field sizes**: the same Go types work across different network presets (mainnet, minimal, custom testnets) by resolving size limits from a spec configuration at runtime. It combines instant reflection-based processing for flexibility with optional static code generation for maximum performance.
+Dynamic SSZ is a production-ready Go library for [SSZ](https://github.com/ethereum/ssz-specs) serialization, hashing, and Merkle proofs. Its distinguishing feature is support for **runtime-determined field sizes**: the same Go types work across different network presets (mainnet, minimal, custom testnets) by resolving size limits from a spec configuration at runtime. It combines instant reflection-based processing for flexibility with optional static code generation for maximum performance.
 
 ## Features
 

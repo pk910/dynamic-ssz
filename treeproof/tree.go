@@ -173,6 +173,11 @@ var (
 	emptyNodeCache [65]*Node
 )
 
+// errMalformedTree is the finalization failure a tree's own shape causes: a
+// nil node, or a branch holding one child. It is what Hash reports through a
+// panic, so it is told apart from a hash backend's refusal.
+var errMalformedTree = errors.New("tree is malformed")
+
 // Show displays the tree structure in a human-readable format for debugging.
 //
 // This method prints the complete tree hierarchy starting from this node,
@@ -542,9 +547,14 @@ func treeFromNodesProgressiveImpl(leaves []*Node, depth int) (*Node, error) {
 // element count as a right sibling of the root. This is the standard SSZ
 // merkleization for lists, where the tree root is hash(merkle_root || length).
 // The limit is rounded up to the next power of two if not already one.
+//
+// More leaves than the limit holds is refused with sszutils.ErrChunkLimitFn's
+// error: no spec root exists for a list over its capacity, and a tree deep
+// enough to hold the leaves is not the one the limit describes. A limit of 0,
+// which a negative one reads as, is no limit and refuses nothing.
 func TreeFromNodesWithMixin(leaves []*Node, num, limit int) (*Node, error) {
 	if limit < 0 {
-		// int-overflow artifact (32-bit): treat as an empty capacity.
+		// int-overflow artifact (32-bit): reads as no limit, like 0.
 		limit = 0
 	}
 	if num < 0 {
@@ -556,7 +566,12 @@ func TreeFromNodesWithMixin(leaves []*Node, num, limit int) (*Node, error) {
 // TreeFromNodesWithMixin64 is the uint64 form of TreeFromNodesWithMixin and
 // carries the canonical logic: it builds the list tree padded to `limit` chunks
 // (rounded up to a power of two via the tree depth) and mixes in the element
-// count as the right sibling of the root.
+// count as the right sibling of the root. A limit of 0 is no limit, and the
+// tree is as deep as the leaves require.
+//
+// More leaves than a non-zero limit holds is refused with
+// sszutils.ErrChunkLimitFn's error, for the reason given on
+// TreeFromNodesWithMixin.
 func TreeFromNodesWithMixin64(leaves []*Node, num, limit uint64) (*Node, error) {
 	if count := uint64(len(leaves)); limit > 0 && count > limit {
 		return nil, sszutils.ErrChunkLimitFn(count, limit)
@@ -706,10 +721,20 @@ func (n *Node) Get(index int) (*Node, error) {
 // A copy is returned for the same reason as in Value: cached empty
 // (zero-padding) nodes are shared across trees, so the raw bytes must not
 // escape to callers.
+//
+// It returns nil when the hash backend refuses a compression, since there is
+// no root to return and nothing is cached: the subtree is left as it was, so a
+// later call answers it once the backend does. Finalize reports the refusal.
 func (n *Node) Hash() []byte {
-	// The malformed-tree error is deliberately dropped: hashNode below
-	// reports the incomplete tree through its documented panic.
-	_ = n.finalize(finalizeConfig{})
+	// hashNode completes an unfinalized subtree with the built-in compression
+	// and caches what it computes, so a backend refusal has to stop here:
+	// finishing the tree behind the backend's back would cache -- and from
+	// then on answer with -- a root the configured backend never produced.
+	// The malformed-tree error travels on: hashNode reports the incomplete
+	// tree through its documented panic.
+	if err := n.finalize(finalizeConfig{}); err != nil && !errors.Is(err, errMalformedTree) {
+		return nil
+	}
 	return bytes.Clone(hashNode(n))
 }
 
@@ -950,7 +975,7 @@ func (n *Node) finalize(cfg finalizeConfig) error {
 	case hashErr != nil:
 		return hashErr
 	case malformed:
-		return errors.New("tree is malformed: branch with a single nil child")
+		return fmt.Errorf("%w: branch with a single nil child", errMalformedTree)
 	case total < finalizeThreshold:
 		// Small trees hash recursively: batch setup costs more than the
 		// vectorized backend saves.
@@ -969,13 +994,13 @@ func (n *Node) finalize(cfg finalizeConfig) error {
 // pass leaves a consistent, resumable tree.
 func hashNodeFn(n *Node, fn hasher.HashFn) error {
 	if n == nil {
-		return errors.New("tree is malformed: nil node")
+		return fmt.Errorf("%w: nil node", errMalformedTree)
 	}
 	if n.hasValue || (n.left == nil && n.right == nil) {
 		return nil
 	}
 	if n.left == nil || n.right == nil {
-		return errors.New("tree is malformed: branch with a single nil child")
+		return fmt.Errorf("%w: branch with a single nil child", errMalformedTree)
 	}
 
 	if err := hashNodeFn(n.left, fn); err != nil {

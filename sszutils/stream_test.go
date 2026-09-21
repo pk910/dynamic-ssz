@@ -743,6 +743,24 @@ func TestStreamDecoder_DecodeBytesBuf_LengthExceedsLimit(t *testing.T) {
 	}
 }
 
+// A length that would overflow the sum of position and request is measured
+// against the region remainder, so it overruns the region rather than wrapping
+// negative and reaching the buffer growth with an impossible allocation.
+func TestStreamDecoder_DecodeBytesBuf_LengthOverflowsPosition(t *testing.T) {
+	reader := bytes.NewReader([]byte{0x01, 0x02, 0x03})
+	dec := NewStreamDecoder(reader, 3, 0)
+
+	if _, err := dec.DecodeBytesBuf(1); err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+
+	_, err := dec.DecodeBytesBuf(math.MaxInt)
+
+	if !errors.Is(err, ErrUnexpectedEOF) {
+		t.Errorf("expected ErrUnexpectedEOF, got %v", err)
+	}
+}
+
 func TestStreamDecoder_DecodeBytesBuf_NegativeLength(t *testing.T) {
 	reader := bytes.NewReader([]byte{0x01, 0x02, 0x03})
 	dec := NewStreamDecoder(reader, 3, 0)

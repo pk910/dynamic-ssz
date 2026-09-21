@@ -135,6 +135,12 @@ func defaultHashFn() HashFn {
 // NewHasher creates a new Hasher with the default sha256 hash function. The
 // hash function draws per-call instances from a pool, so the hasher may be
 // gated into async hashing.
+//
+// It takes the built-in compression whatever FastHasherPool holds, so a
+// caller who installed a backend there names it here too, with
+// NewHasherWithHashFn, or draws the hasher from the pool with Get. A tree
+// built by treeproof.NewWrapper reads the pool instead, so the two answer
+// differently for the same value while only one of them is told.
 func NewHasher() *Hasher {
 	return NewHasherWithHashFn(defaultHashFn())
 }
@@ -620,7 +626,7 @@ func (h *Hasher) CurrentIndex() int {
 // a scope over its limit reduces at the depth its chunks need either way. The
 // one shape it could move -- a scope opened progressive and reduced as binary,
 // where the hint decides whether progressive groups or raw chunks are reduced
-// -- is refused instead, through ErrProgressiveScopeClosedBinary.
+// -- is refused instead, through ErrScopeShapeMismatch.
 func (h *Hasher) Collapse() {
 	if h.layerCount < 0 {
 		return
@@ -1651,6 +1657,10 @@ func (h *Hasher) merkleizeProgressiveImpl(dst, chunks []byte, depth uint8) []byt
 // background reductions are awaited only when their hole can overlap the
 // tail; holes below it are left to fill in the background. The returned
 // slice is only valid until the next hasher operation.
+//
+// The flush performs the scope's reduction, so the backend can refuse it here
+// and at no earlier call: the tail is a root only while HashErr, read after
+// Hash, is nil.
 func (h *Hasher) Hash() []byte {
 	if h.layerCount >= 0 {
 		layer := &h.layers[h.layerCount]
