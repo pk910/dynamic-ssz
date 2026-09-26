@@ -1736,27 +1736,34 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 			fieldIndices[*sszIndex] = struct{}{}
 		}
 
-		// Field-level tags override the type's registered annotation per key:
-		// join the two (field tag first — Lookup returns the first occurrence)
-		// so annotation keys the field does not override still apply.
-		if annTag, ok := sszutils.LookupAnnotation(schemaField.Type); ok {
-			schemaField.Tag = JoinFieldAnnotationTag(schemaField.Tag, annTag)
-		}
+		// A field tag overrides the type's registered annotation per key: the
+		// two are joined (field tag first, Lookup returns the first occurrence)
+		// and the field is described inline from the joined tag. A field that
+		// repeats the annotation, or adds nothing to it, says nothing new: it
+		// hands over no hints, and the type's own declaration and methods stand.
+		var sizeHints []SszSizeHint
+		var maxSizeHints []SszMaxSizeHint
+		var typeHints []SszTypeHint
+		annTag, annotated := sszutils.LookupAnnotation(schemaField.Type)
+		if !annotated || FieldTagOverridesAnnotation(schemaField.Tag, annTag) {
+			if annotated {
+				schemaField.Tag = JoinFieldAnnotationTag(schemaField.Tag, annTag)
+			}
 
-		// Get size hints from schema field tags (schema defines SSZ constraints)
-		sizeHints, err := getSszSizeTag(tc.specs, &schemaField)
-		if err != nil {
-			return sszutils.ErrorWithPath(err, schemaField.Name)
-		}
+			sizeHints, err = getSszSizeTag(tc.specs, &schemaField)
+			if err != nil {
+				return sszutils.ErrorWithPath(err, schemaField.Name)
+			}
 
-		maxSizeHints, err := getSszMaxSizeTag(tc.specs, &schemaField)
-		if err != nil {
-			return sszutils.ErrorWithPath(err, schemaField.Name)
-		}
+			maxSizeHints, err = getSszMaxSizeTag(tc.specs, &schemaField)
+			if err != nil {
+				return sszutils.ErrorWithPath(err, schemaField.Name)
+			}
 
-		typeHints, err := getSszTypeTag(&schemaField)
-		if err != nil {
-			return sszutils.ErrorWithPath(err, schemaField.Name)
+			typeHints, err = getSszTypeTag(&schemaField)
+			if err != nil {
+				return sszutils.ErrorWithPath(err, schemaField.Name)
+			}
 		}
 
 		// Build child type descriptor using (runtimeFieldType, schemaFieldType) pair.

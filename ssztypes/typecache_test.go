@@ -7050,3 +7050,55 @@ func TestDynamicFlagsRaisedByRecursionFixup(t *testing.T) {
 		})
 	}
 }
+
+type flagAnnDelegate []uint64
+
+var _ = sszutils.Annotate[flagAnnDelegate](`ssz-max:"4"`)
+
+func (*flagAnnDelegate) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
+// A field that carries no tag, or repeats its type's annotation, keeps the
+// type's delegation flags; a field that changes the declared shape drops them.
+func TestFieldTagRepeatingAnnotationKeepsDelegation(t *testing.T) {
+	type noTag struct {
+		L flagAnnDelegate
+	}
+	type sameTag struct {
+		L flagAnnDelegate `ssz-max:"4"`
+	}
+	type otherTag struct {
+		L flagAnnDelegate `ssz-max:"8"`
+	}
+	type typeHintOnly struct {
+		L flagAnnDelegate `ssz-type:"list"`
+	}
+
+	tests := []struct {
+		name      string
+		holder    any
+		delegated bool
+		limit     uint64
+	}{
+		{"no tag", noTag{}, true, 4},
+		{"same tag", sameTag{}, true, 4},
+		{"other tag", otherTag{}, false, 8},
+		{"type hint the annotation lacks", typeHintOnly{}, false, 4},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			desc, err := NewTypeCache(nil).GetTypeDescriptor(reflect.TypeOf(tt.holder), nil, nil, nil)
+			if err != nil {
+				t.Fatalf("descriptor: %v", err)
+			}
+			field := desc.ContainerDesc.Fields[0].Type
+			if got := field.SszCompatFlags&SszCompatFlagDynamicHashRoot != 0; got != tt.delegated {
+				t.Fatalf("delegated = %v, want %v (compat flags %b)", got, tt.delegated, field.SszCompatFlags)
+			}
+			if field.Limit != tt.limit {
+				t.Fatalf("limit = %d, want %d", field.Limit, tt.limit)
+			}
+		})
+	}
+}

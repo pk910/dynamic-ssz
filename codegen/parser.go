@@ -1639,10 +1639,13 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 		// Determine data and schema field types
 		schemaFieldType := schemaField.Type()
 
-		// Field-level tags override the type's registered annotation per key:
-		// join the two (field tag first — Lookup returns the first occurrence)
-		// so annotation keys the field does not override still apply.
+		// A field tag overrides the type's registered annotation per key: the
+		// two are joined (field tag first, Lookup returns the first occurrence)
+		// and the field is described inline from the joined tag. A field that
+		// repeats the annotation, or adds nothing to it, says nothing new: it
+		// hands over no hints, and the type's own declaration and methods stand.
 		fieldTag := schemaStruct.Tag(i)
+		annTag := ""
 		if p.AnnotationResolver != nil {
 			// An alias is transparent: the annotation belongs to the type it
 			// names.
@@ -1650,14 +1653,22 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 			if ptr, ok := annotationType.(*types.Pointer); ok {
 				annotationType = types.Unalias(ptr.Elem())
 			}
-			if annTag := p.AnnotationResolver(annotationType); annTag != "" {
-				fieldTag = string(ssztypes.JoinFieldAnnotationTag(reflect.StructTag(fieldTag), annTag))
-			}
+			annTag = p.AnnotationResolver(annotationType)
 		}
 
-		typeHints, sizeHints, maxSizeHints, err := p.parseFieldTags(fieldTag)
-		if err != nil {
-			return fmt.Errorf("failed to parse tags for field %v: %v", schemaField.Name(), err)
+		var typeHints []ssztypes.SszTypeHint
+		var sizeHints []ssztypes.SszSizeHint
+		var maxSizeHints []ssztypes.SszMaxSizeHint
+		if annTag == "" || ssztypes.FieldTagOverridesAnnotation(reflect.StructTag(fieldTag), annTag) {
+			if annTag != "" {
+				fieldTag = string(ssztypes.JoinFieldAnnotationTag(reflect.StructTag(fieldTag), annTag))
+			}
+
+			var err error
+			typeHints, sizeHints, maxSizeHints, err = p.parseFieldTags(fieldTag)
+			if err != nil {
+				return fmt.Errorf("failed to parse tags for field %v: %v", schemaField.Name(), err)
+			}
 		}
 		// The runtime struct position, for direct field access by the
 		// reflection walkers (the schema position for non-view descriptors).

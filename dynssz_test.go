@@ -9548,3 +9548,70 @@ func TestDelegatedLimitFollowsSpecs(t *testing.T) {
 		}
 	})
 }
+
+// annotatedDelegateCalls counts how often annotatedDelegate's own hash method ran.
+var annotatedDelegateCalls int
+
+// annotatedDelegate carries its limit as an annotation and hashes through its
+// own method, which leaves a recognisable leaf.
+type annotatedDelegate []uint64
+
+var _ = sszutils.Annotate[annotatedDelegate](`ssz-max:"4"`)
+
+func (l *annotatedDelegate) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	annotatedDelegateCalls++
+	var leaf [32]byte
+	leaf[0] = 0xaa
+	hh.PutBytes(leaf[:])
+	return nil
+}
+
+// A field that carries no tag, or repeats its type's annotation, leaves the
+// type's own methods in charge. Only a field that changes the declared shape
+// is walked inline.
+func TestAnnotatedFieldKeepsDelegation(t *testing.T) {
+	type noTag struct {
+		X uint32
+		L annotatedDelegate
+	}
+	type sameTag struct {
+		X uint32
+		L annotatedDelegate `ssz-max:"4"`
+	}
+	type otherTag struct {
+		X uint32
+		L annotatedDelegate `ssz-max:"8"`
+	}
+
+	ds := NewDynSsz(nil)
+	root := func(v any) [32]byte {
+		t.Helper()
+		r, err := ds.HashTreeRoot(v)
+		if err != nil {
+			t.Fatalf("HashTreeRoot(%T): %v", v, err)
+		}
+		return r
+	}
+
+	annotatedDelegateCalls = 0
+	noTagRoot := root(&noTag{X: 1, L: annotatedDelegate{1}})
+	if annotatedDelegateCalls != 1 {
+		t.Fatalf("field without a tag: own method ran %d times, want 1", annotatedDelegateCalls)
+	}
+
+	sameTagRoot := root(&sameTag{X: 1, L: annotatedDelegate{1}})
+	if annotatedDelegateCalls != 2 {
+		t.Fatalf("field repeating the annotation: own method ran %d times in total, want 2", annotatedDelegateCalls)
+	}
+	if sameTagRoot != noTagRoot {
+		t.Fatalf("field repeating the annotation hashed to %x, want %x", sameTagRoot, noTagRoot)
+	}
+
+	otherTagRoot := root(&otherTag{X: 1, L: annotatedDelegate{1}})
+	if annotatedDelegateCalls != 2 {
+		t.Fatalf("field changing the limit: own method ran, total %d", annotatedDelegateCalls)
+	}
+	if otherTagRoot == noTagRoot {
+		t.Fatal("field changing the limit must be walked inline and hash differently")
+	}
+}

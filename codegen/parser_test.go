@@ -3940,3 +3940,52 @@ func TestParserWalkerParameterAcceptsHashWalker(t *testing.T) {
 		t.Fatal("sszutils.HashWalker does not qualify as a walker parameter")
 	}
 }
+
+// A field that carries no tag, or repeats its type's annotation, keeps the
+// type's delegation flags; a field that changes the declared shape drops them.
+// Mirrors the reflection type cache.
+func TestFieldTagRepeatingAnnotationKeepsDelegation(t *testing.T) {
+	pkg := types.NewPackage("annfield", "annfield")
+	elem := types.NewNamed(types.NewTypeName(token.NoPos, pkg, "annList", nil), types.NewSlice(types.Typ[types.Uint64]), nil)
+	holder := func(tag string) types.Type {
+		return types.NewStruct([]*types.Var{
+			types.NewField(token.NoPos, pkg, "X", types.Typ[types.Uint32], false),
+			types.NewField(token.NoPos, pkg, "L", elem, false),
+		}, []string{"", tag})
+	}
+
+	tests := []struct {
+		name      string
+		tag       string
+		delegated bool
+		limit     uint64
+	}{
+		{"no tag", "", true, 4},
+		{"same tag", `ssz-max:"4"`, true, 4},
+		{"other tag", `ssz-max:"8"`, false, 8},
+		{"type hint the annotation lacks", `ssz-type:"list"`, false, 4},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := NewParser()
+			p.AnnotationResolver = func(typ types.Type) string {
+				if types.Unalias(typ) == elem {
+					return `ssz-max:"4"`
+				}
+				return ""
+			}
+			p.CompatFlags[elem.String()] = ssztypes.SszCompatFlagDynamicHashRoot
+			desc, err := p.buildTypeDescriptor(holder(tt.tag), holder(tt.tag), nil, nil, nil)
+			if err != nil {
+				t.Fatalf("descriptor: %v", err)
+			}
+			field := desc.ContainerDesc.Fields[1].Type
+			if got := field.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0; got != tt.delegated {
+				t.Fatalf("delegated = %v, want %v (compat flags %b)", got, tt.delegated, field.SszCompatFlags)
+			}
+			if field.Limit != tt.limit {
+				t.Fatalf("limit = %d, want %d", field.Limit, tt.limit)
+			}
+		})
+	}
+}

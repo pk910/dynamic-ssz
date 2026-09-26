@@ -694,6 +694,29 @@ func SameSszTypes(a, b []SszTypeHint) bool {
 	return true
 }
 
+// hintKeys are the tag keys that describe a value's SSZ shape. `ssz` and
+// `ssz-index` belong to the field itself, not to the type it holds.
+var hintKeys = [...]string{"ssz-type", "ssz-size", "ssz-bitsize", "ssz-max", "dynssz-size", "dynssz-bitsize", "dynssz-max"}
+
+// FieldTagOverridesAnnotation reports whether a struct field's tag changes the
+// SSZ shape its type's annotation declares: it names a hint key the annotation
+// does not, or gives one a different value. A field that repeats the
+// annotation, or carries no hint key, leaves the type's own declaration in
+// force.
+func FieldTagOverridesAnnotation(fieldTag reflect.StructTag, annotationTag string) bool {
+	annotation := reflect.StructTag(annotationTag)
+	for _, key := range hintKeys {
+		value, ok := fieldTag.Lookup(key)
+		if !ok {
+			continue
+		}
+		if annValue, annOk := annotation.Lookup(key); !annOk || annValue != value {
+			return true
+		}
+	}
+	return false
+}
+
 // JoinFieldAnnotationTag returns the effective SSZ tag for a struct field whose
 // type carries a registered annotation: the field tag is joined in front of the
 // annotation tag, so a key present in both resolves to the field's value
