@@ -822,7 +822,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 	// A type generated in the same run is reached through its generated methods
 	// and, when a reference declares it custom, frames as its own descriptor does.
 	sameRun := tc.noSpecResolution && callerTypeHinted && tc.getCompatFlag(runtimeType, schemaType) != 0
-	if staticAnnotation != nil && !hasExternalHints && !tc.NoDelegation && !(sameRun && sszType == SszCustomType) {
+	if staticAnnotation != nil && !hasExternalHints && !tc.NoDelegation && (!sameRun || sszType != SszCustomType) {
 		var fullyDelegated bool
 		promoted := tc.PromotedDelegationMethods(runtimeType)
 		if desc.GoTypeFlags&GoTypeFlagIsView != 0 {

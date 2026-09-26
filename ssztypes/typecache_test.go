@@ -7294,3 +7294,31 @@ func TestSameRunCustomForGeneration(t *testing.T) {
 		t.Fatalf("same-run type with a spec-sized field: %+v, want the static fallback with the size expression flag", f)
 	}
 }
+
+// Built for a static build, a custom width named by an expression with no
+// literal beside it is refused; a same-run type whose own descriptor cannot
+// be built passes that refusal on.
+func TestCustomWidthForStaticBuild(t *testing.T) {
+	type exprOnly struct {
+		C widthCustom `ssz-type:"custom" dynssz-size:"W"`
+	}
+	type brokenInner struct{ S int64 }
+	type holder struct {
+		B brokenInner `ssz-type:"custom"`
+	}
+
+	static := NewTypeCache(&dummyDynamicSpecs{})
+	static.DisableSpecResolution()
+	static.NoDelegation = true
+	if _, err := static.GetTypeDescriptor(reflect.TypeOf(exprOnly{}), nil, nil, nil); err == nil || !strings.Contains(err.Error(), "no static width") {
+		t.Fatalf("static build, width from an expression alone: err = %v, want the refusal", err)
+	}
+
+	forGeneration := NewTypeCache(&dummyDynamicSpecs{})
+	forGeneration.DisableSpecResolution()
+	inner := reflect.TypeOf(brokenInner{})
+	forGeneration.CompatFlags = map[string]SszCompatFlag{inner.PkgPath() + "." + inner.Name(): SszCompatFlagDynamicMarshaler | SszCompatFlagDynamicUnmarshaler | SszCompatFlagDynamicSizer | SszCompatFlagDynamicHashRoot}
+	if _, err := forGeneration.GetTypeDescriptor(reflect.TypeOf(holder{}), nil, nil, nil); err == nil || !strings.Contains(err.Error(), "signed integers") {
+		t.Fatalf("same-run type that cannot be described: err = %v, want its own refusal", err)
+	}
+}
