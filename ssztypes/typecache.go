@@ -541,6 +541,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 	// from the annotation registry. External hints override the type's own annotation,
 	// so we must not delegate to generated methods that have the annotation baked in.
 	hasExternalHints := len(sizeHints) > 0 || len(maxSizeHints) > 0
+	callerTypeHinted := len(typeHints) > 0
 
 	// staticAnnotation captures the type's own ssz-static:"true/false" declaration
 	// (true = fixed-size, false = variable-size). It gates the shallow-build path
@@ -818,7 +819,10 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 	// applied to a zero value. Field-level hints (hasExternalHints) opt out, since
 	// they override the type's own annotation and require inline processing. View
 	// descriptors qualify when they delegate through the dynamic view interface set.
-	if staticAnnotation != nil && !hasExternalHints && !tc.NoDelegation {
+	// A type generated in the same run is reached through its generated methods
+	// and, when a reference declares it custom, frames as its own descriptor does.
+	sameRun := tc.noSpecResolution && callerTypeHinted && tc.getCompatFlag(runtimeType, schemaType) != 0
+	if staticAnnotation != nil && !hasExternalHints && !tc.NoDelegation && !(sameRun && sszType == SszCustomType) {
 		var fullyDelegated bool
 		promoted := tc.PromotedDelegationMethods(runtimeType)
 		if desc.GoTypeFlags&GoTypeFlagIsView != 0 {
@@ -998,6 +1002,15 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "custom type %v declares its width from %q but has no spec-aware sizer: the generator cannot know that width, so declare it with a literal ssz-size", t, sizeHints[0].Expr)
 		}
 		switch {
+		case sameRun && (len(sizeHints) == 0 || (sizeHints[0].Size == 0 && sizeHints[0].Expr == "")):
+			own, err := tc.getTypeDescriptor(runtimeType, schemaType, nil, nil, nil)
+			if err != nil {
+				return err
+			}
+			desc.SszTypeFlags |= own.SszTypeFlags & (SszTypeFlagIsDynamic | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
+			if own.SszTypeFlags&SszTypeFlagIsDynamic == 0 {
+				desc.Size = own.Size
+			}
 		case tc.noSpecResolution && len(sizeHints) > 0 && sizeHints[0].Expr != "":
 			// The width is read at run time from the type's sizer; the size
 			// expression flag the hint set makes the emitters ask for it.

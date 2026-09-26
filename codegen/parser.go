@@ -1396,14 +1396,13 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			}
 		}
 		switch {
-		case beingGenerated && !hasExpr && !hasLiteral:
+		case beingGenerated && len(callerTypeHints) > 0 && !hasExpr && !hasLiteral:
 			own, err := p.buildTypeDescriptor(innerDataType, innerSchemaType, nil, nil, nil)
 			if err != nil {
 				return nil, err
 			}
-			if own.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
-				desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
-			} else {
+			desc.SszTypeFlags |= own.SszTypeFlags & (ssztypes.SszTypeFlagIsDynamic | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
+			if own.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 				desc.Size = own.Size
 			}
 		case hasExpr && (beingGenerated || p.getDynamicSizerCompatibility(originalType) || p.getDynamicSizerCompatibility(types.NewPointer(originalType))):

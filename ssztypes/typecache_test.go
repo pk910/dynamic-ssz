@@ -7253,3 +7253,44 @@ func TestPartialSurfaceCustomWidthForGeneration(t *testing.T) {
 		t.Fatalf("process: field = %+v, want a static 4-byte custom", field)
 	}
 }
+
+// Built for generation, a type generated in the same run and referenced as
+// custom frames as its own descriptor does, with its expression flags, as the
+// go/types parser describes it.
+func TestSameRunCustomForGeneration(t *testing.T) {
+	type staticInner struct{ A uint64 }
+	type dynamicInner struct {
+		L []byte `ssz-max:"4"`
+	}
+	type exprInner struct {
+		V []byte `ssz-size:"8" dynssz-size:"W"`
+	}
+	type holder struct {
+		S staticInner  `ssz-type:"custom"`
+		D dynamicInner `ssz-type:"custom"`
+		E exprInner    `ssz-type:"custom"`
+	}
+
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	cache.DisableSpecResolution()
+	generated := SszCompatFlagDynamicMarshaler | SszCompatFlagDynamicUnmarshaler | SszCompatFlagDynamicSizer | SszCompatFlagDynamicHashRoot
+	cache.CompatFlags = map[string]SszCompatFlag{}
+	for _, typ := range []reflect.Type{reflect.TypeOf(staticInner{}), reflect.TypeOf(dynamicInner{}), reflect.TypeOf(exprInner{})} {
+		cache.CompatFlags[typ.PkgPath()+"."+typ.Name()] = generated
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(holder{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("descriptor: %v", err)
+	}
+	fields := desc.ContainerDesc.Fields
+	if f := fields[0].Type; f.Size != 8 || f.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
+		t.Fatalf("static same-run type: %+v, want a static 8-byte custom", f)
+	}
+	if f := fields[1].Type; f.SszTypeFlags&SszTypeFlagIsDynamic == 0 {
+		t.Fatalf("dynamic same-run type: %+v, want a dynamic custom", f)
+	}
+	if f := fields[2].Type; f.Size != 8 || f.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagHasSizeExpr) != SszTypeFlagHasSizeExpr {
+		t.Fatalf("same-run type with a spec-sized field: %+v, want the static fallback with the size expression flag", f)
+	}
+}

@@ -4034,6 +4034,13 @@ func TestCustomWidthSources(t *testing.T) {
 	if err != nil || desc.Size != 8 || desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 		t.Fatalf("generated in this run, no width: desc = %+v, err = %v, want the type's own static 8 bytes", desc, err)
 	}
+
+	sized := types.NewNamed(types.NewTypeName(0, nil, "Sized", nil), types.NewStruct([]*types.Var{types.NewField(0, nil, "V", types.NewSlice(types.Typ[types.Uint8]), false)}, []string{`ssz-size:"8" dynssz-size:"W"`}), nil)
+	parser.CompatFlags[sized.String()] = parser.CompatFlags[generated.String()]
+	desc, err = parser.buildTypeDescriptor(sized, sized, custom, nil, nil)
+	if err != nil || desc.Size != 8 || desc.SszTypeFlags&(ssztypes.SszTypeFlagIsDynamic|ssztypes.SszTypeFlagHasSizeExpr) != ssztypes.SszTypeFlagHasSizeExpr {
+		t.Fatalf("generated in this run with a spec-sized field: desc = %+v, err = %v, want the static fallback with the size expression flag", desc, err)
+	}
 }
 
 // The type-hint override reads the type's annotation; an annotation the tag
