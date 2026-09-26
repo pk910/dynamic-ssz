@@ -7204,21 +7204,31 @@ func TestCustomWidthForGeneration(t *testing.T) {
 	if field := desc.ContainerDesc.Fields[0].Type; field.Size != 4 || field.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagHasSizeExpr) != SszTypeFlagHasSizeExpr {
 		t.Fatalf("generation, width from an expression: field = %+v, want the literal kept as the static fallback, sized at run time", field)
 	}
-	if _, err := forGeneration.GetTypeDescriptor(reflect.TypeOf(staticOnlyExprWidth{}), nil, nil, nil); err == nil || !strings.Contains(err.Error(), "no spec-aware sizer") {
-		t.Fatalf("generation, width from an expression without a spec-aware sizer: err = %v, want the refusal", err)
+	if _, refused := forGeneration.GetTypeDescriptor(reflect.TypeOf(staticOnlyExprWidth{}), nil, nil, nil); refused == nil || !strings.Contains(refused.Error(), "no spec-aware sizer") {
+		t.Fatalf("generation, width from an expression without a spec-aware sizer: err = %v, want the refusal", refused)
 	}
-	if _, err := forGeneration.GetTypeDescriptor(reflect.TypeOf(annStatic{}), nil, nil, nil); err == nil || !strings.Contains(err.Error(), "no ssz-size") {
-		t.Fatalf("generation, static by annotation without a width: err = %v, want the refusal", err)
+	desc, err = forGeneration.GetTypeDescriptor(reflect.TypeOf(annStatic{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("generation, static by annotation without a width: %v", err)
+	}
+	if field := desc.ContainerDesc.Fields[0].Type; field.Size != 0 || field.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagHasSizeExpr|SszTypeFlagSizerWidth) != SszTypeFlagHasSizeExpr|SszTypeFlagSizerWidth {
+		t.Fatalf("generation, static by annotation without a width: field = %+v, want a static value sized from the sizer at run time", field)
 	}
 
 	forProcess := NewTypeCache(specs)
-	for _, typ := range []reflect.Type{reflect.TypeOf(exprWidth{}), reflect.TypeOf(annStatic{})} {
-		desc, err := forProcess.GetTypeDescriptor(typ, nil, nil, nil)
+	for _, tt := range []struct {
+		typ   reflect.Type
+		flags SszTypeFlag
+	}{
+		{reflect.TypeOf(exprWidth{}), SszTypeFlagHasSizeExpr},
+		{reflect.TypeOf(annStatic{}), SszTypeFlagSizerWidth},
+	} {
+		desc, err := forProcess.GetTypeDescriptor(tt.typ, nil, nil, nil)
 		if err != nil {
-			t.Fatalf("process, %v: %v", typ, err)
+			t.Fatalf("process, %v: %v", tt.typ, err)
 		}
-		if field := desc.ContainerDesc.Fields[0].Type; field.Size != 4 || field.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
-			t.Fatalf("process, %v: field = %+v, want a static 4-byte custom", typ, field)
+		if field := desc.ContainerDesc.Fields[0].Type; field.Size != 4 || field.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagHasSizeExpr|SszTypeFlagSizerWidth) != tt.flags {
+			t.Fatalf("process, %v: field = %+v, want a static 4-byte custom with flags %b", tt.typ, field, tt.flags)
 		}
 	}
 }
@@ -7262,8 +7272,8 @@ var _ = sszutils.Annotate[partialStaticCustom](`ssz-type:"custom" ssz-static:"tr
 
 // A custom type that is static by annotation but does not delegate every
 // operation through its spec-aware methods is described in full; built for
-// generation it is refused for the width the generator cannot read, and for
-// this process it reads the width from the sizer.
+// generation its width is read from the sizer at run time, and for this
+// process the sizer answers at build.
 func TestPartialSurfaceCustomWidthForGeneration(t *testing.T) {
 	type holder struct {
 		C partialStaticCustom
@@ -7271,22 +7281,26 @@ func TestPartialSurfaceCustomWidthForGeneration(t *testing.T) {
 
 	forGeneration := NewTypeCache(&dummyDynamicSpecs{})
 	forGeneration.DisableSpecResolution()
-	if _, err := forGeneration.GetTypeDescriptor(reflect.TypeOf(holder{}), nil, nil, nil); err == nil || !strings.Contains(err.Error(), "no ssz-size") {
-		t.Fatalf("generation: err = %v, want the missing-width refusal", err)
+	desc, err := forGeneration.GetTypeDescriptor(reflect.TypeOf(holder{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("generation: %v", err)
+	}
+	if field := desc.ContainerDesc.Fields[0].Type; field.Size != 0 || field.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagHasSizeExpr|SszTypeFlagSizerWidth) != SszTypeFlagHasSizeExpr|SszTypeFlagSizerWidth {
+		t.Fatalf("generation: field = %+v, want a static value sized from the sizer at run time", field)
 	}
 
-	desc, err := NewTypeCache(&dummyDynamicSpecs{}).GetTypeDescriptor(reflect.TypeOf(holder{}), nil, nil, nil)
+	desc, err = NewTypeCache(&dummyDynamicSpecs{}).GetTypeDescriptor(reflect.TypeOf(holder{}), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("process: %v", err)
 	}
-	if field := desc.ContainerDesc.Fields[0].Type; field.Size != 4 || field.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
-		t.Fatalf("process: field = %+v, want a static 4-byte custom", field)
+	if field := desc.ContainerDesc.Fields[0].Type; field.Size != 4 || field.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagHasSizeExpr|SszTypeFlagSizerWidth) != SszTypeFlagSizerWidth {
+		t.Fatalf("process: field = %+v, want a static 4-byte custom that never packs", field)
 	}
 }
 
 // Built for generation, a type generated in the same run and referenced as
-// custom frames as its own descriptor does, with its expression flags, as the
-// go/types parser describes it.
+// custom is static or dynamic as its own descriptor is, and a static one is
+// sized from the sizer at run time, as the go/types parser describes it.
 func TestSameRunCustomForGeneration(t *testing.T) {
 	type staticInner struct{ A uint64 }
 	type dynamicInner struct {
@@ -7299,6 +7313,7 @@ func TestSameRunCustomForGeneration(t *testing.T) {
 		S staticInner  `ssz-type:"custom"`
 		D dynamicInner `ssz-type:"custom"`
 		E exprInner    `ssz-type:"custom"`
+		G staticInner  `ssz-type:"custom" ssz-size:"8" dynssz-size:"W"`
 	}
 
 	cache := NewTypeCache(&dummyDynamicSpecs{})
@@ -7314,14 +7329,18 @@ func TestSameRunCustomForGeneration(t *testing.T) {
 		t.Fatalf("descriptor: %v", err)
 	}
 	fields := desc.ContainerDesc.Fields
-	if f := fields[0].Type; f.Size != 8 || f.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
-		t.Fatalf("static same-run type: %+v, want a static 8-byte custom", f)
+	sizerWidth := SszTypeFlagHasSizeExpr | SszTypeFlagSizerWidth
+	if f := fields[0].Type; f.Size != 8 || f.SszTypeFlags&(SszTypeFlagIsDynamic|sizerWidth) != sizerWidth {
+		t.Fatalf("static same-run type: %+v, want its own 8 bytes as the fallback, sized from the sizer at run time", f)
 	}
 	if f := fields[1].Type; f.SszTypeFlags&SszTypeFlagIsDynamic == 0 {
 		t.Fatalf("dynamic same-run type: %+v, want a dynamic custom", f)
 	}
-	if f := fields[2].Type; f.Size != 8 || f.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagHasSizeExpr) != SszTypeFlagHasSizeExpr {
-		t.Fatalf("same-run type with a spec-sized field: %+v, want the static fallback with the size expression flag", f)
+	if f := fields[2].Type; f.Size != 8 || f.SszTypeFlags&(SszTypeFlagIsDynamic|sizerWidth) != sizerWidth {
+		t.Fatalf("same-run type with a spec-sized field: %+v, want its own fallback, sized from the sizer at run time", f)
+	}
+	if f := fields[3].Type; f.Size != 8 || f.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagHasSizeExpr) != SszTypeFlagHasSizeExpr {
+		t.Fatalf("same-run type with a width expression on the reference: %+v, want the literal kept with the size expression flag", f)
 	}
 }
 

@@ -30,6 +30,7 @@ const (
 	SszTypeFlagHasNoneVariant                          // Whether a classic union declares the None option at selector 0
 	SszTypeFlagNoSszRoot                               // Whether the type is a list or bitlist without a limit, which has no SSZ hash tree root
 	SszTypeFlagRecursionMember                         // Whether the type lies on a recursive cycle and counts as a level against the nesting bound
+	SszTypeFlagSizerWidth                              // Whether a custom type's width is read from its sizer rather than declared; such a width never packs
 )
 
 // SszCompatFlag is a flag indicating whether a type implements a specific SSZ compatibility

@@ -414,3 +414,9 @@ types:
     output: gen_edgecases.go
   - name: TypeHintOverride
     output: gen_edgecases.go
+  - name: SpecWidthInner
+    output: gen_edgecases.go
+  - name: SpecWidthHolder
+    output: gen_edgecases.go
+  - name: FsWidthHolder
+    output: gen_edgecases.go

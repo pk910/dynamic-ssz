@@ -70,6 +70,13 @@ dynamic or streaming surface is preferred over its static one whenever a
 spec-aware call is allowed, since a static method may bake in preset values.
 A static build reaches it through its static surface or fails.
 
+A custom type is static with a literal `ssz-size`, with a spec expression, or
+when its annotation declares `ssz-static:"true"`. A width that is not a
+literal is read from the type's sizer on a zero value: by the reflection
+engine when it describes the type, by generated code where it needs the
+width. A static type's size does not depend on its value, so its sizer must
+not either. Such a width never packs.
+
 Being opaque also exempts it from the rule that a method promoted from an
 embedded field never stands for the outer type. A custom type whose surface is
 entirely promoted delegates to it, so the embedded value is what gets encoded

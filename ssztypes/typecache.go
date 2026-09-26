@@ -838,14 +838,14 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			if partner := tc.cycleWith(runtimeType); partner != nil {
 				return sszutils.NewSszErrorf(sszutils.ErrUnsupportedType, "%v delegates to its own SSZ methods but forms a recursive cycle with %v, which is described here: the members of a cycle must be generated in one run", runtimeType, partner)
 			}
-			// A custom type packs with its neighbours when its width is a basic
-			// size, and generated code decides that from a literal width; a
-			// width only the sizer knows cannot be generated for.
-			if tc.noSpecResolution && *staticAnnotation && sszType == SszCustomType && (len(sizeHints) == 0 || (sizeHints[0].Size == 0 && sizeHints[0].Expr == "")) {
-				return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "custom type %v declares ssz-static:\"true\" but no ssz-size: the generator cannot know its width, so declare it", t)
-			}
 			size, sized, err := int64(0), false, error(nil)
-			if *staticAnnotation {
+			sizerWidth := *staticAnnotation && sszType == SszCustomType && (len(sizeHints) == 0 || sizeHints[0].Size == 0)
+			switch {
+			case sizerWidth && tc.noSpecResolution:
+				// Generated code reads the width at run time.
+				sized = true
+				desc.SszTypeFlags |= SszTypeFlagHasSizeExpr
+			case *staticAnnotation:
 				size, sized, err = tc.delegatedStaticSize(desc, runtimeType)
 				if err != nil {
 					return err
@@ -853,6 +853,9 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			}
 			if sized {
 				desc.Size = size
+				if sizerWidth {
+					desc.SszTypeFlags |= SszTypeFlagSizerWidth
+				}
 			} else {
 				desc.SszTypeFlags |= SszTypeFlagIsDynamic
 			}
@@ -994,23 +997,28 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		// A custom type serializes entirely through its own methods, so its Go
 		// structure is never traversed and no child descriptors are built. It is
 		// variable-size by default; an explicit ssz-size hint or an
-		// ssz-static:"true" annotation pins a fixed size (read from the type's own
-		// sizer), while ssz-static:"false" keeps it dynamic. Generated code
-		// reads a spec-driven width from the type's spec-aware sizer at run
-		// time and cannot read any other, so a descriptor built for generation
-		// refuses a width that only this process could read.
-		if tc.noSpecResolution && len(sizeHints) > 0 && sizeHints[0].Expr != "" && !getDynamicSizerCompatibility(runtimeType) {
+		// ssz-static:"true" annotation pins a fixed size, while
+		// ssz-static:"false" keeps it dynamic. A width that is not a literal is
+		// read from the type's sizer: here on a zero value, by generated code at
+		// run time, so a descriptor built for generation refuses a width the
+		// generated code cannot ask for.
+		if tc.noSpecResolution && len(sizeHints) > 0 && sizeHints[0].Expr != "" && !getDynamicSizerCompatibility(runtimeType) && tc.getCompatFlag(runtimeType, schemaType)&SszCompatFlagDynamicSizer == 0 {
 			return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "custom type %v declares its width from %q but has no spec-aware sizer: the generator cannot know that width, so declare it with a literal ssz-size", t, sizeHints[0].Expr)
 		}
 		switch {
 		case sameRun && (len(sizeHints) == 0 || (sizeHints[0].Size == 0 && sizeHints[0].Expr == "")):
+			// A type generated in the same run declares its shape through the
+			// annotation the run emits, which this build cannot see yet; its
+			// own descriptor says the same.
 			own, err := tc.getTypeDescriptor(runtimeType, schemaType, nil, nil, nil)
 			if err != nil {
 				return err
 			}
-			desc.SszTypeFlags |= own.SszTypeFlags & (SszTypeFlagIsDynamic | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
-			if own.SszTypeFlags&SszTypeFlagIsDynamic == 0 {
+			if own.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
+				desc.SszTypeFlags |= SszTypeFlagIsDynamic
+			} else {
 				desc.Size = own.Size
+				desc.SszTypeFlags |= SszTypeFlagHasSizeExpr | SszTypeFlagSizerWidth
 			}
 		case tc.noSpecResolution && len(sizeHints) > 0 && sizeHints[0].Expr != "":
 			// The width is read at run time from the type's sizer; the size
@@ -1022,10 +1030,12 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			desc.Size = sizeHints[0].Size
 		case len(sizeHints) > 0 && sizeHints[0].Size > 0:
 			desc.Size = sizeHints[0].Size
-		case staticAnnotation != nil && *staticAnnotation:
-			if tc.noSpecResolution {
-				return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "custom type %v declares ssz-static:\"true\" but no ssz-size: the generator cannot know its width, so declare it", t)
+		case staticAnnotation != nil && *staticAnnotation && tc.noSpecResolution:
+			if tc.NoDelegation {
+				return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "custom type %v declares ssz-static:\"true\" but no ssz-size: there is no static width to bake", t)
 			}
+			desc.SszTypeFlags |= SszTypeFlagHasSizeExpr | SszTypeFlagSizerWidth
+		case staticAnnotation != nil && *staticAnnotation:
 			size, sized, err := tc.delegatedStaticSize(desc, runtimeType)
 			if err != nil {
 				return err
@@ -1037,6 +1047,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 				break
 			}
 			desc.Size = size
+			desc.SszTypeFlags |= SszTypeFlagSizerWidth
 		default:
 			desc.Size = 0
 			desc.SszTypeFlags |= SszTypeFlagIsDynamic

@@ -1125,7 +1125,7 @@ func packedElemSize(elemDesc *ssztypes.TypeDescriptor) int64 {
 	switch {
 	case elemDesc.SszType.IsBasic():
 		return elemDesc.Size
-	case elemDesc.SszType == ssztypes.SszCustomType && elemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr == 0 &&
+	case elemDesc.SszType == ssztypes.SszCustomType && elemDesc.SszTypeFlags&(ssztypes.SszTypeFlagHasSizeExpr|ssztypes.SszTypeFlagSizerWidth) == 0 &&
 		elemDesc.Size > 0 && elemDesc.Size <= 16 && elemDesc.Size&(elemDesc.Size-1) == 0:
 		return elemDesc.Size
 	default:

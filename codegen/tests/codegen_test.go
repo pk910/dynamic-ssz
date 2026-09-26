@@ -6071,3 +6071,24 @@ func TestCodegenSpecLimit(t *testing.T) {
 func TestCodegenTypeHintOverride(t *testing.T) {
 	testCodegenPayloadByReflection(t, TypeHintOverride_Payload, nil)
 }
+
+// TestCodegenSameRunCustomWidth checks a same-run type with a spec-driven width,
+// declared custom by its holder's fields with and without a declared width,
+// against the reflection engine at the static width and at a narrower one.
+func TestCodegenSameRunCustomWidth(t *testing.T) {
+	if _, generated := any(&SpecWidthHolder{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	testCodegenPayloadByReflection(t, specWidthHolderPayload(8), nil)
+	testCodegenPayloadByReflection(t, specWidthHolderPayload(4), map[string]any{"SPEC_WIDTH": uint64(4)})
+}
+
+// TestCodegenFastsszWidthCustom checks a static custom type with the fastssz
+// surface only and no declared width: both engines read its width from
+// SizeSSZ on a zero value and agree on bytes, size and root.
+func TestCodegenFastsszWidthCustom(t *testing.T) {
+	if _, generated := any(&FsWidthHolder{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	testCodegenPayloadByReflection(t, FsWidthHolder_Payload, nil)
+}

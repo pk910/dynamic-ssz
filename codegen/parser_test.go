@@ -140,9 +140,8 @@ func TestShallowDescriptorParity(t *testing.T) {
 }
 
 // A delegated custom type that declares a fixed framing without a width is
-// refused wherever it is described: the generator has no sizer to call, and a
-// field reference does not make the width knowable.
-func TestParserRefusesSizerCustomField(t *testing.T) {
+// static, sized from its sizer at run time, and never packs.
+func TestParserSizerCustomField(t *testing.T) {
 	obj := loadTestsPackage(t).Types.Scope().Lookup("SizerCustomField")
 	if obj == nil {
 		t.Fatal("SizerCustomField not found")
@@ -154,9 +153,14 @@ func TestParserRefusesSizerCustomField(t *testing.T) {
 		}
 		return ""
 	}
-	_, err := p.GetTypeDescriptor(types.NewPointer(obj.Type()), nil, nil, nil)
-	if err == nil || !strings.Contains(err.Error(), "no ssz-size") {
-		t.Fatalf("err = %v, want the declared-width refusal", err)
+	desc, err := p.GetTypeDescriptor(types.NewPointer(obj.Type()), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("descriptor: %v", err)
+	}
+	field := desc.ContainerDesc.Fields[1].Type
+	want := ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagSizerWidth
+	if field.SszType != ssztypes.SszCustomType || field.Size != 0 || field.SszTypeFlags&(ssztypes.SszTypeFlagIsDynamic|want) != want {
+		t.Fatalf("field = %+v, want a static custom sized from the sizer at run time", field)
 	}
 }
 
@@ -4001,10 +4005,10 @@ func TestFieldTagRepeatingAnnotationKeepsDelegation(t *testing.T) {
 	}
 }
 
-// A custom type takes a static width from a literal ssz-size, from its
-// spec-aware sizer at run time when a spec expression names the width, or,
-// for a type generated in this run, from that type's own descriptor. A width
-// only this process could read from a sizer is refused.
+// A custom type is static with a literal ssz-size, with a spec expression, or
+// by its annotation; a width that is not a literal is read from the sizer at
+// run time and never packs. An expression on a type without a spec-aware
+// sizer is refused.
 func TestCustomWidthSources(t *testing.T) {
 	custom := []ssztypes.SszTypeHint{{Type: ssztypes.SszCustomType}}
 	opaque := types.NewNamed(types.NewTypeName(0, nil, "Opaque", nil), types.NewStruct(nil, nil), nil)
@@ -4026,10 +4030,6 @@ func TestCustomWidthSources(t *testing.T) {
 	if _, err := parser.buildTypeDescriptor(opaque, opaque, custom, []ssztypes.SszSizeHint{{Size: 4, Expr: "W"}}, nil); err == nil || !strings.Contains(err.Error(), "no spec-aware sizer") {
 		t.Fatalf("static-only type, width from a literal and an expression: err = %v, want the refusal", err)
 	}
-	if _, err := parser.buildTypeDescriptor(opaque, opaque, custom, nil, nil); err == nil || !strings.Contains(err.Error(), "no ssz-size") {
-		t.Fatalf("static-only type, static by annotation without a width: err = %v, want the refusal", err)
-	}
-
 	desc, err := parser.buildTypeDescriptor(generated, generated, custom, []ssztypes.SszSizeHint{{Expr: "W"}}, nil)
 	if err != nil || desc.Size != 0 || desc.SszTypeFlags&(ssztypes.SszTypeFlagIsDynamic|ssztypes.SszTypeFlagHasSizeExpr) != ssztypes.SszTypeFlagHasSizeExpr {
 		t.Fatalf("spec-aware sizer, width from an expression: desc = %+v, err = %v, want a static value sized at run time", desc, err)
@@ -4043,8 +4043,8 @@ func TestCustomWidthSources(t *testing.T) {
 		t.Fatalf("literal width: desc = %+v, err = %v, want a static 4-byte custom", desc, err)
 	}
 	desc, err = parser.buildTypeDescriptor(generated, generated, custom, nil, nil)
-	if err != nil || desc.Size != 8 || desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
-		t.Fatalf("generated in this run, no width: desc = %+v, err = %v, want the type's own static 8 bytes", desc, err)
+	if err != nil || desc.Size != 8 || desc.SszTypeFlags&(ssztypes.SszTypeFlagIsDynamic|ssztypes.SszTypeFlagHasSizeExpr|ssztypes.SszTypeFlagSizerWidth) != ssztypes.SszTypeFlagHasSizeExpr|ssztypes.SszTypeFlagSizerWidth {
+		t.Fatalf("generated in this run, no width: desc = %+v, err = %v, want the type's own 8 bytes as the fallback, sized from the sizer at run time", desc, err)
 	}
 
 	sized := types.NewNamed(types.NewTypeName(0, nil, "Sized", nil), types.NewStruct([]*types.Var{types.NewField(0, nil, "V", types.NewSlice(types.Typ[types.Uint8]), false)}, []string{`ssz-size:"8" dynssz-size:"W"`}), nil)

@@ -5713,3 +5713,67 @@ type TypeHintOverride struct {
 }
 
 var TypeHintOverride_Payload = TypeHintOverride{X: TypeHintInner{A: 1, B: 2}, Y: 3}
+
+// SpecWidthInner is generated in the same run as its holder, which declares it
+// custom; its width is a spec value with a static fallback.
+type SpecWidthInner struct {
+	X []byte `ssz-size:"8" dynssz-size:"SPEC_WIDTH"`
+}
+
+// SpecWidthHolder reaches SpecWidthInner as a custom field with and without a
+// declared width, and as list and vector elements.
+type SpecWidthHolder struct {
+	F SpecWidthInner    `ssz-type:"custom"`
+	G SpecWidthInner    `ssz-type:"custom" ssz-size:"8" dynssz-size:"SPEC_WIDTH"`
+	L []SpecWidthInner  `ssz-max:"4" ssz-type:"?,custom"`
+	V [2]SpecWidthInner `ssz-type:"?,custom"`
+}
+
+func specWidthHolderPayload(width int) SpecWidthHolder {
+	fill := func(b byte) []byte {
+		data := make([]byte, width)
+		for i := range data {
+			data[i] = b
+		}
+		return data
+	}
+	return SpecWidthHolder{
+		F: SpecWidthInner{X: fill(1)},
+		G: SpecWidthInner{X: fill(6)},
+		L: []SpecWidthInner{{X: fill(2)}, {X: fill(3)}},
+		V: [2]SpecWidthInner{{X: fill(4)}, {X: fill(5)}},
+	}
+}
+
+// fsWidthCustom is static by annotation, declares no width, and carries the
+// fastssz surface only: its width is read from SizeSSZ on a zero value.
+type fsWidthCustom struct{ X uint8 }
+
+var _ = sszutils.Annotate[fsWidthCustom](`ssz-type:"custom" ssz-static:"true"`)
+
+func (*fsWidthCustom) SizeSSZ() int                  { return 3 }
+func (v *fsWidthCustom) MarshalSSZ() ([]byte, error) { return v.MarshalSSZTo(nil) }
+func (v *fsWidthCustom) MarshalSSZTo(b []byte) ([]byte, error) {
+	return append(b, v.X, 0, 0), nil
+}
+func (v *fsWidthCustom) UnmarshalSSZ(b []byte) error {
+	if len(b) != 3 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	v.X = b[0]
+	return nil
+}
+func (v *fsWidthCustom) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	root[0] = v.X
+	return root, nil
+}
+
+// FsWidthHolder reaches fsWidthCustom as a field and as list elements.
+type FsWidthHolder struct {
+	A uint64
+	C fsWidthCustom
+	L []fsWidthCustom `ssz-max:"4"`
+}
+
+var FsWidthHolder_Payload = FsWidthHolder{A: 7, C: fsWidthCustom{X: 1}, L: []fsWidthCustom{{X: 2}, {X: 3}}}

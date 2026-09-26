@@ -266,13 +266,15 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 	// the type's sizer on a zero value at runtime. The gate only admits types that
 	// implement DynamicSizer (fullyDelegatesSSZ requires it), so that is the only
 	// case to handle here.
-	// A custom type whose declared width comes from a spec expression is the
-	// same case: its width is fixed for one spec but unknown here, so it is
-	// read from the sizer too.
-	widthFromSizer := desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 &&
-		(desc.SszType == ssztypes.SszUnspecifiedType ||
-			(desc.SszType == ssztypes.SszCustomType && desc.Size == 0 &&
-				desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0))
+	// A custom type whose width is not a literal is the same case: its width
+	// is fixed for one spec but unknown here, so it is read from the sizer too,
+	// whatever static fallback it declares. The zero value never leaves the
+	// stack: a static type's sizer does not keep its receiver.
+	dynamicSizer := desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0
+	staticSizer := desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszSizer != 0
+	widthFromSizer := (dynamicSizer && desc.SszType == ssztypes.SszUnspecifiedType) ||
+		(desc.SszType == ssztypes.SszCustomType && desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 &&
+			desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 && (dynamicSizer || staticSizer))
 	if widthFromSizer {
 		// The sizer speaks int; a negative result is an error, as it is at
 		// the entry points and in the reflection engine. The size path has no
@@ -282,7 +284,11 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 		if retVars == "" {
 			retVars = g.exprVarGenerator.retVars
 		}
-		appendCode(g.codeBuf, 0, "%sSigned := new(%s).SizeSSZDyn(ds)\n", sizeVar, typeName)
+		if dynamicSizer {
+			appendCode(g.codeBuf, 0, "%sSigned := new(%s).SizeSSZDyn(ds)\n", sizeVar, typeName)
+		} else {
+			appendCode(g.codeBuf, 0, "%sSigned := new(%s).SizeSSZ()\n", sizeVar, typeName)
+		}
 		appendCode(g.codeBuf, 0, "if %sSigned < 0 || %sSigned > sszutils.MaxSszSize {\n", sizeVar, sizeVar)
 		if strings.Contains(retVars, "err") {
 			appendCode(g.codeBuf, 1, "err = sszutils.NewSszErrorf(sszutils.ErrSszSizeExceeded, \"sizer of %s returned %%d, outside the SSZ size range\", %sSigned)\n", typeName, sizeVar)

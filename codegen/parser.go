@@ -954,10 +954,9 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 				case shape.size > 0:
 					desc.Size = shape.size
 				case shape.sszType == ssztypes.SszCustomType:
-					// Without a width the emitters cannot tell whether such a
-					// type packs with its neighbours, and would frame it as a
-					// composite where the reflection engine packs it.
-					return nil, fmt.Errorf("%v declares ssz-type:\"custom\" with ssz-static:\"true\" but no ssz-size: the generator cannot know its width, so declare it", originalType)
+					// The width is read from the sizer at run time; a width that
+					// is not a literal never packs.
+					desc.SszTypeFlags |= ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagSizerWidth
 				default:
 					desc.SszTypeFlags |= ssztypes.SszTypeFlagHasSizeExpr
 				}
@@ -1381,12 +1380,12 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			return nil, err
 		}
 	case ssztypes.SszCustomType:
-		// A custom type has no structure to derive a width from. A static width
-		// is a literal ssz-size, or the width the type's own sizer reports at
-		// run time when a spec expression names it; a type generated in this
-		// run frames as its own descriptor does. The reflection engine reads
-		// every other width from the sizer, which the generator cannot, so it
-		// refuses those rather than frame the value differently.
+		// A custom type has no structure to derive a width from. It is static
+		// with a literal ssz-size, with a spec expression, or when its
+		// annotation declares it static; a width that is not a literal is read
+		// from the type's sizer at run time and never packs. A type generated
+		// in this run declares its shape through the annotation the run emits,
+		// which this build cannot see yet; its own descriptor says the same.
 		hasExpr := len(sizeHints) > 0 && sizeHints[0].Expr != ""
 		hasLiteral := len(sizeHints) > 0 && sizeHints[0].Size > 0
 		staticByAnnotation := false
@@ -1401,9 +1400,11 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			if err != nil {
 				return nil, err
 			}
-			desc.SszTypeFlags |= own.SszTypeFlags & (ssztypes.SszTypeFlagIsDynamic | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
-			if own.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
+			if own.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+				desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
+			} else {
 				desc.Size = own.Size
+				desc.SszTypeFlags |= ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagSizerWidth
 			}
 		case hasExpr && (beingGenerated || p.getDynamicSizerCompatibility(originalType) || p.getDynamicSizerCompatibility(types.NewPointer(originalType))):
 			// The width is read at run time from the type's sizer; the size
@@ -1422,7 +1423,10 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 				desc.Size = int64((uint64(desc.Size) + 7) / 8) // ceil up to the next multiple of 8
 			}
 		case staticByAnnotation:
-			return nil, fmt.Errorf("%v declares ssz-type:\"custom\" with ssz-static:\"true\" but no ssz-size: the generator cannot know its width, so declare it", originalType)
+			if p.NoDelegation {
+				return nil, fmt.Errorf("%v declares ssz-type:\"custom\" with ssz-static:\"true\" but no ssz-size: there is no static width to bake", originalType)
+			}
+			desc.SszTypeFlags |= ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagSizerWidth
 		default:
 			desc.Size = 0
 			desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
