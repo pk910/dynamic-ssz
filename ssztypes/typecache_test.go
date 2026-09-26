@@ -7067,11 +7067,37 @@ func (*flagAnnTypedDelegate) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils
 	return nil
 }
 
+type flagAnnContainer struct{ A uint64 }
+
+var _ = sszutils.Annotate[flagAnnContainer](`ssz-type:"container"`)
+
+func (*flagAnnContainer) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
+type flagPlainContainer struct{ A uint64 }
+
+func (*flagPlainContainer) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
 // A field that carries no tag, or repeats its type's annotation, keeps the
 // type's delegation flags; a field that changes the declared shape drops them.
 func TestFieldTagRepeatingAnnotationKeepsDelegation(t *testing.T) {
 	type noTag struct {
 		L flagAnnDelegate
+	}
+	type ctrNoTag struct {
+		C flagAnnContainer
+	}
+	type ctrSameHint struct {
+		C flagAnnContainer `ssz-type:"container"`
+	}
+	type ctrOtherHint struct {
+		C flagAnnContainer `ssz-type:"progressive-container"`
+	}
+	type plainCtrOtherHint struct {
+		C flagPlainContainer `ssz-type:"progressive-container"`
 	}
 	type sameTag struct {
 		L flagAnnDelegate `ssz-max:"4"`
@@ -7111,6 +7137,10 @@ func TestFieldTagRepeatingAnnotationKeepsDelegation(t *testing.T) {
 		{"ssz alias naming the annotation's type", aliasOfTyped{}, 0, true, 4},
 		{"ssz alias with another limit", aliasOfTypedOther{}, 0, false, 8},
 		{"field-only ssz-index", indexOnly{}, 1, true, 4},
+		{"container annotated by type only, no tag", ctrNoTag{}, 0, true, 0},
+		{"container annotated by type only, same hint", ctrSameHint{}, 0, true, 0},
+		{"container annotated by type only, other hint", ctrOtherHint{}, 0, false, 0},
+		{"unannotated container, other hint", plainCtrOtherHint{}, 0, false, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

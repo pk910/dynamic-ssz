@@ -899,19 +899,19 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	// overrides the type, as a size or limit the reference supplies does: the
 	// type is described inline and its own methods are not used, as in the
 	// reflection type cache. The field tag is joined in front of the
-	// annotation, so an annotation-declared type arrives here unchanged. A type
-	// generated in this run declares no SSZ type of its own, only ssz-static,
-	// so any type hint on a reference to it is an override.
+	// annotation, so an annotation-declared type arrives here unchanged; a type
+	// without an annotation declares no type at all.
 	typeHintOverride := false
-	if p.AnnotationResolver != nil && len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) > 0 {
-		annotation := p.AnnotationResolver(types.Unalias(originalType))
-		if _, hasStatic := reflect.StructTag(annotation).Lookup("ssz-static"); hasStatic || beingGenerated {
-			annTypeHints, _, _, err := ssztypes.ParseTags(annotation)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse annotation for type %v: %v", originalType, err)
-			}
-			typeHintOverride = !ssztypes.SameSszTypes(typeHints, annTypeHints)
+	if len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) > 0 {
+		annotation := ""
+		if p.AnnotationResolver != nil {
+			annotation = p.AnnotationResolver(types.Unalias(originalType))
 		}
+		annTypeHints, _, _, err := ssztypes.ParseTags(annotation)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse annotation for type %v: %v", originalType, err)
+		}
+		typeHintOverride = !ssztypes.SameSszTypes(typeHints, annTypeHints)
 	}
 	shallowDelegate := p.AnnotationResolver != nil && !p.NoDelegation && len(sizeHints) == 0 && len(maxSizeHints) == 0 && !beingGenerated && !typeHintOverride && p.fullyDelegatesSSZ(originalType)
 	// A delegated type is not traversed, so a cycle through it and a type

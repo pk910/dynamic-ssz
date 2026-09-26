@@ -650,10 +650,11 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 	}
 
 	// A reference that declares an SSZ type the type's own annotation does not
-	// overrides the type, so it is described inline rather than shallow, as a
-	// size or limit the reference supplies is. The field tag is joined in front
-	// of the annotation, so an annotation-declared type arrives here unchanged.
-	if staticAnnotation != nil && !hasExternalHints && len(typeHints) > 0 {
+	// overrides the type, so it is described inline and its own methods are not
+	// used, as a size or limit the reference supplies is. The field tag is
+	// joined in front of the annotation, so an annotation-declared type arrives
+	// here unchanged; a type without an annotation declares no type at all.
+	if !hasExternalHints && len(typeHints) > 0 {
 		annTypeHints, _, _, parseErr := ParseTags(annotationTag)
 		if parseErr != nil {
 			return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "failed to parse annotation for type %v: %v", t, parseErr)
