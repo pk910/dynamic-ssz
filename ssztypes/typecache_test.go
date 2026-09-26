@@ -7128,3 +7128,128 @@ func TestFieldTagRepeatingAnnotationKeepsDelegation(t *testing.T) {
 		})
 	}
 }
+
+type widthCustom struct{ V uint32 }
+
+func (*widthCustom) SizeSSZDyn(sszutils.DynamicSpecs) int                                 { return 4 }
+func (*widthCustom) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error)      { return b, nil }
+func (*widthCustom) UnmarshalSSZDyn(sszutils.DynamicSpecs, []byte) error                  { return nil }
+func (*widthCustom) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils.HashWalker) error { return nil }
+
+type annStaticCustom struct{ V uint32 }
+
+func (*annStaticCustom) SizeSSZDyn(sszutils.DynamicSpecs) int { return 4 }
+func (*annStaticCustom) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return b, nil
+}
+func (*annStaticCustom) UnmarshalSSZDyn(sszutils.DynamicSpecs, []byte) error { return nil }
+func (*annStaticCustom) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
+var _ = sszutils.Annotate[annStaticCustom](`ssz-type:"custom" ssz-static:"true"`)
+
+// A descriptor built for code generation takes a custom type's static width
+// from a literal ssz-size or, for a spec-driven width, from the type's
+// spec-aware sizer at run time; a width only this process could read is
+// refused. The same references resolve for this process.
+func TestCustomWidthForGeneration(t *testing.T) {
+	type exprWidth struct {
+		C widthCustom `ssz-type:"custom" ssz-size:"4" dynssz-size:"W"`
+	}
+	type staticOnlyExprWidth struct {
+		C staticOnlyCustom `ssz-type:"custom" ssz-size:"4" dynssz-size:"W"`
+	}
+	type annStatic struct {
+		C annStaticCustom
+	}
+	specs := &dummyDynamicSpecs{specValues: map[string]uint64{"W": 4}}
+
+	forGeneration := NewTypeCache(specs)
+	forGeneration.DisableSpecResolution()
+	desc, err := forGeneration.GetTypeDescriptor(reflect.TypeOf(exprWidth{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("generation, width from an expression with a spec-aware sizer: %v", err)
+	}
+	if field := desc.ContainerDesc.Fields[0].Type; field.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagHasSizeExpr) != SszTypeFlagHasSizeExpr {
+		t.Fatalf("generation, width from an expression: field = %+v, want a static value sized at run time", field)
+	}
+	if _, err := forGeneration.GetTypeDescriptor(reflect.TypeOf(staticOnlyExprWidth{}), nil, nil, nil); err == nil || !strings.Contains(err.Error(), "no spec-aware sizer") {
+		t.Fatalf("generation, width from an expression without a spec-aware sizer: err = %v, want the refusal", err)
+	}
+	if _, err := forGeneration.GetTypeDescriptor(reflect.TypeOf(annStatic{}), nil, nil, nil); err == nil || !strings.Contains(err.Error(), "no ssz-size") {
+		t.Fatalf("generation, static by annotation without a width: err = %v, want the refusal", err)
+	}
+
+	forProcess := NewTypeCache(specs)
+	for _, typ := range []reflect.Type{reflect.TypeOf(exprWidth{}), reflect.TypeOf(annStatic{})} {
+		desc, err := forProcess.GetTypeDescriptor(typ, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("process, %v: %v", typ, err)
+		}
+		if field := desc.ContainerDesc.Fields[0].Type; field.Size != 4 || field.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
+			t.Fatalf("process, %v: field = %+v, want a static 4-byte custom", typ, field)
+		}
+	}
+}
+
+type staticOnlyCustom struct{ Items []uint64 }
+
+func (*staticOnlyCustom) SizeSSZ() int                          { return 0 }
+func (*staticOnlyCustom) MarshalSSZTo(b []byte) ([]byte, error) { return b, nil }
+func (*staticOnlyCustom) UnmarshalSSZ([]byte) error             { return nil }
+func (*staticOnlyCustom) HashTreeRoot() ([32]byte, error)       { return [32]byte{}, nil }
+
+// A custom type with static methods only is refused when a resolved spec value
+// differs from what those methods baked in, and the refusal says so.
+func TestStaticOnlyCustomRefusedForDifferingValue(t *testing.T) {
+	type holder struct {
+		C staticOnlyCustom `ssz-type:"custom" ssz-max:"4" dynssz-max:"M"`
+	}
+
+	cache := NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"M": 4}})
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(holder{}), nil, nil, nil); err != nil {
+		t.Fatalf("equal limit: %v", err)
+	}
+
+	cache = NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"M": 8}})
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(holder{}), nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "static methods") {
+		t.Fatalf("differing limit: err = %v, want the static-methods refusal", err)
+	}
+}
+
+type partialStaticCustom struct{ V uint32 }
+
+func (*partialStaticCustom) SizeSSZDyn(sszutils.DynamicSpecs) int { return 4 }
+func (*partialStaticCustom) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return b, nil
+}
+func (*partialStaticCustom) UnmarshalSSZDyn(sszutils.DynamicSpecs, []byte) error { return nil }
+func (*partialStaticCustom) HashTreeRoot() ([32]byte, error)                     { return [32]byte{}, nil }
+
+var _ = sszutils.Annotate[partialStaticCustom](`ssz-type:"custom" ssz-static:"true"`)
+
+// A custom type that is static by annotation but does not delegate every
+// operation through its spec-aware methods is described in full; built for
+// generation it is refused for the width the generator cannot read, and for
+// this process it reads the width from the sizer.
+func TestPartialSurfaceCustomWidthForGeneration(t *testing.T) {
+	type holder struct {
+		C partialStaticCustom
+	}
+
+	forGeneration := NewTypeCache(&dummyDynamicSpecs{})
+	forGeneration.DisableSpecResolution()
+	if _, err := forGeneration.GetTypeDescriptor(reflect.TypeOf(holder{}), nil, nil, nil); err == nil || !strings.Contains(err.Error(), "no ssz-size") {
+		t.Fatalf("generation: err = %v, want the missing-width refusal", err)
+	}
+
+	desc, err := NewTypeCache(&dummyDynamicSpecs{}).GetTypeDescriptor(reflect.TypeOf(holder{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	if field := desc.ContainerDesc.Fields[0].Type; field.Size != 4 || field.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
+		t.Fatalf("process: field = %+v, want a static 4-byte custom", field)
+	}
+}

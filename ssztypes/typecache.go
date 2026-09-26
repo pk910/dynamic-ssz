@@ -833,6 +833,12 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			if partner := tc.cycleWith(runtimeType); partner != nil {
 				return sszutils.NewSszErrorf(sszutils.ErrUnsupportedType, "%v delegates to its own SSZ methods but forms a recursive cycle with %v, which is described here: the members of a cycle must be generated in one run", runtimeType, partner)
 			}
+			// A custom type packs with its neighbours when its width is a basic
+			// size, and generated code decides that from a literal width; a
+			// width only the sizer knows cannot be generated for.
+			if tc.noSpecResolution && *staticAnnotation && sszType == SszCustomType && (len(sizeHints) == 0 || (sizeHints[0].Size == 0 && sizeHints[0].Expr == "")) {
+				return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "custom type %v declares ssz-static:\"true\" but no ssz-size: the generator cannot know its width, so declare it", t)
+			}
 			size, sized, err := int64(0), false, error(nil)
 			if *staticAnnotation {
 				size, sized, err = tc.delegatedStaticSize(desc, runtimeType)
@@ -984,11 +990,23 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		// structure is never traversed and no child descriptors are built. It is
 		// variable-size by default; an explicit ssz-size hint or an
 		// ssz-static:"true" annotation pins a fixed size (read from the type's own
-		// sizer), while ssz-static:"false" keeps it dynamic.
+		// sizer), while ssz-static:"false" keeps it dynamic. Generated code
+		// reads a spec-driven width from the type's spec-aware sizer at run
+		// time and cannot read any other, so a descriptor built for generation
+		// refuses a width that only this process could read.
+		if tc.noSpecResolution && len(sizeHints) > 0 && sizeHints[0].Expr != "" && !getDynamicSizerCompatibility(runtimeType) {
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "custom type %v declares its width from %q but has no spec-aware sizer: the generator cannot know that width, so declare it with a literal ssz-size", t, sizeHints[0].Expr)
+		}
 		switch {
+		case tc.noSpecResolution && len(sizeHints) > 0 && sizeHints[0].Expr != "":
+			// The width is read at run time from the type's sizer; the size
+			// expression flag the hint set makes the emitters ask for it.
 		case len(sizeHints) > 0 && sizeHints[0].Size > 0:
 			desc.Size = sizeHints[0].Size
 		case staticAnnotation != nil && *staticAnnotation:
+			if tc.noSpecResolution {
+				return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "custom type %v declares ssz-static:\"true\" but no ssz-size: the generator cannot know its width, so declare it", t)
+			}
 			size, sized, err := tc.delegatedStaticSize(desc, runtimeType)
 			if err != nil {
 				return err
@@ -1203,6 +1221,13 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		// (Dynamic*) equivalent, but at least one implementation per operation is
 		// required. Marshalling accepts either fastssz-style marshal method.
 		if missing := missingDelegatedOperations(desc.SszCompatFlags); len(missing) > 0 {
+			// A static method the type does carry is left out of the flags when a
+			// resolved spec value differs from what it baked in; the type then
+			// has no method that can answer for that value.
+			if desc.SszTypeFlags&(SszTypeFlagHasDynamicSize|SszTypeFlagHasDynamicMax) != 0 &&
+				(getFastsszCompatFlags(runtimeType) != 0 || getFastsszHashCompatibility(runtimeType) || getHashTreeRootWithCompatibility(runtimeType) != nil) {
+				return sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "custom ssz type %v serves %s only through static methods, which bake in a size or limit the spec resolves differently", schemaType, strings.Join(missing, ", "))
+			}
 			return sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "custom ssz type %v is missing a fastssz or dynssz %s implementation", schemaType, strings.Join(missing, ", "))
 		}
 	}

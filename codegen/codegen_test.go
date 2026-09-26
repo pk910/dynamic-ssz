@@ -3120,3 +3120,57 @@ func TestPerTypeExtendedTypesReachesParser(t *testing.T) {
 		t.Fatalf("a later extended type must widen the shared parser: %v", err)
 	}
 }
+
+// A build without dynamic expressions bakes the static tag values, so a length
+// or limit that only a spec expression supplies is refused rather than baked
+// as none.
+func TestStaticBuildRefusesSpecOnlyBounds(t *testing.T) {
+	type onlyDynLimit struct {
+		V []uint64 `dynssz-max:"LIMIT"`
+	}
+	type onlyDynLength struct {
+		V []uint64 `dynssz-size:"LEN"`
+	}
+	type nestedOnlyDynLimit struct {
+		Inner []onlyDynLimit `ssz-max:"2"`
+	}
+	type unionOnlyDynLimit struct {
+		U dynssz.CompatibleUnion[struct {
+			A uint64
+			B onlyDynLimit
+		}]
+	}
+	type withFallback struct {
+		V []uint64   `ssz-max:"4" dynssz-max:"LIMIT"`
+		W []uint64   `ssz-size:"4" dynssz-size:"LEN"`
+		L [][]uint64 `ssz-max:"2,4" dynssz-max:"2,LIMIT"`
+	}
+
+	tests := []struct {
+		typ  reflect.Type
+		want string
+	}{
+		{reflect.TypeOf(onlyDynLimit{}), "takes its limit from \"LIMIT\" alone"},
+		{reflect.TypeOf(onlyDynLength{}), "takes its length from \"LEN\" alone"},
+		{reflect.TypeOf(nestedOnlyDynLimit{}), "takes its limit from \"LIMIT\" alone"},
+		{reflect.TypeOf(unionOnlyDynLimit{}), "takes its limit from \"LIMIT\" alone"},
+		{reflect.TypeOf(withFallback{}), ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.typ.Name(), func(t *testing.T) {
+			cg := NewCodeGenerator(nil)
+			if err := cg.SetPackageName("x"); err != nil {
+				t.Fatal(err)
+			}
+			cg.BuildFile("x.go", WithReflectType(tt.typ, WithoutDynamicExpressions()))
+			_, err := cg.GenerateToMap()
+			switch {
+			case tt.want == "" && err != nil:
+				t.Fatalf("unexpected error: %v", err)
+			case tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)):
+				t.Fatalf("err = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}

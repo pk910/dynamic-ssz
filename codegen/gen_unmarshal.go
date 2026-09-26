@@ -242,7 +242,8 @@ func (ctx *unmarshalContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 	return false
 }
 
-// unmarshalType generates unmarshal code for any SSZ type, delegating to specific unmarshalers.
+// unmarshalViewType reaches a view type through its generated view methods
+// and reports whether it has any.
 func (ctx *unmarshalContext) unmarshalViewType(desc *ssztypes.TypeDescriptor, varName string, indent int) bool {
 	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewUnmarshaler != 0 {
 		viewFn, viewArg := descendCall(ctx.depthAware, ctx.recursion, desc, "UnmarshalSSZDynView")
@@ -328,6 +329,7 @@ func (ctx *unmarshalContext) unmarshalCompatType(desc *ssztypes.TypeDescriptor, 
 	return false, nil
 }
 
+// unmarshalType generates unmarshal code for any SSZ type, delegating to specific unmarshalers.
 func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot, noBufCheck bool) error {
 	if indent > maxEmitNesting {
 		return errEmitNesting(ctx.typePrinter, desc)

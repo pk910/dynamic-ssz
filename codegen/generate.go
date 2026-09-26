@@ -796,6 +796,59 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 	return formattedCode, nil
 }
 
+// refuseSpecOnlyBounds rejects, for a build without dynamic expressions, every
+// bound below root that only a spec expression supplies. Such a build bakes
+// the static tag values, and a length or limit with no static value would be
+// baked as none: the list would go unchecked and its root would be computed
+// against no capacity.
+func refuseSpecOnlyBounds(root *ssztypes.TypeDescriptor, typePrinter *TypePrinter) error {
+	visited := map[*ssztypes.TypeDescriptor]struct{}{}
+
+	var walk func(desc *ssztypes.TypeDescriptor) error
+	walk = func(desc *ssztypes.TypeDescriptor) error {
+		if desc == nil {
+			return nil
+		}
+		if _, seen := visited[desc]; seen {
+			return nil
+		}
+		visited[desc] = struct{}{}
+
+		switch desc.SszType {
+		case ssztypes.SszListType, ssztypes.SszBitlistType, ssztypes.SszBigIntType:
+			if desc.MaxExpression != nil && desc.Limit == 0 {
+				return fmt.Errorf("%s takes its limit from %q alone and has no static value to bake", typePrinter.TypeStringWithoutTracking(desc, false), *desc.MaxExpression)
+			}
+		case ssztypes.SszVectorType, ssztypes.SszBitvectorType:
+			if desc.SizeExpression != nil && desc.Len == 0 {
+				return fmt.Errorf("%s takes its length from %q alone and has no static value to bake", typePrinter.TypeStringWithoutTracking(desc, false), *desc.SizeExpression)
+			}
+		default:
+			// Every other shape carries no bound of its own.
+		}
+
+		if desc.ContainerDesc != nil {
+			for i := range desc.ContainerDesc.Fields {
+				if err := walk(desc.ContainerDesc.Fields[i].Type); err != nil {
+					return err
+				}
+			}
+		}
+		if err := walk(desc.ElemDesc); err != nil {
+			return err
+		}
+		for _, variant := range desc.UnionVariants {
+			if err := walk(variant); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	}
+
+	return walk(root)
+}
+
 // generateSSZMethods generates all SSZ methods for a single type (data or view).
 //
 // This internal method orchestrates the generation of all requested SSZ methods
@@ -822,6 +875,12 @@ func (cg *CodeGenerator) generateSSZMethods(desc *ssztypes.TypeDescriptor, typeP
 	// Generate the actual methods using flattened generators
 	var err error
 	typeName := typePrinter.TypeStringWithoutTracking(desc, viewName != "")
+
+	if options.WithoutDynamicExpressions {
+		if err = refuseSpecOnlyBounds(desc, typePrinter); err != nil {
+			return fmt.Errorf("cannot generate static code for %s: %w", typeName, err)
+		}
+	}
 
 	if !options.NoMarshalSSZ {
 		err = generateMarshal(desc, codeBuilder, typePrinter, viewName, options)

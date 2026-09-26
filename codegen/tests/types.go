@@ -5696,3 +5696,20 @@ type SpecLimitParent struct {
 	C SpecLimitChild
 	L []SpecLimitChild `ssz-max:"2"`
 }
+
+// TypeHintInner is a plain container generated in the same run as the holder
+// below, which references it with an SSZ type the generated annotation does
+// not declare.
+type TypeHintInner struct {
+	A uint64
+	B uint32
+}
+
+// TypeHintOverride reaches TypeHintInner as a progressive container, so the
+// field is described inline rather than through the type's own methods.
+type TypeHintOverride struct {
+	X TypeHintInner `ssz-type:"progressive-container"`
+	Y uint64
+}
+
+var TypeHintOverride_Payload = TypeHintOverride{X: TypeHintInner{A: 1, B: 2}, Y: 3}

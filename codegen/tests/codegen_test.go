@@ -6063,3 +6063,11 @@ func TestCodegenSpecLimit(t *testing.T) {
 
 	accept(t, wide, &five, rawFive)
 }
+
+// TestCodegenTypeHintOverride checks that a field declaring an SSZ type for a
+// generated type is described inline by the generator as it is by the
+// reflection engine, instead of being delegated to the type's own methods,
+// which hash its declared shape.
+func TestCodegenTypeHintOverride(t *testing.T) {
+	testCodegenPayloadByReflection(t, TypeHintOverride_Payload, nil)
+}

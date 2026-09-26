@@ -895,22 +895,28 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	// as it does in the reflection type cache: it overrides the type's own
 	// annotation and requires inline processing.
 	beingGenerated := p.getCompatFlag(innerDataType, innerSchemaType) != 0 || p.getCompatFlag(innerDataType, innerDataType) != 0
-	shallowDelegate := p.AnnotationResolver != nil && !p.NoDelegation && len(sizeHints) == 0 && len(maxSizeHints) == 0 && !beingGenerated && p.fullyDelegatesSSZ(originalType)
+	// A reference that declares an SSZ type the type's own annotation does not
+	// overrides the type, as a size or limit the reference supplies does: the
+	// type is described inline and its own methods are not used, as in the
+	// reflection type cache. The field tag is joined in front of the
+	// annotation, so an annotation-declared type arrives here unchanged. A type
+	// generated in this run declares no SSZ type of its own, only ssz-static,
+	// so any type hint on a reference to it is an override.
+	typeHintOverride := false
+	if p.AnnotationResolver != nil && len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) > 0 {
+		annotation := p.AnnotationResolver(types.Unalias(originalType))
+		if _, hasStatic := reflect.StructTag(annotation).Lookup("ssz-static"); hasStatic || beingGenerated {
+			annTypeHints, _, _, err := ssztypes.ParseTags(annotation)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse annotation for type %v: %v", originalType, err)
+			}
+			typeHintOverride = !ssztypes.SameSszTypes(typeHints, annTypeHints)
+		}
+	}
+	shallowDelegate := p.AnnotationResolver != nil && !p.NoDelegation && len(sizeHints) == 0 && len(maxSizeHints) == 0 && !beingGenerated && !typeHintOverride && p.fullyDelegatesSSZ(originalType)
 	// A delegated type is not traversed, so a cycle through it and a type
 	// described here would go unmarked and uncounted: the members of a cycle
 	// are described together, by one generator run.
-	if shallowDelegate && len(typeHints) > 0 {
-		// A reference that declares an SSZ type the type's own annotation does
-		// not overrides the type, so it is described inline rather than
-		// shallow, as a size or limit the reference supplies is. The field tag
-		// is joined in front of the annotation, so an annotation-declared type
-		// arrives here unchanged.
-		annTypeHints, _, _, err := ssztypes.ParseTags(p.AnnotationResolver(types.Unalias(originalType)))
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse annotation for type %v: %v", originalType, err)
-		}
-		shallowDelegate = ssztypes.SameSszTypes(typeHints, annTypeHints)
-	}
 	if shallowDelegate {
 		annotation := p.AnnotationResolver(types.Unalias(originalType))
 		if staticStr, ok := reflect.StructTag(annotation).Lookup("ssz-static"); ok {
@@ -1372,13 +1378,45 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			return nil, err
 		}
 	case ssztypes.SszCustomType:
-		if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
+		// A custom type has no structure to derive a width from. A static width
+		// is a literal ssz-size, or the width the type's own sizer reports at
+		// run time when a spec expression names it; a type generated in this
+		// run frames as its own descriptor does. The reflection engine reads
+		// every other width from the sizer, which the generator cannot, so it
+		// refuses those rather than frame the value differently.
+		hasExpr := len(sizeHints) > 0 && sizeHints[0].Expr != ""
+		hasLiteral := len(sizeHints) > 0 && sizeHints[0].Size > 0
+		staticByAnnotation := false
+		if p.AnnotationResolver != nil {
+			if staticStr, ok := reflect.StructTag(p.AnnotationResolver(types.Unalias(originalType))).Lookup("ssz-static"); ok && staticStr == "true" {
+				staticByAnnotation = true
+			}
+		}
+		switch {
+		case beingGenerated && !hasExpr && !hasLiteral:
+			own, err := p.buildTypeDescriptor(innerDataType, innerSchemaType, nil, nil, nil)
+			if err != nil {
+				return nil, err
+			}
+			if own.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+				desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
+			} else {
+				desc.Size = own.Size
+			}
+		case hasExpr && (beingGenerated || p.getDynamicSizerCompatibility(originalType) || p.getDynamicSizerCompatibility(types.NewPointer(originalType))):
+			// The width is read at run time from the type's sizer; the size
+			// expression flag the hint set makes the emitters ask for it.
+		case hasExpr:
+			return nil, fmt.Errorf("%v declares ssz-type:\"custom\" with its width from %q but has no spec-aware sizer: the generator cannot know that width, so declare it with a literal ssz-size", originalType, sizeHints[0].Expr)
+		case hasLiteral:
 			desc.Size = sizeHints[0].Size
 			if sizeHints[0].Bits {
 				desc.BitSize = sizeHints[0].Size
 				desc.Size = int64((uint64(desc.Size) + 7) / 8) // ceil up to the next multiple of 8
 			}
-		} else {
+		case staticByAnnotation:
+			return nil, fmt.Errorf("%v declares ssz-type:\"custom\" with ssz-static:\"true\" but no ssz-size: the generator cannot know its width, so declare it", originalType)
+		default:
 			desc.Size = 0
 			desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
 		}
@@ -1470,11 +1508,11 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	p.detectCompatFlags(desc, originalType, innerDataType, innerSchemaType)
 
 	// When caller-level hints override the type's own annotation, don't delegate
-	// to the type's generated methods — they have the annotation's limits baked
-	// in. Process inline instead so the hints are respected. Gated on the hints
-	// the caller passed (annotation-derived hints assigned above do not count),
-	// mirroring the reflection typecache.
-	if (len(callerSizeHints) > 0 || len(callerMaxSizeHints) > 0) && desc.SszType != ssztypes.SszCustomType {
+	// to the type's generated methods — they have the annotation's limits and
+	// SSZ type baked in. Process inline instead so the hints are respected.
+	// Gated on the hints the caller passed (annotation-derived hints assigned
+	// above do not count), mirroring the reflection typecache.
+	if (len(callerSizeHints) > 0 || len(callerMaxSizeHints) > 0 || typeHintOverride) && desc.SszType != ssztypes.SszCustomType {
 		desc.SszCompatFlags &^= ssztypes.SszCompatFlagDynamicMarshaler |
 			ssztypes.SszCompatFlagDynamicUnmarshaler |
 			ssztypes.SszCompatFlagDynamicSizer |

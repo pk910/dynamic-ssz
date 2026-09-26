@@ -410,3 +410,7 @@ types:
     output: gen_edgecases.go
   - name: ProbeFailHolder
     output: gen_edgecases.go
+  - name: TypeHintInner
+    output: gen_edgecases.go
+  - name: TypeHintOverride
+    output: gen_edgecases.go

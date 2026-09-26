@@ -2101,10 +2101,10 @@ func TestCustomTypesAndErrors(t *testing.T) {
 	})
 
 	t.Run("CustomTypeMissingHasher", func(t *testing.T) {
-		int64Type := types.Typ[types.Int64]
-		parser.CompatFlags[int64Type.String()] = ssztypes.SszCompatFlagFastsszSurface
+		uint16Type := types.Typ[types.Uint16]
+		parser.CompatFlags[uint16Type.String()] = ssztypes.SszCompatFlagFastsszSurface
 		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszCustomType}}
-		_, err := parser.buildTypeDescriptor(int64Type, int64Type, typeHint, nil, nil)
+		_, err := parser.buildTypeDescriptor(uint16Type, uint16Type, typeHint, nil, nil)
 		if err == nil || !strings.Contains(err.Error(), "missing a fastssz or dynssz hasher") {
 			t.Fatalf("custom type without a hasher: err = %v, want the missing hasher named", err)
 		}
@@ -2127,6 +2127,8 @@ func TestCustomTypesAndErrors(t *testing.T) {
 	})
 
 	t.Run("CustomTypeWithoutSize", func(t *testing.T) {
+		// A type generated in this run frames as its own descriptor does: a
+		// uint64 is a static 8-byte value.
 		uint64Type := types.Typ[types.Uint64]
 		parser.CompatFlags[uint64Type.String()] = ssztypes.SszCompatFlagFastsszSurface | ssztypes.SszCompatFlagFastsszHashRoot
 
@@ -2135,11 +2137,8 @@ func TestCustomTypesAndErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to build custom type descriptor: %v", err)
 		}
-		if desc.Size != 0 {
-			t.Errorf("Expected size 0, got %d", desc.Size)
-		}
-		if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
-			t.Error("Expected dynamic flag to be set")
+		if desc.Size != 8 || desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+			t.Errorf("Expected a static 8-byte value, got size %d flags %b", desc.Size, desc.SszTypeFlags)
 		}
 	})
 }
@@ -3991,5 +3990,80 @@ func TestFieldTagRepeatingAnnotationKeepsDelegation(t *testing.T) {
 				t.Fatalf("limit = %d, want %d", field.Limit, tt.limit)
 			}
 		})
+	}
+}
+
+// A custom type takes a static width from a literal ssz-size, from its
+// spec-aware sizer at run time when a spec expression names the width, or,
+// for a type generated in this run, from that type's own descriptor. A width
+// only this process could read from a sizer is refused.
+func TestCustomWidthSources(t *testing.T) {
+	custom := []ssztypes.SszTypeHint{{Type: ssztypes.SszCustomType}}
+	opaque := types.NewNamed(types.NewTypeName(0, nil, "Opaque", nil), types.NewStruct(nil, nil), nil)
+	generated := types.NewNamed(types.NewTypeName(0, nil, "Generated", nil), types.NewStruct([]*types.Var{types.NewField(0, nil, "A", types.Typ[types.Uint64], false)}, nil), nil)
+
+	parser := NewParser()
+	parser.CompatFlags[generated.String()] = ssztypes.SszCompatFlagDynamicMarshaler | ssztypes.SszCompatFlagDynamicUnmarshaler |
+		ssztypes.SszCompatFlagDynamicSizer | ssztypes.SszCompatFlagDynamicHashRoot
+	parser.AnnotationResolver = func(t types.Type) string {
+		if t == opaque {
+			return `ssz-static:"true"`
+		}
+		return ""
+	}
+
+	if _, err := parser.buildTypeDescriptor(opaque, opaque, custom, []ssztypes.SszSizeHint{{Expr: "W"}}, nil); err == nil || !strings.Contains(err.Error(), "no spec-aware sizer") {
+		t.Fatalf("static-only type, width from an expression: err = %v, want the refusal", err)
+	}
+	if _, err := parser.buildTypeDescriptor(opaque, opaque, custom, []ssztypes.SszSizeHint{{Size: 4, Expr: "W"}}, nil); err == nil || !strings.Contains(err.Error(), "no spec-aware sizer") {
+		t.Fatalf("static-only type, width from a literal and an expression: err = %v, want the refusal", err)
+	}
+	if _, err := parser.buildTypeDescriptor(opaque, opaque, custom, nil, nil); err == nil || !strings.Contains(err.Error(), "no ssz-size") {
+		t.Fatalf("static-only type, static by annotation without a width: err = %v, want the refusal", err)
+	}
+
+	desc, err := parser.buildTypeDescriptor(generated, generated, custom, []ssztypes.SszSizeHint{{Expr: "W"}}, nil)
+	if err != nil || desc.Size != 0 || desc.SszTypeFlags&(ssztypes.SszTypeFlagIsDynamic|ssztypes.SszTypeFlagHasSizeExpr) != ssztypes.SszTypeFlagHasSizeExpr {
+		t.Fatalf("spec-aware sizer, width from an expression: desc = %+v, err = %v, want a static value sized at run time", desc, err)
+	}
+	desc, err = parser.buildTypeDescriptor(generated, generated, custom, []ssztypes.SszSizeHint{{Size: 4}}, nil)
+	if err != nil || desc.Size != 4 || desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+		t.Fatalf("literal width: desc = %+v, err = %v, want a static 4-byte custom", desc, err)
+	}
+	desc, err = parser.buildTypeDescriptor(generated, generated, custom, nil, nil)
+	if err != nil || desc.Size != 8 || desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+		t.Fatalf("generated in this run, no width: desc = %+v, err = %v, want the type's own static 8 bytes", desc, err)
+	}
+}
+
+// The type-hint override reads the type's annotation; an annotation the tag
+// parser rejects is reported, and a same-run type referenced as custom takes
+// its own descriptor's framing or its own descriptor's refusal.
+func TestTypeHintOverrideAndSameRunCustom(t *testing.T) {
+	custom := []ssztypes.SszTypeHint{{Type: ssztypes.SszCustomType}}
+	dynamicGenerated := types.NewNamed(types.NewTypeName(0, nil, "DynamicGenerated", nil), types.NewStruct([]*types.Var{types.NewField(0, nil, "L", types.NewSlice(types.Typ[types.Uint8]), false)}, []string{`ssz-max:"4"`}), nil)
+	invalidGenerated := types.NewNamed(types.NewTypeName(0, nil, "InvalidGenerated", nil), types.NewStruct([]*types.Var{types.NewField(0, nil, "S", types.Typ[types.Int64], false)}, nil), nil)
+	annotated := types.NewNamed(types.NewTypeName(0, nil, "Annotated", nil), types.NewStruct([]*types.Var{types.NewField(0, nil, "A", types.Typ[types.Uint64], false)}, nil), nil)
+
+	parser := NewParser()
+	generatedFlags := ssztypes.SszCompatFlagDynamicMarshaler | ssztypes.SszCompatFlagDynamicUnmarshaler | ssztypes.SszCompatFlagDynamicSizer | ssztypes.SszCompatFlagDynamicHashRoot
+	parser.CompatFlags[dynamicGenerated.String()] = generatedFlags
+	parser.CompatFlags[invalidGenerated.String()] = generatedFlags
+	parser.AnnotationResolver = func(t types.Type) string {
+		if t == annotated {
+			return `ssz-static:"true" ssz-size:"not-a-number"`
+		}
+		return ""
+	}
+
+	desc, err := parser.buildTypeDescriptor(dynamicGenerated, dynamicGenerated, custom, nil, nil)
+	if err != nil || desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
+		t.Fatalf("dynamic type generated in this run, referenced as custom: desc = %+v, err = %v, want a dynamic custom", desc, err)
+	}
+	if _, err := parser.buildTypeDescriptor(invalidGenerated, invalidGenerated, custom, nil, nil); err == nil || !strings.Contains(err.Error(), "field S") {
+		t.Fatalf("invalid type generated in this run, referenced as custom: err = %v, want its own refusal", err)
+	}
+	if _, err := parser.buildTypeDescriptor(annotated, annotated, []ssztypes.SszTypeHint{{Type: ssztypes.SszProgressiveContainerType}}, nil, nil); err == nil || !strings.Contains(err.Error(), "failed to parse annotation") {
+		t.Fatalf("type hint over a malformed annotation: err = %v, want the annotation parse failure", err)
 	}
 }
