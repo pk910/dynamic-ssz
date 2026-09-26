@@ -154,6 +154,9 @@ depending on the path taken.
 ```go
 // Rejected: the literal contradicts the static limit.
 Bad3 []uint64 `ssz-max:"4" dynssz-max:"2"`
+
+// Rejected: the placeholder promises a spec value, and a number is not one.
+Bad4 []uint64 `ssz-max:"0" dynssz-max:"2"`
 ```
 
 **A dimension that is `?` to both families is an unbounded list.** `ssz-size:"?"`

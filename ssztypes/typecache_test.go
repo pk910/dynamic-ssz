@@ -3330,6 +3330,12 @@ func TestGetSszMaxSizeTagDynSszMaxNumeric(t *testing.T) {
 		t.Fatalf("expected one static hint of max 100, got %+v", maxSizes)
 	}
 
+	// The ssz-max:"0" placeholder promises a spec value, which a literal is not.
+	field = makeField("Num", reflect.TypeOf([]byte{}), `ssz-max:"0" dynssz-max:"200"`)
+	if _, err := getSszMaxSizeTag(ds, field); err == nil {
+		t.Fatal("expected a dynssz-max literal against the placeholder to be refused")
+	}
+
 	// A literal with no static limit is the limit.
 	field = makeField("Num", reflect.TypeOf([]byte{}), `dynssz-max:"200"`)
 	maxSizes, err = getSszMaxSizeTag(ds, field)
@@ -3625,6 +3631,9 @@ func TestParseTags_DynMaxNumericOverride(t *testing.T) {
 	// repeats it is the plain static limit.
 	if _, _, _, err := ParseTags(`ssz-max:"10" dynssz-max:"20"`); err == nil {
 		t.Fatal("expected a differing dynssz-max literal to be refused")
+	}
+	if _, _, _, err := ParseTags(`ssz-max:"0" dynssz-max:"20"`); err == nil {
+		t.Fatal("expected a dynssz-max literal against the placeholder to be refused")
 	}
 	_, _, maxHints, err := ParseTags(`ssz-max:"10" dynssz-max:"10"`)
 	if err != nil {

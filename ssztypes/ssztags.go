@@ -544,8 +544,9 @@ func getSszMaxSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]S
 				sszMaxSize.Size = sszSizeInt
 				// A literal only repeats the static limit to fill a dimension.
 				// One that differs would be served with either value depending on
-				// the path taken, so the tag pair has to agree.
-				if i < len(sszMaxSizes) && sszMaxSizes[i].Size > 0 && sszMaxSizes[i].Size != sszMaxSize.Size {
+				// the path taken, so the tag pair has to agree. The ssz-max:"0"
+				// placeholder promises a spec value, which a literal is not.
+				if i < len(sszMaxSizes) && !sszMaxSizes[i].NoValue && sszMaxSizes[i].Size != sszMaxSize.Size {
 					return sszMaxSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "conflicting max tags for field %q dimension %d: dynssz-max literal %d does not repeat ssz-max %d", field.Name, i, sszMaxSize.Size, sszMaxSizes[i].Size)
 				}
 			} else {
@@ -897,7 +898,7 @@ func ParseTags(tag string) (typeHints []SszTypeHint, sizeHints []SszSizeHint, ma
 			} else if sszSizeInt, parseErr := strconv.ParseUint(sszMaxSizeStr, 10, 64); parseErr == nil {
 				sszMaxSize.Size = sszSizeInt
 				// See getSszMaxSizeTag: a literal repeats the static limit.
-				if i < len(maxSizeHints) && maxSizeHints[i].Size > 0 && maxSizeHints[i].Size != sszMaxSize.Size {
+				if i < len(maxSizeHints) && !maxSizeHints[i].NoValue && maxSizeHints[i].Size != sszMaxSize.Size {
 					return nil, nil, nil, fmt.Errorf("conflicting max tags for dimension %d: dynssz-max literal %d does not repeat ssz-max %d", i, sszMaxSize.Size, maxSizeHints[i].Size)
 				}
 			} else {
