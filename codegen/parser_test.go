@@ -4026,6 +4026,10 @@ func TestCustomWidthSources(t *testing.T) {
 	if err != nil || desc.Size != 0 || desc.SszTypeFlags&(ssztypes.SszTypeFlagIsDynamic|ssztypes.SszTypeFlagHasSizeExpr) != ssztypes.SszTypeFlagHasSizeExpr {
 		t.Fatalf("spec-aware sizer, width from an expression: desc = %+v, err = %v, want a static value sized at run time", desc, err)
 	}
+	desc, err = parser.buildTypeDescriptor(generated, generated, custom, []ssztypes.SszSizeHint{{Size: 2, Expr: "W"}}, nil)
+	if err != nil || desc.Size != 2 || desc.SszTypeFlags&(ssztypes.SszTypeFlagIsDynamic|ssztypes.SszTypeFlagHasSizeExpr) != ssztypes.SszTypeFlagHasSizeExpr {
+		t.Fatalf("spec-aware sizer, width from an expression with a literal: desc = %+v, err = %v, want the literal kept as the static fallback", desc, err)
+	}
 	desc, err = parser.buildTypeDescriptor(generated, generated, custom, []ssztypes.SszSizeHint{{Size: 4}}, nil)
 	if err != nil || desc.Size != 4 || desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 		t.Fatalf("literal width: desc = %+v, err = %v, want a static 4-byte custom", desc, err)

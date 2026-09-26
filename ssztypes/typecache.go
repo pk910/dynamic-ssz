@@ -1013,10 +1013,12 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			}
 		case tc.noSpecResolution && len(sizeHints) > 0 && sizeHints[0].Expr != "":
 			// The width is read at run time from the type's sizer; the size
-			// expression flag the hint set makes the emitters ask for it.
+			// expression flag the hint set makes the emitters ask for it, and a
+			// literal beside the expression is the static fallback.
 			if tc.NoDelegation && sizeHints[0].Size == 0 {
 				return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "custom type %v has no static width to bake for %q", t, sizeHints[0].Expr)
 			}
+			desc.Size = sizeHints[0].Size
 		case len(sizeHints) > 0 && sizeHints[0].Size > 0:
 			desc.Size = sizeHints[0].Size
 		case staticAnnotation != nil && *staticAnnotation:

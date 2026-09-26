@@ -7171,8 +7171,8 @@ func TestCustomWidthForGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generation, width from an expression with a spec-aware sizer: %v", err)
 	}
-	if field := desc.ContainerDesc.Fields[0].Type; field.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagHasSizeExpr) != SszTypeFlagHasSizeExpr {
-		t.Fatalf("generation, width from an expression: field = %+v, want a static value sized at run time", field)
+	if field := desc.ContainerDesc.Fields[0].Type; field.Size != 4 || field.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagHasSizeExpr) != SszTypeFlagHasSizeExpr {
+		t.Fatalf("generation, width from an expression: field = %+v, want the literal kept as the static fallback, sized at run time", field)
 	}
 	if _, err := forGeneration.GetTypeDescriptor(reflect.TypeOf(staticOnlyExprWidth{}), nil, nil, nil); err == nil || !strings.Contains(err.Error(), "no spec-aware sizer") {
 		t.Fatalf("generation, width from an expression without a spec-aware sizer: err = %v, want the refusal", err)

@@ -1407,10 +1407,12 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			}
 		case hasExpr && (beingGenerated || p.getDynamicSizerCompatibility(originalType) || p.getDynamicSizerCompatibility(types.NewPointer(originalType))):
 			// The width is read at run time from the type's sizer; the size
-			// expression flag the hint set makes the emitters ask for it.
+			// expression flag the hint set makes the emitters ask for it, and a
+			// literal beside the expression is the static fallback.
 			if p.NoDelegation && !hasLiteral {
 				return nil, fmt.Errorf("custom type %v has no static width to bake for %q", originalType, sizeHints[0].Expr)
 			}
+			desc.Size = sizeHints[0].Size
 		case hasExpr:
 			return nil, fmt.Errorf("%v declares ssz-type:\"custom\" with its width from %q but has no spec-aware sizer: the generator cannot know that width, so declare it with a literal ssz-size", originalType, sizeHints[0].Expr)
 		case hasLiteral:
