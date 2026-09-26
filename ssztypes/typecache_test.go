@@ -3332,7 +3332,7 @@ func TestGetSszMaxSizeTagDynSszMaxNumeric(t *testing.T) {
 
 	// The ssz-max:"0" placeholder promises a spec value, which a literal is not.
 	field = makeField("Num", reflect.TypeOf([]byte{}), `ssz-max:"0" dynssz-max:"200"`)
-	if _, err := getSszMaxSizeTag(ds, field); err == nil {
+	if _, err = getSszMaxSizeTag(ds, field); err == nil {
 		t.Fatal("expected a dynssz-max literal against the placeholder to be refused")
 	}
 
