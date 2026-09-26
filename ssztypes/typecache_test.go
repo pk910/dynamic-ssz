@@ -3313,18 +3313,31 @@ func TestGetSszMaxSizeTagPlaceholderMismatch(t *testing.T) {
 
 func TestGetSszMaxSizeTagDynSszMaxNumeric(t *testing.T) {
 	ds := &dummyDynamicSpecs{}
-	// dynssz-max:"200" with numeric value
-	field := makeField("Num", reflect.TypeOf([]byte{}), `ssz-max:"100" dynssz-max:"200"`)
 
+	// A literal that differs from the static limit is refused.
+	field := makeField("Num", reflect.TypeOf([]byte{}), `ssz-max:"100" dynssz-max:"200"`)
+	if _, err := getSszMaxSizeTag(ds, field); err == nil {
+		t.Fatal("expected a differing dynssz-max literal to be refused")
+	}
+
+	// One that repeats it is the plain static limit.
+	field = makeField("Num", reflect.TypeOf([]byte{}), `ssz-max:"100" dynssz-max:"100"`)
 	maxSizes, err := getSszMaxSizeTag(ds, field)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(maxSizes) != 1 {
-		t.Fatalf("expected 1 max size hint, got %d", len(maxSizes))
+	if len(maxSizes) != 1 || maxSizes[0].Size != 100 || maxSizes[0].Custom || maxSizes[0].Expr != "" {
+		t.Fatalf("expected one static hint of max 100, got %+v", maxSizes)
 	}
-	if maxSizes[0].Size != 200 {
-		t.Fatalf("expected max size 200, got %d", maxSizes[0].Size)
+
+	// A literal with no static limit is the limit.
+	field = makeField("Num", reflect.TypeOf([]byte{}), `dynssz-max:"200"`)
+	maxSizes, err = getSszMaxSizeTag(ds, field)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(maxSizes) != 1 || maxSizes[0].Size != 200 {
+		t.Fatalf("expected one hint of max 200, got %+v", maxSizes)
 	}
 }
 
@@ -3453,13 +3466,20 @@ func TestListWithDynamicSizeAccepted(t *testing.T) {
 	}
 }
 
-// Test numeric dynssz-size override to cover getSszSizeTag line 276 (err==nil branch)
+// A numeric dynssz-size repeats the static length; one that differs is refused.
 func TestTypeCache_NumericDynSszSizeOverride(t *testing.T) {
 	ds := &dummyDynamicSpecs{}
 	cache := NewTypeCache(ds)
 
-	type TestStruct struct {
+	type Differing struct {
 		Data []byte `ssz-size:"32" dynssz-size:"64"`
+	}
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(Differing{}), nil, nil, nil); err == nil {
+		t.Fatal("expected a differing dynssz-size literal to be refused")
+	}
+
+	type TestStruct struct {
+		Data []byte `ssz-size:"64" dynssz-size:"64"`
 	}
 
 	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
@@ -3601,18 +3621,17 @@ func TestParseTags_LiteralSizePastLimit(t *testing.T) {
 }
 
 func TestParseTags_DynMaxNumericOverride(t *testing.T) {
-	// dynssz-max with a numeric value that differs from ssz-max
-	_, _, maxHints, err := ParseTags(`ssz-max:"10" dynssz-max:"20"`)
+	// A numeric dynssz-max that differs from ssz-max is refused; one that
+	// repeats it is the plain static limit.
+	if _, _, _, err := ParseTags(`ssz-max:"10" dynssz-max:"20"`); err == nil {
+		t.Fatal("expected a differing dynssz-max literal to be refused")
+	}
+	_, _, maxHints, err := ParseTags(`ssz-max:"10" dynssz-max:"10"`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	if len(maxHints) != 1 {
-		t.Fatalf("expected 1 max hint, got %d", len(maxHints))
-	}
-
-	if maxHints[0].Size != 20 {
-		t.Fatalf("expected dynssz-max override to 20, got %d", maxHints[0].Size)
+	if len(maxHints) != 1 || maxHints[0].Size != 10 || maxHints[0].Custom || maxHints[0].Expr != "" {
+		t.Fatalf("expected one static hint of max 10, got %+v", maxHints)
 	}
 }
 
@@ -3793,29 +3812,25 @@ func TestParseTags_Comprehensive(t *testing.T) {
 	})
 
 	t.Run("DynSszBitsize", func(t *testing.T) {
-		_, sizeHints, _, err := ParseTags(`ssz-bitsize:"32" dynssz-bitsize:"64"`)
+		_, sizeHints, _, err := ParseTags(`ssz-bitsize:"64" dynssz-bitsize:"64"`)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if len(sizeHints) != 1 {
 			t.Fatalf("expected 1 size hint, got %d", len(sizeHints))
 		}
-		// dynssz-bitsize:"64" overrides ssz-bitsize:"32"
+		// dynssz-bitsize:"64" repeats ssz-bitsize:"64"
 		if sizeHints[0].Size != 64 {
-			t.Fatalf("expected Size=64 from dynssz-bitsize override, got %d", sizeHints[0].Size)
+			t.Fatalf("expected Size=64, got %d", sizeHints[0].Size)
 		}
 		if !sizeHints[0].Bits {
 			t.Fatal("expected Bits=true from dynssz-bitsize")
 		}
 	})
 
-	t.Run("DynSszBitsizeOverrideSszBitsize", func(t *testing.T) {
-		_, sizeHints, _, err := ParseTags(`ssz-bitsize:"64" dynssz-bitsize:"128"`)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if len(sizeHints) != 1 || sizeHints[0].Size != 128 || !sizeHints[0].Bits {
-			t.Fatalf("expected Size=128 Bits=true, got %+v", sizeHints[0])
+	t.Run("DynSszBitsizeDiffersFromSszBitsize", func(t *testing.T) {
+		if _, _, _, err := ParseTags(`ssz-bitsize:"64" dynssz-bitsize:"128"`); err == nil {
+			t.Fatal("expected a differing dynssz-bitsize literal to be refused")
 		}
 	})
 
@@ -3832,13 +3847,9 @@ func TestParseTags_Comprehensive(t *testing.T) {
 		}
 	})
 
-	t.Run("DynSszSizeNumericOverride", func(t *testing.T) {
-		_, sizeHints, _, err := ParseTags(`ssz-size:"32" dynssz-size:"64"`)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if len(sizeHints) != 1 || sizeHints[0].Size != 64 {
-			t.Fatalf("expected Size=64, got %+v", sizeHints)
+	t.Run("DynSszSizeNumericDiffers", func(t *testing.T) {
+		if _, _, _, err := ParseTags(`ssz-size:"32" dynssz-size:"64"`); err == nil {
+			t.Fatal("expected a differing dynssz-size literal to be refused")
 		}
 	})
 
@@ -4686,8 +4697,8 @@ func TestTypeCache_ListElemError(t *testing.T) {
 
 func TestGetSszSizeTagDynSszBitsize(t *testing.T) {
 	ds := &dummyDynamicSpecs{}
-	// dynssz-bitsize:"64" as a numeric bitsize override
-	field := makeField("BitField", reflect.TypeOf([]byte{}), `ssz-bitsize:"32" dynssz-bitsize:"64"`)
+	// dynssz-bitsize:"64" as a numeric bitsize repeating the static one
+	field := makeField("BitField", reflect.TypeOf([]byte{}), `ssz-bitsize:"64" dynssz-bitsize:"64"`)
 
 	sizes, err := getSszSizeTag(ds, field)
 	if err != nil {
@@ -4697,7 +4708,7 @@ func TestGetSszSizeTagDynSszBitsize(t *testing.T) {
 		t.Fatalf("expected 1 size hint, got %d", len(sizes))
 	}
 	if sizes[0].Size != 64 {
-		t.Fatalf("expected Size 64 from dynssz-bitsize override, got %d", sizes[0].Size)
+		t.Fatalf("expected Size 64, got %d", sizes[0].Size)
 	}
 	if !sizes[0].Bits {
 		t.Fatal("expected Bits=true")

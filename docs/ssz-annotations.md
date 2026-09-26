@@ -144,6 +144,18 @@ Bad2 [][]uint64 `ssz-max:"16,8" dynssz-max:"?,ROW_LIMIT"`
 Good2 [][]uint64 `ssz-max:"?,8" dynssz-max:"?,ROW_LIMIT"`
 ```
 
+**A number in the dynamic tag repeats the static value.** The dynamic tags name
+spec values; a number in one only fills a dimension the static tag already
+sizes, as the `2` in `Good` above does. A number that differs from the static
+tag is rejected: the static value is what a fastssz-style method baked in, and
+a dimension the tag pair disagrees on would be served with either value
+depending on the path taken.
+
+```go
+// Rejected: the literal contradicts the static limit.
+Bad3 []uint64 `ssz-max:"4" dynssz-max:"2"`
+```
+
 **A dimension that is `?` to both families is an unbounded list.** `ssz-size:"?"`
 with `ssz-max:"?"` says dynamic and unbounded, which is what leaving both tags
 off says. `ssz-max:"0"` spells the same thing explicitly: a zero limit means

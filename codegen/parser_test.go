@@ -2922,35 +2922,31 @@ func TestParseFieldTagsEdgeCases(t *testing.T) {
 		}
 	})
 
-	t.Run("DynSszSizeUpdatesExistingHint", func(t *testing.T) {
-		// When ssz-size and dynssz-size both exist with different values
-		tags := `ssz-size:"32" dynssz-size:"64"`
-		_, sizeHints, _, err := parser.parseFieldTags(tags)
+	t.Run("DynSszSizeLiteralRepeatsStatic", func(t *testing.T) {
+		// A literal that differs from the static length is refused; one that
+		// repeats it is the plain static hint.
+		if _, _, _, err := parser.parseFieldTags(`ssz-size:"32" dynssz-size:"64"`); err == nil {
+			t.Fatal("expected a differing dynssz-size literal to be refused")
+		}
+		_, sizeHints, _, err := parser.parseFieldTags(`ssz-size:"32" dynssz-size:"32"`)
 		if err != nil {
 			t.Fatalf("Failed to parse combined size tags: %v", err)
 		}
-		if len(sizeHints) != 1 {
-			t.Errorf("Expected 1 size hint, got %d", len(sizeHints))
-		}
-		// dynssz-size should override
-		if sizeHints[0].Size != 64 {
-			t.Errorf("Expected size 64 (from dynssz-size), got %d", sizeHints[0].Size)
+		if len(sizeHints) != 1 || sizeHints[0].Size != 32 || sizeHints[0].Custom || sizeHints[0].Expr != "" {
+			t.Errorf("Expected one static hint of size 32, got %+v", sizeHints)
 		}
 	})
 
-	t.Run("DynSszMaxUpdatesExistingHint", func(t *testing.T) {
-		// When ssz-max and dynssz-max both exist with different values
-		tags := `ssz-max:"1024" dynssz-max:"2048"`
-		_, _, maxSizeHints, err := parser.parseFieldTags(tags)
+	t.Run("DynSszMaxLiteralRepeatsStatic", func(t *testing.T) {
+		if _, _, _, err := parser.parseFieldTags(`ssz-max:"1024" dynssz-max:"2048"`); err == nil {
+			t.Fatal("expected a differing dynssz-max literal to be refused")
+		}
+		_, _, maxSizeHints, err := parser.parseFieldTags(`ssz-max:"1024" dynssz-max:"1024"`)
 		if err != nil {
 			t.Fatalf("Failed to parse combined max size tags: %v", err)
 		}
-		if len(maxSizeHints) != 1 {
-			t.Errorf("Expected 1 max size hint, got %d", len(maxSizeHints))
-		}
-		// dynssz-max should override
-		if maxSizeHints[0].Size != 2048 {
-			t.Errorf("Expected max size 2048 (from dynssz-max), got %d", maxSizeHints[0].Size)
+		if len(maxSizeHints) != 1 || maxSizeHints[0].Size != 1024 || maxSizeHints[0].Custom || maxSizeHints[0].Expr != "" {
+			t.Errorf("Expected one static hint of max 1024, got %+v", maxSizeHints)
 		}
 	})
 

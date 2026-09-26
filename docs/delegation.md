@@ -35,9 +35,9 @@ The static surface is taken whenever the analysis phase admits it: fastssz
 delegation is on (`WithNoFastSsz` not set) and no size or limit below the
 child depends on the spec. Under that condition the static method produces
 the same bytes and root as the dynamic one and skips the spec argument, so it
-is preferred on every path. A static method baked its tags in and enforces
-them on every operation, so a child whose size or limit depends on the spec is
-always reached through a spec-aware surface. The two engines decide this
+is preferred on every path. A static method baked its tags into its output and
+enforces them when it encodes, decodes and hashes, so a child whose size or
+limit depends on the spec is always reached through a spec-aware surface. The two engines decide this
 differently: the reflection engine resolves the spec values and only counts
 one that differs from the static tag (`HasDynamicSize`, `HasDynamicMax`),
 while generated code, which sees no spec values, counts every expression

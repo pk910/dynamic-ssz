@@ -9404,6 +9404,17 @@ type limitHolderUnmarshalOnly struct {
 	P *limitProbeUnmarshalOnly
 }
 
+// limitPlain is limitProbe's shape without any methods of its own.
+type limitPlain struct {
+	A     uint64
+	Items []uint64 `ssz-max:"4" dynssz-max:"PROBE_MAX"`
+}
+
+type limitPlainHolder struct {
+	X uint32
+	P *limitPlain
+}
+
 func encodeLimitHolder(items []uint64) []byte {
 	b := binary.LittleEndian.AppendUint32(nil, 1)
 	b = binary.LittleEndian.AppendUint32(b, 8)
@@ -9433,6 +9444,9 @@ func TestDelegatedLimitFollowsSpecs(t *testing.T) {
 		if _, err := ds.HashTreeRoot(value); err == nil {
 			t.Error("HashTreeRoot accepted a value over the resolved limit")
 		}
+		if _, err := ds.GetTree(value); err == nil {
+			t.Error("GetTree accepted a value over the resolved limit")
+		}
 		if err := ds.UnmarshalSSZ(fresh(), raw); err == nil {
 			t.Error("UnmarshalSSZ accepted input over the resolved limit")
 		}
@@ -9443,6 +9457,9 @@ func TestDelegatedLimitFollowsSpecs(t *testing.T) {
 
 	accept := func(t *testing.T, ds *DynSsz, value any, fresh func() any, raw []byte) {
 		t.Helper()
+		if size, err := ds.SizeSSZ(value); err != nil || size != len(raw) {
+			t.Errorf("SizeSSZ = %d (%v), want %d", size, err, len(raw))
+		}
 		if out, err := ds.MarshalSSZ(value); err != nil || !bytes.Equal(out, raw) {
 			t.Errorf("MarshalSSZ = %x (%v), want %x", out, err, raw)
 		}
@@ -9450,8 +9467,12 @@ func TestDelegatedLimitFollowsSpecs(t *testing.T) {
 		if err := ds.MarshalSSZWriter(value, &w); err != nil || !bytes.Equal(w.Bytes(), raw) {
 			t.Errorf("MarshalSSZWriter = %x (%v), want %x", w.Bytes(), err, raw)
 		}
-		if _, err := ds.HashTreeRoot(value); err != nil {
+		root, err := ds.HashTreeRoot(value)
+		if err != nil {
 			t.Errorf("HashTreeRoot: %v", err)
+		}
+		if tree, err := ds.GetTree(value); err != nil || !bytes.Equal(tree.Hash(), root[:]) {
+			t.Errorf("GetTree root = %x (%v), want %x", tree.Hash(), err, root)
 		}
 		if err := ds.UnmarshalSSZ(fresh(), raw); err != nil {
 			t.Errorf("UnmarshalSSZ: %v", err)
@@ -9498,6 +9519,32 @@ func TestDelegatedLimitFollowsSpecs(t *testing.T) {
 		accept(t, equal, &limitHolderUnmarshalOnly{X: 1, P: &limitProbeUnmarshalOnly{A: 7, Items: three}}, fresh, encodeLimitHolder(three))
 		if limitProbeCalls == 0 {
 			t.Error("UnmarshalSSZ did not run under a limit equal to the static tag")
+		}
+	})
+
+	// The resolved limit sets the list's chunk capacity, so a value inside both
+	// limits still hashes differently under each. A delegated type's root must
+	// follow the resolved limit exactly as the same shape without methods does.
+	t.Run("root follows the resolved limit", func(t *testing.T) {
+		equal := NewDynSsz(map[string]any{"PROBE_MAX": uint64(4)})
+		wide := NewDynSsz(map[string]any{"PROBE_MAX": uint64(8)})
+		plainEqual, err := equal.HashTreeRoot(&limitPlainHolder{X: 1, P: &limitPlain{A: 7, Items: three}})
+		if err != nil {
+			t.Fatalf("plain under the static limit: %v", err)
+		}
+		plainWide, err := wide.HashTreeRoot(&limitPlainHolder{X: 1, P: &limitPlain{A: 7, Items: three}})
+		if err != nil {
+			t.Fatalf("plain under the wider limit: %v", err)
+		}
+		if plainEqual == plainWide {
+			t.Fatal("the two limits must give the list different chunk capacities")
+		}
+		probeWide, err := wide.HashTreeRoot(&limitHolder{X: 1, P: &limitProbe{A: 7, Items: three}})
+		if err != nil {
+			t.Fatalf("probe under the wider limit: %v", err)
+		}
+		if probeWide != plainWide {
+			t.Fatalf("delegated root %x under the wider limit, want %x", probeWide, plainWide)
 		}
 	})
 }
