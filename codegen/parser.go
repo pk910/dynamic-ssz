@@ -678,6 +678,24 @@ func (p *Parser) fullyDelegatesSSZ(t types.Type) bool {
 //
 //nolint:gocyclo // SSZ type descriptor builder is inherently complex
 func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints []ssztypes.SszTypeHint, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint) (*ssztypes.TypeDescriptor, error) {
+	// A reference whose hints read the same as the type's own annotation says
+	// nothing new about the type: it is built as a bare reference, so the
+	// type's declaration and methods stand and its plain descriptor is shared.
+	// The annotation is read through the same reader as a tag, so the two
+	// sides compare like for like.
+	if p.AnnotationResolver != nil && (len(typeHints) > 0 || len(sizeHints) > 0 || len(maxSizeHints) > 0) {
+		annotatedType := types.Unalias(schemaType)
+		if ptr, ok := annotatedType.(*types.Pointer); ok {
+			annotatedType = types.Unalias(ptr.Elem())
+		}
+		if annTag := p.AnnotationResolver(annotatedType); annTag != "" {
+			annType, annSize, annMax, err := ssztypes.ParseTags(annTag)
+			if err == nil && ssztypes.SameHints(typeHints, annType, sizeHints, annSize, maxSizeHints, annMax) {
+				typeHints, sizeHints, maxSizeHints = nil, nil, nil
+			}
+		}
+	}
+
 	// Only cache in the plain descriptor cache when types match and no hints
 	// are provided; hint-carrying builds are cached per exact hint combination.
 	cacheable := dataType == schemaType && len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0
@@ -1639,13 +1657,10 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 		// Determine data and schema field types
 		schemaFieldType := schemaField.Type()
 
-		// A field tag overrides the type's registered annotation per key: the
-		// two are joined (field tag first, Lookup returns the first occurrence)
-		// and the field is described inline from the joined tag. A field that
-		// repeats the annotation, or adds nothing to it, says nothing new: it
-		// hands over no hints, and the type's own declaration and methods stand.
+		// A field tag is joined in front of the type's registered annotation
+		// (Lookup returns the first occurrence, so the field overrides per key)
+		// and the joined tag is read like any other.
 		fieldTag := schemaStruct.Tag(i)
-		annTag := ""
 		if p.AnnotationResolver != nil {
 			// An alias is transparent: the annotation belongs to the type it
 			// names.
@@ -1653,22 +1668,14 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 			if ptr, ok := annotationType.(*types.Pointer); ok {
 				annotationType = types.Unalias(ptr.Elem())
 			}
-			annTag = p.AnnotationResolver(annotationType)
-		}
-
-		var typeHints []ssztypes.SszTypeHint
-		var sizeHints []ssztypes.SszSizeHint
-		var maxSizeHints []ssztypes.SszMaxSizeHint
-		if annTag == "" || ssztypes.FieldTagOverridesAnnotation(reflect.StructTag(fieldTag), annTag) {
-			if annTag != "" {
+			if annTag := p.AnnotationResolver(annotationType); annTag != "" {
 				fieldTag = string(ssztypes.JoinFieldAnnotationTag(reflect.StructTag(fieldTag), annTag))
 			}
+		}
 
-			var err error
-			typeHints, sizeHints, maxSizeHints, err = p.parseFieldTags(fieldTag)
-			if err != nil {
-				return fmt.Errorf("failed to parse tags for field %v: %v", schemaField.Name(), err)
-			}
+		typeHints, sizeHints, maxSizeHints, err := p.parseFieldTags(fieldTag)
+		if err != nil {
+			return fmt.Errorf("failed to parse tags for field %v: %v", schemaField.Name(), err)
 		}
 		// The runtime struct position, for direct field access by the
 		// reflection walkers (the schema position for non-view descriptors).

@@ -7059,6 +7059,14 @@ func (*flagAnnDelegate) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils.Hash
 	return nil
 }
 
+type flagAnnTypedDelegate []uint64
+
+var _ = sszutils.Annotate[flagAnnTypedDelegate](`ssz-type:"list" ssz-max:"4"`)
+
+func (*flagAnnTypedDelegate) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
 // A field that carries no tag, or repeats its type's annotation, keeps the
 // type's delegation flags; a field that changes the declared shape drops them.
 func TestFieldTagRepeatingAnnotationKeepsDelegation(t *testing.T) {
@@ -7074,17 +7082,35 @@ func TestFieldTagRepeatingAnnotationKeepsDelegation(t *testing.T) {
 	type typeHintOnly struct {
 		L flagAnnDelegate `ssz-type:"list"`
 	}
+	type aliasHintOnly struct {
+		L flagAnnDelegate `ssz:"list"`
+	}
+	type aliasOfTyped struct {
+		L flagAnnTypedDelegate `ssz:"list"`
+	}
+	type aliasOfTypedOther struct {
+		L flagAnnTypedDelegate `ssz:"list" ssz-max:"8"`
+	}
+	type indexOnly struct {
+		X uint32          `ssz-index:"0"`
+		L flagAnnDelegate `ssz-index:"1"`
+	}
 
 	tests := []struct {
 		name      string
 		holder    any
+		field     int
 		delegated bool
 		limit     uint64
 	}{
-		{"no tag", noTag{}, true, 4},
-		{"same tag", sameTag{}, true, 4},
-		{"other tag", otherTag{}, false, 8},
-		{"type hint the annotation lacks", typeHintOnly{}, false, 4},
+		{"no tag", noTag{}, 0, true, 4},
+		{"same tag", sameTag{}, 0, true, 4},
+		{"other tag", otherTag{}, 0, false, 8},
+		{"type hint the annotation lacks", typeHintOnly{}, 0, false, 4},
+		{"ssz alias the annotation lacks", aliasHintOnly{}, 0, false, 4},
+		{"ssz alias naming the annotation's type", aliasOfTyped{}, 0, true, 4},
+		{"ssz alias with another limit", aliasOfTypedOther{}, 0, false, 8},
+		{"field-only ssz-index", indexOnly{}, 1, true, 4},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -7092,7 +7118,7 @@ func TestFieldTagRepeatingAnnotationKeepsDelegation(t *testing.T) {
 			if err != nil {
 				t.Fatalf("descriptor: %v", err)
 			}
-			field := desc.ContainerDesc.Fields[0].Type
+			field := desc.ContainerDesc.Fields[tt.field].Type
 			if got := field.SszCompatFlags&SszCompatFlagDynamicHashRoot != 0; got != tt.delegated {
 				t.Fatalf("delegated = %v, want %v (compat flags %b)", got, tt.delegated, field.SszCompatFlags)
 			}

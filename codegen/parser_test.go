@@ -3947,35 +3947,39 @@ func TestParserWalkerParameterAcceptsHashWalker(t *testing.T) {
 func TestFieldTagRepeatingAnnotationKeepsDelegation(t *testing.T) {
 	pkg := types.NewPackage("annfield", "annfield")
 	elem := types.NewNamed(types.NewTypeName(token.NoPos, pkg, "annList", nil), types.NewSlice(types.Typ[types.Uint64]), nil)
-	holder := func(tag string) types.Type {
+	typed := types.NewNamed(types.NewTypeName(token.NoPos, pkg, "annTypedList", nil), types.NewSlice(types.Typ[types.Uint64]), nil)
+	annotations := map[types.Type]string{elem: `ssz-max:"4"`, typed: `ssz-type:"list" ssz-max:"4"`}
+	holder := func(field types.Type, xTag, lTag string) types.Type {
 		return types.NewStruct([]*types.Var{
 			types.NewField(token.NoPos, pkg, "X", types.Typ[types.Uint32], false),
-			types.NewField(token.NoPos, pkg, "L", elem, false),
-		}, []string{"", tag})
+			types.NewField(token.NoPos, pkg, "L", field, false),
+		}, []string{xTag, lTag})
 	}
 
 	tests := []struct {
 		name      string
+		field     types.Type
+		xTag      string
 		tag       string
 		delegated bool
 		limit     uint64
 	}{
-		{"no tag", "", true, 4},
-		{"same tag", `ssz-max:"4"`, true, 4},
-		{"other tag", `ssz-max:"8"`, false, 8},
-		{"type hint the annotation lacks", `ssz-type:"list"`, false, 4},
+		{"no tag", elem, "", "", true, 4},
+		{"same tag", elem, "", `ssz-max:"4"`, true, 4},
+		{"other tag", elem, "", `ssz-max:"8"`, false, 8},
+		{"type hint the annotation lacks", elem, "", `ssz-type:"list"`, false, 4},
+		{"ssz alias the annotation lacks", elem, "", `ssz:"list"`, false, 4},
+		{"ssz alias naming the annotation's type", typed, "", `ssz:"list"`, true, 4},
+		{"ssz alias with another limit", typed, "", `ssz:"list" ssz-max:"8"`, false, 8},
+		{"field-only ssz-index", elem, `ssz-index:"0"`, `ssz-index:"1"`, true, 4},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := NewParser()
-			p.AnnotationResolver = func(typ types.Type) string {
-				if types.Unalias(typ) == elem {
-					return `ssz-max:"4"`
-				}
-				return ""
-			}
+			p.AnnotationResolver = func(typ types.Type) string { return annotations[types.Unalias(typ)] }
 			p.CompatFlags[elem.String()] = ssztypes.SszCompatFlagDynamicHashRoot
-			desc, err := p.buildTypeDescriptor(holder(tt.tag), holder(tt.tag), nil, nil, nil)
+			p.CompatFlags[typed.String()] = ssztypes.SszCompatFlagDynamicHashRoot
+			desc, err := p.buildTypeDescriptor(holder(tt.field, tt.xTag, tt.tag), holder(tt.field, tt.xTag, tt.tag), nil, nil, nil)
 			if err != nil {
 				t.Fatalf("descriptor: %v", err)
 			}

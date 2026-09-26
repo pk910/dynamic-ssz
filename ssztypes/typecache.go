@@ -324,6 +324,27 @@ func (tc *TypeCache) cycleBelow(t reflect.Type, walk func(reflect.Type) reflect.
 // When runtimeType == schemaType, this is the standard descriptor building.
 // When they differ, it handles view descriptors where schema defines SSZ layout.
 func (tc *TypeCache) getTypeDescriptor(runtimeType, schemaType reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
+	// A reference whose hints read the same as the type's own annotation says
+	// nothing new about the type: it is built as a bare reference, so the
+	// type's declaration and methods stand and its plain descriptor is shared.
+	// The annotation is read through the same readers as a tag, so the two
+	// sides compare like for like.
+	if len(sizeHints) > 0 || len(maxSizeHints) > 0 || len(typeHints) > 0 {
+		annotatedType := schemaType
+		if annotatedType.Kind() == reflect.Pointer {
+			annotatedType = annotatedType.Elem()
+		}
+		if annTag, ok := sszutils.LookupAnnotation(annotatedType); ok {
+			annField := reflect.StructField{Name: annotatedType.String(), Type: annotatedType, Tag: reflect.StructTag(annTag)}
+			annSize, sizeErr := getSszSizeTag(tc.specs, &annField)
+			annMax, maxErr := getSszMaxSizeTag(tc.specs, &annField)
+			annType, typeErr := getSszTypeTag(&annField)
+			if sizeErr == nil && maxErr == nil && typeErr == nil && SameHints(typeHints, annType, sizeHints, annSize, maxSizeHints, annMax) {
+				sizeHints, maxSizeHints, typeHints = nil, nil, nil
+			}
+		}
+	}
+
 	key := typeKey{runtime: runtimeType, schema: schemaType}
 	cacheable := len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0
 
@@ -1736,34 +1757,26 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 			fieldIndices[*sszIndex] = struct{}{}
 		}
 
-		// A field tag overrides the type's registered annotation per key: the
-		// two are joined (field tag first, Lookup returns the first occurrence)
-		// and the field is described inline from the joined tag. A field that
-		// repeats the annotation, or adds nothing to it, says nothing new: it
-		// hands over no hints, and the type's own declaration and methods stand.
-		var sizeHints []SszSizeHint
-		var maxSizeHints []SszMaxSizeHint
-		var typeHints []SszTypeHint
-		annTag, annotated := sszutils.LookupAnnotation(schemaField.Type)
-		if !annotated || FieldTagOverridesAnnotation(schemaField.Tag, annTag) {
-			if annotated {
-				schemaField.Tag = JoinFieldAnnotationTag(schemaField.Tag, annTag)
-			}
+		// A field tag is joined in front of the type's registered annotation
+		// (Lookup returns the first occurrence, so the field overrides per key)
+		// and the joined tag is read like any other.
+		if annTag, ok := sszutils.LookupAnnotation(schemaField.Type); ok {
+			schemaField.Tag = JoinFieldAnnotationTag(schemaField.Tag, annTag)
+		}
 
-			sizeHints, err = getSszSizeTag(tc.specs, &schemaField)
-			if err != nil {
-				return sszutils.ErrorWithPath(err, schemaField.Name)
-			}
+		sizeHints, err := getSszSizeTag(tc.specs, &schemaField)
+		if err != nil {
+			return sszutils.ErrorWithPath(err, schemaField.Name)
+		}
 
-			maxSizeHints, err = getSszMaxSizeTag(tc.specs, &schemaField)
-			if err != nil {
-				return sszutils.ErrorWithPath(err, schemaField.Name)
-			}
+		maxSizeHints, err := getSszMaxSizeTag(tc.specs, &schemaField)
+		if err != nil {
+			return sszutils.ErrorWithPath(err, schemaField.Name)
+		}
 
-			typeHints, err = getSszTypeTag(&schemaField)
-			if err != nil {
-				return sszutils.ErrorWithPath(err, schemaField.Name)
-			}
+		typeHints, err := getSszTypeTag(&schemaField)
+		if err != nil {
+			return sszutils.ErrorWithPath(err, schemaField.Name)
 		}
 
 		// Build child type descriptor using (runtimeFieldType, schemaFieldType) pair.
