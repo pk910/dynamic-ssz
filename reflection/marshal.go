@@ -215,11 +215,11 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 // through to the reflection walk. Custom types always delegate; other types
 // delegate unless ctx.noDelegation is set.
 func (ctx *ReflectionCtx) tryMarshalCompat(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder) (bool, error) {
-	hasDynamicSize := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
+	hasDynamicSpec := sourceType.SszTypeFlags&(ssztypes.SszTypeFlagHasDynamicSize|ssztypes.SszTypeFlagHasDynamicMax) != 0
 	isFastsszMarshaler := sourceType.SszCompatFlags&(ssztypes.SszCompatFlagFastsszBufferMarshaler|ssztypes.SszCompatFlagFastsszValueMarshaler) != 0
 	useDynamicMarshal := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0
 	useDynamicEncoder := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicEncoder != 0
-	useFastSsz := !ctx.noFastSsz && isFastsszMarshaler && !hasDynamicSize
+	useFastSsz := !ctx.noFastSsz && isFastsszMarshaler && !hasDynamicSpec
 	if !useFastSsz && sourceType.SszType == ssztypes.SszCustomType {
 		useFastSsz = true
 	}

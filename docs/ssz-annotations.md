@@ -97,7 +97,7 @@ The tag string uses the same `key:"value"` syntax as Go struct field tags. All S
 **Important:**
 - Call `Annotate[T]()` at package level (in a `var` block or `init()` function) so the annotation is registered before any SSZ operation
 - The tag string must use the exact struct tag format with quoted values: `ssz-max:"4096"`, not `ssz-max:4096`
-- When a struct field uses an annotated type but also has its own field tags, the field tags take precedence
+- When a struct field uses an annotated type but also has its own field tags, the field tags take precedence key by key, and the field is then processed inline rather than through the type's own SSZ methods. A field tag that repeats the annotation's values changes nothing: the type's declaration and methods stay in charge
 
 ## Size Annotations
 
@@ -142,6 +142,21 @@ Bad2 [][]uint64 `ssz-max:"16,8" dynssz-max:"?,ROW_LIMIT"`
 
 // Correct: the placeholders line up, so dimension 0 is unbounded either way.
 Good2 [][]uint64 `ssz-max:"?,8" dynssz-max:"?,ROW_LIMIT"`
+```
+
+**A number in the dynamic tag repeats the static value.** The dynamic tags name
+spec values; a number in one only fills a dimension the static tag already
+sizes, as the `2` in `Good` above does. A number that differs from the static
+tag is rejected: the static value is what a fastssz-style method baked in, and
+a dimension the tag pair disagrees on would be served with either value
+depending on the path taken.
+
+```go
+// Rejected: the literal contradicts the static limit.
+Bad3 []uint64 `ssz-max:"4" dynssz-max:"2"`
+
+// Rejected: the placeholder promises a spec value, and a number is not one.
+Bad4 []uint64 `ssz-max:"0" dynssz-max:"2"`
 ```
 
 **A dimension that is `?` to both families is an unbounded list.** `ssz-size:"?"`

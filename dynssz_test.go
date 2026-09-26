@@ -9323,3 +9323,295 @@ func TestSpecSizedVectorNeedsItsSpecValue(t *testing.T) {
 		t.Errorf("err = %v, want ErrInvalidConstraint", err)
 	}
 }
+
+// limitProbeCalls counts how often the probes' own fastssz methods ran.
+var limitProbeCalls int
+
+// limitProbe carries the full fastssz surface with the static limit 4 baked
+// into every method, as a fastssz-generated type would.
+type limitProbe struct {
+	A     uint64
+	Items []uint64 `ssz-max:"4" dynssz-max:"PROBE_MAX"`
+}
+
+func (p *limitProbe) SizeSSZ() int {
+	limitProbeCalls++
+	return 12 + 8*len(p.Items)
+}
+
+func (p *limitProbe) MarshalSSZ() ([]byte, error) { return p.MarshalSSZTo(nil) }
+
+func (p *limitProbe) MarshalSSZTo(b []byte) ([]byte, error) {
+	limitProbeCalls++
+	if len(p.Items) > 4 {
+		return nil, errors.New("static limit 4")
+	}
+	b = binary.LittleEndian.AppendUint64(b, p.A)
+	b = binary.LittleEndian.AppendUint32(b, 12)
+	for _, x := range p.Items {
+		b = binary.LittleEndian.AppendUint64(b, x)
+	}
+	return b, nil
+}
+
+func (p *limitProbe) UnmarshalSSZ(buf []byte) error {
+	limitProbeCalls++
+	return unmarshalLimitProbe(buf, &p.A, &p.Items)
+}
+
+func (p *limitProbe) HashTreeRoot() ([32]byte, error) {
+	limitProbeCalls++
+	if len(p.Items) > 4 {
+		return [32]byte{}, errors.New("static limit 4")
+	}
+	return [32]byte{0xee}, nil
+}
+
+// limitProbeUnmarshalOnly carries the static UnmarshalSSZ alone.
+type limitProbeUnmarshalOnly struct {
+	A     uint64
+	Items []uint64 `ssz-max:"4" dynssz-max:"PROBE_MAX"`
+}
+
+func (p *limitProbeUnmarshalOnly) UnmarshalSSZ(buf []byte) error {
+	limitProbeCalls++
+	return unmarshalLimitProbe(buf, &p.A, &p.Items)
+}
+
+func unmarshalLimitProbe(buf []byte, a *uint64, items *[]uint64) error {
+	if len(buf) < 12 || binary.LittleEndian.Uint32(buf[8:]) != 12 {
+		return errors.New("bad header")
+	}
+	tail := buf[12:]
+	if len(tail)%8 != 0 || len(tail)/8 > 4 {
+		return errors.New("static limit 4")
+	}
+	*a = binary.LittleEndian.Uint64(buf)
+	*items = make([]uint64, len(tail)/8)
+	for i := range *items {
+		(*items)[i] = binary.LittleEndian.Uint64(tail[i*8:])
+	}
+	return nil
+}
+
+type limitHolder struct {
+	X uint32
+	P *limitProbe
+}
+
+type limitHolderUnmarshalOnly struct {
+	X uint32
+	P *limitProbeUnmarshalOnly
+}
+
+// limitPlain is limitProbe's shape without any methods of its own.
+type limitPlain struct {
+	A     uint64
+	Items []uint64 `ssz-max:"4" dynssz-max:"PROBE_MAX"`
+}
+
+type limitPlainHolder struct {
+	X uint32
+	P *limitPlain
+}
+
+func encodeLimitHolder(items []uint64) []byte {
+	b := binary.LittleEndian.AppendUint32(nil, 1)
+	b = binary.LittleEndian.AppendUint32(b, 8)
+	b = binary.LittleEndian.AppendUint64(b, 7)
+	b = binary.LittleEndian.AppendUint32(b, 12)
+	for _, v := range items {
+		b = binary.LittleEndian.AppendUint64(b, v)
+	}
+	return b
+}
+
+// A spec that resolves a limit away from the static tag takes the type off
+// every fastssz method, so the resolved limit is enforced on every path. A
+// spec that resolves to the static value leaves the delegation in place.
+func TestDelegatedLimitFollowsSpecs(t *testing.T) {
+	three := []uint64{1, 2, 3}
+	five := []uint64{1, 2, 3, 4, 5}
+
+	refuse := func(t *testing.T, ds *DynSsz, value any, fresh func() any, raw []byte) {
+		t.Helper()
+		if _, err := ds.MarshalSSZ(value); err == nil {
+			t.Error("MarshalSSZ accepted a value over the resolved limit")
+		}
+		if err := ds.MarshalSSZWriter(value, &bytes.Buffer{}); err == nil {
+			t.Error("MarshalSSZWriter accepted a value over the resolved limit")
+		}
+		if _, err := ds.HashTreeRoot(value); err == nil {
+			t.Error("HashTreeRoot accepted a value over the resolved limit")
+		}
+		if _, err := ds.GetTree(value); err == nil {
+			t.Error("GetTree accepted a value over the resolved limit")
+		}
+		if err := ds.UnmarshalSSZ(fresh(), raw); err == nil {
+			t.Error("UnmarshalSSZ accepted input over the resolved limit")
+		}
+		if err := ds.UnmarshalSSZReader(fresh(), bytes.NewReader(raw), len(raw)); err == nil {
+			t.Error("UnmarshalSSZReader accepted input over the resolved limit")
+		}
+	}
+
+	accept := func(t *testing.T, ds *DynSsz, value any, fresh func() any, raw []byte) {
+		t.Helper()
+		if size, err := ds.SizeSSZ(value); err != nil || size != len(raw) {
+			t.Errorf("SizeSSZ = %d (%v), want %d", size, err, len(raw))
+		}
+		if out, err := ds.MarshalSSZ(value); err != nil || !bytes.Equal(out, raw) {
+			t.Errorf("MarshalSSZ = %x (%v), want %x", out, err, raw)
+		}
+		var w bytes.Buffer
+		if err := ds.MarshalSSZWriter(value, &w); err != nil || !bytes.Equal(w.Bytes(), raw) {
+			t.Errorf("MarshalSSZWriter = %x (%v), want %x", w.Bytes(), err, raw)
+		}
+		root, err := ds.HashTreeRoot(value)
+		if err != nil {
+			t.Errorf("HashTreeRoot: %v", err)
+		}
+		if tree, err := ds.GetTree(value); err != nil || !bytes.Equal(tree.Hash(), root[:]) {
+			t.Errorf("GetTree root = %x (%v), want %x", tree.Hash(), err, root)
+		}
+		if err := ds.UnmarshalSSZ(fresh(), raw); err != nil {
+			t.Errorf("UnmarshalSSZ: %v", err)
+		}
+		if err := ds.UnmarshalSSZReader(fresh(), bytes.NewReader(raw), len(raw)); err != nil {
+			t.Errorf("UnmarshalSSZReader: %v", err)
+		}
+	}
+
+	t.Run("full surface", func(t *testing.T) {
+		fresh := func() any { return &limitHolder{} }
+		narrow := NewDynSsz(map[string]any{"PROBE_MAX": uint64(2)})
+		refuse(t, narrow, &limitHolder{X: 1, P: &limitProbe{A: 7, Items: three}}, fresh, encodeLimitHolder(three))
+
+		wide := NewDynSsz(map[string]any{"PROBE_MAX": uint64(8)})
+		limitProbeCalls = 0
+		accept(t, wide, &limitHolder{X: 1, P: &limitProbe{A: 7, Items: five}}, fresh, encodeLimitHolder(five))
+		if limitProbeCalls != 0 {
+			t.Errorf("fastssz methods ran %d times under a differing limit", limitProbeCalls)
+		}
+
+		equal := NewDynSsz(map[string]any{"PROBE_MAX": uint64(4)})
+		limitProbeCalls = 0
+		accept(t, equal, &limitHolder{X: 1, P: &limitProbe{A: 7, Items: three}}, fresh, encodeLimitHolder(three))
+		if limitProbeCalls == 0 {
+			t.Error("fastssz methods did not run under a limit equal to the static tag")
+		}
+	})
+
+	t.Run("unmarshal only", func(t *testing.T) {
+		fresh := func() any { return &limitHolderUnmarshalOnly{} }
+		narrow := NewDynSsz(map[string]any{"PROBE_MAX": uint64(2)})
+		refuse(t, narrow, &limitHolderUnmarshalOnly{X: 1, P: &limitProbeUnmarshalOnly{A: 7, Items: three}}, fresh, encodeLimitHolder(three))
+
+		wide := NewDynSsz(map[string]any{"PROBE_MAX": uint64(8)})
+		limitProbeCalls = 0
+		accept(t, wide, &limitHolderUnmarshalOnly{X: 1, P: &limitProbeUnmarshalOnly{A: 7, Items: five}}, fresh, encodeLimitHolder(five))
+		if limitProbeCalls != 0 {
+			t.Errorf("UnmarshalSSZ ran %d times under a differing limit", limitProbeCalls)
+		}
+
+		equal := NewDynSsz(map[string]any{"PROBE_MAX": uint64(4)})
+		limitProbeCalls = 0
+		accept(t, equal, &limitHolderUnmarshalOnly{X: 1, P: &limitProbeUnmarshalOnly{A: 7, Items: three}}, fresh, encodeLimitHolder(three))
+		if limitProbeCalls == 0 {
+			t.Error("UnmarshalSSZ did not run under a limit equal to the static tag")
+		}
+	})
+
+	// The resolved limit sets the list's chunk capacity, so a value inside both
+	// limits still hashes differently under each. A delegated type's root must
+	// follow the resolved limit exactly as the same shape without methods does.
+	t.Run("root follows the resolved limit", func(t *testing.T) {
+		equal := NewDynSsz(map[string]any{"PROBE_MAX": uint64(4)})
+		wide := NewDynSsz(map[string]any{"PROBE_MAX": uint64(8)})
+		plainEqual, err := equal.HashTreeRoot(&limitPlainHolder{X: 1, P: &limitPlain{A: 7, Items: three}})
+		if err != nil {
+			t.Fatalf("plain under the static limit: %v", err)
+		}
+		plainWide, err := wide.HashTreeRoot(&limitPlainHolder{X: 1, P: &limitPlain{A: 7, Items: three}})
+		if err != nil {
+			t.Fatalf("plain under the wider limit: %v", err)
+		}
+		if plainEqual == plainWide {
+			t.Fatal("the two limits must give the list different chunk capacities")
+		}
+		probeWide, err := wide.HashTreeRoot(&limitHolder{X: 1, P: &limitProbe{A: 7, Items: three}})
+		if err != nil {
+			t.Fatalf("probe under the wider limit: %v", err)
+		}
+		if probeWide != plainWide {
+			t.Fatalf("delegated root %x under the wider limit, want %x", probeWide, plainWide)
+		}
+	})
+}
+
+// annotatedDelegateCalls counts how often annotatedDelegate's own hash method ran.
+var annotatedDelegateCalls int
+
+// annotatedDelegate carries its limit as an annotation and hashes through its
+// own method, which leaves a recognisable leaf.
+type annotatedDelegate []uint64
+
+var _ = sszutils.Annotate[annotatedDelegate](`ssz-max:"4"`)
+
+func (l *annotatedDelegate) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	annotatedDelegateCalls++
+	var leaf [32]byte
+	leaf[0] = 0xaa
+	hh.PutBytes(leaf[:])
+	return nil
+}
+
+// A field that carries no tag, or repeats its type's annotation, leaves the
+// type's own methods in charge. Only a field that changes the declared shape
+// is walked inline.
+func TestAnnotatedFieldKeepsDelegation(t *testing.T) {
+	type noTag struct {
+		X uint32
+		L annotatedDelegate
+	}
+	type sameTag struct {
+		X uint32
+		L annotatedDelegate `ssz-max:"4"`
+	}
+	type otherTag struct {
+		X uint32
+		L annotatedDelegate `ssz-max:"8"`
+	}
+
+	ds := NewDynSsz(nil)
+	root := func(v any) [32]byte {
+		t.Helper()
+		r, err := ds.HashTreeRoot(v)
+		if err != nil {
+			t.Fatalf("HashTreeRoot(%T): %v", v, err)
+		}
+		return r
+	}
+
+	annotatedDelegateCalls = 0
+	noTagRoot := root(&noTag{X: 1, L: annotatedDelegate{1}})
+	if annotatedDelegateCalls != 1 {
+		t.Fatalf("field without a tag: own method ran %d times, want 1", annotatedDelegateCalls)
+	}
+
+	sameTagRoot := root(&sameTag{X: 1, L: annotatedDelegate{1}})
+	if annotatedDelegateCalls != 2 {
+		t.Fatalf("field repeating the annotation: own method ran %d times in total, want 2", annotatedDelegateCalls)
+	}
+	if sameTagRoot != noTagRoot {
+		t.Fatalf("field repeating the annotation hashed to %x, want %x", sameTagRoot, noTagRoot)
+	}
+
+	otherTagRoot := root(&otherTag{X: 1, L: annotatedDelegate{1}})
+	if annotatedDelegateCalls != 2 {
+		t.Fatalf("field changing the limit: own method ran, total %d", annotatedDelegateCalls)
+	}
+	if otherTagRoot == noTagRoot {
+		t.Fatal("field changing the limit must be walked inline and hash differently")
+	}
+}

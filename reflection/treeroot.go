@@ -114,9 +114,8 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 		// Fast path: skip compat interface checks for types that don't implement any
 		isFastsszHasher := sourceType.SszCompatFlags&(ssztypes.SszCompatFlagFastsszHashRoot|ssztypes.SszCompatFlagFastsszHashRootWith) != 0
 		useDynamicHashRoot := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0
-		hasDynamicSize := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
-		hasDynamicMax := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicMax != 0
-		useFastSsz := !ctx.noFastSsz && isFastsszHasher && !hasDynamicSize && !hasDynamicMax
+		hasDynamicSpec := sourceType.SszTypeFlags&(ssztypes.SszTypeFlagHasDynamicSize|ssztypes.SszTypeFlagHasDynamicMax) != 0
+		useFastSsz := !ctx.noFastSsz && isFastsszHasher && !hasDynamicSpec
 		if !useFastSsz && sourceType.SszType == ssztypes.SszCustomType {
 			useFastSsz = true
 		}

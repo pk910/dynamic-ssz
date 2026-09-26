@@ -3313,18 +3313,37 @@ func TestGetSszMaxSizeTagPlaceholderMismatch(t *testing.T) {
 
 func TestGetSszMaxSizeTagDynSszMaxNumeric(t *testing.T) {
 	ds := &dummyDynamicSpecs{}
-	// dynssz-max:"200" with numeric value
-	field := makeField("Num", reflect.TypeOf([]byte{}), `ssz-max:"100" dynssz-max:"200"`)
 
+	// A literal that differs from the static limit is refused.
+	field := makeField("Num", reflect.TypeOf([]byte{}), `ssz-max:"100" dynssz-max:"200"`)
+	if _, err := getSszMaxSizeTag(ds, field); err == nil {
+		t.Fatal("expected a differing dynssz-max literal to be refused")
+	}
+
+	// One that repeats it is the plain static limit.
+	field = makeField("Num", reflect.TypeOf([]byte{}), `ssz-max:"100" dynssz-max:"100"`)
 	maxSizes, err := getSszMaxSizeTag(ds, field)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(maxSizes) != 1 {
-		t.Fatalf("expected 1 max size hint, got %d", len(maxSizes))
+	if len(maxSizes) != 1 || maxSizes[0].Size != 100 || maxSizes[0].Custom || maxSizes[0].Expr != "" {
+		t.Fatalf("expected one static hint of max 100, got %+v", maxSizes)
 	}
-	if maxSizes[0].Size != 200 {
-		t.Fatalf("expected max size 200, got %d", maxSizes[0].Size)
+
+	// The ssz-max:"0" placeholder promises a spec value, which a literal is not.
+	field = makeField("Num", reflect.TypeOf([]byte{}), `ssz-max:"0" dynssz-max:"200"`)
+	if _, err = getSszMaxSizeTag(ds, field); err == nil {
+		t.Fatal("expected a dynssz-max literal against the placeholder to be refused")
+	}
+
+	// A literal with no static limit is the limit.
+	field = makeField("Num", reflect.TypeOf([]byte{}), `dynssz-max:"200"`)
+	maxSizes, err = getSszMaxSizeTag(ds, field)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(maxSizes) != 1 || maxSizes[0].Size != 200 {
+		t.Fatalf("expected one hint of max 200, got %+v", maxSizes)
 	}
 }
 
@@ -3453,13 +3472,20 @@ func TestListWithDynamicSizeAccepted(t *testing.T) {
 	}
 }
 
-// Test numeric dynssz-size override to cover getSszSizeTag line 276 (err==nil branch)
+// A numeric dynssz-size repeats the static length; one that differs is refused.
 func TestTypeCache_NumericDynSszSizeOverride(t *testing.T) {
 	ds := &dummyDynamicSpecs{}
 	cache := NewTypeCache(ds)
 
-	type TestStruct struct {
+	type Differing struct {
 		Data []byte `ssz-size:"32" dynssz-size:"64"`
+	}
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(Differing{}), nil, nil, nil); err == nil {
+		t.Fatal("expected a differing dynssz-size literal to be refused")
+	}
+
+	type TestStruct struct {
+		Data []byte `ssz-size:"64" dynssz-size:"64"`
 	}
 
 	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
@@ -3601,18 +3627,20 @@ func TestParseTags_LiteralSizePastLimit(t *testing.T) {
 }
 
 func TestParseTags_DynMaxNumericOverride(t *testing.T) {
-	// dynssz-max with a numeric value that differs from ssz-max
-	_, _, maxHints, err := ParseTags(`ssz-max:"10" dynssz-max:"20"`)
+	// A numeric dynssz-max that differs from ssz-max is refused; one that
+	// repeats it is the plain static limit.
+	if _, _, _, err := ParseTags(`ssz-max:"10" dynssz-max:"20"`); err == nil {
+		t.Fatal("expected a differing dynssz-max literal to be refused")
+	}
+	if _, _, _, err := ParseTags(`ssz-max:"0" dynssz-max:"20"`); err == nil {
+		t.Fatal("expected a dynssz-max literal against the placeholder to be refused")
+	}
+	_, _, maxHints, err := ParseTags(`ssz-max:"10" dynssz-max:"10"`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	if len(maxHints) != 1 {
-		t.Fatalf("expected 1 max hint, got %d", len(maxHints))
-	}
-
-	if maxHints[0].Size != 20 {
-		t.Fatalf("expected dynssz-max override to 20, got %d", maxHints[0].Size)
+	if len(maxHints) != 1 || maxHints[0].Size != 10 || maxHints[0].Custom || maxHints[0].Expr != "" {
+		t.Fatalf("expected one static hint of max 10, got %+v", maxHints)
 	}
 }
 
@@ -3631,8 +3659,8 @@ func TestParseTags_DynMaxExprWithoutSszMax(t *testing.T) {
 	if maxHints[0].Expr != "SOME_MAX_EXPR" {
 		t.Errorf("expected Expr 'SOME_MAX_EXPR', got %q", maxHints[0].Expr)
 	}
-	if !maxHints[0].Custom {
-		t.Error("expected Custom to be set")
+	if maxHints[0].Custom {
+		t.Error("expected Custom to stay clear: only resolution sets it")
 	}
 }
 
@@ -3793,29 +3821,25 @@ func TestParseTags_Comprehensive(t *testing.T) {
 	})
 
 	t.Run("DynSszBitsize", func(t *testing.T) {
-		_, sizeHints, _, err := ParseTags(`ssz-bitsize:"32" dynssz-bitsize:"64"`)
+		_, sizeHints, _, err := ParseTags(`ssz-bitsize:"64" dynssz-bitsize:"64"`)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if len(sizeHints) != 1 {
 			t.Fatalf("expected 1 size hint, got %d", len(sizeHints))
 		}
-		// dynssz-bitsize:"64" overrides ssz-bitsize:"32"
+		// dynssz-bitsize:"64" repeats ssz-bitsize:"64"
 		if sizeHints[0].Size != 64 {
-			t.Fatalf("expected Size=64 from dynssz-bitsize override, got %d", sizeHints[0].Size)
+			t.Fatalf("expected Size=64, got %d", sizeHints[0].Size)
 		}
 		if !sizeHints[0].Bits {
 			t.Fatal("expected Bits=true from dynssz-bitsize")
 		}
 	})
 
-	t.Run("DynSszBitsizeOverrideSszBitsize", func(t *testing.T) {
-		_, sizeHints, _, err := ParseTags(`ssz-bitsize:"64" dynssz-bitsize:"128"`)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if len(sizeHints) != 1 || sizeHints[0].Size != 128 || !sizeHints[0].Bits {
-			t.Fatalf("expected Size=128 Bits=true, got %+v", sizeHints[0])
+	t.Run("DynSszBitsizeDiffersFromSszBitsize", func(t *testing.T) {
+		if _, _, _, err := ParseTags(`ssz-bitsize:"64" dynssz-bitsize:"128"`); err == nil {
+			t.Fatal("expected a differing dynssz-bitsize literal to be refused")
 		}
 	})
 
@@ -3832,13 +3856,9 @@ func TestParseTags_Comprehensive(t *testing.T) {
 		}
 	})
 
-	t.Run("DynSszSizeNumericOverride", func(t *testing.T) {
-		_, sizeHints, _, err := ParseTags(`ssz-size:"32" dynssz-size:"64"`)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if len(sizeHints) != 1 || sizeHints[0].Size != 64 {
-			t.Fatalf("expected Size=64, got %+v", sizeHints)
+	t.Run("DynSszSizeNumericDiffers", func(t *testing.T) {
+		if _, _, _, err := ParseTags(`ssz-size:"32" dynssz-size:"64"`); err == nil {
+			t.Fatal("expected a differing dynssz-size literal to be refused")
 		}
 	})
 
@@ -3868,8 +3888,8 @@ func TestParseTags_Comprehensive(t *testing.T) {
 		if sizeHints[0].Dynamic {
 			t.Fatal("an expression-sized dimension is a vector, so Dynamic must be false")
 		}
-		if !sizeHints[0].Custom {
-			t.Fatal("expected Custom=true")
+		if sizeHints[0].Custom {
+			t.Fatal("expected Custom=false: only resolution sets it")
 		}
 	})
 
@@ -3932,8 +3952,8 @@ func TestParseTags_Comprehensive(t *testing.T) {
 		if len(sizeHints) != 1 {
 			t.Fatalf("expected 1 size hint, got %d", len(sizeHints))
 		}
-		if sizeHints[0].Dynamic || !sizeHints[0].Custom {
-			t.Fatal("expected Dynamic=false and Custom=true for an expr hint")
+		if sizeHints[0].Dynamic || sizeHints[0].Custom {
+			t.Fatal("expected Dynamic=false and Custom=false for an unresolved expr hint")
 		}
 	})
 
@@ -4686,8 +4706,8 @@ func TestTypeCache_ListElemError(t *testing.T) {
 
 func TestGetSszSizeTagDynSszBitsize(t *testing.T) {
 	ds := &dummyDynamicSpecs{}
-	// dynssz-bitsize:"64" as a numeric bitsize override
-	field := makeField("BitField", reflect.TypeOf([]byte{}), `ssz-bitsize:"32" dynssz-bitsize:"64"`)
+	// dynssz-bitsize:"64" as a numeric bitsize repeating the static one
+	field := makeField("BitField", reflect.TypeOf([]byte{}), `ssz-bitsize:"64" dynssz-bitsize:"64"`)
 
 	sizes, err := getSszSizeTag(ds, field)
 	if err != nil {
@@ -4697,7 +4717,7 @@ func TestGetSszSizeTagDynSszBitsize(t *testing.T) {
 		t.Fatalf("expected 1 size hint, got %d", len(sizes))
 	}
 	if sizes[0].Size != 64 {
-		t.Fatalf("expected Size 64 from dynssz-bitsize override, got %d", sizes[0].Size)
+		t.Fatalf("expected Size 64, got %d", sizes[0].Size)
 	}
 	if !sizes[0].Bits {
 		t.Fatal("expected Bits=true")
@@ -6857,5 +6877,254 @@ func TestTypeCache_OverrideCheckRefusesBadAnnotation(t *testing.T) {
 	_, err := NewTypeCache(nil).GetTypeDescriptor(reflect.TypeOf(holder{}), nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "bogus") {
 		t.Fatalf("err = %v, want the annotation refused", err)
+	}
+}
+
+// flagProbe carries the fastssz method set and one size and one limit that a
+// spec may resolve away from the static tags.
+type flagProbe struct {
+	Data  []byte   `ssz-size:"8" dynssz-size:"FLAG_SIZE"`
+	Items []uint64 `ssz-max:"4" dynssz-max:"FLAG_MAX"`
+}
+
+func (*flagProbe) MarshalSSZ() ([]byte, error)           { return nil, nil }
+func (*flagProbe) MarshalSSZTo(b []byte) ([]byte, error) { return b, nil }
+func (*flagProbe) SizeSSZ() int                          { return 0 }
+func (*flagProbe) UnmarshalSSZ([]byte) error             { return nil }
+func (*flagProbe) HashTreeRoot() ([32]byte, error)       { return [32]byte{}, nil }
+
+// flagNoFallback names its limit through the spec alone.
+type flagNoFallback struct {
+	Items []uint64 `dynssz-max:"FLAG_MAX"`
+}
+
+type flagAnnList []uint64
+
+type flagAnnVec []byte
+
+type flagAnnMaxOnly []uint64
+
+var (
+	_ = sszutils.Annotate[flagAnnList](`ssz-max:"4" dynssz-max:"FLAG_ANN_MAX"`)
+	_ = sszutils.Annotate[flagAnnVec](`ssz-size:"8" dynssz-size:"FLAG_ANN_SIZE"`)
+	_ = sszutils.Annotate[flagAnnMaxOnly](`dynssz-max:"FLAG_ANN_MAX"`)
+)
+
+// flagRecHead owns the spec-dependent limit of a recursive pair; flagRecTail is
+// built inside the head's build and only learns the limit from the fixup pass.
+type flagRecHead struct {
+	Items []uint64      `ssz-max:"4" dynssz-max:"FLAG_MAX"`
+	Next  []flagRecTail `ssz-max:"2"`
+}
+
+type flagRecTail struct {
+	Back []flagRecHead `ssz-max:"2"`
+}
+
+func (*flagRecTail) UnmarshalSSZ([]byte) error { return nil }
+
+const flagFastssz = SszCompatFlagFastsszSurface | SszCompatFlagFastsszHashRoot
+
+// A resolved spec value only makes a type dynamic when it differs from the
+// static tag a fastssz method baked in, and then no fastssz method may answer
+// for the type on any operation.
+func TestDynamicFlagsFollowResolvedValues(t *testing.T) {
+	tests := []struct {
+		name          string
+		specs         map[string]uint64
+		wantDynamic   SszTypeFlag
+		wantDelegated bool
+	}{
+		{"equal", map[string]uint64{"FLAG_SIZE": 8, "FLAG_MAX": 4}, 0, true},
+		{"size differs", map[string]uint64{"FLAG_SIZE": 16, "FLAG_MAX": 4}, SszTypeFlagHasDynamicSize, false},
+		{"max below static", map[string]uint64{"FLAG_SIZE": 8, "FLAG_MAX": 2}, SszTypeFlagHasDynamicMax, false},
+		{"max above static", map[string]uint64{"FLAG_SIZE": 8, "FLAG_MAX": 8}, SszTypeFlagHasDynamicMax, false},
+		{"unresolved", map[string]uint64{}, 0, true},
+	}
+
+	const dynamic = SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cache := NewTypeCache(&dummyDynamicSpecs{specValues: tt.specs})
+			desc, err := cache.GetTypeDescriptor(reflect.TypeOf(flagProbe{}), nil, nil, nil)
+			if err != nil {
+				t.Fatalf("descriptor: %v", err)
+			}
+			if got := desc.SszTypeFlags & dynamic; got != tt.wantDynamic {
+				t.Fatalf("dynamic flags = %b, want %b", got, tt.wantDynamic)
+			}
+			if got := desc.SszTypeFlags & (SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr); got != SszTypeFlagHasSizeExpr|SszTypeFlagHasMaxExpr {
+				t.Fatalf("expression flags = %b, want both", got)
+			}
+			if delegated := desc.SszCompatFlags&flagFastssz == flagFastssz; delegated != tt.wantDelegated {
+				t.Fatalf("fastssz compat flags = %b, delegated %v, want %v", desc.SszCompatFlags, delegated, tt.wantDelegated)
+			}
+			if !tt.wantDelegated && desc.SszCompatFlags&flagFastssz != 0 {
+				t.Fatalf("fastssz compat flags = %b, want none", desc.SszCompatFlags)
+			}
+		})
+	}
+}
+
+// A limit or size the spec supplies without a static tag has nothing to agree
+// with, so it is dynamic whenever it resolves.
+func TestDynamicFlagsWithoutFallback(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"FLAG_MAX": 4, "FLAG_ANN_MAX": 4}})
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(flagNoFallback{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("field descriptor: %v", err)
+	}
+	if desc.SszTypeFlags&SszTypeFlagHasDynamicMax == 0 {
+		t.Fatal("field: expected HasDynamicMax for a limit with no static fallback")
+	}
+
+	desc, err = cache.GetTypeDescriptor(reflect.TypeOf(flagAnnMaxOnly{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("annotation descriptor: %v", err)
+	}
+	if desc.SszTypeFlags&SszTypeFlagHasDynamicMax == 0 {
+		t.Fatal("annotation: expected HasDynamicMax for a limit with no static fallback")
+	}
+}
+
+// Annotations resolve by the same rule as field tags.
+func TestDynamicFlagsFromAnnotations(t *testing.T) {
+	tests := []struct {
+		name  string
+		typ   reflect.Type
+		specs map[string]uint64
+		flag  SszTypeFlag
+		want  bool
+	}{
+		{"max equal", reflect.TypeOf(flagAnnList{}), map[string]uint64{"FLAG_ANN_MAX": 4}, SszTypeFlagHasDynamicMax, false},
+		{"max differs", reflect.TypeOf(flagAnnList{}), map[string]uint64{"FLAG_ANN_MAX": 6}, SszTypeFlagHasDynamicMax, true},
+		{"size equal", reflect.TypeOf(flagAnnVec{}), map[string]uint64{"FLAG_ANN_SIZE": 8}, SszTypeFlagHasDynamicSize, false},
+		{"size differs", reflect.TypeOf(flagAnnVec{}), map[string]uint64{"FLAG_ANN_SIZE": 12}, SszTypeFlagHasDynamicSize, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cache := NewTypeCache(&dummyDynamicSpecs{specValues: tt.specs})
+			desc, err := cache.GetTypeDescriptor(tt.typ, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("descriptor: %v", err)
+			}
+			if got := desc.SszTypeFlags&tt.flag != 0; got != tt.want {
+				t.Fatalf("flag set = %v, want %v (flags %b)", got, tt.want, desc.SszTypeFlags)
+			}
+		})
+	}
+}
+
+// A cycle member that completes before the head learns the head's dynamic
+// limit from the fixup pass, and loses its fastssz methods with it.
+func TestDynamicFlagsRaisedByRecursionFixup(t *testing.T) {
+	tests := []struct {
+		name          string
+		max           uint64
+		wantDelegated bool
+	}{
+		{"equal", 4, true},
+		{"differs", 2, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cache := NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"FLAG_MAX": tt.max}})
+			head, err := cache.GetTypeDescriptor(reflect.TypeOf(flagRecHead{}), nil, nil, nil)
+			if err != nil {
+				t.Fatalf("descriptor: %v", err)
+			}
+			tail := head.ContainerDesc.Fields[1].Type.ElemDesc
+			if tail == nil || tail.Type != reflect.TypeOf(flagRecTail{}) {
+				t.Fatalf("tail descriptor not reached: %+v", tail)
+			}
+			if got := tail.SszTypeFlags&SszTypeFlagHasDynamicMax != 0; got == tt.wantDelegated {
+				t.Fatalf("tail HasDynamicMax = %v, want %v", got, !tt.wantDelegated)
+			}
+			if got := tail.SszCompatFlags&SszCompatFlagFastsszUnmarshaler != 0; got != tt.wantDelegated {
+				t.Fatalf("tail fastssz unmarshaler flag = %v, want %v", got, tt.wantDelegated)
+			}
+		})
+	}
+}
+
+type flagAnnDelegate []uint64
+
+var _ = sszutils.Annotate[flagAnnDelegate](`ssz-max:"4"`)
+
+func (*flagAnnDelegate) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
+type flagAnnTypedDelegate []uint64
+
+var _ = sszutils.Annotate[flagAnnTypedDelegate](`ssz-type:"list" ssz-max:"4"`)
+
+func (*flagAnnTypedDelegate) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
+// A field that carries no tag, or repeats its type's annotation, keeps the
+// type's delegation flags; a field that changes the declared shape drops them.
+func TestFieldTagRepeatingAnnotationKeepsDelegation(t *testing.T) {
+	type noTag struct {
+		L flagAnnDelegate
+	}
+	type sameTag struct {
+		L flagAnnDelegate `ssz-max:"4"`
+	}
+	type otherTag struct {
+		L flagAnnDelegate `ssz-max:"8"`
+	}
+	type typeHintOnly struct {
+		L flagAnnDelegate `ssz-type:"list"`
+	}
+	type aliasHintOnly struct {
+		L flagAnnDelegate `ssz:"list"`
+	}
+	type aliasOfTyped struct {
+		L flagAnnTypedDelegate `ssz:"list"`
+	}
+	type aliasOfTypedOther struct {
+		L flagAnnTypedDelegate `ssz:"list" ssz-max:"8"`
+	}
+	type indexOnly struct {
+		X uint32          `ssz-index:"0"`
+		L flagAnnDelegate `ssz-index:"1"`
+	}
+
+	tests := []struct {
+		name      string
+		holder    any
+		field     int
+		delegated bool
+		limit     uint64
+	}{
+		{"no tag", noTag{}, 0, true, 4},
+		{"same tag", sameTag{}, 0, true, 4},
+		{"other tag", otherTag{}, 0, false, 8},
+		{"type hint the annotation lacks", typeHintOnly{}, 0, false, 4},
+		{"ssz alias the annotation lacks", aliasHintOnly{}, 0, false, 4},
+		{"ssz alias naming the annotation's type", aliasOfTyped{}, 0, true, 4},
+		{"ssz alias with another limit", aliasOfTypedOther{}, 0, false, 8},
+		{"field-only ssz-index", indexOnly{}, 1, true, 4},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			desc, err := NewTypeCache(nil).GetTypeDescriptor(reflect.TypeOf(tt.holder), nil, nil, nil)
+			if err != nil {
+				t.Fatalf("descriptor: %v", err)
+			}
+			field := desc.ContainerDesc.Fields[tt.field].Type
+			if got := field.SszCompatFlags&SszCompatFlagDynamicHashRoot != 0; got != tt.delegated {
+				t.Fatalf("delegated = %v, want %v (compat flags %b)", got, tt.delegated, field.SszCompatFlags)
+			}
+			if field.Limit != tt.limit {
+				t.Fatalf("limit = %d, want %d", field.Limit, tt.limit)
+			}
+		})
 	}
 }

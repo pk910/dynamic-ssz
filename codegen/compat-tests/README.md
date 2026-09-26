@@ -25,6 +25,18 @@ The archives are deliberately left as their release cut them: regenerating one
 would mean rebuilding that version's `dynssz-gen`, re-deriving its golden roots
 and repacking, which would no longer be a snapshot of what that release shipped.
 
+The generated code is never touched. A harness file may be corrected when it
+asserted something the release's own code never delivered, and the correction
+is recorded here:
+
+- `v1.3.0`, `v1.3.1`, `codegen_test.go`, `TestCodegenCoverageTypes1`: the
+  streaming encoders of these releases index past the end of a slice vector
+  shorter than its declared length. The harness ran that type under specs that
+  make it spec-bound, which now reaches the streaming encoder; it did not
+  before, because a type whose only spec dependence was a limit was still
+  served by its static methods. The case now runs the original short-vector
+  payload under the default specs and a full-vector payload under the spec set.
+
 ## Local development
 
 To unpack the archives for local testing:

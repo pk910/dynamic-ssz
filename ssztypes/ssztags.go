@@ -404,6 +404,12 @@ func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszS
 					return sszSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "dynssz-size tag for '%v' field: %d exceeds the SSZ size limit", field.Name, sszSizeInt)
 				}
 				sszSize.Size = int64(sszSizeInt)
+				// A literal only repeats the static length to fill a dimension.
+				// One that differs would be served with either value depending on
+				// the path taken, so the tag pair has to agree.
+				if i < len(sszSizes) && sszSizes[i].Size != sszSize.Size {
+					return sszSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "conflicting size tags for field %q dimension %d: dynssz-size literal %d does not repeat ssz-size %d", field.Name, i, sszSize.Size, sszSizes[i].Size)
+				}
 			} else {
 				ok, specVal, err := ds.ResolveSpecValue(sizeExpr)
 				if err != nil {
@@ -427,7 +433,10 @@ func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszS
 						return sszSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-size for field %q resolved to 0 with no positive static fallback", field.Name)
 					}
 					sszSize.Size = int64(specVal)
-					sszSize.Custom = true
+					// The static tag is what a fastssz method baked in, so the
+					// value only makes the dimension dynamic when it differs from
+					// that fallback, or when there is no fallback to agree with.
+					sszSize.Custom = i >= len(sszSizes) || sszSizes[i].Size != sszSize.Size
 				} else {
 					// Unknown spec value: keep the fastssz default for this dimension,
 					// but keep resolving the remaining dimensions independently
@@ -533,6 +542,13 @@ func getSszMaxSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]S
 				sszMaxSize.NoValue = true
 			} else if sszSizeInt, err := strconv.ParseUint(sszMaxSizeStr, 10, 64); err == nil {
 				sszMaxSize.Size = sszSizeInt
+				// A literal only repeats the static limit to fill a dimension.
+				// One that differs would be served with either value depending on
+				// the path taken, so the tag pair has to agree. The ssz-max:"0"
+				// placeholder promises a spec value, which a literal is not.
+				if i < len(sszMaxSizes) && !sszMaxSizes[i].NoValue && sszMaxSizes[i].Size != sszMaxSize.Size {
+					return sszMaxSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "conflicting max tags for field %q dimension %d: dynssz-max literal %d does not repeat ssz-max %d", field.Name, i, sszMaxSize.Size, sszMaxSizes[i].Size)
+				}
 			} else {
 				ok, specVal, err := ds.ResolveSpecValue(sszMaxSizeStr)
 				if err != nil {
@@ -552,7 +568,10 @@ func getSszMaxSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]S
 						return sszMaxSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-max for field %q resolved to 0 with no positive static fallback", field.Name)
 					}
 					sszMaxSize.Size = specVal
-					sszMaxSize.Custom = true
+					// The static tag is what a fastssz method baked in, so the
+					// value only makes the dimension dynamic when it differs from
+					// that fallback, or when there is no fallback to agree with.
+					sszMaxSize.Custom = i >= len(sszMaxSizes) || sszMaxSizes[i].Size != specVal
 				} else {
 					// Unknown spec value: keep the fastssz default for this
 					// dimension. A zero default is the ssz-max:"0" placeholder,
@@ -588,8 +607,8 @@ func getSszMaxSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]S
 
 			if i >= len(sszMaxSizes) {
 				sszMaxSizes = append(sszMaxSizes, sszMaxSize)
-			} else if sszMaxSizes[i].Size != sszMaxSize.Size {
-				// update if resolved max size differs from default
+			} else {
+				// The dynamic tag overrides the static hint entirely.
 				sszMaxSizes[i] = sszMaxSize
 			}
 
@@ -673,6 +692,13 @@ func SameSszTypes(a, b []SszTypeHint) bool {
 		}
 	}
 	return true
+}
+
+// SameHints reports whether two sets of parsed tag hints describe the same SSZ
+// shape. A struct field whose joined tag reads the same as its type's
+// annotation says nothing new about the type.
+func SameHints(typeA, typeB []SszTypeHint, sizeA, sizeB []SszSizeHint, maxA, maxB []SszMaxSizeHint) bool {
+	return slices.Equal(typeA, typeB) && slices.Equal(sizeA, sizeB) && slices.Equal(maxA, maxB)
 }
 
 // JoinFieldAnnotationTag returns the effective SSZ tag for a struct field whose
@@ -809,11 +835,15 @@ func ParseTags(tag string) (typeHints []SszTypeHint, sizeHints []SszSizeHint, ma
 					return nil, nil, nil, fmt.Errorf("dynssz-size tag: %d exceeds the SSZ size limit", sszSizeInt)
 				}
 				sszSize.Size = int64(sszSizeInt)
+				// See getSszSizeTag: a literal repeats the static length.
+				if i < len(sizeHints) && sizeHints[i].Size != sszSize.Size {
+					return nil, nil, nil, fmt.Errorf("conflicting size tags for dimension %d: dynssz-size literal %d does not repeat ssz-size %d", i, sszSize.Size, sizeHints[i].Size)
+				}
 			} else {
 				// An expression names a length, so the dimension is a vector;
-				// only `?` declares it dynamic.
+				// only `?` declares it dynamic. Nothing resolves here, so the
+				// hint records the expression and never a resolved value.
 				isExpr = true
-				sszSize.Custom = true
 
 				if i < len(sizeHints) {
 					// The static fallback and the expression share one hint.
@@ -874,9 +904,14 @@ func ParseTags(tag string) (typeHints []SszTypeHint, sizeHints []SszSizeHint, ma
 				sszMaxSize.NoValue = true
 			} else if sszSizeInt, parseErr := strconv.ParseUint(sszMaxSizeStr, 10, 64); parseErr == nil {
 				sszMaxSize.Size = sszSizeInt
+				// See getSszMaxSizeTag: a literal repeats the static limit.
+				if i < len(maxSizeHints) && !maxSizeHints[i].NoValue && maxSizeHints[i].Size != sszMaxSize.Size {
+					return nil, nil, nil, fmt.Errorf("conflicting max tags for dimension %d: dynssz-max literal %d does not repeat ssz-max %d", i, sszMaxSize.Size, maxSizeHints[i].Size)
+				}
 			} else {
+				// Nothing resolves here, so the hint records the expression
+				// and never a resolved value.
 				isExpr = true
-				sszMaxSize.Custom = true
 
 				if i < len(maxSizeHints) {
 					maxSizeHints[i].Expr = sszMaxSizeStr

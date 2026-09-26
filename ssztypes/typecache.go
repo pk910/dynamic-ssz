@@ -324,6 +324,27 @@ func (tc *TypeCache) cycleBelow(t reflect.Type, walk func(reflect.Type) reflect.
 // When runtimeType == schemaType, this is the standard descriptor building.
 // When they differ, it handles view descriptors where schema defines SSZ layout.
 func (tc *TypeCache) getTypeDescriptor(runtimeType, schemaType reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
+	// A reference whose hints read the same as the type's own annotation says
+	// nothing new about the type: it is built as a bare reference, so the
+	// type's declaration and methods stand and its plain descriptor is shared.
+	// The annotation is read through the same readers as a tag, so the two
+	// sides compare like for like.
+	if len(sizeHints) > 0 || len(maxSizeHints) > 0 || len(typeHints) > 0 {
+		annotatedType := schemaType
+		if annotatedType.Kind() == reflect.Pointer {
+			annotatedType = annotatedType.Elem()
+		}
+		if annTag, ok := sszutils.LookupAnnotation(annotatedType); ok {
+			annField := reflect.StructField{Name: annotatedType.String(), Type: annotatedType, Tag: reflect.StructTag(annTag)}
+			annSize, sizeErr := getSszSizeTag(tc.specs, &annField)
+			annMax, maxErr := getSszMaxSizeTag(tc.specs, &annField)
+			annType, typeErr := getSszTypeTag(&annField)
+			if sizeErr == nil && maxErr == nil && typeErr == nil && SameHints(typeHints, annType, sizeHints, annSize, maxSizeHints, annMax) {
+				sizeHints, maxSizeHints, typeHints = nil, nil, nil
+			}
+		}
+	}
+
 	key := typeKey{runtime: runtimeType, schema: schemaType}
 	cacheable := len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0
 
@@ -585,8 +606,12 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 						return sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(val), "ssz-size annotation value %d exceeds the SSZ size limit", val)
 					}
 
+					// The annotation's static size is what a fastssz method
+					// baked in, so the value only makes the dimension dynamic
+					// when it differs from that fallback, or when there is no
+					// fallback to agree with.
+					sizeHints[i].Custom = sizeHints[i].Size != int64(val)
 					sizeHints[i].Size = int64(val)
-					sizeHints[i].Custom = true
 
 					continue
 				}
@@ -609,8 +634,10 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 					return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing dynssz-max expression %q for type %v: %v", maxSizeHints[i].Expr, t, resolveErr)
 				}
 				if ok && val > 0 {
+					// As for the size: dynamic only when the value differs
+					// from the annotation's static limit, or there is none.
+					maxSizeHints[i].Custom = maxSizeHints[i].Size != val
 					maxSizeHints[i].Size = val
-					maxSizeHints[i].Custom = true
 
 					continue
 				}
@@ -1276,14 +1303,13 @@ func (td *TypeDescriptor) SetMinSize() {
 }
 
 // detectCompatFlags records which SSZ delegation interfaces (fastssz, dynamic,
-// dynamic-view, and HashTreeRootWith) the type implements. The fastssz marshaler
-// and hasher are only flagged when the type does not carry a dynamic size/max,
-// since those use the static fastssz layout.
+// dynamic-view, and HashTreeRootWith) the type implements. The fastssz family
+// is only flagged when no resolved spec value below the type differs from the
+// static tags: a fastssz method baked those in, enforces them on every
+// operation, and so cannot answer for a value that resolves them differently.
 func (tc *TypeCache) detectCompatFlags(desc *TypeDescriptor, runtimeType, schemaType reflect.Type) {
-	if desc.SszTypeFlags&SszTypeFlagHasDynamicSize == 0 {
+	if desc.SszTypeFlags&(SszTypeFlagHasDynamicSize|SszTypeFlagHasDynamicMax) == 0 {
 		desc.SszCompatFlags |= getFastsszCompatFlags(runtimeType)
-	}
-	if desc.SszTypeFlags&SszTypeFlagHasDynamicMax == 0 {
 		if getFastsszHashCompatibility(runtimeType) {
 			desc.SszCompatFlags |= SszCompatFlagFastsszHashRoot
 		}
@@ -1731,14 +1757,13 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 			fieldIndices[*sszIndex] = struct{}{}
 		}
 
-		// Field-level tags override the type's registered annotation per key:
-		// join the two (field tag first — Lookup returns the first occurrence)
-		// so annotation keys the field does not override still apply.
+		// A field tag is joined in front of the type's registered annotation
+		// (Lookup returns the first occurrence, so the field overrides per key)
+		// and the joined tag is read like any other.
 		if annTag, ok := sszutils.LookupAnnotation(schemaField.Type); ok {
 			schemaField.Tag = JoinFieldAnnotationTag(schemaField.Tag, annTag)
 		}
 
-		// Get size hints from schema field tags (schema defines SSZ constraints)
 		sizeHints, err := getSszSizeTag(tc.specs, &schemaField)
 		if err != nil {
 			return sszutils.ErrorWithPath(err, schemaField.Name)

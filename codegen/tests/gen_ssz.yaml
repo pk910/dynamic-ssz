@@ -55,6 +55,10 @@ types:
     output: gen_specs.go
   - name: DynSizeVectorNoStatic
     output: gen_specs.go
+  - name: SpecLimitChild
+    output: gen_specs.go
+  - name: SpecLimitParent
+    output: gen_specs.go
 
   # List, vector and optional-list shapes, including the wrappers that
   # are transparent to them.

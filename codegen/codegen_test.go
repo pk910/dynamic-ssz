@@ -1555,7 +1555,7 @@ func TestParseTagsConflictingUnits(t *testing.T) {
 	for _, tag := range []string{
 		`ssz-bitsize:"64" dynssz-bitsize:"SPEC"`,
 		`ssz-size:"8" dynssz-size:"SPEC"`,
-		`ssz-size:"8" dynssz-size:"16"`,
+		`ssz-size:"8" dynssz-size:"8"`,
 	} {
 		if _, _, _, err := ParseTags(tag); err != nil {
 			t.Errorf("%s: unexpected error %v", tag, err)

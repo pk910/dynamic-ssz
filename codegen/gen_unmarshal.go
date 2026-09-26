@@ -222,9 +222,9 @@ func (ctx *unmarshalContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 
 	// Inline types with fastssz unmarshaler (or, under WithoutDynamicExpressions,
 	// any type exposing a static UnmarshalSSZ — matching unmarshalCompatType).
-	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
+	hasSpecExpr := desc.SszTypeFlags&(ssztypes.SszTypeFlagHasSizeExpr|ssztypes.SszTypeFlagHasMaxExpr) != 0 && !ctx.options.WithoutDynamicExpressions
 	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszUnmarshaler != 0
-	useFastSsz := isFastsszUnmarshaler && !hasDynamicSize && (!ctx.options.NoFastSsz || ctx.options.WithoutDynamicExpressions)
+	useFastSsz := isFastsszUnmarshaler && !hasSpecExpr && (!ctx.options.NoFastSsz || ctx.options.WithoutDynamicExpressions)
 	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
 		useFastSsz = true
 	}
@@ -270,13 +270,16 @@ func (ctx *unmarshalContext) unmarshalViewType(desc *ssztypes.TypeDescriptor, va
 }
 
 func (ctx *unmarshalContext) unmarshalCompatType(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) (bool, error) {
-	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
+	// A static method baked its size and limit tags in and enforces them, so a
+	// child with a spec expression anywhere below it is reached through a
+	// spec-aware one.
+	hasSpecExpr := desc.SszTypeFlags&(ssztypes.SszTypeFlagHasSizeExpr|ssztypes.SszTypeFlagHasMaxExpr) != 0 && !ctx.options.WithoutDynamicExpressions
 	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszUnmarshaler != 0
 	// Under WithoutDynamicExpressions the generated code must be fully static and
 	// must never call a *Dyn method. A child exposing a static UnmarshalSSZ
 	// (every dynssz-generated child in this mode, plus external fastssz types) is
 	// reached through it even when fastssz delegation is otherwise disabled.
-	useFastSsz := isFastsszUnmarshaler && !hasDynamicSize && (!ctx.options.NoFastSsz || ctx.options.WithoutDynamicExpressions)
+	useFastSsz := isFastsszUnmarshaler && !hasSpecExpr && (!ctx.options.NoFastSsz || ctx.options.WithoutDynamicExpressions)
 	if desc.SszType == ssztypes.SszCustomType {
 		// A custom type has no structure to inline: it is reached through its
 		// spec-aware methods when it has them and dynamic calls are allowed,

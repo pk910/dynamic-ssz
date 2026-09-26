@@ -1155,13 +1155,13 @@ func TestMaxSizeHints(t *testing.T) {
 
 	t.Run("MaxSizeExpression", func(t *testing.T) {
 		uint64Type := types.Typ[types.Uint64]
-		maxSizeHint := []ssztypes.SszMaxSizeHint{{Expr: "maxSize", Custom: true}}
+		maxSizeHint := []ssztypes.SszMaxSizeHint{{Expr: "maxSize"}}
 		desc, err := parser.buildTypeDescriptor(uint64Type, uint64Type, nil, nil, maxSizeHint)
 		if err != nil {
 			t.Fatalf("Failed to build descriptor with max size expression: %v", err)
 		}
-		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicMax == 0 {
-			t.Error("Expected dynamic max flag to be set")
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicMax != 0 {
+			t.Error("Expected dynamic max flag to stay clear: nothing resolves at generation time")
 		}
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasMaxExpr == 0 {
 			t.Error("Expected max expr flag to be set")
@@ -1873,8 +1873,8 @@ func TestParseFieldTags(t *testing.T) {
 		if sizeHints[0].Expr != "expr1" {
 			t.Errorf("Expected expression 'expr1', got %s", sizeHints[0].Expr)
 		}
-		if !sizeHints[0].Custom {
-			t.Error("Expected first size hint to be custom")
+		if sizeHints[0].Custom {
+			t.Error("Expected first size hint not to be custom: nothing resolves at generation time")
 		}
 		if sizeHints[1].Size != 32 {
 			t.Errorf("Expected size 32, got %d", sizeHints[1].Size)
@@ -2922,35 +2922,31 @@ func TestParseFieldTagsEdgeCases(t *testing.T) {
 		}
 	})
 
-	t.Run("DynSszSizeUpdatesExistingHint", func(t *testing.T) {
-		// When ssz-size and dynssz-size both exist with different values
-		tags := `ssz-size:"32" dynssz-size:"64"`
-		_, sizeHints, _, err := parser.parseFieldTags(tags)
+	t.Run("DynSszSizeLiteralRepeatsStatic", func(t *testing.T) {
+		// A literal that differs from the static length is refused; one that
+		// repeats it is the plain static hint.
+		if _, _, _, err := parser.parseFieldTags(`ssz-size:"32" dynssz-size:"64"`); err == nil {
+			t.Fatal("expected a differing dynssz-size literal to be refused")
+		}
+		_, sizeHints, _, err := parser.parseFieldTags(`ssz-size:"32" dynssz-size:"32"`)
 		if err != nil {
 			t.Fatalf("Failed to parse combined size tags: %v", err)
 		}
-		if len(sizeHints) != 1 {
-			t.Errorf("Expected 1 size hint, got %d", len(sizeHints))
-		}
-		// dynssz-size should override
-		if sizeHints[0].Size != 64 {
-			t.Errorf("Expected size 64 (from dynssz-size), got %d", sizeHints[0].Size)
+		if len(sizeHints) != 1 || sizeHints[0].Size != 32 || sizeHints[0].Custom || sizeHints[0].Expr != "" {
+			t.Errorf("Expected one static hint of size 32, got %+v", sizeHints)
 		}
 	})
 
-	t.Run("DynSszMaxUpdatesExistingHint", func(t *testing.T) {
-		// When ssz-max and dynssz-max both exist with different values
-		tags := `ssz-max:"1024" dynssz-max:"2048"`
-		_, _, maxSizeHints, err := parser.parseFieldTags(tags)
+	t.Run("DynSszMaxLiteralRepeatsStatic", func(t *testing.T) {
+		if _, _, _, err := parser.parseFieldTags(`ssz-max:"1024" dynssz-max:"2048"`); err == nil {
+			t.Fatal("expected a differing dynssz-max literal to be refused")
+		}
+		_, _, maxSizeHints, err := parser.parseFieldTags(`ssz-max:"1024" dynssz-max:"1024"`)
 		if err != nil {
 			t.Fatalf("Failed to parse combined max size tags: %v", err)
 		}
-		if len(maxSizeHints) != 1 {
-			t.Errorf("Expected 1 max size hint, got %d", len(maxSizeHints))
-		}
-		// dynssz-max should override
-		if maxSizeHints[0].Size != 2048 {
-			t.Errorf("Expected max size 2048 (from dynssz-max), got %d", maxSizeHints[0].Size)
+		if len(maxSizeHints) != 1 || maxSizeHints[0].Size != 1024 || maxSizeHints[0].Custom || maxSizeHints[0].Expr != "" {
+			t.Errorf("Expected one static hint of max 1024, got %+v", maxSizeHints)
 		}
 	})
 
@@ -3506,7 +3502,9 @@ func TestGetTypeDescriptorError(t *testing.T) {
 	}
 }
 
-// TestSizeHintWithCustomFlag tests the custom/dynamic size hint flag path.
+// TestSizeHintWithCustomFlag tests that a size expression sets the expression
+// flag only: the parser resolves nothing, so the resolved-value flag stays clear
+// even when the hint claims a resolved value.
 func TestSizeHintWithCustomFlag(t *testing.T) {
 	parser := NewParser()
 
@@ -3517,8 +3515,8 @@ func TestSizeHintWithCustomFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize == 0 {
-		t.Error("expected HasDynamicSize flag")
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0 {
+		t.Error("expected HasDynamicSize flag to stay clear")
 	}
 	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr == 0 {
 		t.Error("expected HasSizeExpr flag")
@@ -3940,5 +3938,58 @@ func TestParserWalkerParameterAcceptsHashWalker(t *testing.T) {
 	}
 	if !NewParser().typeMatches(walker.Type(), typeNameHashWalkerParam) {
 		t.Fatal("sszutils.HashWalker does not qualify as a walker parameter")
+	}
+}
+
+// A field that carries no tag, or repeats its type's annotation, keeps the
+// type's delegation flags; a field that changes the declared shape drops them.
+// Mirrors the reflection type cache.
+func TestFieldTagRepeatingAnnotationKeepsDelegation(t *testing.T) {
+	pkg := types.NewPackage("annfield", "annfield")
+	elem := types.NewNamed(types.NewTypeName(token.NoPos, pkg, "annList", nil), types.NewSlice(types.Typ[types.Uint64]), nil)
+	typed := types.NewNamed(types.NewTypeName(token.NoPos, pkg, "annTypedList", nil), types.NewSlice(types.Typ[types.Uint64]), nil)
+	annotations := map[types.Type]string{elem: `ssz-max:"4"`, typed: `ssz-type:"list" ssz-max:"4"`}
+	holder := func(field types.Type, xTag, lTag string) types.Type {
+		return types.NewStruct([]*types.Var{
+			types.NewField(token.NoPos, pkg, "X", types.Typ[types.Uint32], false),
+			types.NewField(token.NoPos, pkg, "L", field, false),
+		}, []string{xTag, lTag})
+	}
+
+	tests := []struct {
+		name      string
+		field     types.Type
+		xTag      string
+		tag       string
+		delegated bool
+		limit     uint64
+	}{
+		{"no tag", elem, "", "", true, 4},
+		{"same tag", elem, "", `ssz-max:"4"`, true, 4},
+		{"other tag", elem, "", `ssz-max:"8"`, false, 8},
+		{"type hint the annotation lacks", elem, "", `ssz-type:"list"`, false, 4},
+		{"ssz alias the annotation lacks", elem, "", `ssz:"list"`, false, 4},
+		{"ssz alias naming the annotation's type", typed, "", `ssz:"list"`, true, 4},
+		{"ssz alias with another limit", typed, "", `ssz:"list" ssz-max:"8"`, false, 8},
+		{"field-only ssz-index", elem, `ssz-index:"0"`, `ssz-index:"1"`, true, 4},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := NewParser()
+			p.AnnotationResolver = func(typ types.Type) string { return annotations[types.Unalias(typ)] }
+			p.CompatFlags[elem.String()] = ssztypes.SszCompatFlagDynamicHashRoot
+			p.CompatFlags[typed.String()] = ssztypes.SszCompatFlagDynamicHashRoot
+			desc, err := p.buildTypeDescriptor(holder(tt.field, tt.xTag, tt.tag), holder(tt.field, tt.xTag, tt.tag), nil, nil, nil)
+			if err != nil {
+				t.Fatalf("descriptor: %v", err)
+			}
+			field := desc.ContainerDesc.Fields[1].Type
+			if got := field.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0; got != tt.delegated {
+				t.Fatalf("delegated = %v, want %v (compat flags %b)", got, tt.delegated, field.SszCompatFlags)
+			}
+			if field.Limit != tt.limit {
+				t.Fatalf("limit = %d, want %d", field.Limit, tt.limit)
+			}
+		})
 	}
 }

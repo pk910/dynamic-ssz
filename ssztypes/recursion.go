@@ -34,10 +34,10 @@ const childDerivedFlags = SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax |
 //
 // When a flag is raised on a descriptor, the fastssz compatibility flags that
 // were detected under the old (incomplete) flags are suppressed to match how
-// detectCompatFlags gates them: fastssz marshalling is only valid without
-// spec-dependent sizes, and fastssz hashing only without spec-dependent
-// limits. Custom types keep their compat flags — they have no traversed
-// children, so their flags can never change here anyway.
+// detectCompatFlags gates them: a fastssz method is only valid while no
+// resolved size or limit below the type differs from the static tags it baked
+// in. Custom types keep their compat flags — they have no traversed children,
+// so their flags can never change here anyway.
 func FixupRecursiveFlags(root *TypeDescriptor) {
 	markRecursionMembers(root)
 
@@ -118,11 +118,8 @@ func FixupRecursiveFlags(root *TypeDescriptor) {
 			desc.SszTypeFlags |= raised
 			changed = true
 
-			if raised&SszTypeFlagHasDynamicSize != 0 {
-				desc.SszCompatFlags &^= SszCompatFlagFastsszSurface
-			}
-			if raised&SszTypeFlagHasDynamicMax != 0 {
-				desc.SszCompatFlags &^= SszCompatFlagFastsszHashRoot | SszCompatFlagFastsszHashRootWith
+			if raised&(SszTypeFlagHasDynamicSize|SszTypeFlagHasDynamicMax) != 0 {
+				desc.SszCompatFlags &^= SszCompatFlagFastsszSurface | SszCompatFlagFastsszHashRoot | SszCompatFlagFastsszHashRootWith
 				desc.HashTreeRootWithMethod = nil
 			}
 		}

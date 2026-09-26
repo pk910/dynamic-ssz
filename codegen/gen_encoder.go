@@ -349,9 +349,12 @@ func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 		}
 	}
 
-	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0
+	// A static method baked its size and limit tags in and enforces them, so a
+	// child with a spec expression anywhere below it is reached through a
+	// spec-aware one.
+	hasSpecExpr := desc.SszTypeFlags&(ssztypes.SszTypeFlagHasSizeExpr|ssztypes.SszTypeFlagHasMaxExpr) != 0
 	isFastsszMarshaler := desc.SszCompatFlags&(ssztypes.SszCompatFlagFastsszBufferMarshaler|ssztypes.SszCompatFlagFastsszValueMarshaler) != 0
-	useFastSsz := !ctx.options.NoFastSsz && isFastsszMarshaler && !hasDynamicSize
+	useFastSsz := !ctx.options.NoFastSsz && isFastsszMarshaler && !hasSpecExpr
 	if desc.SszType == ssztypes.SszCustomType {
 		// A custom type has no structure to inline: it is reached through its
 		// spec-aware methods when it has them and dynamic calls are allowed,
