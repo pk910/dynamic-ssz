@@ -692,7 +692,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 
 		if maxSizeHints[0].Expr != "" {
 			// A limit no value was supplied for is the same dead end as a length.
-			if desc.Limit == 0 && !tc.noSpecResolution {
+			if desc.Limit == 0 && (!tc.noSpecResolution || tc.NoDelegation) {
 				return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-max %q is not defined and has no positive static fallback", maxSizeHints[0].Expr)
 			}
 
@@ -1001,6 +1001,9 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		case tc.noSpecResolution && len(sizeHints) > 0 && sizeHints[0].Expr != "":
 			// The width is read at run time from the type's sizer; the size
 			// expression flag the hint set makes the emitters ask for it.
+			if tc.NoDelegation && sizeHints[0].Size == 0 {
+				return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "custom type %v has no static width to bake for %q", t, sizeHints[0].Expr)
+			}
 		case len(sizeHints) > 0 && sizeHints[0].Size > 0:
 			desc.Size = sizeHints[0].Size
 		case staticAnnotation != nil && *staticAnnotation:
@@ -2251,7 +2254,7 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 	// A length supplied purely by an expression is legitimately 0 here while
 	// generating code, so only a genuine static zero is rejected (matching the
 	// code generator's own parser).
-	if desc.Len == 0 && desc.SizeExpression == nil && (desc.SszTypeFlags&SszTypeFlagHasBitSize == 0 || desc.SszType == SszBitvectorType) {
+	if desc.Len == 0 && (desc.SizeExpression == nil || (tc.NoDelegation && tc.noSpecResolution)) && (desc.SszTypeFlags&SszTypeFlagHasBitSize == 0 || desc.SszType == SszBitvectorType) {
 		return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "vector type %v has zero length, which is invalid per the SSZ spec", t)
 	}
 

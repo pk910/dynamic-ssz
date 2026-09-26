@@ -4067,3 +4067,32 @@ func TestTypeHintOverrideAndSameRunCustom(t *testing.T) {
 		t.Fatalf("type hint over a malformed annotation: err = %v, want the annotation parse failure", err)
 	}
 }
+
+// The go/types parser refuses the same spec-only bounds for a static build as
+// the type cache does: a limit, a length or a custom width that only an
+// expression supplies has no static value to bake.
+func TestParserStaticBuildRefusesSpecOnlyBounds(t *testing.T) {
+	parser := NewParser()
+	parser.NoDelegation = true
+	custom := []ssztypes.SszTypeHint{{Type: ssztypes.SszCustomType}}
+	sized := types.NewNamed(types.NewTypeName(0, nil, "Sized", nil), types.NewStruct(nil, nil), nil)
+	parser.CompatFlags[sized.String()] = ssztypes.SszCompatFlagDynamicMarshaler | ssztypes.SszCompatFlagDynamicUnmarshaler |
+		ssztypes.SszCompatFlagDynamicSizer | ssztypes.SszCompatFlagDynamicHashRoot
+	list := types.NewSlice(types.Typ[types.Uint64])
+
+	if _, err := parser.buildTypeDescriptor(list, list, nil, nil, []ssztypes.SszMaxSizeHint{{Expr: "LIMIT"}}); err == nil || !strings.Contains(err.Error(), "no positive static fallback") {
+		t.Fatalf("limit from an expression alone: err = %v, want the static-build refusal", err)
+	}
+	if _, err := parser.buildTypeDescriptor(list, list, nil, []ssztypes.SszSizeHint{{Expr: "LEN"}}, nil); err == nil || !strings.Contains(err.Error(), "zero length") {
+		t.Fatalf("length from an expression alone: err = %v, want the static-build refusal", err)
+	}
+	if _, err := parser.buildTypeDescriptor(sized, sized, custom, []ssztypes.SszSizeHint{{Expr: "W"}}, nil); err == nil || !strings.Contains(err.Error(), "no static width") {
+		t.Fatalf("custom width from an expression alone: err = %v, want the static-build refusal", err)
+	}
+	if desc, err := parser.buildTypeDescriptor(list, list, nil, nil, []ssztypes.SszMaxSizeHint{{Size: 4, Expr: "LIMIT"}}); err != nil || desc.Limit != 4 {
+		t.Fatalf("limit with a fallback: desc = %+v, err = %v, want limit 4", desc, err)
+	}
+	if desc, err := parser.buildTypeDescriptor(list, list, nil, []ssztypes.SszSizeHint{{Size: 4, Expr: "LEN"}}, nil); err != nil || desc.Len != 4 {
+		t.Fatalf("length with a fallback: desc = %+v, err = %v, want length 4", desc, err)
+	}
+}

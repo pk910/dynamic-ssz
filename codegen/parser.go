@@ -1079,6 +1079,9 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			desc.Limit = maxSizeHints[0].Size
 		}
 		if maxSizeHints[0].Expr != "" {
+			if desc.Limit == 0 && p.NoDelegation {
+				return nil, fmt.Errorf("dynssz-max %q has no positive static fallback", maxSizeHints[0].Expr)
+			}
 			desc.MaxExpression = &maxSizeHints[0].Expr
 		}
 		for _, hint := range maxSizeHints {
@@ -1406,6 +1409,9 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		case hasExpr && (beingGenerated || p.getDynamicSizerCompatibility(originalType) || p.getDynamicSizerCompatibility(types.NewPointer(originalType))):
 			// The width is read at run time from the type's sizer; the size
 			// expression flag the hint set makes the emitters ask for it.
+			if p.NoDelegation && !hasLiteral {
+				return nil, fmt.Errorf("custom type %v has no static width to bake for %q", originalType, sizeHints[0].Expr)
+			}
 		case hasExpr:
 			return nil, fmt.Errorf("%v declares ssz-type:\"custom\" with its width from %q but has no spec-aware sizer: the generator cannot know that width, so declare it with a literal ssz-size", originalType, sizeHints[0].Expr)
 		case hasLiteral:
@@ -1966,7 +1972,7 @@ func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, dataType, 
 	// length is supplied purely by a runtime dynssz-size expression legitimately
 	// carries a static length of 0 here (the expression resolves at runtime), so
 	// only reject a genuine static zero length.
-	if desc.Len == 0 && desc.SizeExpression == nil {
+	if desc.Len == 0 && (desc.SizeExpression == nil || p.NoDelegation) {
 		return fmt.Errorf("vector type %v has zero length, which is invalid per the SSZ spec", schemaType)
 	}
 

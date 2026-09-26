@@ -3122,8 +3122,8 @@ func TestPerTypeExtendedTypesReachesParser(t *testing.T) {
 }
 
 // A build without dynamic expressions bakes the static tag values, so a length
-// or limit that only a spec expression supplies is refused rather than baked
-// as none.
+// or limit that only a spec expression supplies is refused where it is derived
+// rather than baked as none.
 func TestStaticBuildRefusesSpecOnlyBounds(t *testing.T) {
 	type onlyDynLimit struct {
 		V []uint64 `dynssz-max:"LIMIT"`
@@ -3133,6 +3133,9 @@ func TestStaticBuildRefusesSpecOnlyBounds(t *testing.T) {
 	}
 	type nestedOnlyDynLimit struct {
 		Inner []onlyDynLimit `ssz-max:"2"`
+	}
+	type progressiveOnlyDynLimit struct {
+		V []uint64 `ssz-type:"progressive-list" dynssz-max:"LIMIT"`
 	}
 	type unionOnlyDynLimit struct {
 		U dynssz.CompatibleUnion[struct {
@@ -3150,10 +3153,11 @@ func TestStaticBuildRefusesSpecOnlyBounds(t *testing.T) {
 		typ  reflect.Type
 		want string
 	}{
-		{reflect.TypeOf(onlyDynLimit{}), "takes its limit from \"LIMIT\" alone"},
-		{reflect.TypeOf(onlyDynLength{}), "takes its length from \"LEN\" alone"},
-		{reflect.TypeOf(nestedOnlyDynLimit{}), "takes its limit from \"LIMIT\" alone"},
-		{reflect.TypeOf(unionOnlyDynLimit{}), "takes its limit from \"LIMIT\" alone"},
+		{reflect.TypeOf(onlyDynLimit{}), "dynssz-max \"LIMIT\" is not defined and has no positive static fallback"},
+		{reflect.TypeOf(onlyDynLength{}), "has zero length"},
+		{reflect.TypeOf(nestedOnlyDynLimit{}), "dynssz-max \"LIMIT\" is not defined and has no positive static fallback"},
+		{reflect.TypeOf(unionOnlyDynLimit{}), "dynssz-max \"LIMIT\" is not defined and has no positive static fallback"},
+		{reflect.TypeOf(progressiveOnlyDynLimit{}), "dynssz-max \"LIMIT\" is not defined and has no positive static fallback"},
 		{reflect.TypeOf(withFallback{}), ""},
 	}
 
