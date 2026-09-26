@@ -24,7 +24,7 @@ const (
 	SszTypeFlagHasLimit                                // Whether the type has a max size tag
 	SszTypeFlagHasDynamicSize                          // Whether this type or any of its nested types uses dynamic spec size value that differs from the default
 	SszTypeFlagHasDynamicMax                           // Whether this type or any of its nested types uses dynamic spec max value that differs from the default
-	SszTypeFlagHasSizeExpr                             // Whether this type or any of its nested types uses a dynamic expression to calculate the size or max size
+	SszTypeFlagHasSizeExpr                             // Whether this type or any of its nested types uses a dynamic expression to calculate the size
 	SszTypeFlagHasMaxExpr                              // Whether this type or any of its nested types uses a dynamic expression to calculate the max size
 	SszTypeFlagHasBitSize                              // Whether the type has a bit size tag
 	SszTypeFlagHasNoneVariant                          // Whether a classic union declares the None option at selector 0

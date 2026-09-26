@@ -594,9 +594,9 @@ func (p *Parser) getCompatFlag(dataType, schemaType types.Type) ssztypes.SszComp
 }
 
 // detectCompatFlags records which SSZ delegation interfaces the type implements,
-// checking both the value and pointer forms. The fastssz family is only flagged
-// when the descriptor does not carry a dynamic size/max (those use the static
-// fastssz layout). Mirrors the reflection typecache's detection.
+// checking both the value and pointer forms. Every method the type carries is
+// recorded: no spec value resolves at generation time, so whether a static
+// method may answer is decided by the emitters from the expression flags.
 func (p *Parser) detectCompatFlags(desc *ssztypes.TypeDescriptor, originalType, innerDataType, innerSchemaType types.Type) {
 	otherType := originalType
 	if ptr, ok := otherType.(*types.Pointer); ok {
@@ -605,16 +605,12 @@ func (p *Parser) detectCompatFlags(desc *ssztypes.TypeDescriptor, originalType, 
 		otherType = types.NewPointer(otherType)
 	}
 
-	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize == 0 || desc.SszType == ssztypes.SszCustomType {
-		desc.SszCompatFlags |= p.getFastsszCompatFlags(originalType) | p.getFastsszCompatFlags(otherType)
+	desc.SszCompatFlags |= p.getFastsszCompatFlags(originalType) | p.getFastsszCompatFlags(otherType)
+	if p.getFastsszHashCompatibility(originalType) || p.getFastsszHashCompatibility(otherType) {
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagFastsszHashRoot
 	}
-	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicMax == 0 || desc.SszType == ssztypes.SszCustomType {
-		if p.getFastsszHashCompatibility(originalType) || p.getFastsszHashCompatibility(otherType) {
-			desc.SszCompatFlags |= ssztypes.SszCompatFlagFastsszHashRoot
-		}
-		if p.getHashTreeRootWithCompatibility(originalType) || p.getHashTreeRootWithCompatibility(otherType) {
-			desc.SszCompatFlags |= ssztypes.SszCompatFlagFastsszHashRootWith
-		}
+	if p.getHashTreeRootWithCompatibility(originalType) || p.getHashTreeRootWithCompatibility(otherType) {
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagFastsszHashRootWith
 	}
 
 	// Check for dynamic interface implementations
@@ -1030,7 +1026,9 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		desc.Kind = reflect.Invalid
 	}
 
-	// Check dynamic size and max size hints (like reflection code)
+	// Record the size and max expressions. Nothing resolves at generation
+	// time, so the descriptor only ever says that an expression exists; the
+	// resolved-value flags stay clear.
 	if len(sizeHints) > 0 {
 		if sizeHints[0].Expr != "" {
 			desc.SizeExpression = &sizeHints[0].Expr
@@ -1040,9 +1038,6 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			desc.BitSize = sizeHints[0].Size
 		}
 		for _, hint := range sizeHints {
-			if hint.Custom {
-				desc.SszTypeFlags |= ssztypes.SszTypeFlagHasDynamicSize
-			}
 			if hint.Expr != "" {
 				desc.SszTypeFlags |= ssztypes.SszTypeFlagHasSizeExpr
 			}
@@ -1063,9 +1058,6 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			desc.MaxExpression = &maxSizeHints[0].Expr
 		}
 		for _, hint := range maxSizeHints {
-			if hint.Custom {
-				desc.SszTypeFlags |= ssztypes.SszTypeFlagHasDynamicMax
-			}
 			if hint.Expr != "" {
 				desc.SszTypeFlags |= ssztypes.SszTypeFlagHasMaxExpr
 			}

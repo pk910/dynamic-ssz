@@ -197,9 +197,9 @@ func (ctx *decoderContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 	}
 
 	// Inline types with fastssz unmarshaler
-	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0
+	hasSpecExpr := desc.SszTypeFlags&(ssztypes.SszTypeFlagHasSizeExpr|ssztypes.SszTypeFlagHasMaxExpr) != 0
 	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszUnmarshaler != 0
-	useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
+	useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasSpecExpr
 	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
 		useFastSsz = true
 	}
@@ -329,9 +329,12 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 		}
 	}
 
-	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0
+	// A static method baked its size and limit tags in and enforces them, so a
+	// child with a spec expression anywhere below it is reached through a
+	// spec-aware one.
+	hasSpecExpr := desc.SszTypeFlags&(ssztypes.SszTypeFlagHasSizeExpr|ssztypes.SszTypeFlagHasMaxExpr) != 0
 	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszUnmarshaler != 0
-	useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
+	useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasSpecExpr
 	if desc.SszType == ssztypes.SszCustomType {
 		// A custom type has no structure to inline: it is reached through its
 		// spec-aware methods when it has them and dynamic calls are allowed,

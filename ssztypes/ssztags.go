@@ -427,7 +427,10 @@ func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszS
 						return sszSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-size for field %q resolved to 0 with no positive static fallback", field.Name)
 					}
 					sszSize.Size = int64(specVal)
-					sszSize.Custom = true
+					// The static tag is what a fastssz method baked in, so the
+					// value only makes the dimension dynamic when it differs from
+					// that fallback, or when there is no fallback to agree with.
+					sszSize.Custom = i >= len(sszSizes) || sszSizes[i].Size != sszSize.Size
 				} else {
 					// Unknown spec value: keep the fastssz default for this dimension,
 					// but keep resolving the remaining dimensions independently
@@ -552,7 +555,10 @@ func getSszMaxSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]S
 						return sszMaxSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-max for field %q resolved to 0 with no positive static fallback", field.Name)
 					}
 					sszMaxSize.Size = specVal
-					sszMaxSize.Custom = true
+					// The static tag is what a fastssz method baked in, so the
+					// value only makes the dimension dynamic when it differs from
+					// that fallback, or when there is no fallback to agree with.
+					sszMaxSize.Custom = i >= len(sszMaxSizes) || sszMaxSizes[i].Size != specVal
 				} else {
 					// Unknown spec value: keep the fastssz default for this
 					// dimension. A zero default is the ssz-max:"0" placeholder,
@@ -588,8 +594,8 @@ func getSszMaxSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]S
 
 			if i >= len(sszMaxSizes) {
 				sszMaxSizes = append(sszMaxSizes, sszMaxSize)
-			} else if sszMaxSizes[i].Size != sszMaxSize.Size {
-				// update if resolved max size differs from default
+			} else {
+				// The dynamic tag overrides the static hint entirely.
 				sszMaxSizes[i] = sszMaxSize
 			}
 
@@ -811,9 +817,9 @@ func ParseTags(tag string) (typeHints []SszTypeHint, sizeHints []SszSizeHint, ma
 				sszSize.Size = int64(sszSizeInt)
 			} else {
 				// An expression names a length, so the dimension is a vector;
-				// only `?` declares it dynamic.
+				// only `?` declares it dynamic. Nothing resolves here, so the
+				// hint records the expression and never a resolved value.
 				isExpr = true
-				sszSize.Custom = true
 
 				if i < len(sizeHints) {
 					// The static fallback and the expression share one hint.
@@ -875,8 +881,9 @@ func ParseTags(tag string) (typeHints []SszTypeHint, sizeHints []SszSizeHint, ma
 			} else if sszSizeInt, parseErr := strconv.ParseUint(sszMaxSizeStr, 10, 64); parseErr == nil {
 				sszMaxSize.Size = sszSizeInt
 			} else {
+				// Nothing resolves here, so the hint records the expression
+				// and never a resolved value.
 				isExpr = true
-				sszMaxSize.Custom = true
 
 				if i < len(maxSizeHints) {
 					maxSizeHints[i].Expr = sszMaxSizeStr

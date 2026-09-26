@@ -9323,3 +9323,181 @@ func TestSpecSizedVectorNeedsItsSpecValue(t *testing.T) {
 		t.Errorf("err = %v, want ErrInvalidConstraint", err)
 	}
 }
+
+// limitProbeCalls counts how often the probes' own fastssz methods ran.
+var limitProbeCalls int
+
+// limitProbe carries the full fastssz surface with the static limit 4 baked
+// into every method, as a fastssz-generated type would.
+type limitProbe struct {
+	A     uint64
+	Items []uint64 `ssz-max:"4" dynssz-max:"PROBE_MAX"`
+}
+
+func (p *limitProbe) SizeSSZ() int {
+	limitProbeCalls++
+	return 12 + 8*len(p.Items)
+}
+
+func (p *limitProbe) MarshalSSZ() ([]byte, error) { return p.MarshalSSZTo(nil) }
+
+func (p *limitProbe) MarshalSSZTo(b []byte) ([]byte, error) {
+	limitProbeCalls++
+	if len(p.Items) > 4 {
+		return nil, errors.New("static limit 4")
+	}
+	b = binary.LittleEndian.AppendUint64(b, p.A)
+	b = binary.LittleEndian.AppendUint32(b, 12)
+	for _, x := range p.Items {
+		b = binary.LittleEndian.AppendUint64(b, x)
+	}
+	return b, nil
+}
+
+func (p *limitProbe) UnmarshalSSZ(buf []byte) error {
+	limitProbeCalls++
+	return unmarshalLimitProbe(buf, &p.A, &p.Items)
+}
+
+func (p *limitProbe) HashTreeRoot() ([32]byte, error) {
+	limitProbeCalls++
+	if len(p.Items) > 4 {
+		return [32]byte{}, errors.New("static limit 4")
+	}
+	return [32]byte{0xee}, nil
+}
+
+// limitProbeUnmarshalOnly carries the static UnmarshalSSZ alone.
+type limitProbeUnmarshalOnly struct {
+	A     uint64
+	Items []uint64 `ssz-max:"4" dynssz-max:"PROBE_MAX"`
+}
+
+func (p *limitProbeUnmarshalOnly) UnmarshalSSZ(buf []byte) error {
+	limitProbeCalls++
+	return unmarshalLimitProbe(buf, &p.A, &p.Items)
+}
+
+func unmarshalLimitProbe(buf []byte, a *uint64, items *[]uint64) error {
+	if len(buf) < 12 || binary.LittleEndian.Uint32(buf[8:]) != 12 {
+		return errors.New("bad header")
+	}
+	tail := buf[12:]
+	if len(tail)%8 != 0 || len(tail)/8 > 4 {
+		return errors.New("static limit 4")
+	}
+	*a = binary.LittleEndian.Uint64(buf)
+	*items = make([]uint64, len(tail)/8)
+	for i := range *items {
+		(*items)[i] = binary.LittleEndian.Uint64(tail[i*8:])
+	}
+	return nil
+}
+
+type limitHolder struct {
+	X uint32
+	P *limitProbe
+}
+
+type limitHolderUnmarshalOnly struct {
+	X uint32
+	P *limitProbeUnmarshalOnly
+}
+
+func encodeLimitHolder(items []uint64) []byte {
+	b := binary.LittleEndian.AppendUint32(nil, 1)
+	b = binary.LittleEndian.AppendUint32(b, 8)
+	b = binary.LittleEndian.AppendUint64(b, 7)
+	b = binary.LittleEndian.AppendUint32(b, 12)
+	for _, v := range items {
+		b = binary.LittleEndian.AppendUint64(b, v)
+	}
+	return b
+}
+
+// A spec that resolves a limit away from the static tag takes the type off
+// every fastssz method, so the resolved limit is enforced on every path. A
+// spec that resolves to the static value leaves the delegation in place.
+func TestDelegatedLimitFollowsSpecs(t *testing.T) {
+	three := []uint64{1, 2, 3}
+	five := []uint64{1, 2, 3, 4, 5}
+
+	refuse := func(t *testing.T, ds *DynSsz, value any, fresh func() any, raw []byte) {
+		t.Helper()
+		if _, err := ds.MarshalSSZ(value); err == nil {
+			t.Error("MarshalSSZ accepted a value over the resolved limit")
+		}
+		if err := ds.MarshalSSZWriter(value, &bytes.Buffer{}); err == nil {
+			t.Error("MarshalSSZWriter accepted a value over the resolved limit")
+		}
+		if _, err := ds.HashTreeRoot(value); err == nil {
+			t.Error("HashTreeRoot accepted a value over the resolved limit")
+		}
+		if err := ds.UnmarshalSSZ(fresh(), raw); err == nil {
+			t.Error("UnmarshalSSZ accepted input over the resolved limit")
+		}
+		if err := ds.UnmarshalSSZReader(fresh(), bytes.NewReader(raw), len(raw)); err == nil {
+			t.Error("UnmarshalSSZReader accepted input over the resolved limit")
+		}
+	}
+
+	accept := func(t *testing.T, ds *DynSsz, value any, fresh func() any, raw []byte) {
+		t.Helper()
+		if out, err := ds.MarshalSSZ(value); err != nil || !bytes.Equal(out, raw) {
+			t.Errorf("MarshalSSZ = %x (%v), want %x", out, err, raw)
+		}
+		var w bytes.Buffer
+		if err := ds.MarshalSSZWriter(value, &w); err != nil || !bytes.Equal(w.Bytes(), raw) {
+			t.Errorf("MarshalSSZWriter = %x (%v), want %x", w.Bytes(), err, raw)
+		}
+		if _, err := ds.HashTreeRoot(value); err != nil {
+			t.Errorf("HashTreeRoot: %v", err)
+		}
+		if err := ds.UnmarshalSSZ(fresh(), raw); err != nil {
+			t.Errorf("UnmarshalSSZ: %v", err)
+		}
+		if err := ds.UnmarshalSSZReader(fresh(), bytes.NewReader(raw), len(raw)); err != nil {
+			t.Errorf("UnmarshalSSZReader: %v", err)
+		}
+	}
+
+	t.Run("full surface", func(t *testing.T) {
+		fresh := func() any { return &limitHolder{} }
+		narrow := NewDynSsz(map[string]any{"PROBE_MAX": uint64(2)})
+		refuse(t, narrow, &limitHolder{X: 1, P: &limitProbe{A: 7, Items: three}}, fresh, encodeLimitHolder(three))
+
+		wide := NewDynSsz(map[string]any{"PROBE_MAX": uint64(8)})
+		limitProbeCalls = 0
+		accept(t, wide, &limitHolder{X: 1, P: &limitProbe{A: 7, Items: five}}, fresh, encodeLimitHolder(five))
+		if limitProbeCalls != 0 {
+			t.Errorf("fastssz methods ran %d times under a differing limit", limitProbeCalls)
+		}
+
+		equal := NewDynSsz(map[string]any{"PROBE_MAX": uint64(4)})
+		limitProbeCalls = 0
+		accept(t, equal, &limitHolder{X: 1, P: &limitProbe{A: 7, Items: three}}, fresh, encodeLimitHolder(three))
+		if limitProbeCalls == 0 {
+			t.Error("fastssz methods did not run under a limit equal to the static tag")
+		}
+	})
+
+	t.Run("unmarshal only", func(t *testing.T) {
+		fresh := func() any { return &limitHolderUnmarshalOnly{} }
+		narrow := NewDynSsz(map[string]any{"PROBE_MAX": uint64(2)})
+		refuse(t, narrow, &limitHolderUnmarshalOnly{X: 1, P: &limitProbeUnmarshalOnly{A: 7, Items: three}}, fresh, encodeLimitHolder(three))
+
+		wide := NewDynSsz(map[string]any{"PROBE_MAX": uint64(8)})
+		limitProbeCalls = 0
+		accept(t, wide, &limitHolderUnmarshalOnly{X: 1, P: &limitProbeUnmarshalOnly{A: 7, Items: five}}, fresh, encodeLimitHolder(five))
+		if limitProbeCalls != 0 {
+			t.Errorf("UnmarshalSSZ ran %d times under a differing limit", limitProbeCalls)
+		}
+
+		equal := NewDynSsz(map[string]any{"PROBE_MAX": uint64(4)})
+		limitProbeCalls = 0
+		accept(t, equal, &limitHolderUnmarshalOnly{X: 1, P: &limitProbeUnmarshalOnly{A: 7, Items: three}}, fresh, encodeLimitHolder(three))
+		if limitProbeCalls == 0 {
+			t.Error("UnmarshalSSZ did not run under a limit equal to the static tag")
+		}
+	})
+}

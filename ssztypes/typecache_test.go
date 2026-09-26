@@ -3631,8 +3631,8 @@ func TestParseTags_DynMaxExprWithoutSszMax(t *testing.T) {
 	if maxHints[0].Expr != "SOME_MAX_EXPR" {
 		t.Errorf("expected Expr 'SOME_MAX_EXPR', got %q", maxHints[0].Expr)
 	}
-	if !maxHints[0].Custom {
-		t.Error("expected Custom to be set")
+	if maxHints[0].Custom {
+		t.Error("expected Custom to stay clear: only resolution sets it")
 	}
 }
 
@@ -3868,8 +3868,8 @@ func TestParseTags_Comprehensive(t *testing.T) {
 		if sizeHints[0].Dynamic {
 			t.Fatal("an expression-sized dimension is a vector, so Dynamic must be false")
 		}
-		if !sizeHints[0].Custom {
-			t.Fatal("expected Custom=true")
+		if sizeHints[0].Custom {
+			t.Fatal("expected Custom=false: only resolution sets it")
 		}
 	})
 
@@ -3932,8 +3932,8 @@ func TestParseTags_Comprehensive(t *testing.T) {
 		if len(sizeHints) != 1 {
 			t.Fatalf("expected 1 size hint, got %d", len(sizeHints))
 		}
-		if sizeHints[0].Dynamic || !sizeHints[0].Custom {
-			t.Fatal("expected Dynamic=false and Custom=true for an expr hint")
+		if sizeHints[0].Dynamic || sizeHints[0].Custom {
+			t.Fatal("expected Dynamic=false and Custom=false for an unresolved expr hint")
 		}
 	})
 
@@ -6857,5 +6857,176 @@ func TestTypeCache_OverrideCheckRefusesBadAnnotation(t *testing.T) {
 	_, err := NewTypeCache(nil).GetTypeDescriptor(reflect.TypeOf(holder{}), nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "bogus") {
 		t.Fatalf("err = %v, want the annotation refused", err)
+	}
+}
+
+// flagProbe carries the fastssz method set and one size and one limit that a
+// spec may resolve away from the static tags.
+type flagProbe struct {
+	Data  []byte   `ssz-size:"8" dynssz-size:"FLAG_SIZE"`
+	Items []uint64 `ssz-max:"4" dynssz-max:"FLAG_MAX"`
+}
+
+func (*flagProbe) MarshalSSZ() ([]byte, error)           { return nil, nil }
+func (*flagProbe) MarshalSSZTo(b []byte) ([]byte, error) { return b, nil }
+func (*flagProbe) SizeSSZ() int                          { return 0 }
+func (*flagProbe) UnmarshalSSZ([]byte) error             { return nil }
+func (*flagProbe) HashTreeRoot() ([32]byte, error)       { return [32]byte{}, nil }
+
+// flagNoFallback names its limit through the spec alone.
+type flagNoFallback struct {
+	Items []uint64 `dynssz-max:"FLAG_MAX"`
+}
+
+type flagAnnList []uint64
+
+type flagAnnVec []byte
+
+type flagAnnMaxOnly []uint64
+
+var (
+	_ = sszutils.Annotate[flagAnnList](`ssz-max:"4" dynssz-max:"FLAG_ANN_MAX"`)
+	_ = sszutils.Annotate[flagAnnVec](`ssz-size:"8" dynssz-size:"FLAG_ANN_SIZE"`)
+	_ = sszutils.Annotate[flagAnnMaxOnly](`dynssz-max:"FLAG_ANN_MAX"`)
+)
+
+// flagRecHead owns the spec-dependent limit of a recursive pair; flagRecTail is
+// built inside the head's build and only learns the limit from the fixup pass.
+type flagRecHead struct {
+	Items []uint64      `ssz-max:"4" dynssz-max:"FLAG_MAX"`
+	Next  []flagRecTail `ssz-max:"2"`
+}
+
+type flagRecTail struct {
+	Back []flagRecHead `ssz-max:"2"`
+}
+
+func (*flagRecTail) UnmarshalSSZ([]byte) error { return nil }
+
+const flagFastssz = SszCompatFlagFastsszSurface | SszCompatFlagFastsszHashRoot
+
+// A resolved spec value only makes a type dynamic when it differs from the
+// static tag a fastssz method baked in, and then no fastssz method may answer
+// for the type on any operation.
+func TestDynamicFlagsFollowResolvedValues(t *testing.T) {
+	tests := []struct {
+		name          string
+		specs         map[string]uint64
+		wantDynamic   SszTypeFlag
+		wantDelegated bool
+	}{
+		{"equal", map[string]uint64{"FLAG_SIZE": 8, "FLAG_MAX": 4}, 0, true},
+		{"size differs", map[string]uint64{"FLAG_SIZE": 16, "FLAG_MAX": 4}, SszTypeFlagHasDynamicSize, false},
+		{"max below static", map[string]uint64{"FLAG_SIZE": 8, "FLAG_MAX": 2}, SszTypeFlagHasDynamicMax, false},
+		{"max above static", map[string]uint64{"FLAG_SIZE": 8, "FLAG_MAX": 8}, SszTypeFlagHasDynamicMax, false},
+		{"unresolved", map[string]uint64{}, 0, true},
+	}
+
+	const dynamic = SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cache := NewTypeCache(&dummyDynamicSpecs{specValues: tt.specs})
+			desc, err := cache.GetTypeDescriptor(reflect.TypeOf(flagProbe{}), nil, nil, nil)
+			if err != nil {
+				t.Fatalf("descriptor: %v", err)
+			}
+			if got := desc.SszTypeFlags & dynamic; got != tt.wantDynamic {
+				t.Fatalf("dynamic flags = %b, want %b", got, tt.wantDynamic)
+			}
+			if got := desc.SszTypeFlags & (SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr); got != SszTypeFlagHasSizeExpr|SszTypeFlagHasMaxExpr {
+				t.Fatalf("expression flags = %b, want both", got)
+			}
+			if delegated := desc.SszCompatFlags&flagFastssz == flagFastssz; delegated != tt.wantDelegated {
+				t.Fatalf("fastssz compat flags = %b, delegated %v, want %v", desc.SszCompatFlags, delegated, tt.wantDelegated)
+			}
+			if !tt.wantDelegated && desc.SszCompatFlags&flagFastssz != 0 {
+				t.Fatalf("fastssz compat flags = %b, want none", desc.SszCompatFlags)
+			}
+		})
+	}
+}
+
+// A limit or size the spec supplies without a static tag has nothing to agree
+// with, so it is dynamic whenever it resolves.
+func TestDynamicFlagsWithoutFallback(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"FLAG_MAX": 4, "FLAG_ANN_MAX": 4}})
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(flagNoFallback{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("field descriptor: %v", err)
+	}
+	if desc.SszTypeFlags&SszTypeFlagHasDynamicMax == 0 {
+		t.Fatal("field: expected HasDynamicMax for a limit with no static fallback")
+	}
+
+	desc, err = cache.GetTypeDescriptor(reflect.TypeOf(flagAnnMaxOnly{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("annotation descriptor: %v", err)
+	}
+	if desc.SszTypeFlags&SszTypeFlagHasDynamicMax == 0 {
+		t.Fatal("annotation: expected HasDynamicMax for a limit with no static fallback")
+	}
+}
+
+// Annotations resolve by the same rule as field tags.
+func TestDynamicFlagsFromAnnotations(t *testing.T) {
+	tests := []struct {
+		name  string
+		typ   reflect.Type
+		specs map[string]uint64
+		flag  SszTypeFlag
+		want  bool
+	}{
+		{"max equal", reflect.TypeOf(flagAnnList{}), map[string]uint64{"FLAG_ANN_MAX": 4}, SszTypeFlagHasDynamicMax, false},
+		{"max differs", reflect.TypeOf(flagAnnList{}), map[string]uint64{"FLAG_ANN_MAX": 6}, SszTypeFlagHasDynamicMax, true},
+		{"size equal", reflect.TypeOf(flagAnnVec{}), map[string]uint64{"FLAG_ANN_SIZE": 8}, SszTypeFlagHasDynamicSize, false},
+		{"size differs", reflect.TypeOf(flagAnnVec{}), map[string]uint64{"FLAG_ANN_SIZE": 12}, SszTypeFlagHasDynamicSize, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cache := NewTypeCache(&dummyDynamicSpecs{specValues: tt.specs})
+			desc, err := cache.GetTypeDescriptor(tt.typ, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("descriptor: %v", err)
+			}
+			if got := desc.SszTypeFlags&tt.flag != 0; got != tt.want {
+				t.Fatalf("flag set = %v, want %v (flags %b)", got, tt.want, desc.SszTypeFlags)
+			}
+		})
+	}
+}
+
+// A cycle member that completes before the head learns the head's dynamic
+// limit from the fixup pass, and loses its fastssz methods with it.
+func TestDynamicFlagsRaisedByRecursionFixup(t *testing.T) {
+	tests := []struct {
+		name          string
+		max           uint64
+		wantDelegated bool
+	}{
+		{"equal", 4, true},
+		{"differs", 2, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cache := NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"FLAG_MAX": tt.max}})
+			head, err := cache.GetTypeDescriptor(reflect.TypeOf(flagRecHead{}), nil, nil, nil)
+			if err != nil {
+				t.Fatalf("descriptor: %v", err)
+			}
+			tail := head.ContainerDesc.Fields[1].Type.ElemDesc
+			if tail == nil || tail.Type != reflect.TypeOf(flagRecTail{}) {
+				t.Fatalf("tail descriptor not reached: %+v", tail)
+			}
+			if got := tail.SszTypeFlags&SszTypeFlagHasDynamicMax != 0; got == tt.wantDelegated {
+				t.Fatalf("tail HasDynamicMax = %v, want %v", got, !tt.wantDelegated)
+			}
+			if got := tail.SszCompatFlags&SszCompatFlagFastsszUnmarshaler != 0; got != tt.wantDelegated {
+				t.Fatalf("tail fastssz unmarshaler flag = %v, want %v", got, tt.wantDelegated)
+			}
+		})
 	}
 }

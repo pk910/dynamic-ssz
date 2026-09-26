@@ -585,8 +585,12 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 						return sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(val), "ssz-size annotation value %d exceeds the SSZ size limit", val)
 					}
 
+					// The annotation's static size is what a fastssz method
+					// baked in, so the value only makes the dimension dynamic
+					// when it differs from that fallback, or when there is no
+					// fallback to agree with.
+					sizeHints[i].Custom = sizeHints[i].Size != int64(val)
 					sizeHints[i].Size = int64(val)
-					sizeHints[i].Custom = true
 
 					continue
 				}
@@ -609,8 +613,10 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 					return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing dynssz-max expression %q for type %v: %v", maxSizeHints[i].Expr, t, resolveErr)
 				}
 				if ok && val > 0 {
+					// As for the size: dynamic only when the value differs
+					// from the annotation's static limit, or there is none.
+					maxSizeHints[i].Custom = maxSizeHints[i].Size != val
 					maxSizeHints[i].Size = val
-					maxSizeHints[i].Custom = true
 
 					continue
 				}
@@ -1276,14 +1282,13 @@ func (td *TypeDescriptor) SetMinSize() {
 }
 
 // detectCompatFlags records which SSZ delegation interfaces (fastssz, dynamic,
-// dynamic-view, and HashTreeRootWith) the type implements. The fastssz marshaler
-// and hasher are only flagged when the type does not carry a dynamic size/max,
-// since those use the static fastssz layout.
+// dynamic-view, and HashTreeRootWith) the type implements. The fastssz family
+// is only flagged when no resolved spec value below the type differs from the
+// static tags: a fastssz method baked those in, enforces them on every
+// operation, and so cannot answer for a value that resolves them differently.
 func (tc *TypeCache) detectCompatFlags(desc *TypeDescriptor, runtimeType, schemaType reflect.Type) {
-	if desc.SszTypeFlags&SszTypeFlagHasDynamicSize == 0 {
+	if desc.SszTypeFlags&(SszTypeFlagHasDynamicSize|SszTypeFlagHasDynamicMax) == 0 {
 		desc.SszCompatFlags |= getFastsszCompatFlags(runtimeType)
-	}
-	if desc.SszTypeFlags&SszTypeFlagHasDynamicMax == 0 {
 		if getFastsszHashCompatibility(runtimeType) {
 			desc.SszCompatFlags |= SszCompatFlagFastsszHashRoot
 		}

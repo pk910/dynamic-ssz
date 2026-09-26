@@ -32,11 +32,16 @@ default generation registers the dynamic surface, and the streaming pair with
 ## When the static surface is used
 
 The static surface is taken whenever the analysis phase admits it: fastssz
-delegation is on (`WithNoFastSsz` not set), the child carries no size
-expression, and for hashing no limit expression either. Under those conditions
-the static method produces the same bytes and root as the dynamic one and
-skips the spec argument, so it is preferred on every path. A child with spec
-expressions is always reached through a spec-aware surface.
+delegation is on (`WithNoFastSsz` not set) and no size or limit below the
+child depends on the spec. Under that condition the static method produces
+the same bytes and root as the dynamic one and skips the spec argument, so it
+is preferred on every path. A static method baked its tags in and enforces
+them on every operation, so a child whose size or limit depends on the spec is
+always reached through a spec-aware surface. The two engines decide this
+differently: the reflection engine resolves the spec values and only counts
+one that differs from the static tag (`HasDynamicSize`, `HasDynamicMax`),
+while generated code, which sees no spec values, counts every expression
+(`HasSizeExpr`, `HasMaxExpr`).
 
 ## The order per handler
 

@@ -1155,13 +1155,13 @@ func TestMaxSizeHints(t *testing.T) {
 
 	t.Run("MaxSizeExpression", func(t *testing.T) {
 		uint64Type := types.Typ[types.Uint64]
-		maxSizeHint := []ssztypes.SszMaxSizeHint{{Expr: "maxSize", Custom: true}}
+		maxSizeHint := []ssztypes.SszMaxSizeHint{{Expr: "maxSize"}}
 		desc, err := parser.buildTypeDescriptor(uint64Type, uint64Type, nil, nil, maxSizeHint)
 		if err != nil {
 			t.Fatalf("Failed to build descriptor with max size expression: %v", err)
 		}
-		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicMax == 0 {
-			t.Error("Expected dynamic max flag to be set")
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicMax != 0 {
+			t.Error("Expected dynamic max flag to stay clear: nothing resolves at generation time")
 		}
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasMaxExpr == 0 {
 			t.Error("Expected max expr flag to be set")
@@ -1873,8 +1873,8 @@ func TestParseFieldTags(t *testing.T) {
 		if sizeHints[0].Expr != "expr1" {
 			t.Errorf("Expected expression 'expr1', got %s", sizeHints[0].Expr)
 		}
-		if !sizeHints[0].Custom {
-			t.Error("Expected first size hint to be custom")
+		if sizeHints[0].Custom {
+			t.Error("Expected first size hint not to be custom: nothing resolves at generation time")
 		}
 		if sizeHints[1].Size != 32 {
 			t.Errorf("Expected size 32, got %d", sizeHints[1].Size)
@@ -3506,7 +3506,9 @@ func TestGetTypeDescriptorError(t *testing.T) {
 	}
 }
 
-// TestSizeHintWithCustomFlag tests the custom/dynamic size hint flag path.
+// TestSizeHintWithCustomFlag tests that a size expression sets the expression
+// flag only: the parser resolves nothing, so the resolved-value flag stays clear
+// even when the hint claims a resolved value.
 func TestSizeHintWithCustomFlag(t *testing.T) {
 	parser := NewParser()
 
@@ -3517,8 +3519,8 @@ func TestSizeHintWithCustomFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize == 0 {
-		t.Error("expected HasDynamicSize flag")
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0 {
+		t.Error("expected HasDynamicSize flag to stay clear")
 	}
 	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr == 0 {
 		t.Error("expected HasSizeExpr flag")

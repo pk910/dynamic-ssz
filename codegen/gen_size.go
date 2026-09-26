@@ -290,13 +290,16 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 
 	if !isRoot && !isView {
 		staticBuild := ctx.options.WithoutDynamicExpressions || ctx.staticChildDelegation
-		hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !staticBuild
+		// A static method baked its size and limit tags in, so a child with a
+		// spec expression anywhere below it is reached through a spec-aware
+		// one, as it is on every other path.
+		hasSpecExpr := desc.SszTypeFlags&(ssztypes.SszTypeFlagHasSizeExpr|ssztypes.SszTypeFlagHasMaxExpr) != 0 && !staticBuild
 		// Under WithoutDynamicExpressions the generated code must be fully static
 		// and must never call a *Dyn method. A child exposing a static SizeSSZ
 		// (every dynssz-generated child in this mode, plus external fastssz types)
 		// is reached through it even when fastssz delegation is otherwise disabled.
 		isFastsszSizer := desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszSizer != 0
-		useFastSsz := isFastsszSizer && !hasDynamicSize && (!ctx.options.NoFastSsz || staticBuild)
+		useFastSsz := isFastsszSizer && !hasSpecExpr && (!ctx.options.NoFastSsz || staticBuild)
 		if desc.SszType == ssztypes.SszCustomType {
 			// A custom type has no structure to inline: it is reached through its
 			// spec-aware method when it has one and dynamic calls are allowed,

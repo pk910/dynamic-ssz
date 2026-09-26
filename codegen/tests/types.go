@@ -5682,3 +5682,17 @@ type GiBElem struct {
 type GiBList struct {
 	L []GiBElem `ssz-max:"8"`
 }
+
+// SpecLimitChild carries a limit a preset may resolve away from its static
+// tag. It is generated with -legacy, so it also exposes the static method set
+// a parent could reach it through.
+type SpecLimitChild struct {
+	Items []uint64 `ssz-max:"4" dynssz-max:"SPEC_LIMIT_MAX"`
+}
+
+// SpecLimitParent nests SpecLimitChild as a field and as a list element.
+type SpecLimitParent struct {
+	X uint32
+	C SpecLimitChild
+	L []SpecLimitChild `ssz-max:"2"`
+}

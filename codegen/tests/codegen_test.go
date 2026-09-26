@@ -5986,3 +5986,80 @@ func TestSizeExpressionPastTheLimitRefusedAlikeByBothEngines(t *testing.T) {
 		t.Errorf("the size limit was reported as a platform overflow:\n  generated  %v\n  reflection %v", genErr, reflErr)
 	}
 }
+
+// TestCodegenSpecLimit checks that a generated parent enforces a nested child's
+// spec-resolved limit with the caller's specs on every path: a limit resolving
+// below the static tag refuses what the static tag allows, one resolving above
+// it accepts what the static tag refuses, and both engines agree.
+func TestCodegenSpecLimit(t *testing.T) {
+	if _, generated := any(&SpecLimitParent{}).(sszutils.DynamicUnmarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	three := SpecLimitParent{X: 1, C: SpecLimitChild{Items: []uint64{1, 2, 3}}, L: []SpecLimitChild{{Items: []uint64{4, 5, 6}}}}
+	five := SpecLimitParent{X: 1, C: SpecLimitChild{Items: []uint64{1, 2, 3, 4, 5}}, L: []SpecLimitChild{{Items: []uint64{6, 7, 8, 9, 10}}}}
+	wideSpecs := map[string]any{"SPEC_LIMIT_MAX": uint64(8)}
+
+	testCodegenPayloadByReflection(t, three, nil)
+	testCodegenPayloadByReflection(t, five, wideSpecs)
+
+	wide := dynssz.NewDynSsz(wideSpecs)
+	rawThree, err := wide.MarshalSSZ(&three)
+	if err != nil {
+		t.Fatalf("marshal three: %v", err)
+	}
+	rawFive, err := wide.MarshalSSZ(&five)
+	if err != nil {
+		t.Fatalf("marshal five: %v", err)
+	}
+
+	refuse := func(t *testing.T, ds *dynssz.DynSsz, value *SpecLimitParent, raw []byte) {
+		t.Helper()
+		if _, err := ds.MarshalSSZ(value); err == nil {
+			t.Error("MarshalSSZ accepted a value over the resolved limit")
+		}
+		if err := ds.MarshalSSZWriter(value, &bytes.Buffer{}); err == nil {
+			t.Error("MarshalSSZWriter accepted a value over the resolved limit")
+		}
+		if _, err := ds.HashTreeRoot(value); err == nil {
+			t.Error("HashTreeRoot accepted a value over the resolved limit")
+		}
+		if err := ds.UnmarshalSSZ(&SpecLimitParent{}, raw); err == nil {
+			t.Error("UnmarshalSSZ accepted input over the resolved limit")
+		}
+		if err := ds.UnmarshalSSZReader(&SpecLimitParent{}, bytes.NewReader(raw), len(raw)); err == nil {
+			t.Error("UnmarshalSSZReader accepted input over the resolved limit")
+		}
+	}
+
+	accept := func(t *testing.T, ds *dynssz.DynSsz, value *SpecLimitParent, raw []byte) {
+		t.Helper()
+		if out, err := ds.MarshalSSZ(value); err != nil || !bytes.Equal(out, raw) {
+			t.Errorf("MarshalSSZ = %x (%v), want %x", out, err, raw)
+		}
+		var w bytes.Buffer
+		if err := ds.MarshalSSZWriter(value, &w); err != nil || !bytes.Equal(w.Bytes(), raw) {
+			t.Errorf("MarshalSSZWriter = %x (%v), want %x", w.Bytes(), err, raw)
+		}
+		if _, err := ds.HashTreeRoot(value); err != nil {
+			t.Errorf("HashTreeRoot: %v", err)
+		}
+		var back SpecLimitParent
+		if err := ds.UnmarshalSSZ(&back, raw); err != nil {
+			t.Errorf("UnmarshalSSZ: %v", err)
+		}
+		var backReader SpecLimitParent
+		if err := ds.UnmarshalSSZReader(&backReader, bytes.NewReader(raw), len(raw)); err != nil {
+			t.Errorf("UnmarshalSSZReader: %v", err)
+		}
+	}
+
+	narrow := dynssz.NewDynSsz(map[string]any{"SPEC_LIMIT_MAX": uint64(2)})
+	refuse(t, narrow, &three, rawThree)
+
+	static := dynssz.NewDynSsz(nil)
+	accept(t, static, &three, rawThree)
+	refuse(t, static, &five, rawFive)
+
+	accept(t, wide, &five, rawFive)
+}

@@ -230,15 +230,17 @@ func (ctx *marshalContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 		ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", varName, varName, ctx.typePrinter.InnerTypeString(desc))
 	}
 
-	// Handle types that have generated methods we can call
-	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
+	// Handle types that have generated methods we can call. A static method
+	// baked its size and limit tags in and enforces them, so a child with a
+	// spec expression anywhere below it is reached through a spec-aware one.
+	hasSpecExpr := desc.SszTypeFlags&(ssztypes.SszTypeFlagHasSizeExpr|ssztypes.SszTypeFlagHasMaxExpr) != 0 && !ctx.options.WithoutDynamicExpressions
 	isFastsszMarshaler := desc.SszCompatFlags&(ssztypes.SszCompatFlagFastsszBufferMarshaler|ssztypes.SszCompatFlagFastsszValueMarshaler) != 0
 	// Under WithoutDynamicExpressions the generated buffer code must be fully
 	// static and must never call a *Dyn method. A child exposing a static
 	// MarshalSSZTo (every dynssz-generated child in this mode, plus external
 	// fastssz types) is reached through that static method even when fastssz
 	// delegation is otherwise disabled, because the dynamic path is forbidden.
-	useFastSsz := isFastsszMarshaler && !hasDynamicSize && (!ctx.options.NoFastSsz || ctx.options.WithoutDynamicExpressions)
+	useFastSsz := isFastsszMarshaler && !hasSpecExpr && (!ctx.options.NoFastSsz || ctx.options.WithoutDynamicExpressions)
 	if desc.SszType == ssztypes.SszCustomType {
 		// A custom type has no structure to inline: it is reached through its
 		// spec-aware methods when it has them and dynamic calls are allowed,
