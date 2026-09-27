@@ -756,7 +756,7 @@ func (t *State) buildDynSSZSpecSet(ds sszutils.DynamicSpecs) ([]uint64, error) {
 
 // Generated dynamic method
 func (t *State) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
-    exprs, err := sszutils.GetCachedSpecSet[State](ds, t.buildDynSSZSpecSet)
+    exprs, err := sszutils.GetCachedSpecSet[State, State](ds, t.buildDynSSZSpecSet)
     if err != nil {
         return nil, err
     }

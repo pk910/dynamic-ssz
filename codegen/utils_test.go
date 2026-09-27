@@ -289,5 +289,5 @@ func TestGetTypeWrapperFieldNameExcludedFields(t *testing.T) {
 
 // testSpecSet is the spec set a generator test hands to a method generator.
 func testSpecSet() *specSetGenerator {
-	return newSpecSetGenerator("*T", "T")
+	return newSpecSetGenerator("*T", "T", "T", "buildDynSSZSpecSet")
 }

@@ -6609,8 +6609,9 @@ func (p plainSpecs) ResolveSpecValue(name string) (bool, uint64, error) {
 	return p.inner.ResolveSpecValue(name)
 }
 
-// A generated type resolves its spec set once per DynSsz instance and keeps
-// it there; through a DynamicSpecs without a cache it encodes the same bytes.
+// A generated type serializes the same bytes through the caching DynSsz and
+// through a DynamicSpecs without a cache, on the first call and on repeats,
+// and an instance with other spec values resolves its own set.
 func TestCodegenSpecSetCache(t *testing.T) {
 	marshaler, generated := any(&SimpleTypesWithSpecs_Payload).(interface {
 		MarshalSSZDyn(sszutils.DynamicSpecs, []byte) ([]byte, error)
@@ -6620,24 +6621,16 @@ func TestCodegenSpecSetCache(t *testing.T) {
 	}
 
 	ds := dynssz.NewDynSsz(SimpleTypesWithSpecs_Specs)
-	key := reflect.TypeFor[SimpleTypesWithSpecs]()
-	if ds.LoadSpecSet(key) != nil {
-		t.Fatal("a fresh instance holds a spec set")
-	}
-
 	want, err := ds.MarshalSSZ(&SimpleTypesWithSpecs_Payload)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	set := ds.LoadSpecSet(key)
-	if set == nil {
-		t.Fatal("the marshal did not cache the spec set")
-	}
-	if _, err = ds.MarshalSSZ(&SimpleTypesWithSpecs_Payload); err != nil {
+	again, err := ds.MarshalSSZ(&SimpleTypesWithSpecs_Payload)
+	if err != nil {
 		t.Fatalf("second marshal: %v", err)
 	}
-	if again := ds.LoadSpecSet(key); &again[0] != &set[0] {
-		t.Fatal("the second marshal replaced the cached set")
+	if !bytes.Equal(again, want) {
+		t.Fatalf("second marshal encoded %x, want %x", again, want)
 	}
 
 	got, err := marshaler.MarshalSSZDyn(plainSpecs{inner: ds}, nil)
@@ -6648,12 +6641,91 @@ func TestCodegenSpecSetCache(t *testing.T) {
 		t.Fatalf("plain specs encoded %x, want %x", got, want)
 	}
 
-	// Another instance with other spec values resolves its own set.
-	other := dynssz.NewDynSsz(nil)
-	if _, err := other.MarshalSSZ(&SimpleTypesWithSpecs_Payload); err == nil {
-		otherSet := other.LoadSpecSet(key)
-		if len(otherSet) == 0 || &otherSet[0] == &set[0] {
-			t.Fatal("instances share a spec set")
-		}
+	// Another instance with other spec values resolves its own set: the
+	// static sizes differ from the specs above, so the encoding differs.
+	other, err := dynssz.NewDynSsz(nil).MarshalSSZ(&SimpleTypesWithSpecs_Payload)
+	if err == nil && bytes.Equal(other, want) {
+		t.Fatal("instances share a spec set")
+	}
+}
+
+// A view resolves only its own expressions: with ONLY_B undefined and no
+// static fallback for it, view B is refused while view A, which never
+// declared ONLY_B, serializes; each view keeps a spec set of its own.
+func TestCodegenSpecSetPerView(t *testing.T) {
+	if _, generated := any(&SpecViewIsolation_Base{}).(sszutils.DynamicViewMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	ds := dynssz.NewDynSsz(map[string]any{"ONLY_A": uint64(6)})
+	value := &SpecViewIsolation_Base{V: []uint16{1, 2, 3, 4, 5, 6}}
+
+	got, err := ds.MarshalSSZ(value, dynssz.WithViewDescriptor((*SpecViewIsolation_ViewA)(nil)))
+	if err != nil {
+		t.Fatalf("view A: %v", err)
+	}
+	if len(got) != 12 {
+		t.Fatalf("view A encoded %d bytes, want 12 (ONLY_A=6 elements of 2 bytes)", len(got))
+	}
+
+	// The size path has no error channel: it refuses with -1, which is
+	// reported as a size the type cannot represent.
+	if _, err = ds.MarshalSSZ(value, dynssz.WithViewDescriptor((*SpecViewIsolation_ViewB)(nil))); err == nil {
+		t.Fatal("view B serialized without ONLY_B defined")
+	}
+}
+
+// A view served by two data types keeps a spec set per type: T1 inlines the
+// child, so its set numbers the child's width before the view's own length,
+// while T2 delegates the child and reaches its width after the length. One
+// shared set would hand each the other's values. Whichever type serializes
+// first, both encode as reflection does.
+func TestCodegenSpecSetSharedView(t *testing.T) {
+	if _, generated := any(&SpecViewShared_T1{}).(sszutils.DynamicViewMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	specs := map[string]any{"SHARED_W": uint64(3), "SHARED_V": uint64(5)}
+	t1 := &SpecViewShared_T1{Child: &SpecViewShared_ChildPlain{W: []uint16{1, 2, 3}}, V: []uint16{4, 5, 6, 7, 8}}
+	t2 := &SpecViewShared_T2{Child: &SpecViewShared_ChildGen{W: []uint16{1, 2, 3}}, V: []uint16{4, 5, 6, 7, 8}}
+	view := dynssz.WithViewDescriptor((*SpecViewShared_View)(nil))
+
+	refl := dynssz.NewDynSsz(specs, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation())
+	want1, err := refl.MarshalSSZ(t1, view)
+	if err != nil {
+		t.Fatalf("reflection T1: %v", err)
+	}
+	want2, err := refl.MarshalSSZ(t2, view)
+	if err != nil {
+		t.Fatalf("reflection T2: %v", err)
+	}
+	if !bytes.Equal(want1, want2) || len(want1) != 16 {
+		t.Fatalf("reflection encodings differ or are not 16 bytes: %x, %x", want1, want2)
+	}
+
+	for _, order := range []string{"T1 first", "T2 first"} {
+		t.Run(order, func(t *testing.T) {
+			ds := dynssz.NewDynSsz(specs)
+			marshal := func() {
+				got1, err := ds.MarshalSSZ(t1, view)
+				if err != nil {
+					t.Fatalf("T1: %v", err)
+				}
+				got2, err := ds.MarshalSSZ(t2, view)
+				if err != nil {
+					t.Fatalf("T2: %v", err)
+				}
+				if !bytes.Equal(got1, want1) || !bytes.Equal(got2, want2) {
+					t.Fatalf("T1 %x, T2 %x, want %x", got1, got2, want1)
+				}
+			}
+			if order == "T2 first" {
+				if _, err := ds.MarshalSSZ(t2, view); err != nil {
+					t.Fatalf("T2: %v", err)
+				}
+			}
+			marshal()
+			marshal()
+		})
 	}
 }

@@ -44,7 +44,8 @@ func ResolveSpecValueWithDefault(ds DynamicSpecs, name string, defaultValue uint
 }
 
 // SpecSetCache is implemented by a DynamicSpecs that keeps the resolved spec
-// sets of generated types, one per type, for the lifetime of its spec values.
+// sets of generated types, one per schema they serve, for the lifetime of its
+// spec values. The key is the library's; an implementation holds it opaque.
 // DynSsz implements it; a DynamicSpecs without it resolves the set on every
 // call.
 //
@@ -60,19 +61,37 @@ type SpecSetCache interface {
 	StoreSpecSet(key reflect.Type, set []uint64) []uint64
 }
 
+// specSetKey is the cache key of the spec set of the generated type T
+// serving the schema V: T itself for its own methods, or the pointer type of
+// one of its views. The expressions and their order follow the walk over the
+// pair, so a view served by two types has a set per type. The function type
+// over the pair is one canonical type per pair, which keys as one word.
+func specSetKey[T, V any]() reflect.Type {
+	return reflect.TypeFor[func(T) V]()
+}
+
 // GetCachedSpecSet returns the spec set of the generated type T under ds,
 // building it with build on the first call for a caching ds and on every
 // call otherwise. The set is shared between callers and must not be written.
 //
 // Generated code calls this once per method entry with the type's
 // buildDynSSZSpecSet, which resolves every spec expression the type's methods
-// use and rejects the resolved values its sizes cannot hold.
+// use.
 func GetCachedSpecSet[T any](ds DynamicSpecs, build func(DynamicSpecs) ([]uint64, error)) ([]uint64, error) {
+	return cachedSpecSet(ds, specSetKey[T, T](), build)
+}
+
+// GetCachedViewSpecSet is GetCachedSpecSet for the methods of T serving its
+// view V, which resolve the view's expressions by a builder of their own.
+func GetCachedViewSpecSet[T, V any](ds DynamicSpecs, build func(DynamicSpecs) ([]uint64, error)) ([]uint64, error) {
+	return cachedSpecSet(ds, specSetKey[T, V](), build)
+}
+
+func cachedSpecSet(ds DynamicSpecs, key reflect.Type, build func(DynamicSpecs) ([]uint64, error)) ([]uint64, error) {
 	cache, ok := ds.(SpecSetCache)
 	if !ok {
 		return build(ds)
 	}
-	key := reflect.TypeFor[T]()
 	if set := cache.LoadSpecSet(key); set != nil {
 		return set, nil
 	}

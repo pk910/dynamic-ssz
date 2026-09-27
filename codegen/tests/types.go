@@ -6013,3 +6013,49 @@ type ZeroWidthOptional struct {
 }
 
 var ZeroWidthOptional_Payload = ZeroWidthOptional{A: 1, O: &zeroWidthCustom{}}
+
+// SpecViewIsolation_Base serves two views whose expressions differ: view A
+// keeps a static fallback, view B is spec-only. A spec set lacking ONLY_B
+// must leave view A working.
+type SpecViewIsolation_Base struct {
+	V []uint16 `ssz-size:"4"`
+}
+
+type SpecViewIsolation_ViewA struct {
+	V []uint16 `ssz-size:"4" dynssz-size:"ONLY_A"`
+}
+
+type SpecViewIsolation_ViewB struct {
+	V []uint16 `dynssz-size:"ONLY_B"`
+}
+
+// SpecViewShared_View is served by two data types: SpecViewShared_T1 holds a
+// child the view's methods inline, SpecViewShared_T2 a generated child they
+// delegate to, so the two builders of the view number its expressions in
+// opposite order and must not share a cached set.
+type SpecViewShared_ChildView struct {
+	W []uint16 `ssz-size:"2" dynssz-size:"SHARED_W"`
+}
+
+type SpecViewShared_ChildPlain struct {
+	W []uint16 `ssz-size:"2"`
+}
+
+type SpecViewShared_ChildGen struct {
+	W []uint16 `ssz-size:"2"`
+}
+
+type SpecViewShared_View struct {
+	Child *SpecViewShared_ChildView
+	V     []uint16 `ssz-size:"4" dynssz-size:"SHARED_V"`
+}
+
+type SpecViewShared_T1 struct {
+	Child *SpecViewShared_ChildPlain
+	V     []uint16 `ssz-size:"4"`
+}
+
+type SpecViewShared_T2 struct {
+	Child *SpecViewShared_ChildGen
+	V     []uint16 `ssz-size:"4"`
+}

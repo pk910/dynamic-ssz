@@ -45,14 +45,21 @@ const (
 	errCodeTrailingData           = "sszutils.ErrTrailingDataFn(diff)"
 )
 
-// specSetGenerator collects the spec expressions that the methods of one data
-// type and its views resolve, numbers them, and emits the buildDynSSZSpecSet
-// method that resolves them all at once. Each method then fetches the resolved
-// set through sszutils.GetCachedSpecSet, which the DynSsz instance caches per
-// type, instead of resolving every expression on entry.
+// specSetGenerator collects the spec expressions that the methods of one
+// schema (a data type, or one view of it) resolve, numbers them, and emits the
+// builder method that resolves them all at once. Each method then fetches the
+// resolved set through sszutils.GetCachedSpecSet, which the DynSsz instance
+// caches per schema type, instead of resolving every expression on entry. A
+// view has a set of its own, so a view never resolves what another view or
+// the data type declares.
 type specSetGenerator struct {
-	typeName      string
+	// typeName is the receiver of the builder: the data type's methods.
+	typeName string
+	// innerTypeName and schemaName key the cache: the data type, and the
+	// schema its methods serve (the data type itself, or a view type).
 	innerTypeName string
+	schemaName    string
+	fnName        string
 	entries       []specSetEntry
 	index         map[[32]byte]int
 }
@@ -66,10 +73,12 @@ type specSetEntry struct {
 	floor bool
 }
 
-func newSpecSetGenerator(typeName, innerTypeName string) *specSetGenerator {
+func newSpecSetGenerator(typeName, innerTypeName, schemaName, fnName string) *specSetGenerator {
 	return &specSetGenerator{
 		typeName:      typeName,
 		innerTypeName: innerTypeName,
+		schemaName:    schemaName,
+		fnName:        fnName,
 		index:         make(map[[32]byte]int),
 	}
 }
@@ -88,14 +97,18 @@ func (s *specSetGenerator) indexOf(expr string, defaultValue uint64, floor bool)
 	return idx
 }
 
-// emit writes the buildDynSSZSpecSet method of the type; nothing when its
-// methods resolve no expression.
+// emit writes the builder method of the schema; nothing when its methods
+// resolve no expression.
 func (s *specSetGenerator) emit(codeBuilder *strings.Builder) {
 	if len(s.entries) == 0 {
 		return
 	}
-	appendCode(codeBuilder, 0, "// buildDynSSZSpecSet resolves the spec expressions the SSZ methods of the %s use.\n", s.typeName)
-	appendCode(codeBuilder, 0, "func (t %s) buildDynSSZSpecSet(ds sszutils.DynamicSpecs) ([]uint64, error) {\n", s.typeName)
+	served := ""
+	if s.schemaName != s.innerTypeName {
+		served = fmt.Sprintf(" serving the %s", s.schemaName)
+	}
+	appendCode(codeBuilder, 0, "// %s resolves the spec expressions the SSZ methods of the %s%s use.\n", s.fnName, s.typeName, served)
+	appendCode(codeBuilder, 0, "func (t %s) %s(ds sszutils.DynamicSpecs) ([]uint64, error) {\n", s.typeName, s.fnName)
 	appendCode(codeBuilder, 1, "exprs := make([]uint64, %d)\n", len(s.entries))
 	// A floor resolves without an error to return; only a value needs err.
 	if slices.ContainsFunc(s.entries, func(entry specSetEntry) bool { return !entry.floor }) {
@@ -252,7 +265,11 @@ func (g *exprVarGenerator) getCode() string {
 		setVar, define = g.prefix, ""
 	}
 	codeBuf := strings.Builder{}
-	appendCode(&codeBuf, 0, "%s, err %s= sszutils.GetCachedSpecSet[%s](ds, t.buildDynSSZSpecSet)\n", setVar, define, g.set.innerTypeName)
+	fetch := fmt.Sprintf("sszutils.GetCachedSpecSet[%s]", g.set.innerTypeName)
+	if g.set.schemaName != g.set.innerTypeName {
+		fetch = fmt.Sprintf("sszutils.GetCachedViewSpecSet[%s, %s]", g.set.innerTypeName, g.set.schemaName)
+	}
+	appendCode(&codeBuf, 0, "%s, err %s= %s(ds, t.%s)\n", setVar, define, fetch, g.set.fnName)
 	appendCode(&codeBuf, 0, "if err != nil {\n")
 	appendCode(&codeBuf, 1, "return %s\n", g.retVars)
 	appendCode(&codeBuf, 0, "}\n")

@@ -72,11 +72,34 @@ func TestGetCachedSpecSet(t *testing.T) {
 		if _, err := GetCachedSpecSet[specSetTypeB](ds, build); err != nil {
 			t.Fatal(err)
 		}
-		if builds != 2 {
-			t.Fatalf("built %d times, want 2 (one per type)", builds)
+		// A view of A is a set of its own, apart from A's and from B's.
+		if _, err := GetCachedViewSpecSet[specSetTypeA, *specSetTypeB](ds, build); err != nil {
+			t.Fatal(err)
 		}
-		if len(ds.sets) != 2 {
-			t.Fatalf("cached %d sets, want 2", len(ds.sets))
+		if builds != 3 {
+			t.Fatalf("built %d times, want 3 (one per schema)", builds)
+		}
+		if len(ds.sets) != 3 {
+			t.Fatalf("cached %d sets, want 3", len(ds.sets))
+		}
+	})
+
+	t.Run("a schema served by two types keys apart, a type serving itself apart from its view", func(t *testing.T) {
+		keys := map[string]reflect.Type{
+			"A as itself": specSetKey[specSetTypeA, specSetTypeA](),
+			"B as itself": specSetKey[specSetTypeB, specSetTypeB](),
+			"A as view B": specSetKey[specSetTypeA, *specSetTypeB](),
+			"B as view B": specSetKey[specSetTypeB, *specSetTypeB](),
+		}
+		seen := map[reflect.Type]string{}
+		for name, key := range keys {
+			if other, dup := seen[key]; dup {
+				t.Fatalf("%q and %q share the key %v", name, other, key)
+			}
+			seen[key] = name
+		}
+		if specSetKey[specSetTypeA, *specSetTypeB]() != specSetKey[specSetTypeA, *specSetTypeB]() {
+			t.Fatal("the same pair keys differently across calls")
 		}
 	})
 

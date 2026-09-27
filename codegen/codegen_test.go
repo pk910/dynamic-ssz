@@ -1083,9 +1083,9 @@ func TestGenerateSSZViewMethodsErrorPaths(t *testing.T) {
 			cg := NewCodeGenerator(nil)
 			codeBuilder := &strings.Builder{}
 			typePrinter := NewTypePrinter("test/package")
-			err := cg.generateSSZViewMethods(
+			_, err := cg.generateSSZViewMethods(
 				unsupportedDesc, []*ssztypes.TypeDescriptor{viewDesc},
-				typePrinter, codeBuilder, &tt.opts, testSpecSet(),
+				typePrinter, codeBuilder, &tt.opts,
 			)
 			if err == nil {
 				t.Error("expected error from generateSSZViewMethods")
@@ -3593,11 +3593,55 @@ func TestGeneratedSpecSet(t *testing.T) {
 	}
 }
 
+type genSpecViewBase struct {
+	V []uint16 `ssz-size:"4"`
+}
+type genSpecViewA struct {
+	V []uint16 `ssz-size:"4" dynssz-size:"ONLY_A"`
+}
+type genSpecViewB struct {
+	V []uint16 `dynssz-size:"ONLY_B"`
+}
+
+// Each view resolves its own expressions by a builder of its own, keyed by
+// the view type, so one view never resolves what another declares; the data
+// type, with no expression of its own, builds no set.
+func TestGeneratedSpecSetPerView(t *testing.T) {
+	cg := NewCodeGenerator(ssztypes.NewTypeCache(nil))
+	cg.BuildFile("gen_test.go",
+		WithReflectType(reflect.TypeFor[genSpecViewBase](), WithReflectViewTypes(reflect.TypeFor[genSpecViewA](), reflect.TypeFor[genSpecViewB]())),
+	)
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	code := files["gen_test.go"]
+
+	for view, expr := range map[string]string{"genSpecViewA": `"ONLY_A", 4`, "genSpecViewB": `"ONLY_B", 0`} {
+		build := "func (t *genSpecViewBase) buildDynSSZSpecSet_" + view + "(ds sszutils.DynamicSpecs) ([]uint64, error) {"
+		if n := strings.Count(code, build); n != 1 {
+			t.Fatalf("emitted %d builders for %s, want 1:\n%s", n, view, code)
+		}
+		if n := strings.Count(code, "ResolveSpecValueWithDefault(ds, "+expr+")"); n != 1 {
+			t.Fatalf("resolved %s %d times, want once in the view's builder:\n%s", expr, n, code)
+		}
+		// A view is keyed with the data type, by its pointer type, as the
+		// dispatchers and the annotations refer to it.
+		fetch := "sszutils.GetCachedViewSpecSet[genSpecViewBase, *" + view + "](ds, t.buildDynSSZSpecSet_" + view + ")"
+		if n := strings.Count(code, fetch); n != 4 {
+			t.Fatalf("fetched the set of %s in %d methods, want 4:\n%s", view, n, code)
+		}
+	}
+	if strings.Contains(code, "func (t *genSpecViewBase) buildDynSSZSpecSet(") {
+		t.Fatalf("the data type without expressions builds a set:\n%s", code)
+	}
+}
+
 // A floor entry resolves as a bound and never a refusal, so the builder has
 // no error to return for it and declares err only when a value entry needs
 // it; a value and a floor of the same expression are separate entries.
 func TestSpecSetBuilderFloors(t *testing.T) {
-	set := newSpecSetGenerator("*T", "T")
+	set := newSpecSetGenerator("*T", "T", "T", "buildDynSSZSpecSet")
 	first := set.indexOf("VEC_LEN*8+4", 36, true)
 	if again := set.indexOf("VEC_LEN*8+4", 36, true); first != 0 || again != first {
 		t.Fatalf("floor entries %d and %d, want one entry at 0", first, again)
