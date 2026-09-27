@@ -294,6 +294,8 @@ types:
     output: gen_edgecases.go
   - name: ExprWidthHolder
     output: gen_edgecases.go
+  - name: AnnExprWidthHolder
+    output: gen_edgecases.go
   - name: ShallowBasicHolder
     output: gen_edgecases.go
   - name: ShallowBasicList

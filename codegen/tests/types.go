@@ -3032,6 +3032,47 @@ type ExprWidthHolderRefl struct {
 	L []exprWidthCustom `ssz-type:"?,custom" dynssz-size:"?,WIDTH" ssz-max:"4"`
 }
 
+// annExprWidthCustom is exprWidthCustom with the width named on the type's
+// own annotation instead of on each reference.
+type annExprWidthCustom [4]byte
+
+var _ = sszutils.Annotate[annExprWidthCustom](`ssz-type:"custom" dynssz-size:"WIDTH"`)
+
+func (*annExprWidthCustom) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
+	w, _ := dynWidthOf(ds)
+	return w
+}
+
+func (v *annExprWidthCustom) MarshalSSZDyn(ds sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	w, _ := dynWidthOf(ds)
+	return append(b, v[:w]...), nil
+}
+
+func (v *annExprWidthCustom) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) error {
+	*v = annExprWidthCustom{}
+	copy(v[:], b)
+	return nil
+}
+
+func (v *annExprWidthCustom) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	w, _ := dynWidthOf(ds)
+	hh.PutBytes(v[:w])
+	return nil
+}
+
+// AnnExprWidthHolder references annExprWidthCustom without any width of its
+// own, as a field and as a list element.
+type AnnExprWidthHolder struct {
+	E annExprWidthCustom
+	L []annExprWidthCustom `ssz-max:"4"`
+}
+
+// AnnExprWidthHolderRefl is the same shape without generated methods.
+type AnnExprWidthHolderRefl struct {
+	E annExprWidthCustom
+	L []annExprWidthCustom `ssz-max:"4"`
+}
+
 // AmountListRefl is the same shape without generated methods.
 type AmountListRefl struct {
 	L []amount `ssz-max:"8"`

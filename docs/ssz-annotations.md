@@ -522,7 +522,9 @@ The `dynssz-*` expression references a spec value that was not provided. If a po
 fallback exists, it is used. If not, the type named a length or a limit that nothing supplies
 and analysis fails with `is not defined and has no positive static fallback` — the tag decides
 whether a dimension is a vector or a list, so a missing value is a missing number rather than a
-different SSZ type.
+different SSZ type. A custom type with a spec-aware sizer is the one exception: an expression-only
+width nobody supplied falls back to the width its `SizeSSZDyn` reports, which is also what generated
+code frames it with, whether the annotation is a field tag or an `Annotate[T]` registration.
 
 ```go
 // Ensure all referenced values are provided

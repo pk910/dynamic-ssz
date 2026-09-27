@@ -126,15 +126,33 @@ func NewTypeCache(specs sszutils.DynamicSpecs) *TypeCache {
 // dimensionKind returns the Go kind of the type at size dimension dim of t,
 // walking through pointers and one array or slice level per dimension.
 func dimensionKind(t reflect.Type, dim int) reflect.Kind {
+	if dt := dimensionType(t, dim); dt != nil {
+		return dt.Kind()
+	}
+
+	return reflect.Invalid
+}
+
+// customSizerAt reports whether the type at a tag dimension has a spec-aware
+// sizer to supply a custom width from.
+func customSizerAt(t reflect.Type, dim int) bool {
+	dt := dimensionType(t, dim)
+
+	return dt != nil && getDynamicSizerCompatibility(dt)
+}
+
+// dimensionType returns the type at a tag dimension, pointers stripped, or
+// nil where the dimensions run out.
+func dimensionType(t reflect.Type, dim int) reflect.Type {
 	for {
 		for t.Kind() == reflect.Pointer {
 			t = t.Elem()
 		}
 		if dim == 0 {
-			return t.Kind()
+			return t
 		}
 		if t.Kind() != reflect.Array && t.Kind() != reflect.Slice {
-			return reflect.Invalid
+			return nil
 		}
 		t = t.Elem()
 		dim--
@@ -616,11 +634,17 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 
 					continue
 				}
+				// A custom width nobody supplied a value for keeps its
+				// expression when the type's own spec-aware sizer can supply
+				// it: the custom builder sizes it from that sizer, as it does
+				// for a field tag naming the same width. A value that resolved
+				// to zero is a dead end on both paths.
+				sizerWidth := !ok && i < len(typeHints) && typeHints[i].Type == SszCustomType && customSizerAt(t, i)
 				// A bit size on a Go array falls back to the array's own
 				// length in bits; the vector builder applies that, as it
 				// does for field tags. A slice has no length to fall back
 				// to and is rejected there.
-				if sizeHints[i].Size == 0 && (!sizeHints[i].Bits || dimensionKind(t, i) != reflect.Array) {
+				if sizeHints[i].Size == 0 && !sizerWidth && (!sizeHints[i].Bits || dimensionKind(t, i) != reflect.Array) {
 					return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-size expression %q %s", sizeHints[i].Expr, unresolvedReason(ok))
 				}
 			}

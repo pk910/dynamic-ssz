@@ -5173,6 +5173,49 @@ func TestCodegenExprOnlyCustomWidth(t *testing.T) {
 	}
 }
 
+// The same rule holds when the expression is on the type's own annotation
+// rather than on the reference.
+func TestCodegenExprOnlyCustomWidthByAnnotation(t *testing.T) {
+	if _, generated := any(&AnnExprWidthHolder{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	gen := &AnnExprWidthHolder{E: annExprWidthCustom{1, 2, 3, 4}, L: []annExprWidthCustom{{5, 6, 7, 8}, {9, 10, 11, 12}}}
+	refl := &AnnExprWidthHolderRefl{E: annExprWidthCustom{1, 2, 3, 4}, L: []annExprWidthCustom{{5, 6, 7, 8}, {9, 10, 11, 12}}}
+
+	for _, tt := range []struct {
+		name  string
+		specs map[string]any
+		want  []byte
+	}{
+		{"WIDTH defined", map[string]any{"WIDTH": uint64(3)}, []byte{1, 2, 3, 7, 0, 0, 0, 5, 6, 7, 9, 10, 11}},
+		{"WIDTH undefined", nil, []byte{1, 2, 6, 0, 0, 0, 5, 6, 9, 10}},
+	} {
+		ds := dynssz.NewDynSsz(tt.specs)
+		var roots [2][32]byte
+		for i, v := range []any{gen, refl} {
+			data, err := ds.MarshalSSZ(v)
+			if err != nil || !bytes.Equal(data, tt.want) {
+				t.Fatalf("%s: %T bytes = %x, %v, want %x", tt.name, v, data, err, tt.want)
+			}
+			root, err := ds.HashTreeRoot(v)
+			if err != nil {
+				t.Fatalf("%s: %T root: %v", tt.name, v, err)
+			}
+			roots[i] = root
+		}
+		if roots[0] != roots[1] {
+			t.Fatalf("%s: roots differ: generated %x, reflection %x", tt.name, roots[0], roots[1])
+		}
+	}
+
+	// Decoding at three bytes per value leaves the fourth zero.
+	wantBack := &AnnExprWidthHolder{E: annExprWidthCustom{1, 2, 3}, L: []annExprWidthCustom{{5, 6, 7}, {9, 10, 11}}}
+	back := &AnnExprWidthHolder{}
+	if err := dynssz.NewDynSsz(map[string]any{"WIDTH": uint64(3)}).UnmarshalSSZ(back, []byte{1, 2, 3, 7, 0, 0, 0, 5, 6, 7, 9, 10, 11}); err != nil || !reflect.DeepEqual(back, wantBack) {
+		t.Fatalf("generated decode = %+v, %v, want %+v", back, err, wantBack)
+	}
+}
+
 // A delegated signed basic keeps its shape where extended types are enabled,
 // so both engines pack its list by the declared width and agree on the root.
 func TestCodegenExtendedBasicDelegateShape(t *testing.T) {
