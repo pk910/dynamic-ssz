@@ -89,8 +89,10 @@ and hashed and the outer type's other fields do not appear.
   surface, or inlined when it has neither.
 - `WithNoDelegation` removes the dynamic, streaming and view surfaces for
   every non-custom child, so the reflection engine walks generated types too.
-  The static surface stays governed by `WithNoFastSsz`. This is how the
-  differential tests compare generated code against the reflection walk.
+  The static surface stays governed by `WithNoFastSsz`, except for a child
+  with spec expressions and dynamic methods, which reflection walks too. This
+  is how the differential tests compare generated code against the reflection
+  walk.
 - `-without-dynamic-expressions` produces static handlers, which follow the
   static rows above.
 

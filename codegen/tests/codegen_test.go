@@ -6186,6 +6186,116 @@ func TestCodegenSpecLimit(t *testing.T) {
 	accept(t, wide, &five, rawFive)
 }
 
+// TestCodegenLegacyNoDelegationSpecs checks that WithNoDelegation doesn't call
+// SpecLimitChild's -legacy static methods, which use the global specs. Results
+// must match pure reflection whatever the global specs are.
+func TestCodegenLegacyNoDelegationSpecs(t *testing.T) {
+	if _, generated := any(&SpecLimitChild{}).(sszutils.FastsszBufferMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	t.Cleanup(func() { dynssz.SetGlobalSpecs(nil) })
+
+	value := &SpecLimitParent{X: 1, C: SpecLimitChild{Items: []uint64{1, 2, 3}}, L: []SpecLimitChild{{Items: []uint64{4, 5, 6}}}}
+	for _, globalMax := range []uint64{2, 64} {
+		for _, local := range []map[string]any{nil, {"SPEC_LIMIT_MAX": uint64(4)}} {
+			t.Run(fmt.Sprintf("global=%d/local=%v", globalMax, local), func(t *testing.T) {
+				dynssz.SetGlobalSpecs(map[string]any{"SPEC_LIMIT_MAX": globalMax})
+
+				ref := dynssz.NewDynSsz(local, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+				wantBytes, err := ref.MarshalSSZ(value)
+				if err != nil {
+					t.Fatalf("reference marshal: %v", err)
+				}
+				wantRoot, err := ref.HashTreeRoot(value)
+				if err != nil {
+					t.Fatalf("reference root: %v", err)
+				}
+
+				for name, ds := range map[string]*dynssz.DynSsz{
+					"no-delegation": dynssz.NewDynSsz(local, dynssz.WithNoDelegation()),
+					"default":       dynssz.NewDynSsz(local),
+				} {
+					if got, err := ds.MarshalSSZ(value); err != nil || !bytes.Equal(got, wantBytes) {
+						t.Errorf("%s: MarshalSSZ = %x, %v; want %x", name, got, err, wantBytes)
+					}
+					var buf bytes.Buffer
+					if err := ds.MarshalSSZWriter(value, &buf); err != nil || !bytes.Equal(buf.Bytes(), wantBytes) {
+						t.Errorf("%s: MarshalSSZWriter = %x, %v; want %x", name, buf.Bytes(), err, wantBytes)
+					}
+					if got, err := ds.SizeSSZ(value); err != nil || got != len(wantBytes) {
+						t.Errorf("%s: SizeSSZ = %d, %v; want %d", name, got, err, len(wantBytes))
+					}
+					if got, err := ds.HashTreeRoot(value); err != nil || got != wantRoot {
+						t.Errorf("%s: HashTreeRoot = %x, %v; want %x", name, got, err, wantRoot)
+					}
+					decoded := &SpecLimitParent{}
+					if err := ds.UnmarshalSSZ(decoded, wantBytes); err != nil || !reflect.DeepEqual(decoded, value) {
+						t.Errorf("%s: UnmarshalSSZ = %+v, %v; want %+v", name, decoded, err, value)
+					}
+					decoded = &SpecLimitParent{}
+					if err := ds.UnmarshalSSZReader(decoded, bytes.NewReader(wantBytes), len(wantBytes)); err != nil || !reflect.DeepEqual(decoded, value) {
+						t.Errorf("%s: UnmarshalSSZReader = %+v, %v; want %+v", name, decoded, err, value)
+					}
+				}
+			})
+		}
+	}
+	// Results don't change while the global specs are swapped.
+	t.Run("concurrent global swaps", func(t *testing.T) {
+		dynssz.SetGlobalSpecs(nil)
+		ref := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+		wantBytes, err := ref.MarshalSSZ(value)
+		if err != nil {
+			t.Fatalf("reference marshal: %v", err)
+		}
+		wantRoot, err := ref.HashTreeRoot(value)
+		if err != nil {
+			t.Fatalf("reference root: %v", err)
+		}
+
+		stop := make(chan struct{})
+		swapped := make(chan struct{})
+		go func() {
+			defer close(swapped)
+			for i := 0; ; i++ {
+				select {
+				case <-stop:
+					return
+				default:
+					dynssz.SetGlobalSpecs(map[string]any{"SPEC_LIMIT_MAX": []uint64{2, 64}[i%2]})
+				}
+			}
+		}()
+
+		var wg sync.WaitGroup
+		for w := 0; w < 8; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				ds := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation())
+				for i := 0; i < 200; i++ {
+					if got, err := ds.MarshalSSZ(value); err != nil || !bytes.Equal(got, wantBytes) {
+						t.Errorf("MarshalSSZ = %x, %v; want %x", got, err, wantBytes)
+						return
+					}
+					if got, err := ds.HashTreeRoot(value); err != nil || got != wantRoot {
+						t.Errorf("HashTreeRoot = %x, %v; want %x", got, err, wantRoot)
+						return
+					}
+					decoded := &SpecLimitParent{}
+					if err := ds.UnmarshalSSZ(decoded, wantBytes); err != nil || !reflect.DeepEqual(decoded, value) {
+						t.Errorf("UnmarshalSSZ = %+v, %v; want %+v", decoded, err, value)
+						return
+					}
+				}
+			}()
+		}
+		wg.Wait()
+		close(stop)
+		<-swapped
+	})
+}
+
 // TestCodegenTypeHintOverride checks that a field declaring an SSZ type for a
 // generated type is described inline by the generator as it is by the
 // reflection engine, instead of being delegated to the type's own methods,

@@ -1389,8 +1389,16 @@ func (td *TypeDescriptor) SetMinSize() {
 // is only flagged when no resolved spec value below the type differs from the
 // static tags: a fastssz method baked those in, enforces them on every
 // operation, and so cannot answer for a value that resolves them differently.
+//
+// Under NoDelegation it is also skipped for a type with spec expressions and
+// dynamic methods: its fastssz methods can't take the specs (with -legacy they
+// use the global instance), so reflection handles the type instead.
 func (tc *TypeCache) detectCompatFlags(desc *TypeDescriptor, runtimeType, schemaType reflect.Type) {
-	if desc.SszTypeFlags&(SszTypeFlagHasDynamicSize|SszTypeFlagHasDynamicMax) == 0 {
+	specAware := tc.NoDelegation && !tc.noSpecResolution && desc.SszType != SszCustomType && desc.SszTypeFlags&(SszTypeFlagHasSizeExpr|SszTypeFlagHasMaxExpr) != 0 &&
+		(getDynamicMarshalerCompatibility(runtimeType) || getDynamicUnmarshalerCompatibility(runtimeType) ||
+			getDynamicEncoderCompatibility(runtimeType) || getDynamicDecoderCompatibility(runtimeType) ||
+			getDynamicSizerCompatibility(runtimeType) || getDynamicHashRootCompatibility(runtimeType))
+	if desc.SszTypeFlags&(SszTypeFlagHasDynamicSize|SszTypeFlagHasDynamicMax) == 0 && !specAware {
 		desc.SszCompatFlags |= getFastsszCompatFlags(runtimeType)
 		if getFastsszHashCompatibility(runtimeType) {
 			desc.SszCompatFlags |= SszCompatFlagFastsszHashRoot
