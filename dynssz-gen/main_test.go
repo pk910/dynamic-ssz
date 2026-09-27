@@ -853,9 +853,10 @@ func lookupNamed(pkg *packages.Package, name string) *types.Named {
 	return named
 }
 
-// TestAnnotationResolver covers annotatedNamedType / annotationResolver including
+// TestAnnotationResolver covers annotatedNamedType / annotationIndex including
 // the edge cases the generator's gate inputs do not normally produce: a non-named
-// type and a named type from a different package both resolve to no annotation.
+// type and an unannotated named type from a different package both resolve to
+// no annotation.
 func TestAnnotationResolver(t *testing.T) {
 	cfg := &packages.Config{Mode: packages.NeedName | packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedImports | packages.NeedDeps}
 	pkgs, err := packages.Load(cfg,
@@ -877,7 +878,11 @@ func TestAnnotationResolver(t *testing.T) {
 		t.Fatal("expected both packages to load")
 	}
 
-	resolve := annotationResolver(testsPkg)
+	idx, err := newAnnotationIndex(testsPkg)
+	if err != nil {
+		t.Fatalf("annotation index: %v", err)
+	}
+	resolve := idx.resolve
 
 	// An annotation written against an alias of a type is the type's
 	// annotation, found by the type's own name.
@@ -920,7 +925,7 @@ func TestAnnotationResolver(t *testing.T) {
 		t.Errorf("non-named type: expected empty, got %q", got)
 	}
 
-	// Named type from another package → no annotation (resolved only within pkg).
+	// Named type from another package without an Annotate call → no annotation.
 	other := otherPkg.Types.Scope().Lookup("HashWalker")
 	if other == nil {
 		t.Fatal("HashWalker not found in sszutils package")
@@ -2109,4 +2114,128 @@ func TestWriteOutputFilesReportsBackupRenameFailure(t *testing.T) {
 		}
 		t.Errorf("directory holds %v, want only the target", names)
 	}
+}
+
+// TestAnnotationIndex_CrossPackage covers annotations registered in the package
+// declaring a type other than the generated one: a field type from an imported
+// package, and a view field type from a separately loaded view package. Both
+// used to resolve to no annotation, so the generator described the vector as a
+// list and dropped the list limit, diverging from the reflection type cache.
+func TestAnnotationIndex_CrossPackage(t *testing.T) {
+	cfg := &packages.Config{Mode: packages.NeedName | packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedImports | packages.NeedDeps}
+	root, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg/xann")
+	if err != nil || len(root) != 1 {
+		t.Fatalf("load xann: %v", err)
+	}
+	views, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg/xann/xviews")
+	if err != nil || len(views) != 1 {
+		t.Fatalf("load xviews: %v", err)
+	}
+	idx, err := newAnnotationIndex(root[0], views[0])
+	if err != nil {
+		t.Fatalf("annotation index: %v", err)
+	}
+
+	holder, ok := root[0].Types.Scope().Lookup("Holder").Type().Underlying().(*types.Struct)
+	if !ok {
+		t.Fatal("xann.Holder is not a struct")
+	}
+	for i, want := range []string{`ssz-size:"2,32"`, `ssz-max:"3"`} {
+		if got := idx.resolve(holder.Field(i).Type()); got != want {
+			t.Errorf("imported %v: annotation = %q, want %q", holder.Field(i).Type(), got, want)
+		}
+	}
+	for name, want := range map[string]string{"RootsV": `ssz-size:"2,32"`, "NumsV": `ssz-max:"3"`} {
+		if got := idx.resolve(views[0].Types.Scope().Lookup(name).Type()); got != want {
+			t.Errorf("view package %s: annotation = %q, want %q", name, got, want)
+		}
+	}
+
+	// End to end under default flags: without the annotations the vector is
+	// read as a list without a limit, which has no SSZ hash tree root.
+	out := filepath.Join(t.TempDir(), "out.go")
+	if err := run(&Config{
+		PackagePath: "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg/xann",
+		TypeNames:   "Holder,Data:views=github.com/pk910/dynamic-ssz/dynssz-gen/testpkg/xann/xviews.View:viewonly",
+		OutputFile:  out,
+	}); err != nil {
+		t.Fatalf("generation with cross-package annotations failed: %v", err)
+	}
+}
+
+// TestAnnotationIndex_Unreadable covers the cases the index refuses to guess
+// about: a package that imports sszutils without loaded syntax fails the index,
+// and a type from a package outside the loaded graph resolves to no annotation
+// while recording an error that fails generation.
+func TestAnnotationIndex_Unreadable(t *testing.T) {
+	noSyntax := &packages.Package{
+		PkgPath: "example.com/nosyntax",
+		Types:   types.NewPackage("example.com/nosyntax", "nosyntax"),
+		Imports: map[string]*packages.Package{sszutilsPkgPath: {PkgPath: sszutilsPkgPath}},
+	}
+	if _, err := newAnnotationIndex(noSyntax); err == nil || !strings.Contains(err.Error(), "without syntax") {
+		t.Errorf("package importing sszutils without syntax: err = %v, want a refusal", err)
+	}
+
+	root := &packages.Package{PkgPath: "example.com/root", Types: types.NewPackage("example.com/root", "root")}
+	idx, err := newAnnotationIndex(root)
+	if err != nil {
+		t.Fatalf("annotation index: %v", err)
+	}
+	if got := idx.resolve(types.Universe.Lookup("error").Type()); got != "" || idx.err != nil {
+		t.Errorf("predeclared type: annotation = %q, err = %v, want neither", got, idx.err)
+	}
+	other := types.NewPackage("example.com/other", "other")
+	foreign := types.NewNamed(types.NewTypeName(token.NoPos, other, "List", nil), types.NewSlice(types.Typ[types.Uint32]), nil)
+	if got := idx.resolve(foreign); got != "" {
+		t.Errorf("type from an unloaded package: annotation = %q, want none", got)
+	}
+	if idx.err == nil || !strings.Contains(idx.err.Error(), "example.com/other") {
+		t.Errorf("type from an unloaded package: err = %v, want it named", idx.err)
+	}
+}
+
+// syntheticHolderPackage returns a loaded package declaring
+// `type Holder struct{ F other.Num }`, where other is outside the package's
+// import graph.
+func syntheticHolderPackage() *packages.Package {
+	root := types.NewPackage("example.com/root", "root")
+	other := types.NewPackage("example.com/other", "other")
+	num := types.NewNamed(types.NewTypeName(token.NoPos, other, "Num", nil), types.Typ[types.Uint64], nil)
+	field := types.NewField(token.NoPos, root, "F", num, false)
+	holder := types.NewTypeName(token.NoPos, root, "Holder", nil)
+	types.NewNamed(holder, types.NewStruct([]*types.Var{field}, nil), nil)
+	root.Scope().Insert(holder)
+	return &packages.Package{PkgPath: root.Path(), Name: root.Name(), Types: root}
+}
+
+// TestRun_UnreadableAnnotations fails generation when the index cannot vouch
+// for a type's annotations, instead of writing code without them.
+func TestRun_UnreadableAnnotations(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "out.go")
+
+	t.Run("sszutils without syntax", func(t *testing.T) {
+		withLoader(t, func(_ *packages.Config, _ ...string) ([]*packages.Package, error) {
+			pkg := syntheticHolderPackage()
+			pkg.Imports = map[string]*packages.Package{sszutilsPkgPath: {PkgPath: sszutilsPkgPath}}
+			return []*packages.Package{pkg}, nil
+		})
+		err := run(&Config{PackagePath: "example.com/root", TypeNames: "Holder", OutputFile: out})
+		if err == nil || !strings.Contains(err.Error(), "without syntax") {
+			t.Fatalf("expected a refusal, got %v", err)
+		}
+	})
+
+	t.Run("type from an unloaded package", func(t *testing.T) {
+		withLoader(t, func(_ *packages.Config, _ ...string) ([]*packages.Package, error) {
+			return []*packages.Package{syntheticHolderPackage()}, nil
+		})
+		err := run(&Config{PackagePath: "example.com/root", TypeNames: "Holder", OutputFile: out})
+		if err == nil || !strings.Contains(err.Error(), "example.com/other") {
+			t.Fatalf("expected a refusal naming the unloaded package, got %v", err)
+		}
+		if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
+			t.Errorf("output written despite the refusal: %v", statErr)
+		}
+	})
 }
