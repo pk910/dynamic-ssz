@@ -507,6 +507,12 @@ func minSizeExpr(desc *ssztypes.TypeDescriptor, sizeVars *staticSizeVarGenerator
 		return minSizeExpr(desc.ElemDesc, sizeVars, options)
 
 	case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
+		// A fully delegated container is described without its fields, so
+		// nothing bounds its minimum; the go/types front end reports the same
+		// shape as unspecified.
+		if desc.ContainerDesc == nil {
+			return "", "", false
+		}
 		staticSize := 0
 		sizeParts := []string{}
 		for _, field := range desc.ContainerDesc.Fields {

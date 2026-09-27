@@ -7371,3 +7371,41 @@ func TestCustomWidthForStaticBuild(t *testing.T) {
 		t.Fatalf("same-run type that cannot be described: err = %v, want its own refusal", err)
 	}
 }
+
+// For this process, a custom width named only by an expression takes the
+// value the specs supply. A value nobody supplied leaves the type's sizer as
+// the width, which is what generated code frames the value with, rather than
+// offsets the sizer never writes.
+func TestCustomWidthExpressionOnlyForProcess(t *testing.T) {
+	type exprOnly struct {
+		C widthCustom `ssz-type:"custom" dynssz-size:"W"`
+	}
+	type exprOnlyList struct {
+		L []widthCustom `ssz-type:"?,custom" dynssz-size:"?,W" ssz-max:"4"`
+	}
+
+	defined := NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"W": 4}})
+	desc, err := defined.GetTypeDescriptor(reflect.TypeOf(exprOnly{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("process, width from a defined expression: %v", err)
+	}
+	if field := desc.ContainerDesc.Fields[0].Type; field.Size != 4 || field.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
+		t.Fatalf("process, width from a defined expression: field = %+v, want a static 4-byte custom", field)
+	}
+
+	undefined := NewTypeCache(&dummyDynamicSpecs{})
+	desc, err = undefined.GetTypeDescriptor(reflect.TypeOf(exprOnly{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("process, width from an undefined expression: %v", err)
+	}
+	if field := desc.ContainerDesc.Fields[0].Type; field.Size != 4 || field.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagSizerWidth) != SszTypeFlagSizerWidth {
+		t.Fatalf("process, width from an undefined expression: field = %+v, want a static custom sized from the sizer", field)
+	}
+	desc, err = undefined.GetTypeDescriptor(reflect.TypeOf(exprOnlyList{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("process, list element width from an undefined expression: %v", err)
+	}
+	if elem := desc.ContainerDesc.Fields[0].Type.ElemDesc; elem.Size != 4 || elem.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagSizerWidth) != SszTypeFlagSizerWidth {
+		t.Fatalf("process, list element width from an undefined expression: elem = %+v, want a static custom sized from the sizer", elem)
+	}
+}

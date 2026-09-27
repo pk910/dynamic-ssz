@@ -2991,6 +2991,47 @@ type AmountList struct {
 	L []amount `ssz-max:"8"`
 }
 
+// exprWidthCustom is a delegated custom type whose width only a spec value
+// names on the reference: WIDTH bytes, two when nothing says otherwise. A
+// width dynWidthOf refuses is zero bytes here; the refusal itself is
+// dynWidthCustom's to report.
+type exprWidthCustom [4]byte
+
+func (*exprWidthCustom) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
+	w, _ := dynWidthOf(ds)
+	return w
+}
+
+func (v *exprWidthCustom) MarshalSSZDyn(ds sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	w, _ := dynWidthOf(ds)
+	return append(b, v[:w]...), nil
+}
+
+func (v *exprWidthCustom) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) error {
+	*v = exprWidthCustom{}
+	copy(v[:], b)
+	return nil
+}
+
+func (v *exprWidthCustom) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	w, _ := dynWidthOf(ds)
+	hh.PutBytes(v[:w])
+	return nil
+}
+
+// ExprWidthHolder references exprWidthCustom with its width from WIDTH alone,
+// as a field and as a list element.
+type ExprWidthHolder struct {
+	E exprWidthCustom   `ssz-type:"custom" dynssz-size:"WIDTH"`
+	L []exprWidthCustom `ssz-type:"?,custom" dynssz-size:"?,WIDTH" ssz-max:"4"`
+}
+
+// ExprWidthHolderRefl is the same shape without generated methods.
+type ExprWidthHolderRefl struct {
+	E exprWidthCustom   `ssz-type:"custom" dynssz-size:"WIDTH"`
+	L []exprWidthCustom `ssz-type:"?,custom" dynssz-size:"?,WIDTH" ssz-max:"4"`
+}
+
 // AmountListRefl is the same shape without generated methods.
 type AmountListRefl struct {
 	L []amount `ssz-max:"8"`
@@ -3826,6 +3867,12 @@ func (n *nestedDelegatedDyn) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh ssz
 	hh.FillUpTo32()
 	hh.MerkleizeWithMixin(idx, uint64(len(n.Items)), 1024)
 	return nil
+}
+
+// ReflectDelegatedDynList holds a fully delegated variable-size type as a
+// list element, which the reflect front end describes without its fields.
+type ReflectDelegatedDynList struct {
+	L []nestedDelegatedDyn `ssz-max:"3"`
 }
 
 // NestedDelegatedDynContainer references the variable-size fully-delegated type

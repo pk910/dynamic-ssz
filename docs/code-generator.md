@@ -318,6 +318,8 @@ codeGen.BuildFile("output.go",
 )
 ```
 
+**Reflect API limit:** a type added with `WithReflectType` that references a static type from another package with its own generated methods and an `ssz-static:"true"` annotation is sized once, at generation time, with the type cache's specs. When that type's width depends on a spec value (a bitvector sized by `dynssz-size`, for instance), the generated code bakes that width, so it is only correct under the preset the generator ran with. Use `dynssz-gen` for such types: it reads the width from the referenced type's sizer at run time.
+
 ### View Support Options
 
 ```go

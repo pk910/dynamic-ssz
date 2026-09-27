@@ -4043,6 +4043,30 @@ func TestVectorSliceShorterThanItsLength(t *testing.T) {
 	}
 }
 
+// The reflect front end describes a fully delegated variable-size element
+// without its fields, so a list of it has no element minimum to bound the
+// region by: generation proceeds in every mode, as the go/types front end
+// does for the same shape.
+func TestReflectFrontendDelegatedDynamicListElement(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts []codegen.CodeGeneratorOption
+	}{
+		{"default", nil},
+		{"streaming", []codegen.CodeGeneratorOption{codegen.WithCreateEncoderFn(), codegen.WithCreateDecoderFn()}},
+	} {
+		cg := codegen.NewCodeGenerator(nil)
+		cg.BuildFile("gen_zz_reflectdyn.go", append(tc.opts, codegen.WithReflectType(reflect.TypeFor[ReflectDelegatedDynList]()))...)
+		files, err := cg.GenerateToMap()
+		if err != nil {
+			t.Fatalf("%s: generate: %v", tc.name, err)
+		}
+		if files["gen_zz_reflectdyn.go"] == "" {
+			t.Fatalf("%s: no output", tc.name)
+		}
+	}
+}
+
 // The reflect front-end must emit the same compiling code for optional fields
 // the go/types front-end emits: an optional's variable is the pointer, its
 // element handling dereferences exactly once. The generated output is
@@ -5091,6 +5115,61 @@ func TestCodegenDeclaredBasicShape(t *testing.T) {
 		if err != nil || root != want {
 			t.Fatalf("%T root = %x, %v, want %x", v, root, err, want)
 		}
+	}
+}
+
+// A custom width named only by a spec expression frames the value by that
+// value in both engines when it is defined, and by the type's sizer in both
+// when it is not: the sizer is what generated code asks, and reflection asks
+// it too rather than framing the value with offsets.
+func TestCodegenExprOnlyCustomWidth(t *testing.T) {
+	if _, generated := any(&ExprWidthHolder{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	gen := &ExprWidthHolder{E: exprWidthCustom{1, 2, 3, 4}, L: []exprWidthCustom{{5, 6, 7, 8}, {9, 10, 11, 12}}}
+	refl := &ExprWidthHolderRefl{E: exprWidthCustom{1, 2, 3, 4}, L: []exprWidthCustom{{5, 6, 7, 8}, {9, 10, 11, 12}}}
+
+	// WIDTH = 3: three bytes of E, the offset of L, then two three-byte elements.
+	defined := dynssz.NewDynSsz(map[string]any{"WIDTH": uint64(3)})
+	want := []byte{1, 2, 3, 7, 0, 0, 0, 5, 6, 7, 9, 10, 11}
+	var roots [2][32]byte
+	for i, v := range []any{gen, refl} {
+		data, err := defined.MarshalSSZ(v)
+		if err != nil || !bytes.Equal(data, want) {
+			t.Fatalf("%T bytes = %x, %v, want %x", v, data, err, want)
+		}
+		root, err := defined.HashTreeRoot(v)
+		if err != nil {
+			t.Fatalf("%T root: %v", v, err)
+		}
+		roots[i] = root
+	}
+	if roots[0] != roots[1] {
+		t.Fatalf("roots differ: generated %x, reflection %x", roots[0], roots[1])
+	}
+	// The wire holds three bytes per value, so the fourth comes back zero.
+	wantBack := &ExprWidthHolder{E: exprWidthCustom{1, 2, 3}, L: []exprWidthCustom{{5, 6, 7}, {9, 10, 11}}}
+	back := &ExprWidthHolder{}
+	if err := defined.UnmarshalSSZ(back, want); err != nil || !reflect.DeepEqual(back, wantBack) {
+		t.Fatalf("generated decode = %+v, %v, want %+v", back, err, wantBack)
+	}
+
+	// WIDTH undefined: the sizer's default of two bytes, on both engines.
+	undefined := dynssz.NewDynSsz(nil)
+	wantDefault := []byte{1, 2, 6, 0, 0, 0, 5, 6, 9, 10}
+	for i, v := range []any{gen, refl} {
+		data, err := undefined.MarshalSSZ(v)
+		if err != nil || !bytes.Equal(data, wantDefault) {
+			t.Fatalf("%T bytes with WIDTH undefined = %x, %v, want %x", v, data, err, wantDefault)
+		}
+		root, err := undefined.HashTreeRoot(v)
+		if err != nil {
+			t.Fatalf("%T root with WIDTH undefined: %v", v, err)
+		}
+		roots[i] = root
+	}
+	if roots[0] != roots[1] {
+		t.Fatalf("roots with WIDTH undefined differ: generated %x, reflection %x", roots[0], roots[1])
 	}
 }
 

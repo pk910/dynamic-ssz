@@ -1035,7 +1035,10 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 				return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "custom type %v declares ssz-static:\"true\" but no ssz-size: there is no static width to bake", t)
 			}
 			desc.SszTypeFlags |= SszTypeFlagHasSizeExpr | SszTypeFlagSizerWidth
-		case staticAnnotation != nil && *staticAnnotation:
+		case (staticAnnotation != nil && *staticAnnotation) || (len(sizeHints) > 0 && sizeHints[0].Expr != ""):
+			// A static delegate, or one whose width an expression names that no
+			// value was supplied for and no literal stands in, is as wide as its
+			// sizer says: that is the width generated code frames it with.
 			size, sized, err := tc.delegatedStaticSize(desc, runtimeType)
 			if err != nil {
 				return err
