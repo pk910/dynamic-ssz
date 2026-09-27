@@ -576,10 +576,19 @@ func runGeneration(config *Config, typeSpecs []typeSpec) error {
 	typeCache := ssztypes.NewTypeCache(nil)
 	codeGen := codegen.NewCodeGenerator(typeCache)
 
-	// Let the parser read same-package types' annotations (incl. generated
-	// ssz-static declarations) so referenced fully-delegated types are
-	// shallow-built rather than traversed and validated.
-	codeGen.SetAnnotationResolver(annotationResolver(pkg))
+	// Let the parser read the annotations of every referenced type, from any
+	// loaded package (incl. generated ssz-static declarations), so hints match
+	// the reflection type cache and fully-delegated types are shallow-built
+	// rather than traversed and validated.
+	extraPkgs := make([]*packages.Package, 0, len(externalPackages))
+	for _, extPkg := range externalPackages {
+		extraPkgs = append(extraPkgs, extPkg)
+	}
+	annotations, err := newAnnotationIndex(pkg, extraPkgs...)
+	if err != nil {
+		return err
+	}
+	codeGen.SetAnnotationResolver(annotations.resolve)
 
 	if config.PackageName != "" {
 		if nameErr := codeGen.SetPackageName(config.PackageName); nameErr != nil {
@@ -617,7 +626,7 @@ func runGeneration(config *Config, typeSpecs []typeSpec) error {
 			var typeSpecificOpts []codegen.CodeGeneratorOption
 
 			// Parse SSZ annotations from sszutils.Annotate[T]() calls in source
-			if tag := findAnnotateCall(pkg, annotatedNamedType(goType, pkg)); tag != "" {
+			if tag := annotations.resolve(goType); tag != "" {
 				annotateOpts, parseErr := parseAnnotateTag(tag)
 				if parseErr != nil {
 					return fmt.Errorf("failed to parse Annotate tag for type %s: %v", spec.TypeName, parseErr)
@@ -683,6 +692,11 @@ func runGeneration(config *Config, typeSpecs []typeSpec) error {
 	}
 
 	codeMap, err := codeGen.GenerateToMap()
+	// A type whose annotations could not be read makes any generation error
+	// a consequence, so it is reported first.
+	if annotations.err != nil {
+		return fmt.Errorf("failed to generate code: %v", annotations.err)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to generate code: %v", err)
 	}
@@ -709,33 +723,85 @@ func runGeneration(config *Config, typeSpecs []typeSpec) error {
 	return nil
 }
 
-func annotationResolver(pkg *packages.Package) func(types.Type) string {
-	return func(t types.Type) string {
-		target := annotatedNamedType(t, pkg)
-		if target == nil {
-			return ""
-		}
-		return findAnnotateCall(pkg, target)
-	}
+const sszutilsPkgPath = "github.com/pk910/dynamic-ssz/sszutils"
+
+// annotationIndex resolves the sszutils.Annotate registrations of a named type
+// the way the runtime registry sees them: the calls in the package declaring
+// the type (initialized first, as a dependency) followed by those in the
+// generated package, which is linked into every binary running its code. A
+// type is looked up in the loaded package that owns its *types.Package, so the
+// Annotate type arguments resolve to the very *types.Named the parser holds.
+type annotationIndex struct {
+	root   *packages.Package
+	owners map[*types.Package]*packages.Package
+	cache  map[*types.Named]string
+	err    error
 }
 
-// annotatedNamedType returns the named type t stands for when that type is
-// declared in pkg, or nil. An alias is transparent and one pointer level is
-// stripped, as the runtime registration does. Only same-package types are
-// resolved, since annotations are scanned within pkg.
-func annotatedNamedType(t types.Type, pkg *packages.Package) *types.Named {
+// newAnnotationIndex indexes root and extra (separately loaded view packages)
+// with all their dependencies. A package that imports sszutils but was loaded
+// without syntax could hold registrations the generator cannot read, so it is
+// refused rather than treated as unannotated.
+func newAnnotationIndex(root *packages.Package, extra ...*packages.Package) (*annotationIndex, error) {
+	idx := &annotationIndex{
+		root:   root,
+		owners: make(map[*types.Package]*packages.Package),
+		cache:  make(map[*types.Named]string),
+	}
+	var err error
+	packages.Visit(append([]*packages.Package{root}, extra...), nil, func(p *packages.Package) {
+		if p.Types == nil {
+			return
+		}
+		idx.owners[p.Types] = p
+		if err == nil && p.Imports[sszutilsPkgPath] != nil && (len(p.Syntax) == 0 || p.TypesInfo == nil) {
+			err = fmt.Errorf("package %s imports sszutils but was loaded without syntax: its Annotate registrations cannot be read", p.PkgPath)
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	return idx, nil
+}
+
+// resolve returns the merged annotation tag for t, or "". An alias is
+// transparent and one pointer level is stripped, as the runtime registration
+// does.
+func (idx *annotationIndex) resolve(t types.Type) string {
+	named := annotatedNamedType(t)
+	if named == nil || named.Obj().Pkg() == nil {
+		return ""
+	}
+	if tag, ok := idx.cache[named]; ok {
+		return tag
+	}
+	owner := idx.owners[named.Obj().Pkg()]
+	if owner == nil {
+		// Every type the parser reaches comes from an indexed package; one
+		// that does not cannot be vouched for, so generation is failed.
+		if idx.err == nil {
+			idx.err = fmt.Errorf("type %v: declaring package %s was not loaded, its Annotate registrations cannot be read", named, named.Obj().Pkg().Path())
+		}
+		return ""
+	}
+	tags := annotateCallTags(owner, named)
+	if owner != idx.root {
+		tags = append(tags, annotateCallTags(idx.root, named)...)
+	}
+	tag := mergeAnnotateTags(tags)
+	idx.cache[named] = tag
+	return tag
+}
+
+// annotatedNamedType returns the named type t stands for, or nil. An alias is
+// transparent and one pointer level is stripped, as the runtime registration
+// does.
+func annotatedNamedType(t types.Type) *types.Named {
 	t = types.Unalias(t)
 	if ptr, ok := t.(*types.Pointer); ok {
 		t = types.Unalias(ptr.Elem())
 	}
-	named, ok := t.(*types.Named)
-	if !ok {
-		return nil
-	}
-	obj := named.Obj()
-	if obj.Pkg() == nil || obj.Pkg().Path() != pkg.PkgPath {
-		return nil
-	}
+	named, _ := t.(*types.Named)
 	return named
 }
 
@@ -759,15 +825,13 @@ func annotateTypeArgMatches(pkg *packages.Package, arg ast.Expr, target *types.N
 	return ok && ident.Name == target.Obj().Name()
 }
 
-// findAnnotateCall scans package AST for sszutils.Annotate[target]("...")
-// calls and returns the merged tag, or "" if not found. The calls are taken
-// in the package's initialization order (package-level variables of every
-// file in file order, then the init functions) and merged newest first, as
-// the runtime registration does, so a key registered twice resolves to the
-// same registration in both.
-func findAnnotateCall(pkg *packages.Package, target *types.Named) string {
-	if target == nil {
-		return ""
+// annotateCallTags scans pkg's AST for sszutils.Annotate[target]("...")
+// calls and returns their tags in the package's initialization order:
+// package-level variables of every file in file order, then the init
+// functions.
+func annotateCallTags(pkg *packages.Package, target *types.Named) []string {
+	if pkg == nil || target == nil {
+		return nil
 	}
 	var varTags, initTags []string
 
@@ -803,7 +867,12 @@ func findAnnotateCall(pkg *packages.Package, target *types.Named) string {
 
 	ordered := make([]string, 0, len(varTags)+len(initTags))
 	ordered = append(ordered, varTags...)
-	ordered = append(ordered, initTags...)
+	return append(ordered, initTags...)
+}
+
+// mergeAnnotateTags merges tags registered in the given order newest first,
+// dropping repeats, as the runtime registry does.
+func mergeAnnotateTags(ordered []string) string {
 	merged := make([]string, 0, len(ordered))
 	seen := make(map[string]struct{}, len(ordered))
 	for i := len(ordered) - 1; i >= 0; i-- {

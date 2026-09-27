@@ -792,6 +792,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	// Use schemaType for SSZ layout analysis, dataType for interface checks
 
 	originalType := dataType
+	originalSchemaType := schemaType
 	innerSchemaType := schemaType
 	innerDataType := dataType
 
@@ -987,7 +988,10 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	// those (they override the annotation).
 	if p.AnnotationResolver != nil && len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0 {
 		// An alias is transparent: the annotation belongs to the type it names.
-		annotationType := types.Unalias(originalType)
+		// The layout comes from the schema type, as in the reflection type
+		// cache and the hint comparison above: a view's field reads its own
+		// type's annotation, not the data field's.
+		annotationType := types.Unalias(originalSchemaType)
 		if ptr, ok := annotationType.(*types.Pointer); ok {
 			annotationType = types.Unalias(ptr.Elem())
 		}
