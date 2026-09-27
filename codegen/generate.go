@@ -769,9 +769,6 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 		mainCodeBuilder.WriteString(")\n\n")
 	}
 
-	// Variable declarations
-	mainCodeBuilder.WriteString("var _ = sszutils.ErrListTooBig\n\n")
-
 	// Type annotations (ssz-static declarations) up front so the reflection
 	// typecache can shallow-build these fully-delegated types.
 	if annotationsBuilder.Len() > 0 {

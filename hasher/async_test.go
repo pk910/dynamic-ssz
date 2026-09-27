@@ -694,8 +694,10 @@ func TestAsyncAccessorsDrain(t *testing.T) {
 	rng := rand.New(rand.NewSource(37))
 	chunk := make([]byte, 32)
 
+	// A declared binary scope is what compacts a run to one node; an
+	// undeclared one keeps element roots, as either closer may follow.
 	elems := make([][]byte, 4096)
-	idx := hh.Index()
+	idx := hh.StartTree(sszutils.TreeTypeBinary)
 	for i := range elems {
 		ci := hh.Index()
 		elems[i] = make([]byte, 0, 8*32)

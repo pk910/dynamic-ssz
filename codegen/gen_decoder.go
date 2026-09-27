@@ -345,7 +345,17 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 
 	if useFastSsz && !isRoot && !isView {
 		sizeStr := "-1"
-		if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
+		switch {
+		case desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 &&
+			desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions:
+			// A fixed-size delegate whose width is read at run time is framed
+			// at that width, as the spec-aware branch below frames it.
+			sizeVar, verr := ctx.staticSizeVars.getStaticSizeVar(desc)
+			if verr != nil {
+				return verr
+			}
+			sizeStr = fmt.Sprintf("int(%s)", sizeVar)
+		case desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0:
 			sizeStr = intLitStr(fmt.Sprintf("%d", desc.Size))
 		}
 		ctx.appendCode(indent, "if buf, err := sszutils.DecodeDelegateBuffer(dec, %s); err != nil {\n", sizeStr)

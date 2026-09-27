@@ -7067,11 +7067,37 @@ func (*flagAnnTypedDelegate) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils
 	return nil
 }
 
+type flagAnnContainer struct{ A uint64 }
+
+var _ = sszutils.Annotate[flagAnnContainer](`ssz-type:"container"`)
+
+func (*flagAnnContainer) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
+type flagPlainContainer struct{ A uint64 }
+
+func (*flagPlainContainer) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
 // A field that carries no tag, or repeats its type's annotation, keeps the
 // type's delegation flags; a field that changes the declared shape drops them.
 func TestFieldTagRepeatingAnnotationKeepsDelegation(t *testing.T) {
 	type noTag struct {
 		L flagAnnDelegate
+	}
+	type ctrNoTag struct {
+		C flagAnnContainer
+	}
+	type ctrSameHint struct {
+		C flagAnnContainer `ssz-type:"container"`
+	}
+	type ctrOtherHint struct {
+		C flagAnnContainer `ssz-type:"progressive-container"`
+	}
+	type plainCtrOtherHint struct {
+		C flagPlainContainer `ssz-type:"progressive-container"`
 	}
 	type sameTag struct {
 		L flagAnnDelegate `ssz-max:"4"`
@@ -7111,6 +7137,10 @@ func TestFieldTagRepeatingAnnotationKeepsDelegation(t *testing.T) {
 		{"ssz alias naming the annotation's type", aliasOfTyped{}, 0, true, 4},
 		{"ssz alias with another limit", aliasOfTypedOther{}, 0, false, 8},
 		{"field-only ssz-index", indexOnly{}, 1, true, 4},
+		{"container annotated by type only, no tag", ctrNoTag{}, 0, true, 0},
+		{"container annotated by type only, same hint", ctrSameHint{}, 0, true, 0},
+		{"container annotated by type only, other hint", ctrOtherHint{}, 0, false, 0},
+		{"unannotated container, other hint", plainCtrOtherHint{}, 0, false, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -7126,5 +7156,218 @@ func TestFieldTagRepeatingAnnotationKeepsDelegation(t *testing.T) {
 				t.Fatalf("limit = %d, want %d", field.Limit, tt.limit)
 			}
 		})
+	}
+}
+
+type widthCustom struct{ V uint32 }
+
+func (*widthCustom) SizeSSZDyn(sszutils.DynamicSpecs) int                                 { return 4 }
+func (*widthCustom) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error)      { return b, nil }
+func (*widthCustom) UnmarshalSSZDyn(sszutils.DynamicSpecs, []byte) error                  { return nil }
+func (*widthCustom) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils.HashWalker) error { return nil }
+
+type annStaticCustom struct{ V uint32 }
+
+func (*annStaticCustom) SizeSSZDyn(sszutils.DynamicSpecs) int { return 4 }
+func (*annStaticCustom) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return b, nil
+}
+func (*annStaticCustom) UnmarshalSSZDyn(sszutils.DynamicSpecs, []byte) error { return nil }
+func (*annStaticCustom) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
+var _ = sszutils.Annotate[annStaticCustom](`ssz-type:"custom" ssz-static:"true"`)
+
+// A descriptor built for code generation takes a custom type's static width
+// from a literal ssz-size or, for a spec-driven width, from the type's
+// spec-aware sizer at run time; a width only this process could read is
+// refused. The same references resolve for this process.
+func TestCustomWidthForGeneration(t *testing.T) {
+	type exprWidth struct {
+		C widthCustom `ssz-type:"custom" ssz-size:"4" dynssz-size:"W"`
+	}
+	type staticOnlyExprWidth struct {
+		C staticOnlyCustom `ssz-type:"custom" ssz-size:"4" dynssz-size:"W"`
+	}
+	type annStatic struct {
+		C annStaticCustom
+	}
+	specs := &dummyDynamicSpecs{specValues: map[string]uint64{"W": 4}}
+
+	forGeneration := NewTypeCache(specs)
+	forGeneration.DisableSpecResolution()
+	desc, err := forGeneration.GetTypeDescriptor(reflect.TypeOf(exprWidth{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("generation, width from an expression with a spec-aware sizer: %v", err)
+	}
+	if field := desc.ContainerDesc.Fields[0].Type; field.Size != 4 || field.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagHasSizeExpr) != SszTypeFlagHasSizeExpr {
+		t.Fatalf("generation, width from an expression: field = %+v, want the literal kept as the static fallback, sized at run time", field)
+	}
+	if _, refused := forGeneration.GetTypeDescriptor(reflect.TypeOf(staticOnlyExprWidth{}), nil, nil, nil); refused == nil || !strings.Contains(refused.Error(), "no spec-aware sizer") {
+		t.Fatalf("generation, width from an expression without a spec-aware sizer: err = %v, want the refusal", refused)
+	}
+	desc, err = forGeneration.GetTypeDescriptor(reflect.TypeOf(annStatic{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("generation, static by annotation without a width: %v", err)
+	}
+	if field := desc.ContainerDesc.Fields[0].Type; field.Size != 0 || field.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagHasSizeExpr|SszTypeFlagSizerWidth) != SszTypeFlagHasSizeExpr|SszTypeFlagSizerWidth {
+		t.Fatalf("generation, static by annotation without a width: field = %+v, want a static value sized from the sizer at run time", field)
+	}
+
+	forProcess := NewTypeCache(specs)
+	for _, tt := range []struct {
+		typ   reflect.Type
+		flags SszTypeFlag
+	}{
+		{reflect.TypeOf(exprWidth{}), SszTypeFlagHasSizeExpr},
+		{reflect.TypeOf(annStatic{}), SszTypeFlagSizerWidth},
+	} {
+		desc, err := forProcess.GetTypeDescriptor(tt.typ, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("process, %v: %v", tt.typ, err)
+		}
+		if field := desc.ContainerDesc.Fields[0].Type; field.Size != 4 || field.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagHasSizeExpr|SszTypeFlagSizerWidth) != tt.flags {
+			t.Fatalf("process, %v: field = %+v, want a static 4-byte custom with flags %b", tt.typ, field, tt.flags)
+		}
+	}
+}
+
+type staticOnlyCustom struct{ Items []uint64 }
+
+func (*staticOnlyCustom) SizeSSZ() int                          { return 0 }
+func (*staticOnlyCustom) MarshalSSZTo(b []byte) ([]byte, error) { return b, nil }
+func (*staticOnlyCustom) UnmarshalSSZ([]byte) error             { return nil }
+func (*staticOnlyCustom) HashTreeRoot() ([32]byte, error)       { return [32]byte{}, nil }
+
+// A custom type with static methods only is refused when a resolved spec value
+// differs from what those methods baked in, and the refusal says so.
+func TestStaticOnlyCustomRefusedForDifferingValue(t *testing.T) {
+	type holder struct {
+		C staticOnlyCustom `ssz-type:"custom" ssz-max:"4" dynssz-max:"M"`
+	}
+
+	cache := NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"M": 4}})
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(holder{}), nil, nil, nil); err != nil {
+		t.Fatalf("equal limit: %v", err)
+	}
+
+	cache = NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"M": 8}})
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(holder{}), nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "static methods") {
+		t.Fatalf("differing limit: err = %v, want the static-methods refusal", err)
+	}
+}
+
+type partialStaticCustom struct{ V uint32 }
+
+func (*partialStaticCustom) SizeSSZDyn(sszutils.DynamicSpecs) int { return 4 }
+func (*partialStaticCustom) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return b, nil
+}
+func (*partialStaticCustom) UnmarshalSSZDyn(sszutils.DynamicSpecs, []byte) error { return nil }
+func (*partialStaticCustom) HashTreeRoot() ([32]byte, error)                     { return [32]byte{}, nil }
+
+var _ = sszutils.Annotate[partialStaticCustom](`ssz-type:"custom" ssz-static:"true"`)
+
+// A custom type that is static by annotation but does not delegate every
+// operation through its spec-aware methods is described in full; built for
+// generation its width is read from the sizer at run time, and for this
+// process the sizer answers at build.
+func TestPartialSurfaceCustomWidthForGeneration(t *testing.T) {
+	type holder struct {
+		C partialStaticCustom
+	}
+
+	forGeneration := NewTypeCache(&dummyDynamicSpecs{})
+	forGeneration.DisableSpecResolution()
+	desc, err := forGeneration.GetTypeDescriptor(reflect.TypeOf(holder{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("generation: %v", err)
+	}
+	if field := desc.ContainerDesc.Fields[0].Type; field.Size != 0 || field.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagHasSizeExpr|SszTypeFlagSizerWidth) != SszTypeFlagHasSizeExpr|SszTypeFlagSizerWidth {
+		t.Fatalf("generation: field = %+v, want a static value sized from the sizer at run time", field)
+	}
+
+	desc, err = NewTypeCache(&dummyDynamicSpecs{}).GetTypeDescriptor(reflect.TypeOf(holder{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	if field := desc.ContainerDesc.Fields[0].Type; field.Size != 4 || field.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagHasSizeExpr|SszTypeFlagSizerWidth) != SszTypeFlagSizerWidth {
+		t.Fatalf("process: field = %+v, want a static 4-byte custom that never packs", field)
+	}
+}
+
+// Built for generation, a type generated in the same run and referenced as
+// custom is static or dynamic as its own descriptor is, and a static one is
+// sized from the sizer at run time, as the go/types parser describes it.
+func TestSameRunCustomForGeneration(t *testing.T) {
+	type staticInner struct{ A uint64 }
+	type dynamicInner struct {
+		L []byte `ssz-max:"4"`
+	}
+	type exprInner struct {
+		V []byte `ssz-size:"8" dynssz-size:"W"`
+	}
+	type holder struct {
+		S staticInner  `ssz-type:"custom"`
+		D dynamicInner `ssz-type:"custom"`
+		E exprInner    `ssz-type:"custom"`
+		G staticInner  `ssz-type:"custom" ssz-size:"8" dynssz-size:"W"`
+	}
+
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	cache.DisableSpecResolution()
+	generated := SszCompatFlagDynamicMarshaler | SszCompatFlagDynamicUnmarshaler | SszCompatFlagDynamicSizer | SszCompatFlagDynamicHashRoot
+	cache.CompatFlags = map[string]SszCompatFlag{}
+	for _, typ := range []reflect.Type{reflect.TypeOf(staticInner{}), reflect.TypeOf(dynamicInner{}), reflect.TypeOf(exprInner{})} {
+		cache.CompatFlags[typ.PkgPath()+"."+typ.Name()] = generated
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(holder{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("descriptor: %v", err)
+	}
+	fields := desc.ContainerDesc.Fields
+	sizerWidth := SszTypeFlagHasSizeExpr | SszTypeFlagSizerWidth
+	if f := fields[0].Type; f.Size != 8 || f.SszTypeFlags&(SszTypeFlagIsDynamic|sizerWidth) != sizerWidth {
+		t.Fatalf("static same-run type: %+v, want its own 8 bytes as the fallback, sized from the sizer at run time", f)
+	}
+	if f := fields[1].Type; f.SszTypeFlags&SszTypeFlagIsDynamic == 0 {
+		t.Fatalf("dynamic same-run type: %+v, want a dynamic custom", f)
+	}
+	if f := fields[2].Type; f.Size != 8 || f.SszTypeFlags&(SszTypeFlagIsDynamic|sizerWidth) != sizerWidth {
+		t.Fatalf("same-run type with a spec-sized field: %+v, want its own fallback, sized from the sizer at run time", f)
+	}
+	if f := fields[3].Type; f.Size != 8 || f.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagHasSizeExpr) != SszTypeFlagHasSizeExpr {
+		t.Fatalf("same-run type with a width expression on the reference: %+v, want the literal kept with the size expression flag", f)
+	}
+}
+
+// Built for a static build, a custom width named by an expression with no
+// literal beside it is refused; a same-run type whose own descriptor cannot
+// be built passes that refusal on.
+func TestCustomWidthForStaticBuild(t *testing.T) {
+	type exprOnly struct {
+		C widthCustom `ssz-type:"custom" dynssz-size:"W"`
+	}
+	type brokenInner struct{ S int64 }
+	type holder struct {
+		B brokenInner `ssz-type:"custom"`
+	}
+
+	static := NewTypeCache(&dummyDynamicSpecs{})
+	static.DisableSpecResolution()
+	static.NoDelegation = true
+	if _, err := static.GetTypeDescriptor(reflect.TypeOf(exprOnly{}), nil, nil, nil); err == nil || !strings.Contains(err.Error(), "no static width") {
+		t.Fatalf("static build, width from an expression alone: err = %v, want the refusal", err)
+	}
+
+	forGeneration := NewTypeCache(&dummyDynamicSpecs{})
+	forGeneration.DisableSpecResolution()
+	inner := reflect.TypeOf(brokenInner{})
+	forGeneration.CompatFlags = map[string]SszCompatFlag{inner.PkgPath() + "." + inner.Name(): SszCompatFlagDynamicMarshaler | SszCompatFlagDynamicUnmarshaler | SszCompatFlagDynamicSizer | SszCompatFlagDynamicHashRoot}
+	if _, err := forGeneration.GetTypeDescriptor(reflect.TypeOf(holder{}), nil, nil, nil); err == nil || !strings.Contains(err.Error(), "signed integers") {
+		t.Fatalf("same-run type that cannot be described: err = %v, want its own refusal", err)
 	}
 }

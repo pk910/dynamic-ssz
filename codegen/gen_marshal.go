@@ -904,6 +904,17 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 		ctx.appendCode(indent, "}\n")
 	}
 
+	// A static element whose width a sizer reports cannot be zero: every
+	// length would encode alike, and the decoders refuse the same width. A
+	// width a spec expression supplies is refused at resolution.
+	if desc.ElemDesc.SszTypeFlags&(ssztypes.SszTypeFlagIsDynamic|ssztypes.SszTypeFlagSizerWidth) == ssztypes.SszTypeFlagSizerWidth && !ctx.options.WithoutDynamicExpressions {
+		sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
+		if err != nil {
+			return err
+		}
+		ctx.appendCode(indent, "if %s == 0 {\n\treturn nil, %s\n}\n", sizeVar, typePath.getErrorWith(`sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "list element size resolved to 0")`))
+	}
+
 	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 		// static elements
 		switch {

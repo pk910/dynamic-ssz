@@ -541,6 +541,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 	// from the annotation registry. External hints override the type's own annotation,
 	// so we must not delegate to generated methods that have the annotation baked in.
 	hasExternalHints := len(sizeHints) > 0 || len(maxSizeHints) > 0
+	callerTypeHinted := len(typeHints) > 0
 
 	// staticAnnotation captures the type's own ssz-static:"true/false" declaration
 	// (true = fixed-size, false = variable-size). It gates the shallow-build path
@@ -649,10 +650,11 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 	}
 
 	// A reference that declares an SSZ type the type's own annotation does not
-	// overrides the type, so it is described inline rather than shallow, as a
-	// size or limit the reference supplies is. The field tag is joined in front
-	// of the annotation, so an annotation-declared type arrives here unchanged.
-	if staticAnnotation != nil && !hasExternalHints && len(typeHints) > 0 {
+	// overrides the type, so it is described inline and its own methods are not
+	// used, as a size or limit the reference supplies is. The field tag is
+	// joined in front of the annotation, so an annotation-declared type arrives
+	// here unchanged; a type without an annotation declares no type at all.
+	if !hasExternalHints && len(typeHints) > 0 {
 		annTypeHints, _, _, parseErr := ParseTags(annotationTag)
 		if parseErr != nil {
 			return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "failed to parse annotation for type %v: %v", t, parseErr)
@@ -692,7 +694,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 
 		if maxSizeHints[0].Expr != "" {
 			// A limit no value was supplied for is the same dead end as a length.
-			if desc.Limit == 0 && !tc.noSpecResolution {
+			if desc.Limit == 0 && (!tc.noSpecResolution || tc.NoDelegation) {
 				return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-max %q is not defined and has no positive static fallback", maxSizeHints[0].Expr)
 			}
 
@@ -818,7 +820,10 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 	// applied to a zero value. Field-level hints (hasExternalHints) opt out, since
 	// they override the type's own annotation and require inline processing. View
 	// descriptors qualify when they delegate through the dynamic view interface set.
-	if staticAnnotation != nil && !hasExternalHints && !tc.NoDelegation {
+	// A type generated in the same run is reached through its generated methods
+	// and, when a reference declares it custom, frames as its own descriptor does.
+	sameRun := tc.noSpecResolution && callerTypeHinted && tc.getCompatFlag(runtimeType, schemaType) != 0
+	if staticAnnotation != nil && !hasExternalHints && !tc.NoDelegation && (!sameRun || sszType != SszCustomType) {
 		var fullyDelegated bool
 		promoted := tc.PromotedDelegationMethods(runtimeType)
 		if desc.GoTypeFlags&GoTypeFlagIsView != 0 {
@@ -834,7 +839,13 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 				return sszutils.NewSszErrorf(sszutils.ErrUnsupportedType, "%v delegates to its own SSZ methods but forms a recursive cycle with %v, which is described here: the members of a cycle must be generated in one run", runtimeType, partner)
 			}
 			size, sized, err := int64(0), false, error(nil)
-			if *staticAnnotation {
+			sizerWidth := *staticAnnotation && sszType == SszCustomType && (len(sizeHints) == 0 || sizeHints[0].Size == 0)
+			switch {
+			case sizerWidth && tc.noSpecResolution:
+				// Generated code reads the width at run time.
+				sized = true
+				desc.SszTypeFlags |= SszTypeFlagHasSizeExpr
+			case *staticAnnotation:
 				size, sized, err = tc.delegatedStaticSize(desc, runtimeType)
 				if err != nil {
 					return err
@@ -842,6 +853,9 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			}
 			if sized {
 				desc.Size = size
+				if sizerWidth {
+					desc.SszTypeFlags |= SszTypeFlagSizerWidth
+				}
 			} else {
 				desc.SszTypeFlags |= SszTypeFlagIsDynamic
 			}
@@ -983,11 +997,44 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		// A custom type serializes entirely through its own methods, so its Go
 		// structure is never traversed and no child descriptors are built. It is
 		// variable-size by default; an explicit ssz-size hint or an
-		// ssz-static:"true" annotation pins a fixed size (read from the type's own
-		// sizer), while ssz-static:"false" keeps it dynamic.
+		// ssz-static:"true" annotation pins a fixed size, while
+		// ssz-static:"false" keeps it dynamic. A width that is not a literal is
+		// read from the type's sizer: here on a zero value, by generated code at
+		// run time, so a descriptor built for generation refuses a width the
+		// generated code cannot ask for.
+		if tc.noSpecResolution && len(sizeHints) > 0 && sizeHints[0].Expr != "" && !getDynamicSizerCompatibility(runtimeType) && tc.getCompatFlag(runtimeType, schemaType)&SszCompatFlagDynamicSizer == 0 {
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "custom type %v declares its width from %q but has no spec-aware sizer: the generator cannot know that width, so declare it with a literal ssz-size", t, sizeHints[0].Expr)
+		}
 		switch {
+		case sameRun && (len(sizeHints) == 0 || (sizeHints[0].Size == 0 && sizeHints[0].Expr == "")):
+			// A type generated in the same run declares its shape through the
+			// annotation the run emits, which this build cannot see yet; its
+			// own descriptor says the same.
+			own, err := tc.getTypeDescriptor(runtimeType, schemaType, nil, nil, nil)
+			if err != nil {
+				return err
+			}
+			if own.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
+				desc.SszTypeFlags |= SszTypeFlagIsDynamic
+			} else {
+				desc.Size = own.Size
+				desc.SszTypeFlags |= SszTypeFlagHasSizeExpr | SszTypeFlagSizerWidth
+			}
+		case tc.noSpecResolution && len(sizeHints) > 0 && sizeHints[0].Expr != "":
+			// The width is read at run time from the type's sizer; the size
+			// expression flag the hint set makes the emitters ask for it, and a
+			// literal beside the expression is the static fallback.
+			if tc.NoDelegation && sizeHints[0].Size == 0 {
+				return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "custom type %v has no static width to bake for %q", t, sizeHints[0].Expr)
+			}
+			desc.Size = sizeHints[0].Size
 		case len(sizeHints) > 0 && sizeHints[0].Size > 0:
 			desc.Size = sizeHints[0].Size
+		case staticAnnotation != nil && *staticAnnotation && tc.noSpecResolution:
+			if tc.NoDelegation {
+				return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "custom type %v declares ssz-static:\"true\" but no ssz-size: there is no static width to bake", t)
+			}
+			desc.SszTypeFlags |= SszTypeFlagHasSizeExpr | SszTypeFlagSizerWidth
 		case staticAnnotation != nil && *staticAnnotation:
 			size, sized, err := tc.delegatedStaticSize(desc, runtimeType)
 			if err != nil {
@@ -1000,6 +1047,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 				break
 			}
 			desc.Size = size
+			desc.SszTypeFlags |= SszTypeFlagSizerWidth
 		default:
 			desc.Size = 0
 			desc.SszTypeFlags |= SszTypeFlagIsDynamic
@@ -1203,6 +1251,13 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		// (Dynamic*) equivalent, but at least one implementation per operation is
 		// required. Marshalling accepts either fastssz-style marshal method.
 		if missing := missingDelegatedOperations(desc.SszCompatFlags); len(missing) > 0 {
+			// A static method the type does carry is left out of the flags when a
+			// resolved spec value differs from what it baked in; the type then
+			// has no method that can answer for that value.
+			if desc.SszTypeFlags&(SszTypeFlagHasDynamicSize|SszTypeFlagHasDynamicMax) != 0 &&
+				(getFastsszCompatFlags(runtimeType) != 0 || getFastsszHashCompatibility(runtimeType) || getHashTreeRootWithCompatibility(runtimeType) != nil) {
+				return sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "custom ssz type %v serves %s only through static methods, which bake in a size or limit the spec resolves differently", schemaType, strings.Join(missing, ", "))
+			}
 			return sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "custom ssz type %v is missing a fastssz or dynssz %s implementation", schemaType, strings.Join(missing, ", "))
 		}
 	}
@@ -1552,7 +1607,7 @@ func (tc *TypeCache) buildTypeWrapperDescriptor(desc *TypeDescriptor, runtimeTyp
 
 	// The TypeWrapper inherits properties from the wrapped type
 	desc.Size = wrappedDesc.Size
-	desc.SszTypeFlags |= wrappedDesc.SszTypeFlags & (SszTypeFlagIsDynamic | SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
+	desc.SszTypeFlags |= wrappedDesc.SszTypeFlags & (SszTypeFlagIsDynamic | SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr | SszTypeFlagSizerWidth)
 
 	return nil
 }
@@ -1800,7 +1855,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 			})
 		}
 
-		desc.SszTypeFlags |= fieldDesc.Type.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
+		desc.SszTypeFlags |= fieldDesc.Type.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr | SszTypeFlagSizerWidth)
 		// A fixed section is addressed by 32-bit offsets, so it is bounded to
 		// the SSZ size limit like every other size.
 		if totalSize > sszutils.MaxSszSize-sszSize {
@@ -2063,7 +2118,7 @@ func (tc *TypeCache) buildOptionalDescriptor(desc *TypeDescriptor, runtimeType, 
 	desc.ElemDesc = elemDesc
 
 	// The Optional inherits properties from the child type
-	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagIsDynamic | SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
+	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagIsDynamic | SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr | SszTypeFlagSizerWidth)
 
 	return nil
 }
@@ -2114,7 +2169,7 @@ func (tc *TypeCache) buildOptionalListDescriptor(desc *TypeDescriptor, runtimeTy
 	}
 
 	desc.ElemDesc = elemDesc
-	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
+	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr | SszTypeFlagSizerWidth)
 
 	// A present element of zero size leaves the region as empty as an absent
 	// one, so presence could never be decoded. Only reachable through custom
@@ -2226,7 +2281,7 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 	// A length supplied purely by an expression is legitimately 0 here while
 	// generating code, so only a genuine static zero is rejected (matching the
 	// code generator's own parser).
-	if desc.Len == 0 && desc.SizeExpression == nil && (desc.SszTypeFlags&SszTypeFlagHasBitSize == 0 || desc.SszType == SszBitvectorType) {
+	if desc.Len == 0 && (desc.SizeExpression == nil || (tc.NoDelegation && tc.noSpecResolution)) && (desc.SszTypeFlags&SszTypeFlagHasBitSize == 0 || desc.SszType == SszBitvectorType) {
 		return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "vector type %v has zero length, which is invalid per the SSZ spec", t)
 	}
 
@@ -2272,7 +2327,7 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 	}
 
 	desc.ElemDesc = elemDesc
-	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
+	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr | SszTypeFlagSizerWidth)
 
 	// A bitvector is a sequence of bits stored in bytes; a string holds text.
 	if desc.SszType == SszBitvectorType && desc.GoTypeFlags&GoTypeFlagIsString != 0 {
@@ -2371,7 +2426,7 @@ func (tc *TypeCache) buildListDescriptor(desc *TypeDescriptor, runtimeType, sche
 	}
 
 	desc.ElemDesc = elemDesc
-	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
+	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr | SszTypeFlagSizerWidth)
 
 	// A static element of zero size makes the element count underivable from
 	// the wire format (region length / element size), so such a list can never

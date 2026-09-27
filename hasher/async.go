@@ -416,13 +416,15 @@ func (h *Hasher) asyncRootCompatible(layer *treeLayer, pendStart, nodeDepth int)
 
 // flushPendingAsync reduces the layer's deferred run in cap-sized background
 // jobs and leaves any sub-cap remainder pending for the next round, so every
-// job matches the pre-sized input buffers exactly. A binary layer gets one
-// completed subtree node per job, recorded at depth log2(elements-per-cap) —
-// the layer's leaves are element roots, so the intra-element levels do not
-// count. A progressive layer gets one root per element instead: group
-// boundaries are not aligned to run boundaries, so completed subtrees cannot
-// span them. Reports whether at least one job was emitted; if not (a binary
-// run whose node would not be compatible with what precedes it), the caller
+// job matches the pre-sized input buffers exactly. A declared binary layer
+// gets one completed subtree node per job, recorded at depth
+// log2(elements-per-cap) — the layer's leaves are element roots, so the
+// intra-element levels do not count. A progressive layer, and a layer opened
+// without a declared shape, get one root per element instead: progressive
+// group boundaries are not aligned to run boundaries, so completed subtrees
+// cannot span them, and an undeclared layer may still be closed as either
+// tree. Reports whether at least one job was emitted; if not (a binary run
+// whose node would not be compatible with what precedes it), the caller
 // reduces synchronously.
 func (h *Hasher) flushPendingAsync(st *asyncShared, layer *treeLayer) bool {
 	elem := layer.pendElemChunks
@@ -434,7 +436,10 @@ func (h *Hasher) flushPendingAsync(st *asyncShared, layer *treeLayer) bool {
 	emitted := false
 	for layer.pendCount >= batchElems {
 		start := layer.pendStart
-		if layer.progressive {
+		// A layer opened without a declared shape may be closed as either
+		// tree, and only element roots suit both closers; a subtree node
+		// would be taken for a leaf by a progressive close.
+		if layer.progressive || !layer.declared {
 			h.enqueueReduce(st, start, lazyFlushChunks, batchElems, start)
 			h.compactAsyncRun(start, lazyFlushChunks, batchElems)
 			layer.pendStart = start + batchElems*32

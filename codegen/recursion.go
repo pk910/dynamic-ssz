@@ -61,7 +61,11 @@ func validateEmittableGraph(root *ssztypes.TypeDescriptor, staticDelegation, dyn
 			if dynamicDelegation && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 {
 				return nil
 			}
-			if staticDelegation && staticSurfaceComplete(desc.SszCompatFlags) {
+			// The static methods baked the tag values, so the emitters only call
+			// them for a child without spec expressions, or in a build without
+			// dynamic expressions.
+			if staticDelegation && staticSurfaceComplete(desc.SszCompatFlags) &&
+				(desc.SszTypeFlags&(ssztypes.SszTypeFlagHasSizeExpr|ssztypes.SszTypeFlagHasMaxExpr) == 0 || !dynamicDelegation) {
 				return nil
 			}
 		}

@@ -578,7 +578,9 @@ two walkers lay bytes out identically, so a method that leaves anything else
 produces the same wrong root through `HashTreeRoot` and through `GetTree`.
 Inside a list or vector, a custom type whose declared `ssz-size` is one a basic
 type could have (1, 2, 4, 8 or 16 bytes, without a size expression) is packed
-like that basic type: the scope is a packed walker scope, in which `Put*`
+like that basic type. A custom type declared static by `ssz-static:"true"`
+without an `ssz-size` takes its width from its sizer; that width is not a
+declared size and never packs. The packed case works as follows: the scope is a packed walker scope, in which `Put*`
 appends the packed bytes, and the method must leave exactly those bytes. This
 is not verified: a method that merkleizes a leaf of its own there shifts the
 elements that follow, in both walkers alike. A `HashTreeRoot()`-only type

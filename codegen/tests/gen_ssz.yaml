@@ -410,3 +410,21 @@ types:
     output: gen_edgecases.go
   - name: ProbeFailHolder
     output: gen_edgecases.go
+  - name: TypeHintInner
+    output: gen_edgecases.go
+  - name: TypeHintOverride
+    output: gen_edgecases.go
+  - name: SpecWidthInner
+    output: gen_edgecases.go
+  - name: SpecWidthHolder
+    output: gen_edgecases.go
+  - name: FsWidthHolder
+    output: gen_edgecases.go
+  - name: ZeroWidthList
+    output: gen_edgecases.go
+  - name: ZeroWidthWrapperList
+    output: gen_edgecases.go
+  - name: ZeroWidthShellList
+    output: gen_edgecases.go
+  - name: ZeroWidthOptionalList
+    output: gen_edgecases.go
