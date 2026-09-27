@@ -4115,3 +4115,168 @@ func TestParserStaticBuildRefusesSpecOnlyBounds(t *testing.T) {
 		t.Fatalf("length with a fallback: desc = %+v, err = %v, want length 4", desc, err)
 	}
 }
+
+// A view is built shallow when its data type serves views through the view
+// method set, and it reads its own ssz-static declaration from the view type,
+// as the reflection type cache does. A data type that delegates only its plain
+// SSZ operations is traversed when viewed. The type-hint override and a custom
+// type's static declaration read the view type as well.
+func TestViewShallowDelegation(t *testing.T) {
+	pkg := loadTestsPackage(t)
+	lookup := func(name string) types.Type {
+		obj := pkg.Types.Scope().Lookup(name)
+		if obj == nil {
+			t.Fatalf("%s not found", name)
+		}
+		return obj.Type()
+	}
+	stripPointer := func(typ types.Type) types.Type {
+		if ptr, ok := typ.(*types.Pointer); ok {
+			return ptr.Elem()
+		}
+		return typ
+	}
+	resolver := func(annotations map[types.Type]string) func(types.Type) string {
+		return func(typ types.Type) string { return annotations[stripPointer(types.Unalias(typ))] }
+	}
+	isShallow := func(desc *ssztypes.TypeDescriptor) bool { return desc.ContainerDesc == nil }
+
+	base, view1, view2 := lookup("ViewTypes1_Base"), lookup("ViewTypes1_View1"), lookup("ViewTypes1_View2")
+	if !NewParser().fullyDelegatesSSZView(types.NewPointer(base)) {
+		t.Skip("generated code not present; ViewTypes1_Base serves no views")
+	}
+	const dynamic, static = `ssz-static:"false"`, `ssz-static:"true"`
+	declared := map[types.Type]string{base: dynamic, view1: static, view2: dynamic}
+
+	t.Run("static view of a dynamic type", func(t *testing.T) {
+		p := NewParser()
+		p.AnnotationResolver = resolver(declared)
+		desc, err := p.buildTypeDescriptor(types.NewPointer(base), types.NewPointer(view1), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("descriptor: %v", err)
+		}
+		if !isShallow(desc) || desc.GoTypeFlags&ssztypes.GoTypeFlagIsView == 0 || desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+			t.Fatalf("shallow = %v, go flags = %b, ssz flags = %b, want a shallow static view", isShallow(desc), desc.GoTypeFlags, desc.SszTypeFlags)
+		}
+		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewSizer == 0 {
+			t.Fatalf("compat flags = %b, want the view sizer", desc.SszCompatFlags)
+		}
+	})
+
+	t.Run("dynamic view of a dynamic type", func(t *testing.T) {
+		p := NewParser()
+		p.AnnotationResolver = resolver(declared)
+		desc, err := p.buildTypeDescriptor(types.NewPointer(base), types.NewPointer(view2), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("descriptor: %v", err)
+		}
+		if !isShallow(desc) || desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
+			t.Fatalf("shallow = %v, ssz flags = %b, want a shallow dynamic view", isShallow(desc), desc.SszTypeFlags)
+		}
+	})
+
+	t.Run("plain reference reads the data type", func(t *testing.T) {
+		p := NewParser()
+		p.AnnotationResolver = resolver(declared)
+		desc, err := p.buildTypeDescriptor(types.NewPointer(base), types.NewPointer(base), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("descriptor: %v", err)
+		}
+		if !isShallow(desc) || desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0 || desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
+			t.Fatalf("shallow = %v, go flags = %b, ssz flags = %b, want a shallow dynamic value", isShallow(desc), desc.GoTypeFlags, desc.SszTypeFlags)
+		}
+	})
+
+	t.Run("view-only data type", func(t *testing.T) {
+		viewOnly, view := lookup("ViewTypes3_Base"), lookup("ViewTypes3_View1")
+		p := NewParser()
+		p.AnnotationResolver = resolver(map[types.Type]string{view: dynamic})
+		if p.fullyDelegatesSSZ(types.NewPointer(viewOnly)) {
+			t.Fatal("ViewTypes3_Base is expected to serve views only")
+		}
+		desc, err := p.buildTypeDescriptor(types.NewPointer(viewOnly), types.NewPointer(view), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("view: %v", err)
+		}
+		if !isShallow(desc) {
+			t.Fatal("view: want a shallow descriptor through the view method set")
+		}
+		desc, err = p.buildTypeDescriptor(types.NewPointer(viewOnly), types.NewPointer(viewOnly), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("plain: %v", err)
+		}
+		if isShallow(desc) {
+			t.Fatal("plain: want the type traversed, it delegates no plain operation")
+		}
+	})
+
+	t.Run("plain delegate viewed through another type", func(t *testing.T) {
+		container := lookup("NestedDelegatedContainer")
+		containerNamed, ok := container.(*types.Named)
+		if !ok {
+			t.Fatal("NestedDelegatedContainer is not a named type")
+		}
+		// The view has the data type's layout under another name. The pair
+		// is traversed, which reaches the fixture's invalid inner vector.
+		view := types.NewNamed(types.NewTypeName(0, nil, "NestedDelegatedView", nil), containerNamed.Underlying(), nil)
+		p := NewParser()
+		p.AnnotationResolver = resolver(map[types.Type]string{container: static, view: static})
+		_, err := p.buildTypeDescriptor(types.NewPointer(container), types.NewPointer(view), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "zero length") {
+			t.Fatalf("err = %v, want the traversed subtree refused", err)
+		}
+	})
+
+	t.Run("type hint against the view's declaration", func(t *testing.T) {
+		containerHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszContainerType}}
+		for _, tt := range []struct {
+			name    string
+			base    string
+			view    string
+			shallow bool
+		}{
+			{"hint matches the view", `ssz-static:"false" ssz-type:"progressive-container"`, `ssz-static:"true" ssz-type:"container"`, true},
+			{"hint matches the data type only", `ssz-static:"false" ssz-type:"container"`, `ssz-static:"true" ssz-type:"progressive-container"`, false},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				p := NewParser()
+				p.AnnotationResolver = resolver(map[types.Type]string{base: tt.base, view1: tt.view})
+				desc, err := p.buildTypeDescriptor(types.NewPointer(base), types.NewPointer(view1), containerHint, nil, nil)
+				if err != nil {
+					t.Fatalf("descriptor: %v", err)
+				}
+				if got := isShallow(desc); got != tt.shallow {
+					t.Fatalf("shallow = %v, want %v", got, tt.shallow)
+				}
+			})
+		}
+	})
+
+	t.Run("custom type static declaration", func(t *testing.T) {
+		custom := []ssztypes.SszTypeHint{{Type: ssztypes.SszCustomType}}
+		opaque := lookup("CustomType1")
+		view := types.NewNamed(types.NewTypeName(0, nil, "CustomView", nil), opaque.Underlying(), nil)
+		staticFlags := ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagSizerWidth
+		for _, tt := range []struct {
+			name  string
+			data  string
+			view  string
+			flags ssztypes.SszTypeFlag
+		}{
+			{"ssz-static on the view", "", static, staticFlags},
+			{"ssz-static on the data type only", static, "", ssztypes.SszTypeFlagIsDynamic},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				p := NewParser()
+				p.AnnotationResolver = resolver(map[types.Type]string{opaque: tt.data, view: tt.view})
+				desc, err := p.buildTypeDescriptor(opaque, view, custom, nil, nil)
+				if err != nil {
+					t.Fatalf("descriptor: %v", err)
+				}
+				if got := desc.SszTypeFlags & (staticFlags | ssztypes.SszTypeFlagIsDynamic); got != tt.flags {
+					t.Fatalf("flags = %b, want %b", got, tt.flags)
+				}
+			})
+		}
+	})
+}

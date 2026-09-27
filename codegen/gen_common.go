@@ -252,6 +252,13 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 	// the dedup key; otherwise two different delegated types would share one
 	// size variable.
 	descJson = append(descJson, g.typePrinter.TypeStringWithoutTracking(desc, false)...)
+	isView := desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
+	if isView {
+		// A view's size is the view's, so two views of one type keep
+		// separate size variables.
+		descJson = append(descJson, '|')
+		descJson = append(descJson, g.typePrinter.TypeStringWithoutTracking(desc, true)...)
+	}
 	descHash := sha256.Sum256(descJson)
 
 	if sizeVar, ok := g.varMap[descHash]; ok {
@@ -264,15 +271,18 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 	// A shallow-built, fully-delegated type (parser gate) has no traversed subtree
 	// to sum: it computes its own (possibly spec-dependent) fixed size, so query
 	// the type's sizer on a zero value at runtime. The gate only admits types that
-	// implement DynamicSizer (fullyDelegatesSSZ requires it), so that is the only
-	// case to handle here.
+	// implement DynamicSizer (fullyDelegatesSSZ requires it), or the view sizer
+	// for a view (fullyDelegatesSSZView requires it), so those are the only
+	// cases to handle here; a view is sized by its view sizer, as the reflection
+	// type cache sizes it.
 	// A custom type whose width is not a literal is the same case: its width
 	// is fixed for one spec but unknown here, so it is read from the sizer too,
 	// whatever static fallback it declares. The zero value never leaves the
 	// stack: a static type's sizer does not keep its receiver.
 	dynamicSizer := desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0
 	staticSizer := desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszSizer != 0
-	widthFromSizer := (dynamicSizer && desc.SszType == ssztypes.SszUnspecifiedType) ||
+	viewSizer := isView && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewSizer != 0
+	widthFromSizer := ((dynamicSizer || viewSizer) && desc.SszType == ssztypes.SszUnspecifiedType) ||
 		(desc.SszType == ssztypes.SszCustomType && desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 &&
 			desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 && (dynamicSizer || staticSizer))
 	if widthFromSizer {
@@ -284,9 +294,20 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 		if retVars == "" {
 			retVars = g.exprVarGenerator.retVars
 		}
-		if dynamicSizer {
+		switch {
+		case viewSizer:
+			// The view sizer is nil for a view the type does not serve.
+			appendCode(g.codeBuf, 0, "%sFn := new(%s).SizeSSZDynView((%s)(nil))\n", sizeVar, typeName, g.typePrinter.ViewTypeString(desc, true))
+			appendCode(g.codeBuf, 0, "if %sFn == nil {\n", sizeVar)
+			if strings.Contains(retVars, "err") {
+				appendCode(g.codeBuf, 1, "err := sszutils.ErrNotImplemented\n")
+			}
+			appendCode(g.codeBuf, 1, "return %s\n", retVars)
+			appendCode(g.codeBuf, 0, "}\n")
+			appendCode(g.codeBuf, 0, "%sSigned := %sFn(ds)\n", sizeVar, sizeVar)
+		case dynamicSizer:
 			appendCode(g.codeBuf, 0, "%sSigned := new(%s).SizeSSZDyn(ds)\n", sizeVar, typeName)
-		} else {
+		default:
 			appendCode(g.codeBuf, 0, "%sSigned := new(%s).SizeSSZ()\n", sizeVar, typeName)
 		}
 		appendCode(g.codeBuf, 0, "if %sSigned < 0 || %sSigned > sszutils.MaxSszSize {\n", sizeVar, sizeVar)

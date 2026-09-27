@@ -1231,6 +1231,15 @@ func testCodegenPayloadWithView(t *testing.T, payload, view any) {
 	if err != nil {
 		t.Fatalf("MarshalSSZ failed: %v", err)
 	}
+	// The reflection engine, delegating to no generated code, frames the
+	// value the same way: both engines agree on the wire for every view.
+	reflectionBytes, err := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz()).MarshalSSZ(payload, opts...)
+	if err != nil {
+		t.Fatalf("reflection MarshalSSZ failed: %v", err)
+	}
+	if !bytes.Equal(reflectionBytes, sszBytes) {
+		t.Fatalf("generated code and reflection disagree:\n  gen=%x\n  refl=%x", sszBytes, reflectionBytes)
+	}
 
 	// Unmarshal roundtrip
 	obj := &struct{ Data any }{}

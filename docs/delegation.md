@@ -58,6 +58,12 @@ while generated code, which sees no spec values, counts every expression
 into the decoder buffer, or written to the encoder's scratch buffer, and the
 child's buffer method runs on it.
 
+A view of a child that serves views is reached through the child's view
+surface without walking the view schema, on both engines. Whether such a view
+is fixed-size is the view type's own `ssz-static` declaration, not the data
+type's: a static view is framed inline and sized by the child's view sizer, a
+dynamic one is placed behind an offset.
+
 A static build reaching a child that has no static surface inlines the child's
 structure. A child with no traversable structure, a custom type or an
 external fully-delegated type built without its subtree, cannot be inlined and

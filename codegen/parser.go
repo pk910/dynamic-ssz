@@ -674,6 +674,24 @@ func (p *Parser) fullyDelegatesSSZ(t types.Type) bool {
 		any2(p.getDynamicHashRootCompatibility)
 }
 
+// fullyDelegatesSSZView reports whether the type implements the complete set
+// of dynamic view SSZ operation interfaces, checking both value and pointer
+// forms. A view of such a type is handled by the type's own view methods, so
+// the pairing need not be traversed.
+func (p *Parser) fullyDelegatesSSZView(t types.Type) bool {
+	other := t
+	if ptr, ok := other.(*types.Pointer); ok {
+		other = ptr.Elem()
+	} else {
+		other = types.NewPointer(other)
+	}
+	any2 := func(f func(types.Type) bool) bool { return f(t) || f(other) }
+	return (any2(p.getDynamicViewMarshalerCompatibility) || any2(p.getDynamicViewEncoderCompatibility)) &&
+		(any2(p.getDynamicViewUnmarshalerCompatibility) || any2(p.getDynamicViewDecoderCompatibility)) &&
+		any2(p.getDynamicViewSizerCompatibility) &&
+		any2(p.getDynamicViewHashRootCompatibility)
+}
+
 // buildTypeDescriptor builds the descriptor of a type pair.
 //
 //nolint:gocyclo // SSZ type descriptor builder is inherently complex
@@ -789,7 +807,8 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		}
 	}()
 
-	// Use schemaType for SSZ layout analysis, dataType for interface checks
+	// Use schemaType for SSZ layout analysis and the type's own annotation,
+	// dataType for interface checks
 
 	originalType := dataType
 	originalSchemaType := schemaType
@@ -884,7 +903,9 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	// A fully-delegated, already-implemented type handles every SSZ operation in
 	// its own code, so the descriptor subtree below it is never consulted. When
 	// such a type declares ssz-static, build a shallow descriptor from that
-	// declaration and skip traversing — and validating — its subtree.
+	// declaration and skip traversing — and validating — its subtree. A view
+	// delegates through its data type's view method set and declares its own
+	// ssz-static, on the view type, as in the reflection type cache.
 	//
 	// This only applies to EXTERNAL types: a type that is itself being generated
 	// in this run is registered in CompatFlags and must be traversed so its own
@@ -906,7 +927,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	if len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) > 0 {
 		annotation := ""
 		if p.AnnotationResolver != nil {
-			annotation = p.AnnotationResolver(types.Unalias(originalType))
+			annotation = p.AnnotationResolver(types.Unalias(originalSchemaType))
 		}
 		annTypeHints, _, _, err := ssztypes.ParseTags(annotation)
 		if err != nil {
@@ -914,12 +935,18 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		}
 		typeHintOverride = !ssztypes.SameSszTypes(typeHints, annTypeHints)
 	}
-	shallowDelegate := p.AnnotationResolver != nil && !p.NoDelegation && len(sizeHints) == 0 && len(maxSizeHints) == 0 && !beingGenerated && !typeHintOverride && p.fullyDelegatesSSZ(originalType)
+	fullyDelegated := false
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0 {
+		fullyDelegated = p.fullyDelegatesSSZView(originalType)
+	} else {
+		fullyDelegated = p.fullyDelegatesSSZ(originalType)
+	}
+	shallowDelegate := p.AnnotationResolver != nil && !p.NoDelegation && len(sizeHints) == 0 && len(maxSizeHints) == 0 && !beingGenerated && !typeHintOverride && fullyDelegated
 	// A delegated type is not traversed, so a cycle through it and a type
 	// described here would go unmarked and uncounted: the members of a cycle
 	// are described together, by one generator run.
 	if shallowDelegate {
-		annotation := p.AnnotationResolver(types.Unalias(originalType))
+		annotation := p.AnnotationResolver(types.Unalias(originalSchemaType))
 		if staticStr, ok := reflect.StructTag(annotation).Lookup("ssz-static"); ok {
 			// A delegated type is not traversed, so a cycle through it and a
 			// type described here would go unmarked and uncounted: the members
@@ -1394,7 +1421,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		hasLiteral := len(sizeHints) > 0 && sizeHints[0].Size > 0
 		staticByAnnotation := false
 		if p.AnnotationResolver != nil {
-			if staticStr, ok := reflect.StructTag(p.AnnotationResolver(types.Unalias(originalType))).Lookup("ssz-static"); ok && staticStr == "true" {
+			if staticStr, ok := reflect.StructTag(p.AnnotationResolver(types.Unalias(originalSchemaType))).Lookup("ssz-static"); ok && staticStr == "true" {
 				staticByAnnotation = true
 			}
 		}

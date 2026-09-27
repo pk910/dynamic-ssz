@@ -3178,3 +3178,59 @@ func TestStaticBuildRefusesSpecOnlyBounds(t *testing.T) {
 		})
 	}
 }
+
+// A view whose data type serves views is emitted through the data type's
+// view surface without its subtree, framed by the view type's own ssz-static
+// declaration: a static view is inlined and sized by the view sizer, while the
+// plain reference to the same dynamic data type keeps its offset.
+func TestGenerateStaticViewOfDynamicDelegate(t *testing.T) {
+	scope := loadTestsPackage(t).Types.Scope()
+	lookup := func(name string) types.Type {
+		obj := scope.Lookup(name)
+		if obj == nil {
+			t.Fatalf("%s not found", name)
+		}
+		return obj.Type()
+	}
+	child := lookup("ViewTypes1_Base")
+	if !NewParser().fullyDelegatesSSZView(types.NewPointer(child)) {
+		t.Skip("generated code not present; ViewTypes1_Base serves no views")
+	}
+
+	cg := NewCodeGenerator(nil)
+	// The declarations gen_views.go registers for the child and its views.
+	cg.SetAnnotationResolver(func(t types.Type) string {
+		if ptr, ok := types.Unalias(t).(*types.Pointer); ok {
+			t = ptr.Elem()
+		}
+		named, ok := types.Unalias(t).(*types.Named)
+		if !ok {
+			return ""
+		}
+		switch named.Obj().Name() {
+		case "ViewTypes1_Base", "ViewTypes1_View2":
+			return `ssz-static:"false"`
+		case "ViewTypes1_View1":
+			return `ssz-static:"true"`
+		}
+		return ""
+	})
+	cg.BuildFile("gen_viewtypes4.go", WithGoTypesType(lookup("ViewTypes4_Base"), WithGoTypesViewTypes(lookup("ViewTypes4_View1"))))
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("GenerateToMap failed: %v", err)
+	}
+	code := files["gen_viewtypes4.go"]
+	for _, want := range []string{
+		"Fn := new(ViewTypes1_Base).SizeSSZDynView((*ViewTypes1_View1)(nil))",
+		"// Static Field #1 'Child'",
+		"// Offset Field #1 'Child'",
+	} {
+		if !strings.Contains(code, want) {
+			t.Errorf("generated code lacks %q", want)
+		}
+	}
+	if strings.Contains(code, "new(ViewTypes1_Base).SizeSSZDyn(ds)") {
+		t.Error("the view is sized by the child's plain sizer")
+	}
+}
