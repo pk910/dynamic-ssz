@@ -4284,3 +4284,114 @@ func TestViewShallowDelegation(t *testing.T) {
 		}
 	})
 }
+
+// The basic shapes a Go type states, with and without extended types.
+func TestBasicShape(t *testing.T) {
+	type shape struct {
+		kind    reflect.Kind
+		sszType ssztypes.SszType
+		width   int64
+	}
+	none := shape{reflect.Invalid, ssztypes.SszUnspecifiedType, 0}
+	for _, tt := range []struct {
+		name     string
+		typ      types.Type
+		plain    shape
+		extended shape
+	}{
+		{"bool", types.Typ[types.Bool], shape{reflect.Bool, ssztypes.SszBoolType, 1}, shape{reflect.Bool, ssztypes.SszBoolType, 1}},
+		{"uint8", types.Typ[types.Uint8], shape{reflect.Uint8, ssztypes.SszUint8Type, 1}, shape{reflect.Uint8, ssztypes.SszUint8Type, 1}},
+		{"uint16", types.Typ[types.Uint16], shape{reflect.Uint16, ssztypes.SszUint16Type, 2}, shape{reflect.Uint16, ssztypes.SszUint16Type, 2}},
+		{"uint32", types.Typ[types.Uint32], shape{reflect.Uint32, ssztypes.SszUint32Type, 4}, shape{reflect.Uint32, ssztypes.SszUint32Type, 4}},
+		{"uint64", types.Typ[types.Uint64], shape{reflect.Uint64, ssztypes.SszUint64Type, 8}, shape{reflect.Uint64, ssztypes.SszUint64Type, 8}},
+		{"named uint64", types.NewNamed(types.NewTypeName(0, nil, "Slot", nil), types.Typ[types.Uint64], nil), shape{reflect.Uint64, ssztypes.SszUint64Type, 8}, shape{reflect.Uint64, ssztypes.SszUint64Type, 8}},
+		{"alias of uint32", types.NewAlias(types.NewTypeName(0, nil, "Epoch", nil), types.Typ[types.Uint32]), shape{reflect.Uint32, ssztypes.SszUint32Type, 4}, shape{reflect.Uint32, ssztypes.SszUint32Type, 4}},
+		{"int8", types.Typ[types.Int8], none, shape{reflect.Int8, ssztypes.SszInt8Type, 1}},
+		{"int16", types.Typ[types.Int16], none, shape{reflect.Int16, ssztypes.SszInt16Type, 2}},
+		{"int32", types.Typ[types.Int32], none, shape{reflect.Int32, ssztypes.SszInt32Type, 4}},
+		{"int64", types.Typ[types.Int64], none, shape{reflect.Int64, ssztypes.SszInt64Type, 8}},
+		{"float32", types.Typ[types.Float32], none, shape{reflect.Float32, ssztypes.SszFloat32Type, 4}},
+		{"float64", types.Typ[types.Float64], none, shape{reflect.Float64, ssztypes.SszFloat64Type, 8}},
+		{"int", types.Typ[types.Int], none, none},
+		{"uint", types.Typ[types.Uint], none, none},
+		{"uintptr", types.Typ[types.Uintptr], none, none},
+		{"complex64", types.Typ[types.Complex64], none, none},
+		{"string", types.Typ[types.String], none, none},
+		{"struct", types.NewStruct(nil, nil), none, none},
+		{"slice", types.NewSlice(types.Typ[types.Uint8]), none, none},
+		{"array", types.NewArray(types.Typ[types.Uint8], 4), none, none},
+		{"pointer", types.NewPointer(types.Typ[types.Uint64]), none, none},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			for extended, want := range map[bool]shape{false: tt.plain, true: tt.extended} {
+				kind, sszType, width := basicShape(tt.typ, extended)
+				if got := (shape{kind, sszType, width}); got != want {
+					t.Errorf("extended=%v: shape = %+v, want %+v", extended, got, want)
+				}
+			}
+		})
+	}
+}
+
+// The byte width of every basic SSZ type, with and without extended types;
+// anything else is zero.
+func TestSszBasicWidth(t *testing.T) {
+	for _, tt := range []struct {
+		sszType  ssztypes.SszType
+		plain    int64
+		extended int64
+	}{
+		{ssztypes.SszBoolType, 1, 1},
+		{ssztypes.SszUint8Type, 1, 1},
+		{ssztypes.SszUint16Type, 2, 2},
+		{ssztypes.SszUint32Type, 4, 4},
+		{ssztypes.SszUint64Type, 8, 8},
+		{ssztypes.SszUint128Type, 16, 16},
+		{ssztypes.SszUint256Type, 32, 32},
+		{ssztypes.SszInt8Type, 0, 1},
+		{ssztypes.SszInt16Type, 0, 2},
+		{ssztypes.SszInt32Type, 0, 4},
+		{ssztypes.SszInt64Type, 0, 8},
+		{ssztypes.SszFloat32Type, 0, 4},
+		{ssztypes.SszFloat64Type, 0, 8},
+		{ssztypes.SszUnspecifiedType, 0, 0},
+		{ssztypes.SszContainerType, 0, 0},
+		{ssztypes.SszListType, 0, 0},
+		{ssztypes.SszVectorType, 0, 0},
+		{ssztypes.SszBitvectorType, 0, 0},
+		{ssztypes.SszCustomType, 0, 0},
+		{ssztypes.SszBigIntType, 0, 0},
+	} {
+		if got := sszBasicWidth(tt.sszType, false); got != tt.plain {
+			t.Errorf("%v: width = %d, want %d", tt.sszType, got, tt.plain)
+		}
+		if got := sszBasicWidth(tt.sszType, true); got != tt.extended {
+			t.Errorf("%v extended: width = %d, want %d", tt.sszType, got, tt.extended)
+		}
+	}
+}
+
+// The Go kinds a shallow descriptor can carry; anything else is invalid.
+func TestGoKind(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		typ  types.Type
+		want reflect.Kind
+	}{
+		{"array", types.NewArray(types.Typ[types.Uint8], 4), reflect.Array},
+		{"slice", types.NewSlice(types.Typ[types.Uint8]), reflect.Slice},
+		{"struct", types.NewStruct(nil, nil), reflect.Struct},
+		{"string", types.Typ[types.String], reflect.String},
+		{"named string", types.NewNamed(types.NewTypeName(0, nil, "Name", nil), types.Typ[types.String], nil), reflect.String},
+		{"alias of a slice", types.NewAlias(types.NewTypeName(0, nil, "Bytes", nil), types.NewSlice(types.Typ[types.Uint8])), reflect.Slice},
+		{"uint64", types.Typ[types.Uint64], reflect.Invalid},
+		{"bool", types.Typ[types.Bool], reflect.Invalid},
+		{"pointer", types.NewPointer(types.NewStruct(nil, nil)), reflect.Invalid},
+		{"map", types.NewMap(types.Typ[types.String], types.Typ[types.Uint64]), reflect.Invalid},
+		{"interface", types.NewInterfaceType(nil, nil), reflect.Invalid},
+	} {
+		if got := goKind(tt.typ); got != tt.want {
+			t.Errorf("%s: kind = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
