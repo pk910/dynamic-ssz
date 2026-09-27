@@ -65,7 +65,7 @@ type encoderContext struct {
 //
 // Returns:
 //   - error: An error if code generation fails
-func generateEncoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions) error {
+func generateEncoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions, set *specSetGenerator) error {
 	// Streaming code always uses dynamic expressions since the encoder interface
 	// requires DynamicSpecs. Override WithoutDynamicExpressions for this generator.
 	// The no-*Dyn-buffer-call invariant is preserved separately via
@@ -95,7 +95,7 @@ func generateEncoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 	ctx.recursion = newRecursionBound(rootTypeDesc, options)
 	ctx.depthAware = ctx.recursion.threads(rootTypeDesc)
 
-	ctx.exprVars = newExprVarGenerator("ctx.exprs", typePrinter, options)
+	ctx.exprVars = newExprVarGenerator("ctx.exprs", set)
 	ctx.exprVars.isSlice = true
 	ctx.staticSizeVars = newStaticSizeVarGenerator(typePrinter, options, ctx.exprVars)
 
@@ -113,7 +113,7 @@ func generateEncoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 		return err
 	}
 
-	if ctx.exprVars.varCounter > 0 {
+	if ctx.exprVars.used {
 		ctx.usedContext = true
 		ctx.usedDynSpecs = true
 	}
@@ -233,7 +233,7 @@ func (ctx *encoderContext) generateSizeFnCode(indent int) (string, error) {
 
 	for _, desc := range fnTypeList {
 		fnName := fmt.Sprintf("sizeFn%d", ctx.sizeFnNameMap[desc])
-		sizeCtx := newSizeContext(ctx.typePrinter, ctx.options)
+		sizeCtx := newSizeContext(ctx.typePrinter, ctx.options, ctx.exprVars.set)
 		sizeCtx.exprVars = ctx.exprVars
 		sizeCtx.staticSizeVars = newStaticSizeVarGenerator(ctx.typePrinter, ctx.options, ctx.exprVars)
 		// The static-size prelude lands inside the closure, which returns an int.
@@ -296,8 +296,8 @@ func (ctx *encoderContext) generateEncodeContext(indent int) string {
 
 	appendCode(&codeBuf, indent, "type encoderCtx struct {\n")
 	appendCode(&codeBuf, indent, "\t%s sszutils.DynamicSpecs\n", padField("ds"))
-	if ctx.exprVars.varCounter > 0 {
-		appendCode(&codeBuf, indent, "\t%s [%d]uint64\n", padField("exprs"), ctx.exprVars.varCounter)
+	if ctx.exprVars.used {
+		appendCode(&codeBuf, indent, "\t%s []uint64\n", padField("exprs"))
 	}
 
 	for _, fnName := range fnNameList {

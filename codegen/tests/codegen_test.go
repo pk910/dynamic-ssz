@@ -6598,3 +6598,62 @@ func TestCodegenZeroWidthOptional(t *testing.T) {
 	}
 	testCodegenPayloadByReflection(t, ZeroWidthOptional_Payload, nil, dynssz.WithExtendedTypes())
 }
+
+// plainSpecs resolves like the wrapped instance but caches no spec set, so
+// generated code resolves the set on every call through it.
+type plainSpecs struct {
+	inner sszutils.DynamicSpecs
+}
+
+func (p plainSpecs) ResolveSpecValue(name string) (bool, uint64, error) {
+	return p.inner.ResolveSpecValue(name)
+}
+
+// A generated type resolves its spec set once per DynSsz instance and keeps
+// it there; through a DynamicSpecs without a cache it encodes the same bytes.
+func TestCodegenSpecSetCache(t *testing.T) {
+	marshaler, generated := any(&SimpleTypesWithSpecs_Payload).(interface {
+		MarshalSSZDyn(sszutils.DynamicSpecs, []byte) ([]byte, error)
+	})
+	if !generated {
+		t.Skip("no generated code present")
+	}
+
+	ds := dynssz.NewDynSsz(SimpleTypesWithSpecs_Specs)
+	key := reflect.TypeFor[SimpleTypesWithSpecs]()
+	if ds.LoadSpecSet(key) != nil {
+		t.Fatal("a fresh instance holds a spec set")
+	}
+
+	want, err := ds.MarshalSSZ(&SimpleTypesWithSpecs_Payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	set := ds.LoadSpecSet(key)
+	if set == nil {
+		t.Fatal("the marshal did not cache the spec set")
+	}
+	if _, err = ds.MarshalSSZ(&SimpleTypesWithSpecs_Payload); err != nil {
+		t.Fatalf("second marshal: %v", err)
+	}
+	if again := ds.LoadSpecSet(key); &again[0] != &set[0] {
+		t.Fatal("the second marshal replaced the cached set")
+	}
+
+	got, err := marshaler.MarshalSSZDyn(plainSpecs{inner: ds}, nil)
+	if err != nil {
+		t.Fatalf("marshal through plain specs: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("plain specs encoded %x, want %x", got, want)
+	}
+
+	// Another instance with other spec values resolves its own set.
+	other := dynssz.NewDynSsz(nil)
+	if _, err := other.MarshalSSZ(&SimpleTypesWithSpecs_Payload); err == nil {
+		otherSet := other.LoadSpecSet(key)
+		if len(otherSet) == 0 || &otherSet[0] == &set[0] {
+			t.Fatal("instances share a spec set")
+		}
+	}
+}

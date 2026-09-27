@@ -55,7 +55,7 @@ type sizeContext struct {
 	depthAware bool
 }
 
-func newSizeContext(typePrinter *TypePrinter, options *CodeGeneratorOptions) *sizeContext {
+func newSizeContext(typePrinter *TypePrinter, options *CodeGeneratorOptions, set *specSetGenerator) *sizeContext {
 	codeBuf := strings.Builder{}
 	var ctx *sizeContext
 	ctx = &sizeContext{
@@ -65,7 +65,7 @@ func newSizeContext(typePrinter *TypePrinter, options *CodeGeneratorOptions) *si
 		},
 		typePrinter:  typePrinter,
 		options:      options,
-		exprVars:     newExprVarGenerator("expr", typePrinter, options),
+		exprVars:     newExprVarGenerator("expr", set),
 		useTypeFnMap: make(map[*ssztypes.TypeDescriptor]*sizeFnPtr),
 	}
 	ctx.exprVars.retVars = "-1"
@@ -108,8 +108,8 @@ func (s *sizeFnPtr) getFnCall(varName string) string {
 //
 // Returns:
 //   - error: An error if code generation fails
-func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions) error {
-	ctx := newSizeContext(typePrinter, options)
+func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions, set *specSetGenerator) error {
+	ctx := newSizeContext(typePrinter, options, set)
 	ctx.recursion = newRecursionBound(rootTypeDesc, options)
 	ctx.depthAware = ctx.recursion.threads(rootTypeDesc)
 
@@ -121,7 +121,7 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 		return err
 	}
 
-	if ctx.exprVars.varCounter > 0 || ctx.staticSizeVars.varCounter > 0 {
+	if ctx.exprVars.used || ctx.staticSizeVars.varCounter > 0 {
 		ctx.usedDynSpecs = true
 	}
 

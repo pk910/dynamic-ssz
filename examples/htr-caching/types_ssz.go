@@ -12,12 +12,10 @@ import (
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
-var _ = sszutils.ErrListTooBig
-
-var _ = sszutils.Annotate[Validator](`ssz-static:"true"`)
-var _ = sszutils.Annotate[CachedValidator](`ssz-static:"true"`)
-var _ = sszutils.Annotate[CachedRegistry](`ssz-static:"false"`)
-var _ = sszutils.Annotate[PlainRegistry](`ssz-static:"false"`)
+var _ = sszutils.Annotate[Validator](`ssz-static:"true" ssz-minsize:"121"`)
+var _ = sszutils.Annotate[CachedValidator](`ssz-static:"true" ssz-minsize:"121"`)
+var _ = sszutils.Annotate[CachedRegistry](`ssz-static:"false" ssz-minsize:"4"`)
+var _ = sszutils.Annotate[PlainRegistry](`ssz-static:"false" ssz-minsize:"4"`)
 
 // MarshalSSZTo marshals the *Validator to SSZ-encoded bytes, appending to the provided buffer.
 func (t *Validator) MarshalSSZTo(buf []byte) (dst []byte, err error) {
@@ -110,12 +108,12 @@ func (t *Validator) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) (err er
 }
 
 // SizeSSZ returns the SSZ encoded size of the *Validator.
-func (t *Validator) SizeSSZ() (size int) {
+func (t *Validator) SizeSSZ() int {
 	return 121
 }
 
 // SizeSSZDyn returns the SSZ encoded size of the *Validator using dynamic specifications.
-func (t *Validator) SizeSSZDyn(_ sszutils.DynamicSpecs) (size int) {
+func (t *Validator) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
 	return t.SizeSSZ()
 }
 
@@ -216,21 +214,40 @@ func (t *CachedValidator) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) (
 }
 
 // SizeSSZDyn returns the SSZ encoded size of the *CachedValidator using dynamic specifications.
-func (t *CachedValidator) SizeSSZDyn(ds sszutils.DynamicSpecs) (size int) {
+func (t *CachedValidator) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
+	var size int64
 	if t == nil {
 		t = new(CachedValidator)
 	}
-	size += t.Data.SizeSSZDyn(ds)
-	return size
+	s1 := int64(t.Data.SizeSSZDyn(ds))
+	if s1 < 0 {
+		return -1
+	}
+	size += s1
+	if uint64(size) > sszutils.MaxSszSize {
+		return -1
+	}
+	return int(size)
+}
+
+// buildDynSSZSpecSet resolves the spec expressions the SSZ methods of the *CachedRegistry use.
+func (t *CachedRegistry) buildDynSSZSpecSet(ds sszutils.DynamicSpecs) ([]uint64, error) {
+	exprs := make([]uint64, 1)
+	var err error
+	if exprs[0], err = sszutils.ResolveSpecValueWithDefault(ds, "VALIDATOR_REGISTRY_LIMIT", 1099511627776); err != nil {
+		return nil, err
+	}
+	return exprs, nil
 }
 
 // MarshalSSZDyn marshals the *CachedRegistry to SSZ-encoded bytes using dynamic specifications.
 func (t *CachedRegistry) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {
 	dst = buf
-	expr0, err := sszutils.ResolveSpecValueWithDefault(ds, "VALIDATOR_REGISTRY_LIMIT", 1099511627776)
+	exprs, err := sszutils.GetCachedSpecSet[CachedRegistry](ds, t.buildDynSSZSpecSet)
 	if err != nil {
 		return dst, err
 	}
+	expr0 := exprs[0]
 	if t == nil {
 		t = new(CachedRegistry)
 	}
@@ -263,10 +280,11 @@ func (t *CachedRegistry) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (ds
 
 // UnmarshalSSZDyn unmarshals the *CachedRegistry from SSZ-encoded bytes using dynamic specifications.
 func (t *CachedRegistry) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (err error) {
-	expr0, err := sszutils.ResolveSpecValueWithDefault(ds, "VALIDATOR_REGISTRY_LIMIT", 1099511627776)
+	exprs, err := sszutils.GetCachedSpecSet[CachedRegistry](ds, t.buildDynSSZSpecSet)
 	if err != nil {
 		return err
 	}
+	expr0 := exprs[0]
 	buflen := uint64(len(buf))
 	if buflen < 4 {
 		return sszutils.ErrFixedFieldsEOFFn(buflen, 4)
@@ -302,20 +320,24 @@ func (t *CachedRegistry) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (
 }
 
 // SizeSSZ returns the SSZ encoded size of the *CachedRegistry.
-func (t *CachedRegistry) SizeSSZ() (size int) {
+func (t *CachedRegistry) SizeSSZ() int {
+	var size int64
 	if t == nil {
 		t = new(CachedRegistry)
 	}
 	// Field #0 'Validators' offset (4 bytes)
 	size += 4
 	{ // Dynamic field #0 'Validators'
-		size += len(t.Validators) * 121
+		size += int64(len(t.Validators)) * 121
 	}
-	return size
+	if uint64(size) > sszutils.MaxSszSize {
+		return -1
+	}
+	return int(size)
 }
 
 // SizeSSZDyn returns the SSZ encoded size of the *CachedRegistry using dynamic specifications.
-func (t *CachedRegistry) SizeSSZDyn(_ sszutils.DynamicSpecs) (size int) {
+func (t *CachedRegistry) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
 	return t.SizeSSZ()
 }
 
@@ -333,10 +355,11 @@ func (t *CachedRegistry) HashTreeRootDyn(ds sszutils.DynamicSpecs) (root [32]byt
 
 // HashTreeRootWithDyn computes the SSZ hash tree root of the *CachedRegistry using dynamic specifications and the given hash walker.
 func (t *CachedRegistry) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
-	expr0, err := sszutils.ResolveSpecValueWithDefault(ds, "VALIDATOR_REGISTRY_LIMIT", 1099511627776)
+	exprs, err := sszutils.GetCachedSpecSet[CachedRegistry](ds, t.buildDynSSZSpecSet)
 	if err != nil {
 		return err
 	}
+	expr0 := exprs[0]
 	if t == nil {
 		t = new(CachedRegistry)
 	}
@@ -366,13 +389,24 @@ func (t *CachedRegistry) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszuti
 	return nil
 }
 
+// buildDynSSZSpecSet resolves the spec expressions the SSZ methods of the *PlainRegistry use.
+func (t *PlainRegistry) buildDynSSZSpecSet(ds sszutils.DynamicSpecs) ([]uint64, error) {
+	exprs := make([]uint64, 1)
+	var err error
+	if exprs[0], err = sszutils.ResolveSpecValueWithDefault(ds, "VALIDATOR_REGISTRY_LIMIT", 1099511627776); err != nil {
+		return nil, err
+	}
+	return exprs, nil
+}
+
 // MarshalSSZDyn marshals the *PlainRegistry to SSZ-encoded bytes using dynamic specifications.
 func (t *PlainRegistry) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {
 	dst = buf
-	expr0, err := sszutils.ResolveSpecValueWithDefault(ds, "VALIDATOR_REGISTRY_LIMIT", 1099511627776)
+	exprs, err := sszutils.GetCachedSpecSet[PlainRegistry](ds, t.buildDynSSZSpecSet)
 	if err != nil {
 		return dst, err
 	}
+	expr0 := exprs[0]
 	if t == nil {
 		t = new(PlainRegistry)
 	}
@@ -405,10 +439,11 @@ func (t *PlainRegistry) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (dst
 
 // UnmarshalSSZDyn unmarshals the *PlainRegistry from SSZ-encoded bytes using dynamic specifications.
 func (t *PlainRegistry) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (err error) {
-	expr0, err := sszutils.ResolveSpecValueWithDefault(ds, "VALIDATOR_REGISTRY_LIMIT", 1099511627776)
+	exprs, err := sszutils.GetCachedSpecSet[PlainRegistry](ds, t.buildDynSSZSpecSet)
 	if err != nil {
 		return err
 	}
+	expr0 := exprs[0]
 	buflen := uint64(len(buf))
 	if buflen < 4 {
 		return sszutils.ErrFixedFieldsEOFFn(buflen, 4)
@@ -444,20 +479,24 @@ func (t *PlainRegistry) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (e
 }
 
 // SizeSSZ returns the SSZ encoded size of the *PlainRegistry.
-func (t *PlainRegistry) SizeSSZ() (size int) {
+func (t *PlainRegistry) SizeSSZ() int {
+	var size int64
 	if t == nil {
 		t = new(PlainRegistry)
 	}
 	// Field #0 'Validators' offset (4 bytes)
 	size += 4
 	{ // Dynamic field #0 'Validators'
-		size += len(t.Validators) * 121
+		size += int64(len(t.Validators)) * 121
 	}
-	return size
+	if uint64(size) > sszutils.MaxSszSize {
+		return -1
+	}
+	return int(size)
 }
 
 // SizeSSZDyn returns the SSZ encoded size of the *PlainRegistry using dynamic specifications.
-func (t *PlainRegistry) SizeSSZDyn(_ sszutils.DynamicSpecs) (size int) {
+func (t *PlainRegistry) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
 	return t.SizeSSZ()
 }
 
@@ -475,10 +514,11 @@ func (t *PlainRegistry) HashTreeRootDyn(ds sszutils.DynamicSpecs) (root [32]byte
 
 // HashTreeRootWithDyn computes the SSZ hash tree root of the *PlainRegistry using dynamic specifications and the given hash walker.
 func (t *PlainRegistry) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
-	expr0, err := sszutils.ResolveSpecValueWithDefault(ds, "VALIDATOR_REGISTRY_LIMIT", 1099511627776)
+	exprs, err := sszutils.GetCachedSpecSet[PlainRegistry](ds, t.buildDynSSZSpecSet)
 	if err != nil {
 		return err
 	}
+	expr0 := exprs[0]
 	if t == nil {
 		t = new(PlainRegistry)
 	}

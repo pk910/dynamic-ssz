@@ -12,6 +12,7 @@ import (
 	"math"
 	"math/bits"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -44,96 +45,138 @@ const (
 	errCodeTrailingData           = "sszutils.ErrTrailingDataFn(diff)"
 )
 
-type exprVarGenerator struct {
-	prefix      string
-	typePrinter *TypePrinter
-	options     *CodeGeneratorOptions
-	isSlice     bool
-	retVars     string
-	codeBuf     *strings.Builder
-	varMap      map[[32]byte]string
-	varCounter  int
+// specSetGenerator collects the spec expressions that the methods of one data
+// type and its views resolve, numbers them, and emits the buildDynSSZSpecSet
+// method that resolves them all at once. Each method then fetches the resolved
+// set through sszutils.GetCachedSpecSet, which the DynSsz instance caches per
+// type, instead of resolving every expression on entry.
+type specSetGenerator struct {
+	typeName      string
+	innerTypeName string
+	entries       []specSetEntry
+	index         map[[32]byte]int
 }
 
-func newExprVarGenerator(prefix string, typePrinter *TypePrinter, options *CodeGeneratorOptions) *exprVarGenerator {
-	return &exprVarGenerator{
-		prefix:      prefix,
-		typePrinter: typePrinter,
-		options:     options,
-		retVars:     "err",
-		codeBuf:     &strings.Builder{},
-		varMap:      make(map[[32]byte]string),
-		varCounter:  0,
+type specSetEntry struct {
+	expr         string
+	defaultValue uint64
+	// floor marks a declared floor (see delegateFloor): a bound and never a
+	// refusal, so a value that does not resolve, or lies beyond the SSZ size
+	// limit, is held as zero, which the region gate skips.
+	floor bool
+}
+
+func newSpecSetGenerator(typeName, innerTypeName string) *specSetGenerator {
+	return &specSetGenerator{
+		typeName:      typeName,
+		innerTypeName: innerTypeName,
+		index:         make(map[[32]byte]int),
 	}
 }
 
-// getExprVar generates a variable name for cached limit expression calculations.
+// indexOf returns the set index of expr with defaultValue, adding the
+// expression on its first use. A floor and a value of the same expression
+// are separate entries.
+func (s *specSetGenerator) indexOf(expr string, defaultValue uint64, floor bool) int {
+	key := sha256.Sum256(fmt.Appendf(nil, "%v\n%s\n%v", floor, expr, defaultValue))
+	if idx, ok := s.index[key]; ok {
+		return idx
+	}
+	idx := len(s.entries)
+	s.entries = append(s.entries, specSetEntry{expr: expr, defaultValue: defaultValue, floor: floor})
+	s.index[key] = idx
+	return idx
+}
+
+// emit writes the buildDynSSZSpecSet method of the type; nothing when its
+// methods resolve no expression.
+func (s *specSetGenerator) emit(codeBuilder *strings.Builder) {
+	if len(s.entries) == 0 {
+		return
+	}
+	appendCode(codeBuilder, 0, "// buildDynSSZSpecSet resolves the spec expressions the SSZ methods of the %s use.\n", s.typeName)
+	appendCode(codeBuilder, 0, "func (t %s) buildDynSSZSpecSet(ds sszutils.DynamicSpecs) ([]uint64, error) {\n", s.typeName)
+	appendCode(codeBuilder, 1, "exprs := make([]uint64, %d)\n", len(s.entries))
+	// A floor resolves without an error to return; only a value needs err.
+	if slices.ContainsFunc(s.entries, func(entry specSetEntry) bool { return !entry.floor }) {
+		appendCode(codeBuilder, 1, "var err error\n")
+	}
+	for idx, entry := range s.entries {
+		if entry.floor {
+			appendCode(codeBuilder, 1, "if floor, floorErr := sszutils.ResolveSpecValueWithDefault(ds, \"%s\", %d); floorErr == nil && floor <= sszutils.MaxSszSize {\n", entry.expr, entry.defaultValue)
+			appendCode(codeBuilder, 2, "exprs[%d] = floor\n", idx)
+			appendCode(codeBuilder, 1, "}\n")
+			continue
+		}
+		appendCode(codeBuilder, 1, "if exprs[%d], err = sszutils.ResolveSpecValueWithDefault(ds, \"%s\", %d); err != nil {\n", idx, entry.expr, entry.defaultValue)
+		appendCode(codeBuilder, 2, "return nil, err\n")
+		appendCode(codeBuilder, 1, "}\n")
+	}
+	appendCode(codeBuilder, 1, "return exprs, nil\n")
+	appendCode(codeBuilder, 0, "}\n\n")
+}
+
+// exprVarGenerator names the resolved spec expressions inside one method body
+// and emits the method's prelude: the fetch of the type's resolved set, the
+// locals bound from it, and the bounds the body relies on.
+type exprVarGenerator struct {
+	prefix  string
+	set     *specSetGenerator
+	retVars string
+	// isSlice makes the body refer to the set's elements in place, through
+	// the encoder context's field named by prefix, instead of locals.
+	isSlice bool
+	used    bool
+	codeBuf *strings.Builder
+	varMap  map[[32]byte]string
+}
+
+func newExprVarGenerator(prefix string, set *specSetGenerator) *exprVarGenerator {
+	return &exprVarGenerator{
+		prefix:  prefix,
+		set:     set,
+		retVars: "err",
+		codeBuf: &strings.Builder{},
+		varMap:  make(map[[32]byte]string),
+	}
+}
+
+// getExprVar returns the name of the resolved expression in the method body:
+// a local bound from the fetched set, or the set element itself.
 func (g *exprVarGenerator) getExprVar(expr string, defaultValue uint64) string {
 	if expr == "" {
 		return fmt.Sprintf("%v", defaultValue)
 	}
 
-	exprKey := sha256.Sum256(fmt.Appendf(nil, "%s\n%v", expr, defaultValue))
-	if exprVar, ok := g.varMap[exprKey]; ok {
-		return exprVar
-	}
-
-	varNamePattern := "%s%d"
-	varDefColon := ":"
-	if g.isSlice {
-		varNamePattern = "%s[%d]"
-		varDefColon = ""
-	}
-	exprVar := fmt.Sprintf(varNamePattern, g.prefix, g.varCounter)
-	g.varCounter++
-
-	appendCode(g.codeBuf, 0, "%s, err %s= sszutils.ResolveSpecValueWithDefault(ds, \"%s\", %d)\n", exprVar, varDefColon, expr, defaultValue)
-	appendCode(g.codeBuf, 0, "if err != nil {\n")
-	appendCode(g.codeBuf, 1, "return %s\n", g.retVars)
-	appendCode(g.codeBuf, 0, "}\n")
-
-	g.varMap[exprKey] = exprVar
-
-	return exprVar
+	return g.entryVar(g.set.indexOf(expr, defaultValue, false))
 }
 
-// getFloorExprVar resolves a declared floor (see delegateFloor) into a
-// variable the region gate divides by. A floor is a bound and never a refusal:
-// one that does not resolve, or lies beyond the SSZ size limit, leaves the
-// variable at zero, which the gate skips.
+// getFloorExprVar returns the name of a declared floor (see delegateFloor) in
+// the method body, resolved into the set as a bound and never a refusal.
 func (g *exprVarGenerator) getFloorExprVar(expr string, fallback uint64) string {
-	exprKey := sha256.Sum256(fmt.Appendf(nil, "floor\n%s\n%v", expr, fallback))
-	if exprVar, ok := g.varMap[exprKey]; ok {
+	return g.entryVar(g.set.indexOf(expr, fallback, true))
+}
+
+// entryVar names the set entry idx in the method body and, for a local, binds
+// it in the prelude on first use.
+func (g *exprVarGenerator) entryVar(idx int) string {
+	g.used = true
+	if g.isSlice {
+		return fmt.Sprintf("%s[%d]", g.prefix, idx)
+	}
+
+	bindKey := sha256.Sum256(fmt.Appendf(nil, "bind\n%d", idx))
+	if exprVar, ok := g.varMap[bindKey]; ok {
 		return exprVar
 	}
 
-	varNamePattern := "%s%d"
-	if g.isSlice {
-		varNamePattern = "%s[%d]"
-	}
-	exprVar := fmt.Sprintf(varNamePattern, g.prefix, g.varCounter)
-	g.varCounter++
-
-	if g.isSlice {
-		appendCode(g.codeBuf, 0, "%s = 0\n", exprVar)
-	} else {
-		appendCode(g.codeBuf, 0, "%s := uint64(0)\n", exprVar)
-	}
-	appendCode(g.codeBuf, 0, "if floor, floorErr := sszutils.ResolveSpecValueWithDefault(ds, \"%s\", %d); floorErr == nil && floor <= sszutils.MaxSszSize {\n", expr, fallback)
-	appendCode(g.codeBuf, 1, "%s = floor\n", exprVar)
-	appendCode(g.codeBuf, 0, "}\n")
-
-	g.varMap[exprKey] = exprVar
+	exprVar := fmt.Sprintf("%s%d", g.prefix, idx)
+	appendCode(g.codeBuf, 0, "%s := exprs[%d]\n", exprVar, idx)
+	g.varMap[bindKey] = exprVar
 
 	return exprVar
 }
 
-// getSizeExprVar resolves a size-domain spec expression (a vector or byte
-// size, as opposed to a list limit) via getExprVar and additionally rejects a
-// resolved value above the platform integer range: sizes pass through int at
-// their use sites (allocations, loop bounds, the int-based codec surface), so
-// the guard makes those conversions exact. List limits keep their full uint64
-// range by resolving through getExprVar directly.
 // getVectorLenExprVar resolves the length expression of a vector. The length
 // bounds what the vector occupies, so where the element width is a literal the
 // limit is divided by it here and the length carries one bound: the division
@@ -195,8 +238,26 @@ func (g *exprVarGenerator) withRetVars(retVars string) func() {
 	}
 }
 
+// getCode returns the method's prelude: the fetch of the type's resolved set,
+// followed by the locals bound from it and their bounds. Nothing when the
+// body refers to no expression. A local set is declared; the encoder
+// context's field is assigned.
 func (g *exprVarGenerator) getCode() string {
-	return g.codeBuf.String()
+	if !g.used {
+		return ""
+	}
+
+	setVar, define := "exprs", ":"
+	if g.isSlice {
+		setVar, define = g.prefix, ""
+	}
+	codeBuf := strings.Builder{}
+	appendCode(&codeBuf, 0, "%s, err %s= sszutils.GetCachedSpecSet[%s](ds, t.buildDynSSZSpecSet)\n", setVar, define, g.set.innerTypeName)
+	appendCode(&codeBuf, 0, "if err != nil {\n")
+	appendCode(&codeBuf, 1, "return %s\n", g.retVars)
+	appendCode(&codeBuf, 0, "}\n")
+	codeBuf.WriteString(g.codeBuf.String())
+	return codeBuf.String()
 }
 
 type staticSizeVarGenerator struct {

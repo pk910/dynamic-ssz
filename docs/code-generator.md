@@ -732,19 +732,41 @@ func (c *CustomType) MarshalSSZ() ([]byte, error) {
 
 ### Dynamic Expression Support
 
-By default, dynamic methods support runtime specification values:
+By default, dynamic methods support runtime specification values. The
+expressions a type's methods use are resolved together by one generated
+`buildDynSSZSpecSet` method; each dynamic method fetches the resolved set on
+entry through `sszutils.GetCachedSpecSet`, and a `DynSsz` instance keeps the
+set per type, so the expressions are resolved once per instance rather than on
+every call:
 
 ```go
 type State struct {
     Validators []Validator `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
 }
 
+// Generated once per type
+func (t *State) buildDynSSZSpecSet(ds sszutils.DynamicSpecs) ([]uint64, error) {
+    exprs := make([]uint64, 1)
+    var err error
+    if exprs[0], err = sszutils.ResolveSpecValueWithDefault(ds, "VALIDATOR_REGISTRY_LIMIT", 1099511627776); err != nil {
+        return nil, err
+    }
+    return exprs, nil
+}
+
 // Generated dynamic method
-func (s *State) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
-    maxValidators, _ := sszutils.ResolveSpecValueWithDefault(ds, "VALIDATOR_REGISTRY_LIMIT", 1099511627776)
+func (t *State) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+    exprs, err := sszutils.GetCachedSpecSet[State](ds, t.buildDynSSZSpecSet)
+    if err != nil {
+        return nil, err
+    }
+    expr0 := exprs[0]
     // ... use dynamic value for different presets
 }
 ```
+
+A `DynamicSpecs` implementation other than `DynSsz` caches nothing: the set is
+built on every call through it.
 
 ### Static Expression Optimization
 

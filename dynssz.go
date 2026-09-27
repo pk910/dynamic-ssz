@@ -56,6 +56,7 @@ type DynSsz struct {
 	specValues     map[string]any              // Dynamic specification values
 	specValueCache map[string]*cachedSpecValue // Cache for parsed specification expressions
 	specCacheMutex sync.RWMutex
+	specSets       sync.Map // specSets holds the resolved spec set of generated types
 	options        *DynSszOptions
 }
 

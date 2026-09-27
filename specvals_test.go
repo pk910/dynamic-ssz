@@ -8,7 +8,11 @@ import (
 	"encoding/json"
 	"math"
 	"math/big"
+	"reflect"
+	"sync"
 	"testing"
+
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 // TestEvalIntSpecExpression exercises the rational spec-expression evaluator
@@ -229,5 +233,71 @@ func TestSpecDirectKeyWhitespace(t *testing.T) {
 		if err != nil || !resolved || got != 99 {
 			t.Errorf("%q: resolved=%v got=%d err=%v, want the direct 99", name, resolved, got, err)
 		}
+	}
+}
+
+type specSetTypeA struct{}
+type specSetTypeB struct{}
+
+func TestSpecSetCache(t *testing.T) {
+	ds := NewDynSsz(map[string]any{"MAX": uint64(9)})
+	keyA := reflect.TypeFor[specSetTypeA]()
+	keyB := reflect.TypeFor[specSetTypeB]()
+
+	if got := ds.LoadSpecSet(keyA); got != nil {
+		t.Fatalf("empty cache returned %v", got)
+	}
+
+	setA := []uint64{1}
+	if got := ds.StoreSpecSet(keyA, setA); &got[0] != &setA[0] {
+		t.Fatal("first store did not return the stored set")
+	}
+	other := []uint64{2}
+	if got := ds.StoreSpecSet(keyA, other); &got[0] != &setA[0] {
+		t.Fatal("second store replaced the cached set")
+	}
+	if got := ds.LoadSpecSet(keyA); &got[0] != &setA[0] {
+		t.Fatal("load did not return the cached set")
+	}
+
+	// Concurrent stores of different keys keep every set.
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ds.StoreSpecSet(keyB, []uint64{3})
+			ds.LoadSpecSet(keyA)
+		}()
+	}
+	wg.Wait()
+	if got := ds.LoadSpecSet(keyB); len(got) != 1 || got[0] != 3 {
+		t.Fatalf("load B returned %v", got)
+	}
+	if got := ds.LoadSpecSet(keyA); &got[0] != &setA[0] {
+		t.Fatal("store of another key dropped the cached set")
+	}
+
+	// Through the generic entry point, one build per type and instance.
+	builds := 0
+	build := func(specs sszutils.DynamicSpecs) ([]uint64, error) {
+		builds++
+		v, err := sszutils.ResolveSpecValueWithDefault(specs, "MAX", 4)
+		if err != nil {
+			return nil, err
+		}
+		return []uint64{v}, nil
+	}
+	for i := 0; i < 3; i++ {
+		set, err := sszutils.GetCachedSpecSet[DynSsz](ds, build)
+		if err != nil || len(set) != 1 || set[0] != 9 {
+			t.Fatalf("call %d: set %v, err %v", i, set, err)
+		}
+	}
+	if builds != 1 {
+		t.Fatalf("built %d times, want 1", builds)
+	}
+	if _, err := sszutils.GetCachedSpecSet[DynSsz](NewDynSsz(nil), build); err != nil || builds != 2 {
+		t.Fatalf("another instance: err %v, builds %d, want 2", err, builds)
 	}
 }

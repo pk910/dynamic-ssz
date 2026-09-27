@@ -562,3 +562,22 @@ func stripSpecSpaces(name string) string {
 		return r
 	}, name)
 }
+
+// LoadSpecSet returns the spec set cached for the generated type key, or nil
+// when no method of that type has resolved one under this instance yet.
+func (d *DynSsz) LoadSpecSet(key reflect.Type) []uint64 {
+	if set, ok := d.specSets.Load(key); ok {
+		cached, _ := set.([]uint64)
+		return cached
+	}
+	return nil
+}
+
+// StoreSpecSet caches set for the generated type key. The spec values of an
+// instance never change, so two callers that resolved the set at the same time
+// hold equal sets; the first one stored is the one every caller shares.
+func (d *DynSsz) StoreSpecSet(key reflect.Type, set []uint64) []uint64 {
+	cached, _ := d.specSets.LoadOrStore(key, set)
+	stored, _ := cached.([]uint64)
+	return stored
+}
