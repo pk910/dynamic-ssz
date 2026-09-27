@@ -289,7 +289,7 @@ func TestSpecSetCache(t *testing.T) {
 		return []uint64{v}, nil
 	}
 	for i := 0; i < 3; i++ {
-		set, err := sszutils.GetCachedSpecSet[DynSsz, DynSsz](ds, build)
+		set, err := sszutils.GetCachedSpecSet[DynSsz](ds, build)
 		if err != nil || len(set) != 1 || set[0] != 9 {
 			t.Fatalf("call %d: set %v, err %v", i, set, err)
 		}
@@ -297,7 +297,7 @@ func TestSpecSetCache(t *testing.T) {
 	if builds != 1 {
 		t.Fatalf("built %d times, want 1", builds)
 	}
-	if _, err := sszutils.GetCachedSpecSet[DynSsz, DynSsz](NewDynSsz(nil), build); err != nil || builds != 2 {
+	if _, err := sszutils.GetCachedSpecSet[DynSsz](NewDynSsz(nil), build); err != nil || builds != 2 {
 		t.Fatalf("another instance: err %v, builds %d, want 2", err, builds)
 	}
 }
