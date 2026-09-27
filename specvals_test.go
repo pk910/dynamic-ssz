@@ -72,6 +72,7 @@ func TestEvalIntSpecExpression(t *testing.T) {
 		{"fallback_rounds_each_operand", "(A/B):1+(A/B):1", true, true, 8, false},
 		{"fallback_undefined_zero", "X:0+4", true, true, 4, false},
 		{"fallback_missing", "X:", false, false, 0, false},
+		{"fallback_overflow", "X:99999999999999999999999", true, false, 0, true},
 		{"fallback_negative_operand", "(B-A):1", true, false, 0, true},
 		// A chained division agrees with per-division ceil (10/3/2 -> ceil 2).
 		{"chained_div", "A / B / 2", true, true, 2, false},
