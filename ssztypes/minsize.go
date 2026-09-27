@@ -5,6 +5,7 @@
 package ssztypes
 
 import (
+	"math"
 	"reflect"
 	"strconv"
 
@@ -46,7 +47,9 @@ func EvaluateMinSize(specs sszutils.DynamicSpecs, literal uint64, expr string) i
 		}
 		floor = resolved
 	}
-	if floor > uint64(sszutils.MaxSszSize) {
+	// The floor enters the int domain of the decoders, so it is bounded there
+	// as well as to the SSZ size range.
+	if floor > uint64(sszutils.MaxSszSize) || floor > math.MaxInt {
 		return 0
 	}
 	return int64(floor)
