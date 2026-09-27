@@ -3258,6 +3258,9 @@ func TestDelegateAnnotationFor(t *testing.T) {
 		// A static child described without its subtree contributes its
 		// declared size; a vector of dynamic children only its offset.
 		"sszutils.Annotate[SpecPairVec](`ssz-static:\"false\" ssz-minsize:\"44\" dynssz-minsize:\"(VECSPEC_LEN):4*8+(VECSPEC_LEN):4+8\"`)",
+		// A vector with no static fallback declares a :0 part, nothing until
+		// its spec value is defined.
+		"sszutils.Annotate[SpecOnlyElem](`ssz-static:\"false\" ssz-minsize:\"4\" dynssz-minsize:\"(VLEN):0+4\"`)",
 	}
 	check := func(t *testing.T, files map[string]string, want []string) {
 		t.Helper()
@@ -3275,6 +3278,7 @@ func TestDelegateAnnotationFor(t *testing.T) {
 			WithGoTypesType(lookup("SpecSizedElem")),
 			WithGoTypesType(lookup("SpecPairElem")),
 			WithGoTypesType(lookup("SpecPairVec")),
+			WithGoTypesType(lookup("SpecOnlyElem")),
 		)
 		files, err := cg.GenerateToMap()
 		if err != nil {
@@ -3293,6 +3297,7 @@ func TestDelegateAnnotationFor(t *testing.T) {
 			WithReflectType(reflect.TypeFor[reflectDeclPairElem]()),
 			WithReflectType(reflect.TypeFor[reflectDeclNested]()),
 			WithReflectType(reflect.TypeFor[reflectDeclPairVec]()),
+			WithReflectType(reflect.TypeFor[reflectDeclOnlyElem]()),
 		)
 		files, err := cg.GenerateToMap()
 		if err != nil {
@@ -3303,6 +3308,7 @@ func TestDelegateAnnotationFor(t *testing.T) {
 			// literal count distributes over the parts.
 			"sszutils.Annotate[reflectDeclNested](`ssz-static:\"false\" ssz-minsize:\"516\" dynssz-minsize:\"(SYNC_COMMITTEE_SIZE/8):64+2*(SYNC_COMMITTEE_SIZE/8):64+324\"`)",
 			"sszutils.Annotate[reflectDeclPairVec](`ssz-static:\"false\" ssz-minsize:\"44\" dynssz-minsize:\"(VECSPEC_LEN):4*8+(VECSPEC_LEN):4+8\"`)",
+			"sszutils.Annotate[reflectDeclOnlyElem](`ssz-static:\"false\" ssz-minsize:\"4\" dynssz-minsize:\"(VLEN):0+4\"`)",
 			"sszutils.Annotate[reflectDeclBase](`ssz-static:\"false\" ssz-minsize:\"20\"`)",
 			"sszutils.Annotate[*reflectDeclStaticView](`ssz-static:\"true\" ssz-minsize:\"96\"`)",
 			"sszutils.Annotate[*reflectDeclDynamicView](`ssz-static:\"false\" ssz-minsize:\"16\"`)",
@@ -3351,6 +3357,7 @@ func TestGenerateDelegatedListFloor(t *testing.T) {
 		"SpecSizedElem":    reflect.TypeFor[tests.SpecSizedElem](),
 		"SpecPairElem":     reflect.TypeFor[tests.SpecPairElem](),
 		"SpecPairVec":      reflect.TypeFor[tests.SpecPairVec](),
+		"SpecOnlyElem":     reflect.TypeFor[tests.SpecOnlyElem](),
 	}
 	resolver := func(t types.Type) string {
 		if ptr, ok := types.Unalias(t).(*types.Pointer); ok {
@@ -3370,7 +3377,12 @@ func TestGenerateDelegatedListFloor(t *testing.T) {
 		`sszutils.ResolveSpecValueWithDefault(ds, "(VECSPEC_LEN):4*8+4", 36)`,
 		`sszutils.ResolveSpecValueWithDefault(ds, "(SPEC_A):32+(SPEC_B):4*8+(SPEC_BITS/8):3+4", 71)`,
 		`sszutils.ResolveSpecValueWithDefault(ds, "(VECSPEC_LEN):4*8+(VECSPEC_LEN):4+8", 44)`,
+		// A floor is a bound, never a refusal: one that does not resolve
+		// leaves its variable at zero, which the gate skips.
+		`if floor, floorErr := sszutils.ResolveSpecValueWithDefault(ds, "(VLEN):0+4", 4); floorErr == nil && floor <= sszutils.MaxSszSize {`,
 		"if expr0 > 0 && uint64(itemCount) > uint64(len(buf)-startOffset)/(expr0) {",
+		// A bit list or a union element holds at least one byte.
+		"if itemCount > (len(buf)-startOffset)/(1) {",
 	}
 	check := func(t *testing.T, files map[string]string) {
 		t.Helper()
@@ -3389,6 +3401,8 @@ func TestGenerateDelegatedListFloor(t *testing.T) {
 			WithGoTypesType(lookup("SpecSizedList")),
 			WithGoTypesType(lookup("SpecPairList")),
 			WithGoTypesType(lookup("SpecPairVecList")),
+			WithGoTypesType(lookup("SpecOnlyList")),
+			WithGoTypesType(lookup("OneByteLists")),
 		)
 		files, err := cg.GenerateToMap()
 		if err != nil {
@@ -3407,6 +3421,8 @@ func TestGenerateDelegatedListFloor(t *testing.T) {
 			WithReflectType(reflect.TypeFor[reflectSpecSizedList]()),
 			WithReflectType(reflect.TypeFor[reflectSpecPairList]()),
 			WithReflectType(reflect.TypeFor[reflectSpecPairVecList]()),
+			WithReflectType(reflect.TypeFor[reflectSpecOnlyList]()),
+			WithReflectType(reflect.TypeFor[reflectOneByteLists]()),
 		)
 		files, err := cg.GenerateToMap()
 		if err != nil {
@@ -3466,6 +3482,20 @@ type (
 	}
 	reflectSpecPairVecList struct {
 		Items []*tests.SpecPairVec `ssz-max:"4"`
+	}
+	reflectDeclOnlyElem struct {
+		V []byte   `dynssz-size:"VLEN"`
+		L []uint64 `ssz-max:"4"`
+	}
+	reflectSpecOnlyList struct {
+		Items []*tests.SpecOnlyElem `ssz-max:"4"`
+	}
+	reflectOneByteLists struct {
+		Bits   [][]byte `ssz-type:"list,bitlist" ssz-max:"4,64"`
+		Unions []dynssz.CompatibleUnion[struct {
+			A uint32
+			B uint64
+		}] `ssz-max:"4"`
 	}
 	reflectDeclPairElem struct {
 		A    []byte    `ssz-size:"32" dynssz-size:"SPEC_A"`

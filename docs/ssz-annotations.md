@@ -403,7 +403,7 @@ Dynamic annotations (`dynssz-size`, `dynssz-max`, `dynssz-bitsize`) support expr
 **Fallback**: an identifier or parenthesized group followed by `:N` resolves
 on its own, the way a size tag resolves against its static fallback: it takes
 its value rounded up to a whole unit, or `N` when the spec does not define it
-or resolves it to zero. It binds tighter than the arithmetic around it, so
+or resolves it to zero (with `:0` it is then simply zero). It binds tighter than the arithmetic around it, so
 `(A/8):4*8+B:2` reads `((A/8):4)*8+(B:2)`. This is how a generated type
 declares its minimum size (`dynssz-minsize`) from several independently
 resolved parts.

@@ -1424,6 +1424,84 @@ func TestSpecPairVecReflectionFloor(t *testing.T) {
 	}
 }
 
+// TestSpecOnlyListFloors: a list of children whose vector has no static
+// fallback encodes and decodes empty without the spec value, through
+// generated code and through a reflection-decoded container, since an
+// unresolvable floor is no floor; with VLEN defined both engines refuse the
+// same table by the resolved 20-byte floor and decode the children's own
+// bytes.
+func TestSpecOnlyListFloors(t *testing.T) {
+	if _, generated := any(&SpecOnlyList{}).(sszutils.DynamicSizer); !generated {
+		t.Skip("no generated code present")
+	}
+	type reflectionList struct {
+		Items []*SpecOnlyElem `ssz-max:"4"`
+	}
+	empty := []byte{4, 0, 0, 0}
+	for name, target := range map[string]any{"generated": &SpecOnlyList{}, "reflection": &reflectionList{}} {
+		ds := dynssz.NewDynSsz(nil)
+		encoded, err := ds.MarshalSSZ(target)
+		if err != nil || !bytes.Equal(encoded, empty) {
+			t.Fatalf("%s: empty list without VLEN: %x, err = %v", name, encoded, err)
+		}
+		if err := ds.UnmarshalSSZ(target, empty); err != nil {
+			t.Fatalf("%s: decode of the empty list without VLEN: %v", name, err)
+		}
+	}
+
+	specs := map[string]any{"VLEN": uint64(16)}
+	ds := dynssz.NewDynSsz(specs)
+	// Two elements declared in a 24-byte region; each holds at least 20.
+	buf := append([]byte{4, 0, 0, 0, 8, 0, 0, 0, 20, 0, 0, 0}, make([]byte, 24)...)
+	for name, target := range map[string]any{"generated": &SpecOnlyList{}, "reflection": &reflectionList{}} {
+		err := ds.UnmarshalSSZ(target, buf)
+		if !errors.Is(err, sszutils.ErrOffset) || !strings.Contains(err.Error(), "elements of at least 20 bytes") {
+			t.Fatalf("%s: err = %v, want the region refused by the 20-byte floor", name, err)
+		}
+	}
+	payload := SpecOnlyList{Items: []*SpecOnlyElem{{V: make([]byte, 16), L: []uint64{1}}, {V: make([]byte, 16)}}}
+	testCodegenPayloadByReflection(t, payload, specs)
+	encoded, err := ds.MarshalSSZ(&payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded reflectionList
+	if err := ds.UnmarshalSSZ(&decoded, encoded); err != nil || len(decoded.Items) != 2 {
+		t.Fatalf("reflection decode of the elements' own bytes: err = %v, items = %d", err, len(decoded.Items))
+	}
+}
+
+// TestOneByteListFloors: a list of bit lists or of unions is bounded by one
+// byte per element on both engines, and both refuse the same offset table.
+func TestOneByteListFloors(t *testing.T) {
+	if _, generated := any(&OneByteLists{}).(sszutils.DynamicSizer); !generated {
+		t.Skip("no generated code present")
+	}
+	type reflectionLists struct {
+		Bits   [][]byte `ssz-type:"list,bitlist" ssz-max:"4,64"`
+		Unions []dynssz.CompatibleUnion[struct {
+			A uint32
+			B uint64
+		}] `ssz-max:"4"`
+	}
+	ds := dynssz.NewDynSsz(nil)
+	// Bits: three elements declared in a 14-byte region, two bytes past the
+	// table. Unions: an empty list.
+	buf := append([]byte{8, 0, 0, 0, 22, 0, 0, 0, 12, 0, 0, 0, 13, 0, 0, 0, 14, 0, 0, 0}, 1, 1)
+	for name, target := range map[string]any{"generated": &OneByteLists{}, "reflection": &reflectionLists{}} {
+		err := ds.UnmarshalSSZ(target, buf)
+		if !errors.Is(err, sszutils.ErrOffset) || !strings.Contains(err.Error(), "elements of at least 1 bytes") {
+			t.Fatalf("%s: err = %v, want the region refused by the one-byte floor", name, err)
+		}
+	}
+	payload := OneByteLists{Bits: [][]byte{{1}, {0x0f, 1}}}
+	payload.Unions = append(payload.Unions, dynssz.CompatibleUnion[struct {
+		A uint32
+		B uint64
+	}]{Variant: 1, Data: uint32(7)})
+	testCodegenPayloadByReflection(t, payload, nil)
+}
+
 // testCodegenPayloadWithView tests a payload serialized through a view.
 // It marshals via the view, unmarshals, and verifies roundtrip hash consistency.
 func testCodegenPayloadWithView(t *testing.T, payload, view any) {

@@ -36,9 +36,9 @@ type cachedSpecValue struct {
 //
 // An identifier or parenthesized group followed by :N resolves on its own the
 // way a size tag resolves against its static fallback: it takes its value
-// rounded up to a whole unit, or N when it is undefined or zero. It binds
-// tighter than the arithmetic operators, so "(A/8):4*8+B:2" is
-// ((A/8):4)*8+(B:2).
+// rounded up to a whole unit, or N when it is undefined or zero (with :0 it
+// is simply zero then). It binds tighter than the arithmetic operators, so
+// "(A/8):4*8+B:2" is ((A/8):4)*8+(B:2).
 //
 // Returns whether the value was resolved, the uint64 value, and any parse error.
 // If the name references undefined spec values, resolved will be false with no error.
@@ -427,9 +427,10 @@ func (p *intSpecExprParser) parseTerm() (*big.Rat, error) {
 }
 
 // parseFactor parses a primary and its optional :N fallback. With the
-// fallback the primary resolves on its own: undefined or zero takes N, as
-// ResolveSpecValueWithDefault does for a size tag, and any other value is
-// rounded up to a whole unit, as the tag's expression would be.
+// fallback the primary resolves on its own: undefined or zero takes N (zero
+// for :0, where a size tag would refuse), as ResolveSpecValueWithDefault does
+// for a size tag, and any other value is rounded up to a whole unit, as the
+// tag's expression would be.
 func (p *intSpecExprParser) parseFactor() (*big.Rat, error) {
 	outerUnresolved := p.unresolved
 	p.unresolved = false
@@ -459,9 +460,6 @@ func (p *intSpecExprParser) parseFactor() (*big.Rat, error) {
 	}
 	p.unresolved = outerUnresolved
 	if primaryUnresolved || value.Sign() == 0 {
-		if fallback == 0 {
-			return nil, fmt.Errorf("%q is not defined and has no positive fallback", p.input[:start-1])
-		}
 		return new(big.Rat).SetUint64(fallback), nil
 	}
 	rounded, err := ratCeilToUint64(value)

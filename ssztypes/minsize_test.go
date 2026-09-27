@@ -5,6 +5,7 @@
 package ssztypes
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 )
@@ -17,6 +18,13 @@ func (s minSizeSpecs) ResolveSpecValue(name string) (bool, uint64, error) {
 	return ok, v, nil
 }
 
+// minSizeErrSpecs refuses every expression.
+type minSizeErrSpecs struct{}
+
+func (minSizeErrSpecs) ResolveSpecValue(string) (bool, uint64, error) {
+	return false, 0, errors.New("refused")
+}
+
 // A declared floor parses into its literal and expression; the expression is
 // resolved with the literal as its fallback, and a literal alone stands.
 func TestMinSizeDeclaration(t *testing.T) {
@@ -25,22 +33,46 @@ func TestMinSizeDeclaration(t *testing.T) {
 	if !ok || literal != 71 || got != expr {
 		t.Fatalf("parsed %d %q %v", literal, got, ok)
 	}
-	if floor, err := EvaluateMinSize(minSizeSpecs{expr: 31}, literal, expr); err != nil || floor != 31 {
-		t.Fatalf("resolved floor = %d, err = %v, want 31", floor, err)
+	if floor := EvaluateMinSize(minSizeSpecs{expr: 31}, literal, expr); floor != 31 {
+		t.Fatalf("resolved floor = %d, want 31", floor)
 	}
-	if floor, err := EvaluateMinSize(minSizeSpecs{}, literal, expr); err != nil || floor != 71 {
-		t.Fatalf("fallback floor = %d, err = %v, want 71", floor, err)
+	if floor := EvaluateMinSize(minSizeSpecs{}, literal, expr); floor != 71 {
+		t.Fatalf("fallback floor = %d, want 71", floor)
 	}
-	if floor, err := EvaluateMinSize(nil, literal, expr); err != nil || floor != 71 {
-		t.Fatalf("floor without specs = %d, err = %v, want 71", floor, err)
+	if floor := EvaluateMinSize(nil, literal, expr); floor != 71 {
+		t.Fatalf("floor without specs = %d, want 71", floor)
 	}
-	if floor, err := EvaluateMinSize(nil, 20, ""); err != nil || floor != 20 {
-		t.Fatalf("literal floor = %d, err = %v, want 20", floor, err)
+	if floor := EvaluateMinSize(nil, 20, ""); floor != 20 {
+		t.Fatalf("literal floor = %d, want 20", floor)
 	}
 	if _, _, ok := ParseMinSizeDeclaration(`ssz-minsize:"x"`); ok {
 		t.Error("an invalid literal parsed")
 	}
-	if _, err := EvaluateMinSize(minSizeSpecs{expr: 1 << 40}, literal, expr); err == nil {
-		t.Error("a floor beyond the size limit was accepted")
+	// A floor beyond the size limit, or one whose expression the evaluator
+	// refuses, states no floor rather than refusing the type.
+	if floor := EvaluateMinSize(minSizeSpecs{expr: 1 << 40}, literal, expr); floor != 0 {
+		t.Errorf("floor beyond the size limit = %d, want none", floor)
+	}
+	if floor := EvaluateMinSize(minSizeErrSpecs{}, literal, expr); floor != 0 {
+		t.Errorf("floor with a refused expression = %d, want none", floor)
+	}
+}
+
+// A bit list holds its termination bit and a union its selector, so each
+// states a one-byte floor; a list or an optional states none.
+func TestSetMinSizeOneByteFloors(t *testing.T) {
+	for sszType, want := range map[SszType]int64{
+		SszBitlistType:            1,
+		SszProgressiveBitlistType: 1,
+		SszUnionType:              1,
+		SszCompatibleUnionType:    1,
+		SszListType:               0,
+		SszOptionalType:           0,
+	} {
+		desc := &TypeDescriptor{SszType: sszType, SszTypeFlags: SszTypeFlagIsDynamic}
+		desc.SetMinSize()
+		if desc.MinSize != want {
+			t.Errorf("%v: MinSize = %d, want %d", sszType, desc.MinSize, want)
+		}
 	}
 }

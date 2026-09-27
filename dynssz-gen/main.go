@@ -752,10 +752,22 @@ func newAnnotationIndex(root *packages.Package, extra ...*packages.Package) (*an
 	var err error
 	// A separately loaded view package is imported by the generated code that
 	// serves its views, so it initializes before root: it is visited first,
-	// and root's registrations merge last. A package both loads hold a copy
-	// of is read once, as it initializes once.
+	// and root's registrations merge last. Separately loaded packages
+	// initialize in import path order, so they are visited in that order,
+	// each once. A package both loads hold a copy of is read once, as it
+	// initializes once.
+	roots := make([]*packages.Package, 0, len(extra)+1)
+	seen := make(map[string]bool)
+	for _, p := range extra {
+		if !seen[p.PkgPath] {
+			seen[p.PkgPath] = true
+			roots = append(roots, p)
+		}
+	}
+	sort.Slice(roots, func(i, j int) bool { return roots[i].PkgPath < roots[j].PkgPath })
+	roots = append(roots, root)
 	read := make(map[string]bool)
-	packages.Visit(append(append([]*packages.Package{}, extra...), root), nil, func(p *packages.Package) {
+	packages.Visit(roots, nil, func(p *packages.Package) {
 		if p.Types == nil {
 			return
 		}

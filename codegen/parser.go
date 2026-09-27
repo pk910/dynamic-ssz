@@ -1008,11 +1008,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			desc.SetMinSize()
 			if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 				if literal, expr, ok := ssztypes.ParseMinSizeDeclaration(reflect.StructTag(annotation)); ok {
-					floor, floorErr := ssztypes.EvaluateMinSize(nil, literal, expr)
-					if floorErr != nil {
-						return nil, floorErr
-					}
-					desc.MinSize = floor
+					desc.MinSize = ssztypes.EvaluateMinSize(nil, literal, expr)
 				}
 			}
 			return desc, nil

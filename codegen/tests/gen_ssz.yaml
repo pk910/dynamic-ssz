@@ -49,6 +49,10 @@ types:
     output: gen_specs.go
   - name: SpecPairElem
     output: gen_specs.go
+  - name: SpecOnlyElem
+    output: gen_specs.go
+  - name: OneByteLists
+    output: gen_specs.go
   - name: SpecShrunkList
     output: gen_specs.go
   - name: SpecShrunkElem

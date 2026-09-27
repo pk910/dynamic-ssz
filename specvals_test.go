@@ -70,7 +70,7 @@ func TestEvalIntSpecExpression(t *testing.T) {
 		{"fallback_binds_tighter", "X:8*B", true, true, 24, false},
 		{"fallback_nested", "(X:5)*((Y:4)*8+4)", true, true, 180, false},
 		{"fallback_rounds_each_operand", "(A/B):1+(A/B):1", true, true, 8, false},
-		{"fallback_undefined_zero", "X:0", true, false, 0, true},
+		{"fallback_undefined_zero", "X:0+4", true, true, 4, false},
 		{"fallback_missing", "X:", false, false, 0, false},
 		{"fallback_negative_operand", "(B-A):1", true, false, 0, true},
 		// A chained division agrees with per-division ceil (10/3/2 -> ceil 2).

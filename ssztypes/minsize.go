@@ -31,9 +31,10 @@ func ParseMinSizeDeclaration(tag reflect.StructTag) (literal uint64, expr string
 
 // EvaluateMinSize resolves a declared floor against specs: the expression
 // with the literal as its fallback, as a size tag resolves, or the literal
-// alone. A floor beyond the SSZ size limit is refused, as generated code
-// refuses it.
-func EvaluateMinSize(specs sszutils.DynamicSpecs, literal uint64, expr string) (int64, error) {
+// alone. A floor is a bound and never a refusal: one that does not resolve,
+// or lies beyond the SSZ size limit, states no floor, as generated code
+// treats it.
+func EvaluateMinSize(specs sszutils.DynamicSpecs, literal uint64, expr string) int64 {
 	floor := literal
 	if expr != "" {
 		if specs == nil {
@@ -41,14 +42,14 @@ func EvaluateMinSize(specs sszutils.DynamicSpecs, literal uint64, expr string) (
 		}
 		resolved, err := sszutils.ResolveSpecValueWithDefault(specs, expr, literal)
 		if err != nil {
-			return 0, err
+			return 0
 		}
 		floor = resolved
 	}
 	if floor > uint64(sszutils.MaxSszSize) {
-		return 0, sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(floor), "declared minimum size %d exceeds the SSZ size limit", floor)
+		return 0
 	}
-	return int64(floor), nil
+	return int64(floor)
 }
 
 // noSpecs defines no spec value, so every part takes its fallback.

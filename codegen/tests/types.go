@@ -476,6 +476,30 @@ type SpecPairVecList struct {
 	Items []*SpecPairVec `ssz-max:"4"`
 }
 
+// SpecOnlyElem is a dynamic element whose vector has no static fallback: its
+// declared floor part (VLEN):0 is nothing until VLEN is defined, so a list of
+// them generated later (SpecOnlyList) decodes an empty list without VLEN and
+// is bounded once it is defined.
+type SpecOnlyElem struct {
+	V []byte   `dynssz-size:"VLEN"`
+	L []uint64 `ssz-max:"4"`
+}
+
+type SpecOnlyList struct {
+	Items []*SpecOnlyElem `ssz-max:"4"`
+}
+
+// OneByteLists holds lists whose elements hold at least one byte, a bit list's
+// termination bit or a union's selector, so their offset tables are bounded
+// by one byte per element.
+type OneByteLists struct {
+	Bits   [][]byte `ssz-type:"list,bitlist" ssz-max:"4,64"`
+	Unions []dynssz.CompatibleUnion[struct {
+		A uint32
+		B uint64
+	}] `ssz-max:"4"`
+}
+
 var SpecSizedList_Payload = SpecSizedList{
 	Items: []*SpecSizedElem{
 		{V: [8]uint64{1, 2, 3, 4, 5, 6, 7, 8}},

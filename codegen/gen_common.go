@@ -97,6 +97,37 @@ func (g *exprVarGenerator) getExprVar(expr string, defaultValue uint64) string {
 	return exprVar
 }
 
+// getFloorExprVar resolves a declared floor (see delegateFloor) into a
+// variable the region gate divides by. A floor is a bound and never a refusal:
+// one that does not resolve, or lies beyond the SSZ size limit, leaves the
+// variable at zero, which the gate skips.
+func (g *exprVarGenerator) getFloorExprVar(expr string, fallback uint64) string {
+	exprKey := sha256.Sum256(fmt.Appendf(nil, "floor\n%s\n%v", expr, fallback))
+	if exprVar, ok := g.varMap[exprKey]; ok {
+		return exprVar
+	}
+
+	varNamePattern := "%s%d"
+	if g.isSlice {
+		varNamePattern = "%s[%d]"
+	}
+	exprVar := fmt.Sprintf(varNamePattern, g.prefix, g.varCounter)
+	g.varCounter++
+
+	if g.isSlice {
+		appendCode(g.codeBuf, 0, "%s = 0\n", exprVar)
+	} else {
+		appendCode(g.codeBuf, 0, "%s := uint64(0)\n", exprVar)
+	}
+	appendCode(g.codeBuf, 0, "if floor, floorErr := sszutils.ResolveSpecValueWithDefault(ds, \"%s\", %d); floorErr == nil && floor <= sszutils.MaxSszSize {\n", expr, fallback)
+	appendCode(g.codeBuf, 1, "%s = floor\n", exprVar)
+	appendCode(g.codeBuf, 0, "}\n")
+
+	g.varMap[exprKey] = exprVar
+
+	return exprVar
+}
+
 // getSizeExprVar resolves a size-domain spec expression (a vector or byte
 // size, as opposed to a list limit) via getExprVar and additionally rejects a
 // resolved value above the platform integer range: sizes pass through int at
@@ -537,13 +568,17 @@ func minSizeExpr(desc *ssztypes.TypeDescriptor, sizeVars *staticSizeVarGenerator
 		if floorExpr == "" || options.WithoutDynamicExpressions {
 			return fmt.Sprintf("%d", lit), "", lit > 0
 		}
-		floorVar := sizeVars.exprVarGenerator.getVectorLenExprVar(floorExpr, lit, false, false, "")
+		floorVar := sizeVars.exprVarGenerator.getFloorExprVar(floorExpr, lit)
 		return floorVar, floorVar, true
 	}
 
 	switch desc.SszType {
 	case ssztypes.SszTypeWrapperType:
 		return minSizeExpr(desc.ElemDesc, sizeVars, options)
+
+	case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType, ssztypes.SszUnionType, ssztypes.SszCompatibleUnionType:
+		// The termination bit's byte, or the selector byte.
+		return "1", "", true
 
 	case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
 		if desc.ContainerDesc == nil {

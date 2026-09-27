@@ -2150,14 +2150,15 @@ func TestAnnotationIndex_CrossPackage(t *testing.T) {
 		}
 	}
 
-	// A separately loaded package initializes before the generated one at
-	// run time, so its registration merges behind the generated package's.
-	idx, err = newAnnotationIndex(root, loadTestPackage(t, testPkgPath+"/extra"))
+	// Separately loaded packages initialize before the generated one at run
+	// time, in import path order, so their registrations merge behind the
+	// generated package's, the later path in front, however they were given.
+	idx, err = newAnnotationIndex(root, loadTestPackage(t, testPkgPath+"/extra2"), loadTestPackage(t, testPkgPath+"/extra"), loadTestPackage(t, testPkgPath+"/extra"))
 	if err != nil {
-		t.Fatalf("annotation index with an extra package: %v", err)
+		t.Fatalf("annotation index with extra packages: %v", err)
 	}
-	if got, want := idx.resolve(holder.Field(1).Type()), `ssz-minsize:"11" ssz-minsize:"9" ssz-minsize:"7" ssz-max:"3"`; got != want {
-		t.Errorf("with an extra package: annotation = %q, want %q", got, want)
+	if got, want := idx.resolve(holder.Field(1).Type()), `ssz-minsize:"11" ssz-minsize:"9" ssz-minsize:"5" ssz-minsize:"7" ssz-max:"3"`; got != want {
+		t.Errorf("with extra packages: annotation = %q, want %q", got, want)
 	}
 
 	views := loadTestPackage(t, subPath)
