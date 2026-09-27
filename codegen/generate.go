@@ -1207,7 +1207,9 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 	// emitViewDispatcher writes the public dispatcher and, when any target's
 	// methods carry a depth, the unexported twin a cyclic parent calls to keep
 	// the depth advancing across the view boundary.
-	emitViewDispatcher := func(publicName, fnPrefix string, sig viewFnSignature, mainFn func() string) {
+	// action states, for the dispatcher's doc comment, what the returned
+	// function does with the type as the given view.
+	emitViewDispatcher := func(publicName, fnPrefix, action string, sig viewFnSignature, mainFn func() string) {
 		typeName := typePrinter.TypeString(dataType)
 		cyclic := recursion.threads(dataType)
 		for _, view := range views {
@@ -1218,10 +1220,11 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 		if cyclic {
 			depthExpr = "0"
 		}
+		appendCode(codeBuilder, 0, "// %s returns the function that %s the %s as the given view, or nil for a view it does not serve.\n", publicName, action, typeName)
 		appendCode(codeBuilder, 0, "func (t %s) %s(view any) func(%s) %s {\n", typeName, publicName, sig.params, sig.results)
 		buildViewDispatcher(fnPrefix, mainFn, sig, depthExpr)
 		appendCode(codeBuilder, 1, "return nil\n")
-		appendCode(codeBuilder, 0, "}\n")
+		appendCode(codeBuilder, 0, "}\n\n")
 
 		if !cyclic {
 			return
@@ -1232,11 +1235,11 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 		appendCode(codeBuilder, 0, "func (t %s) %s(view any, depth int) func(%s) %s {\n", typeName, depthMethodName(publicName), sig.params, sig.results)
 		buildViewDispatcher(fnPrefix, mainFn, sig, depthParam)
 		appendCode(codeBuilder, 1, "return nil\n")
-		appendCode(codeBuilder, 0, "}\n")
+		appendCode(codeBuilder, 0, "}\n\n")
 	}
 
 	if !options.NoMarshalSSZ {
-		emitViewDispatcher("MarshalSSZDynView", "marshalSSZView", viewFnSignature{params: "ds sszutils.DynamicSpecs, buf []byte", results: "([]byte, error)", args: "ds, buf"}, func() string {
+		emitViewDispatcher("MarshalSSZDynView", "marshalSSZView", "marshals", viewFnSignature{params: "ds sszutils.DynamicSpecs, buf []byte", results: "([]byte, error)", args: "ds, buf"}, func() string {
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 {
 				return "t.MarshalSSZDyn"
 			}
@@ -1256,7 +1259,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 	}
 
 	if options.CreateEncoderFn {
-		emitViewDispatcher("MarshalSSZEncoderView", "marshalSSZEncoderView", viewFnSignature{params: "ds sszutils.DynamicSpecs, enc sszutils.Encoder", results: typeNameError, args: "ds, enc"}, func() string {
+		emitViewDispatcher("MarshalSSZEncoderView", "marshalSSZEncoderView", "encodes", viewFnSignature{params: "ds sszutils.DynamicSpecs, enc sszutils.Encoder", results: typeNameError, args: "ds, enc"}, func() string {
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicEncoder != 0 {
 				return "t.MarshalSSZEncoder"
 			}
@@ -1273,7 +1276,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 	}
 
 	if !options.NoUnmarshalSSZ {
-		emitViewDispatcher("UnmarshalSSZDynView", "unmarshalSSZView", viewFnSignature{params: "ds sszutils.DynamicSpecs, buf []byte", results: typeNameError, args: "ds, buf"}, func() string {
+		emitViewDispatcher("UnmarshalSSZDynView", "unmarshalSSZView", "unmarshals", viewFnSignature{params: "ds sszutils.DynamicSpecs, buf []byte", results: typeNameError, args: "ds, buf"}, func() string {
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
 				return "t.UnmarshalSSZDyn"
 			}
@@ -1293,7 +1296,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 	}
 
 	if options.CreateDecoderFn {
-		emitViewDispatcher("UnmarshalSSZDecoderView", "unmarshalSSZDecoderView", viewFnSignature{params: "ds sszutils.DynamicSpecs, dec sszutils.Decoder", results: typeNameError, args: "ds, dec"}, func() string {
+		emitViewDispatcher("UnmarshalSSZDecoderView", "unmarshalSSZDecoderView", "decodes", viewFnSignature{params: "ds sszutils.DynamicSpecs, dec sszutils.Decoder", results: typeNameError, args: "ds, dec"}, func() string {
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 {
 				return "t.UnmarshalSSZDecoder"
 			}
@@ -1310,7 +1313,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 	}
 
 	if !options.NoSizeSSZ {
-		emitViewDispatcher("SizeSSZDynView", "sizeSSZView", viewFnSignature{params: "ds sszutils.DynamicSpecs", results: typeNameInt, args: "ds"}, func() string {
+		emitViewDispatcher("SizeSSZDynView", "sizeSSZView", "sizes", viewFnSignature{params: "ds sszutils.DynamicSpecs", results: typeNameInt, args: "ds"}, func() string {
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 {
 				return "t.SizeSSZDyn"
 			}
@@ -1330,7 +1333,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 	}
 
 	if !options.NoHashTreeRoot {
-		emitViewDispatcher("HashTreeRootWithDynView", "hashTreeRootView", viewFnSignature{params: "ds sszutils.DynamicSpecs, hh sszutils.HashWalker", results: typeNameError, args: "ds, hh"}, func() string {
+		emitViewDispatcher("HashTreeRootWithDynView", "hashTreeRootView", "hashes", viewFnSignature{params: "ds sszutils.DynamicSpecs, hh sszutils.HashWalker", results: typeNameError, args: "ds, hh"}, func() string {
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 {
 				return "t.HashTreeRootWithDyn"
 			}
