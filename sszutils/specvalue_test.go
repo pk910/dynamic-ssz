@@ -29,6 +29,7 @@ func (c *specSetCacheSpecs) StoreSpecSet(key reflect.Type, set []uint64) []uint6
 
 type specSetTypeA struct{}
 type specSetTypeB struct{}
+type specSetTypeC struct{}
 
 func TestGetCachedSpecSet(t *testing.T) {
 	builds := 0
@@ -73,7 +74,7 @@ func TestGetCachedSpecSet(t *testing.T) {
 			t.Fatal(err)
 		}
 		// A view of A is a set of its own, apart from A's and from B's.
-		if _, err := GetCachedViewSpecSet[specSetTypeA, *specSetTypeB](ds, build); err != nil {
+		if _, err := GetCachedViewSpecSet[specSetTypeA, specSetTypeB](ds, build); err != nil {
 			t.Fatal(err)
 		}
 		if builds != 3 {
@@ -84,12 +85,12 @@ func TestGetCachedSpecSet(t *testing.T) {
 		}
 	})
 
-	t.Run("a schema served by two types keys apart, a type serving itself apart from its view", func(t *testing.T) {
+	t.Run("a view served by two types keys apart, and apart from the view generated on its own", func(t *testing.T) {
 		keys := map[string]reflect.Type{
 			"A as itself": specSetKey[specSetTypeA, specSetTypeA](),
 			"B as itself": specSetKey[specSetTypeB, specSetTypeB](),
-			"A as view B": specSetKey[specSetTypeA, *specSetTypeB](),
-			"B as view B": specSetKey[specSetTypeB, *specSetTypeB](),
+			"A as view B": specSetKey[specSetTypeA, specSetTypeB](),
+			"C as view B": specSetKey[specSetTypeC, specSetTypeB](),
 		}
 		seen := map[reflect.Type]string{}
 		for name, key := range keys {
@@ -98,7 +99,7 @@ func TestGetCachedSpecSet(t *testing.T) {
 			}
 			seen[key] = name
 		}
-		if specSetKey[specSetTypeA, *specSetTypeB]() != specSetKey[specSetTypeA, *specSetTypeB]() {
+		if specSetKey[specSetTypeA, specSetTypeB]() != specSetKey[specSetTypeA, specSetTypeB]() {
 			t.Fatal("the same pair keys differently across calls")
 		}
 	})

@@ -1181,7 +1181,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 		if set, ok := viewSets[desc]; ok {
 			return set
 		}
-		set := newSpecSetGenerator(typePrinter.TypeString(dataType), typePrinter.InnerTypeString(dataType), typePrinter.ViewTypeString(desc, false), "buildDynSSZSpecSet_"+getViewFnName(desc))
+		set := newSpecSetGenerator(typePrinter.TypeString(dataType), typePrinter.InnerTypeString(dataType), typePrinter.InnerViewTypeString(desc), "buildDynSSZSpecSet_"+getViewFnName(desc))
 		viewSets[desc] = set
 		return set
 	}

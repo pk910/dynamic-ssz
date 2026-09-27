@@ -62,10 +62,11 @@ type SpecSetCache interface {
 }
 
 // specSetKey is the cache key of the spec set of the generated type T
-// serving the schema V: T itself for its own methods, or the pointer type of
-// one of its views. The expressions and their order follow the walk over the
-// pair, so a view served by two types has a set per type. The function type
-// over the pair is one canonical type per pair, which keys as one word.
+// serving the schema V: T itself for its own methods, or one of its view
+// types. The expressions and their order follow the walk over the pair, so a
+// view served by two types has a set per type, and a view type generated on
+// its own has its own. The function type over the pair is one canonical type
+// per pair, which keys as one word.
 func specSetKey[T, V any]() reflect.Type {
 	return reflect.TypeFor[func(T) V]()
 }

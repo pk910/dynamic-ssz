@@ -3625,9 +3625,7 @@ func TestGeneratedSpecSetPerView(t *testing.T) {
 		if n := strings.Count(code, "ResolveSpecValueWithDefault(ds, "+expr+")"); n != 1 {
 			t.Fatalf("resolved %s %d times, want once in the view's builder:\n%s", expr, n, code)
 		}
-		// A view is keyed with the data type, by its pointer type, as the
-		// dispatchers and the annotations refer to it.
-		fetch := "sszutils.GetCachedViewSpecSet[genSpecViewBase, *" + view + "](ds, t.buildDynSSZSpecSet_" + view + ")"
+		fetch := "sszutils.GetCachedViewSpecSet[genSpecViewBase, " + view + "](ds, t.buildDynSSZSpecSet_" + view + ")"
 		if n := strings.Count(code, fetch); n != 4 {
 			t.Fatalf("fetched the set of %s in %d methods, want 4:\n%s", view, n, code)
 		}
