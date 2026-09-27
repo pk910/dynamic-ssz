@@ -669,6 +669,15 @@ func (h *Hasher) Collapse() {
 			// toward the next cap-sized job.
 			return
 		}
+		// A scope opened without a declared shape may still close as either
+		// tree, and only element roots suit both closers: a binary node
+		// would be taken for a leaf by a progressive close, and a node
+		// reduced in the background would be built over the holes of the
+		// element-root jobs above. The hint has reduced this scope's
+		// deferred children; its own chunks wait for the close.
+		if !layer.declared {
+			return
+		}
 		if async {
 			// Raw chunk runs (packed primitive lists and vectors) reduce as
 			// cap-sized background jobs too. The synchronous batch collapse

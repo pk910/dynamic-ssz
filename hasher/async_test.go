@@ -1167,3 +1167,48 @@ func TestAsyncUndeclaredScopeHolesNotDeferred(t *testing.T) {
 		}
 	}
 }
+
+// TestAsyncCollapseHintOnUndeclaredScope hints a scope opened without a
+// declared shape while its deferred children are reduced in the background:
+// the hint must not hand the scope's own chunks to a job while the holes of
+// those reductions are still open, so the root is the synchronous hint-free
+// root past the job cap as well as below it.
+func TestAsyncCollapseHintOnUndeclaredScope(t *testing.T) {
+	defer DisableAsyncHashing()
+
+	walk := func(hh *Hasher, n int, hint bool) [32]byte {
+		chunk := make([]byte, 32)
+		idx := hh.Index()
+		for i := 0; i < n; i++ {
+			ci := hh.Index()
+			for c := 0; c < 8; c++ {
+				chunk[0] = byte(i)
+				chunk[1] = byte(i >> 8)
+				chunk[2] = byte(c)
+				hh.Append(chunk)
+			}
+			hh.Merkleize(ci)
+			if hint && (i+1)%256 == 0 {
+				hh.Collapse()
+			}
+		}
+		hh.MerkleizeWithMixin(idx, uint64(n), 1<<40)
+		root, err := hh.HashRoot()
+		if err != nil {
+			t.Fatalf("%d elements: HashRoot: %v", n, err)
+		}
+		return root
+	}
+
+	for _, n := range []int{4096, 33000} {
+		DisableAsyncHashing()
+		want := walk(NewHasher(), n, false)
+
+		EnableAsyncHashing(4)
+		hh := NewHasher()
+		hh.SetAsyncHashing(true)
+		if got := walk(hh, n, true); got != want {
+			t.Errorf("%d elements: async root with hints %x != sync root %x", n, got, want)
+		}
+	}
+}
