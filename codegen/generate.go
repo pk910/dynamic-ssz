@@ -900,11 +900,20 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 		t.Options.generated = cg.compatFlags
 		t.Options.annotationResolver = cg.annotationResolver
 
+		// The spec expressions of the type's methods are resolved together,
+		// by one method the DynSsz instance caches the result of, and each
+		// view's by a method of its own. They lead the type's methods, and
+		// are known once those are generated, so the methods are collected
+		// apart and appended after them.
+		set := newSpecSetGenerator(typePrinter.TypeString(t.Descriptor), typePrinter.InnerTypeString(t.Descriptor), typePrinter.InnerTypeString(t.Descriptor), "buildDynSSZSpecSet")
+		var viewSets []*specSetGenerator
+		methodsBuilder := strings.Builder{}
+
 		if !t.IsViewOnly {
 			hash := t.Descriptor.GetTypeHash()
 			hashParts = append(hashParts, hash[:])
 
-			err := cg.generateSSZMethods(t.Descriptor, typePrinter, &codeBuilder, "", &t.Options)
+			err := cg.generateSSZMethods(t.Descriptor, typePrinter, &methodsBuilder, "", &t.Options, set)
 			if err != nil {
 				return "", fmt.Errorf("failed to generate code for %s: %w", t.TypeName, err)
 			}
@@ -924,7 +933,8 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 				hashParts = append(hashParts, hash[:])
 			}
 
-			err := cg.generateSSZViewMethods(t.Descriptor, t.ViewDescriptors, typePrinter, &codeBuilder, &t.Options)
+			var err error
+			viewSets, err = cg.generateSSZViewMethods(t.Descriptor, t.ViewDescriptors, typePrinter, &methodsBuilder, &t.Options)
 			if err != nil {
 				return "", fmt.Errorf("failed to generate code for view types of %s: %w", t.TypeName, err)
 			}
@@ -935,6 +945,12 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 				fmt.Fprintf(&annotationsBuilder, "var _ = sszutils.Annotate[%s](`%s`)\n", typePrinter.ViewTypeString(viewDesc, false), delegateAnnotationFor(viewDesc, &t.Options))
 			}
 		}
+
+		set.emit(&codeBuilder)
+		for _, viewSet := range viewSets {
+			viewSet.emit(&codeBuilder)
+		}
+		codeBuilder.WriteString(methodsBuilder.String())
 	}
 
 	typesHash := sha256.Sum256(bytes.Join(hashParts, []byte{}))
@@ -1067,48 +1083,48 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 // Returns:
 //   - bool: True if any generated code uses dynamic SSZ functionality
 //   - error: An error if any method generation fails
-func (cg *CodeGenerator) generateSSZMethods(desc *ssztypes.TypeDescriptor, typePrinter *TypePrinter, codeBuilder *strings.Builder, viewName string, options *CodeGeneratorOptions) error {
+func (cg *CodeGenerator) generateSSZMethods(desc *ssztypes.TypeDescriptor, typePrinter *TypePrinter, codeBuilder *strings.Builder, viewName string, options *CodeGeneratorOptions, set *specSetGenerator) error {
 	// Generate the actual methods using flattened generators
 	var err error
 	typeName := typePrinter.TypeStringWithoutTracking(desc, viewName != "")
 
 	if !options.NoMarshalSSZ {
-		err = generateMarshal(desc, codeBuilder, typePrinter, viewName, options)
+		err = generateMarshal(desc, codeBuilder, typePrinter, viewName, options, set)
 		if err != nil {
 			return fmt.Errorf("failed to generate marshal for %s: %w", typeName, err)
 		}
 	}
 
 	if options.CreateEncoderFn {
-		err = generateEncoder(desc, codeBuilder, typePrinter, viewName, options)
+		err = generateEncoder(desc, codeBuilder, typePrinter, viewName, options, set)
 		if err != nil {
 			return fmt.Errorf("failed to generate encoder for %s: %w", typeName, err)
 		}
 	}
 
 	if !options.NoUnmarshalSSZ {
-		err = generateUnmarshal(desc, codeBuilder, typePrinter, viewName, options)
+		err = generateUnmarshal(desc, codeBuilder, typePrinter, viewName, options, set)
 		if err != nil {
 			return fmt.Errorf("failed to generate unmarshal for %s: %w", typeName, err)
 		}
 	}
 
 	if options.CreateDecoderFn {
-		err = generateDecoder(desc, codeBuilder, typePrinter, viewName, options)
+		err = generateDecoder(desc, codeBuilder, typePrinter, viewName, options, set)
 		if err != nil {
 			return fmt.Errorf("failed to generate decoder for %s: %w", typeName, err)
 		}
 	}
 
 	if !options.NoSizeSSZ {
-		err = generateSize(desc, codeBuilder, typePrinter, viewName, options)
+		err = generateSize(desc, codeBuilder, typePrinter, viewName, options, set)
 		if err != nil {
 			return fmt.Errorf("failed to generate size for %s: %w", typeName, err)
 		}
 	}
 
 	if !options.NoHashTreeRoot {
-		err = generateHashTreeRoot(desc, codeBuilder, typePrinter, viewName, options)
+		err = generateHashTreeRoot(desc, codeBuilder, typePrinter, viewName, options, set)
 		if err != nil {
 			return fmt.Errorf("failed to generate hash tree root for %s: %w", typeName, err)
 		}
@@ -1117,7 +1133,9 @@ func (cg *CodeGenerator) generateSSZMethods(desc *ssztypes.TypeDescriptor, typeP
 	return nil
 }
 
-func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescriptor, views []*ssztypes.TypeDescriptor, typePrinter *TypePrinter, codeBuilder *strings.Builder, options *CodeGeneratorOptions) error {
+// generateSSZViewMethods generates the view dispatchers and the methods of
+// every view, and returns the spec set of each view in the views' order.
+func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescriptor, views []*ssztypes.TypeDescriptor, typePrinter *TypePrinter, codeBuilder *strings.Builder, options *CodeGeneratorOptions) ([]*specSetGenerator, error) {
 	recursion := newRecursionBound(dataType, options)
 	// Generate the actual methods using flattened generators
 	var err error
@@ -1155,6 +1173,17 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 
 		viewFnNameMap[desc] = fnName
 		return fnName
+	}
+
+	// A view's expressions are its own, keyed by the data type and the view.
+	viewSets := make(map[*ssztypes.TypeDescriptor]*specSetGenerator, len(views))
+	getViewSet := func(desc *ssztypes.TypeDescriptor) *specSetGenerator {
+		if set, ok := viewSets[desc]; ok {
+			return set
+		}
+		set := newSpecSetGenerator(typePrinter.TypeString(dataType), typePrinter.InnerTypeString(dataType), typePrinter.InnerViewTypeString(desc), "buildDynSSZSpecSet_"+getViewFnName(desc))
+		viewSets[desc] = set
+		return set
 	}
 
 	// A view dispatcher hands back a closure, which has nowhere to take a
@@ -1197,7 +1226,9 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 	// emitViewDispatcher writes the public dispatcher and, when any target's
 	// methods carry a depth, the unexported twin a cyclic parent calls to keep
 	// the depth advancing across the view boundary.
-	emitViewDispatcher := func(publicName, fnPrefix string, sig viewFnSignature, mainFn func() string) {
+	// action states, for the dispatcher's doc comment, what the returned
+	// function does with the type as the given view.
+	emitViewDispatcher := func(publicName, fnPrefix, action string, sig viewFnSignature, mainFn func() string) {
 		typeName := typePrinter.TypeString(dataType)
 		cyclic := recursion.threads(dataType)
 		for _, view := range views {
@@ -1208,10 +1239,11 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 		if cyclic {
 			depthExpr = "0"
 		}
+		appendCode(codeBuilder, 0, "// %s returns the function that %s the %s as the given view, or nil for a view it does not serve.\n", publicName, action, typeName)
 		appendCode(codeBuilder, 0, "func (t %s) %s(view any) func(%s) %s {\n", typeName, publicName, sig.params, sig.results)
 		buildViewDispatcher(fnPrefix, mainFn, sig, depthExpr)
 		appendCode(codeBuilder, 1, "return nil\n")
-		appendCode(codeBuilder, 0, "}\n")
+		appendCode(codeBuilder, 0, "}\n\n")
 
 		if !cyclic {
 			return
@@ -1222,11 +1254,11 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 		appendCode(codeBuilder, 0, "func (t %s) %s(view any, depth int) func(%s) %s {\n", typeName, depthMethodName(publicName), sig.params, sig.results)
 		buildViewDispatcher(fnPrefix, mainFn, sig, depthParam)
 		appendCode(codeBuilder, 1, "return nil\n")
-		appendCode(codeBuilder, 0, "}\n")
+		appendCode(codeBuilder, 0, "}\n\n")
 	}
 
 	if !options.NoMarshalSSZ {
-		emitViewDispatcher("MarshalSSZDynView", "marshalSSZView", viewFnSignature{params: "ds sszutils.DynamicSpecs, buf []byte", results: "([]byte, error)", args: "ds, buf"}, func() string {
+		emitViewDispatcher("MarshalSSZDynView", "marshalSSZView", "marshals", viewFnSignature{params: "ds sszutils.DynamicSpecs, buf []byte", results: "([]byte, error)", args: "ds, buf"}, func() string {
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 {
 				return "t.MarshalSSZDyn"
 			}
@@ -1238,15 +1270,15 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 
 		for _, desc := range views {
 			viewName := getViewFnName(desc)
-			err = generateMarshal(desc, codeBuilder, typePrinter, viewName, options)
+			err = generateMarshal(desc, codeBuilder, typePrinter, viewName, options, getViewSet(desc))
 			if err != nil {
-				return fmt.Errorf("failed to generate marshal for %s: %w", viewName, err)
+				return nil, fmt.Errorf("failed to generate marshal for %s: %w", viewName, err)
 			}
 		}
 	}
 
 	if options.CreateEncoderFn {
-		emitViewDispatcher("MarshalSSZEncoderView", "marshalSSZEncoderView", viewFnSignature{params: "ds sszutils.DynamicSpecs, enc sszutils.Encoder", results: typeNameError, args: "ds, enc"}, func() string {
+		emitViewDispatcher("MarshalSSZEncoderView", "marshalSSZEncoderView", "encodes", viewFnSignature{params: "ds sszutils.DynamicSpecs, enc sszutils.Encoder", results: typeNameError, args: "ds, enc"}, func() string {
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicEncoder != 0 {
 				return "t.MarshalSSZEncoder"
 			}
@@ -1255,15 +1287,15 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 
 		for _, desc := range views {
 			viewName := getViewFnName(desc)
-			err = generateEncoder(desc, codeBuilder, typePrinter, viewName, options)
+			err = generateEncoder(desc, codeBuilder, typePrinter, viewName, options, getViewSet(desc))
 			if err != nil {
-				return fmt.Errorf("failed to generate encoder for %s: %w", viewName, err)
+				return nil, fmt.Errorf("failed to generate encoder for %s: %w", viewName, err)
 			}
 		}
 	}
 
 	if !options.NoUnmarshalSSZ {
-		emitViewDispatcher("UnmarshalSSZDynView", "unmarshalSSZView", viewFnSignature{params: "ds sszutils.DynamicSpecs, buf []byte", results: typeNameError, args: "ds, buf"}, func() string {
+		emitViewDispatcher("UnmarshalSSZDynView", "unmarshalSSZView", "unmarshals", viewFnSignature{params: "ds sszutils.DynamicSpecs, buf []byte", results: typeNameError, args: "ds, buf"}, func() string {
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
 				return "t.UnmarshalSSZDyn"
 			}
@@ -1275,15 +1307,15 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 
 		for _, desc := range views {
 			viewName := getViewFnName(desc)
-			err = generateUnmarshal(desc, codeBuilder, typePrinter, viewName, options)
+			err = generateUnmarshal(desc, codeBuilder, typePrinter, viewName, options, getViewSet(desc))
 			if err != nil {
-				return fmt.Errorf("failed to generate unmarshal for %s: %w", viewName, err)
+				return nil, fmt.Errorf("failed to generate unmarshal for %s: %w", viewName, err)
 			}
 		}
 	}
 
 	if options.CreateDecoderFn {
-		emitViewDispatcher("UnmarshalSSZDecoderView", "unmarshalSSZDecoderView", viewFnSignature{params: "ds sszutils.DynamicSpecs, dec sszutils.Decoder", results: typeNameError, args: "ds, dec"}, func() string {
+		emitViewDispatcher("UnmarshalSSZDecoderView", "unmarshalSSZDecoderView", "decodes", viewFnSignature{params: "ds sszutils.DynamicSpecs, dec sszutils.Decoder", results: typeNameError, args: "ds, dec"}, func() string {
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 {
 				return "t.UnmarshalSSZDecoder"
 			}
@@ -1292,15 +1324,15 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 
 		for _, desc := range views {
 			viewName := getViewFnName(desc)
-			err = generateDecoder(desc, codeBuilder, typePrinter, viewName, options)
+			err = generateDecoder(desc, codeBuilder, typePrinter, viewName, options, getViewSet(desc))
 			if err != nil {
-				return fmt.Errorf("failed to generate decoder for %s: %w", viewName, err)
+				return nil, fmt.Errorf("failed to generate decoder for %s: %w", viewName, err)
 			}
 		}
 	}
 
 	if !options.NoSizeSSZ {
-		emitViewDispatcher("SizeSSZDynView", "sizeSSZView", viewFnSignature{params: "ds sszutils.DynamicSpecs", results: typeNameInt, args: "ds"}, func() string {
+		emitViewDispatcher("SizeSSZDynView", "sizeSSZView", "sizes", viewFnSignature{params: "ds sszutils.DynamicSpecs", results: typeNameInt, args: "ds"}, func() string {
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 {
 				return "t.SizeSSZDyn"
 			}
@@ -1312,15 +1344,15 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 
 		for _, desc := range views {
 			viewName := getViewFnName(desc)
-			err = generateSize(desc, codeBuilder, typePrinter, viewName, options)
+			err = generateSize(desc, codeBuilder, typePrinter, viewName, options, getViewSet(desc))
 			if err != nil {
-				return fmt.Errorf("failed to generate size for %s: %w", viewName, err)
+				return nil, fmt.Errorf("failed to generate size for %s: %w", viewName, err)
 			}
 		}
 	}
 
 	if !options.NoHashTreeRoot {
-		emitViewDispatcher("HashTreeRootWithDynView", "hashTreeRootView", viewFnSignature{params: "ds sszutils.DynamicSpecs, hh sszutils.HashWalker", results: typeNameError, args: "ds, hh"}, func() string {
+		emitViewDispatcher("HashTreeRootWithDynView", "hashTreeRootView", "hashes", viewFnSignature{params: "ds sszutils.DynamicSpecs, hh sszutils.HashWalker", results: typeNameError, args: "ds, hh"}, func() string {
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 {
 				return "t.HashTreeRootWithDyn"
 			}
@@ -1335,14 +1367,18 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 
 		for _, desc := range views {
 			viewName := getViewFnName(desc)
-			err = generateHashTreeRoot(desc, codeBuilder, typePrinter, viewName, options)
+			err = generateHashTreeRoot(desc, codeBuilder, typePrinter, viewName, options, getViewSet(desc))
 			if err != nil {
-				return fmt.Errorf("failed to generate hash tree root for %s: %w", viewName, err)
+				return nil, fmt.Errorf("failed to generate hash tree root for %s: %w", viewName, err)
 			}
 		}
 	}
 
-	return nil
+	sets := make([]*specSetGenerator, 0, len(views))
+	for _, desc := range views {
+		sets = append(sets, getViewSet(desc))
+	}
+	return sets, nil
 }
 
 func isThirdPartyImport(path string) bool {

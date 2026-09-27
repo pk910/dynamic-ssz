@@ -61,7 +61,7 @@ type marshalContext struct {
 //
 // Returns:
 //   - error: An error if code generation fails
-func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions) error {
+func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions, set *specSetGenerator) error {
 	codeBuf := strings.Builder{}
 	ctx := &marshalContext{
 		appendCode: func(indent int, code string, args ...any) {
@@ -72,7 +72,7 @@ func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 		},
 		typePrinter: typePrinter,
 		options:     options,
-		exprVars:    newExprVarGenerator("expr", typePrinter, options),
+		exprVars:    newExprVarGenerator("expr", set),
 	}
 	ctx.recursion = newRecursionBound(rootTypeDesc, options)
 	ctx.depthAware = ctx.recursion.threads(rootTypeDesc)
@@ -88,7 +88,7 @@ func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 		return err
 	}
 
-	if ctx.exprVars.varCounter > 0 {
+	if ctx.exprVars.used {
 		ctx.usedDynSpecs = true
 	}
 

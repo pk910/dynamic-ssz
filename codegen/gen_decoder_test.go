@@ -25,7 +25,7 @@ func TestGenerateDecoderUnsupportedType(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateEncoderFn: true}
 
-	err := generateDecoder(desc, codeBuilder, typePrinter, "", options)
+	err := generateDecoder(desc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for unsupported SSZ type, got nil")
 	}
@@ -45,7 +45,7 @@ func TestGenerateDecoderBigIntType(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateEncoderFn: true, ExtendedTypes: true}
 
-	err := generateDecoder(bigIntDesc, codeBuilder, typePrinter, "", options)
+	err := generateDecoder(bigIntDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestGenerateDecoderOptionalError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateEncoderFn: true, ExtendedTypes: true}
 
-	err := generateDecoder(optionalDesc, codeBuilder, typePrinter, "", options)
+	err := generateDecoder(optionalDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for optional with unsupported inner type")
 	}
@@ -104,7 +104,7 @@ func TestGenerateDecoderDynamicUnmarshaler(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateEncoderFn: true}
 
-	err := generateDecoder(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateDecoder(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestGenerateDecoderVectorError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateEncoderFn: true}
 
-	err := generateDecoder(vectorDesc, codeBuilder, typePrinter, "", options)
+	err := generateDecoder(vectorDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for vector with unsupported element type")
 	}
@@ -157,7 +157,7 @@ func TestGenerateDecoderListError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateEncoderFn: true}
 
-	err := generateDecoder(listDesc, codeBuilder, typePrinter, "", options)
+	err := generateDecoder(listDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for list with unsupported element type")
 	}
@@ -186,7 +186,7 @@ func TestGenerateDecoderContainerError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateEncoderFn: true}
 
-	err := generateDecoder(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateDecoder(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for container with unsupported field type")
 	}
@@ -213,7 +213,7 @@ func TestDecoderVectorWithUnsupportedElement(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateDecoderFn: true}
 
-	err := generateDecoder(vectorDesc, codeBuilder, typePrinter, "", options)
+	err := generateDecoder(vectorDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for vector with unsupported element type")
 	}
@@ -241,7 +241,7 @@ func TestDecoderListWithUnsupportedElement(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateDecoderFn: true}
 
-	err := generateDecoder(listDesc, codeBuilder, typePrinter, "", options)
+	err := generateDecoder(listDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for list with unsupported element type")
 	}
@@ -277,7 +277,7 @@ func TestDecoderOptionalWithUnsupportedInner(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateDecoderFn: true, ExtendedTypes: true}
 
-	err := generateDecoder(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateDecoder(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for optional with unsupported inner type")
 	}
@@ -305,7 +305,7 @@ func TestDecoderUnionWithUnsupportedVariant(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateDecoderFn: true}
 
-	err := generateDecoder(unionDesc, codeBuilder, typePrinter, "", options)
+	err := generateDecoder(unionDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for union with unsupported variant type")
 	}
@@ -343,7 +343,7 @@ func TestDecoderTypeWrapperSuccess(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateDecoderFn: true}
 
-	if err := generateDecoder(wrapperDesc, codeBuilder, typePrinter, "", options); err != nil {
+	if err := generateDecoder(wrapperDesc, codeBuilder, typePrinter, "", options, testSpecSet()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(codeBuilder.String(), "t.Payload") {
@@ -382,7 +382,7 @@ func TestDecoderTypeWrapperWithUnsupportedInner(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateDecoderFn: true}
 
-	err := generateDecoder(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateDecoder(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for wrapper with unsupported inner type")
 	}
@@ -421,7 +421,7 @@ func TestDecoderContainerWithVectorOfUnsupported(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateDecoderFn: true}
 
-	err := generateDecoder(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateDecoder(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for container with vector of unsupported elements")
 	}
@@ -461,7 +461,7 @@ func TestDecoderContainerWithListOfUnsupported(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateDecoderFn: true}
 
-	err := generateDecoder(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateDecoder(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for container with list of unsupported elements")
 	}
@@ -491,7 +491,7 @@ func TestDecoderProgressiveContainerError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateDecoderFn: true}
 
-	err := generateDecoder(desc, codeBuilder, typePrinter, "", options)
+	err := generateDecoder(desc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for progressive container with unsupported field")
 	}
@@ -519,7 +519,7 @@ func TestDecoderProgressiveListError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateDecoderFn: true}
 
-	err := generateDecoder(listDesc, codeBuilder, typePrinter, "", options)
+	err := generateDecoder(listDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for progressive list with unsupported element type")
 	}
@@ -560,7 +560,7 @@ func TestDecoderNestedContainerUnsupportedField(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateDecoderFn: true}
 
-	err := generateDecoder(outerContainer, codeBuilder, typePrinter, "", options)
+	err := generateDecoder(outerContainer, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for nested container with unsupported field")
 	}
@@ -600,7 +600,7 @@ func TestDecoderContainerStaticPlusDynamicError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateDecoderFn: true}
 
-	err := generateDecoder(desc, codeBuilder, typePrinter, "", options)
+	err := generateDecoder(desc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for container with static + dynamic unsupported field")
 	}

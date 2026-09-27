@@ -487,7 +487,7 @@ func TestGenerateCodeErrorPaths(t *testing.T) {
 			cg := NewCodeGenerator(nil)
 			codeBuilder := &strings.Builder{}
 			typePrinter := NewTypePrinter("test/package")
-			err := cg.generateSSZMethods(unsupportedDesc, typePrinter, codeBuilder, "", &tt.opts)
+			err := cg.generateSSZMethods(unsupportedDesc, typePrinter, codeBuilder, "", &tt.opts, testSpecSet())
 			if err == nil {
 				t.Error("expected error from generateCode")
 			}
@@ -516,7 +516,7 @@ func TestGenerateCodeDecoderError(t *testing.T) {
 		CreateDecoderFn: false,
 	}
 	// With all disabled, no error
-	err := cg.generateSSZMethods(unsupportedDesc, typePrinter, codeBuilder, "", &opts)
+	err := cg.generateSSZMethods(unsupportedDesc, typePrinter, codeBuilder, "", &opts, testSpecSet())
 	if err != nil {
 		t.Errorf("expected no error when all generation disabled, got: %v", err)
 	}
@@ -1083,7 +1083,7 @@ func TestGenerateSSZViewMethodsErrorPaths(t *testing.T) {
 			cg := NewCodeGenerator(nil)
 			codeBuilder := &strings.Builder{}
 			typePrinter := NewTypePrinter("test/package")
-			err := cg.generateSSZViewMethods(
+			_, err := cg.generateSSZViewMethods(
 				unsupportedDesc, []*ssztypes.TypeDescriptor{viewDesc},
 				typePrinter, codeBuilder, &tt.opts,
 			)
@@ -3546,5 +3546,120 @@ func TestShallowFloorFrontEndParity(t *testing.T) {
 	}
 	if parsed.MinSize != 71 || cached.MinSize != 71 {
 		t.Fatalf("MinSize: parser %d, type cache %d, want the declared 71 on both", parsed.MinSize, cached.MinSize)
+	}
+}
+
+// The spec expressions of a type are resolved by one buildDynSSZSpecSet
+// method, each once, and every method that uses one fetches the resolved set
+// on entry instead of resolving on its own. A type without dynamic
+// expressions gets no set.
+func TestGeneratedSpecSet(t *testing.T) {
+	cg := NewCodeGenerator(ssztypes.NewTypeCache(nil))
+	cg.BuildFile("gen_test.go",
+		WithReflectType(reflect.TypeFor[genSpecSizedFallback](), WithCreateEncoderFn(), WithCreateDecoderFn()),
+		WithReflectType(reflect.TypeFor[mixedStatic](), WithoutDynamicExpressions()),
+	)
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	code := files["gen_test.go"]
+
+	build := "func (t *genSpecSizedFallback) buildDynSSZSpecSet(ds sszutils.DynamicSpecs) ([]uint64, error) {"
+	if n := strings.Count(code, build); n != 1 {
+		t.Fatalf("emitted %d spec set builders, want 1:\n%s", n, code)
+	}
+	if n := strings.Count(code, `ResolveSpecValueWithDefault(ds, "GEN_LEN", 4)`); n != 1 {
+		t.Fatalf("resolved GEN_LEN %d times, want once in the builder:\n%s", n, code)
+	}
+
+	fetch := "sszutils.GetCachedSpecSet[genSpecSizedFallback](ds, t.buildDynSSZSpecSet)"
+	fetches := strings.Count(code, fetch)
+	// Marshal, encoder, unmarshal, decoder, size and hash tree root each use
+	// the resolved length.
+	if fetches != 6 {
+		t.Fatalf("fetched the spec set in %d methods, want 6:\n%s", fetches, code)
+	}
+	if binds := strings.Count(code, "expr0 := exprs[0]"); binds != 5 {
+		// The encoder reads its context's field in place.
+		t.Fatalf("bound the resolved value in %d methods, want 5:\n%s", binds, code)
+	}
+	if !strings.Contains(code, "exprs []uint64") {
+		t.Fatalf("the encoder context does not hold the fetched set:\n%s", code)
+	}
+
+	if strings.Contains(code, "func (t *mixedStatic) buildDynSSZSpecSet") {
+		t.Fatalf("a type without dynamic expressions builds a spec set:\n%s", code)
+	}
+}
+
+type genSpecViewBase struct {
+	V []uint16 `ssz-size:"4"`
+}
+type genSpecViewA struct {
+	V []uint16 `ssz-size:"4" dynssz-size:"ONLY_A"`
+}
+type genSpecViewB struct {
+	V []uint16 `dynssz-size:"ONLY_B"`
+}
+
+// Each view resolves its own expressions by a builder of its own, keyed by
+// the view type, so one view never resolves what another declares; the data
+// type, with no expression of its own, builds no set.
+func TestGeneratedSpecSetPerView(t *testing.T) {
+	cg := NewCodeGenerator(ssztypes.NewTypeCache(nil))
+	cg.BuildFile("gen_test.go",
+		WithReflectType(reflect.TypeFor[genSpecViewBase](), WithReflectViewTypes(reflect.TypeFor[genSpecViewA](), reflect.TypeFor[genSpecViewB]())),
+	)
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	code := files["gen_test.go"]
+
+	for view, expr := range map[string]string{"genSpecViewA": `"ONLY_A", 4`, "genSpecViewB": `"ONLY_B", 0`} {
+		build := "func (t *genSpecViewBase) buildDynSSZSpecSet_" + view + "(ds sszutils.DynamicSpecs) ([]uint64, error) {"
+		if n := strings.Count(code, build); n != 1 {
+			t.Fatalf("emitted %d builders for %s, want 1:\n%s", n, view, code)
+		}
+		if n := strings.Count(code, "ResolveSpecValueWithDefault(ds, "+expr+")"); n != 1 {
+			t.Fatalf("resolved %s %d times, want once in the view's builder:\n%s", expr, n, code)
+		}
+		fetch := "sszutils.GetCachedViewSpecSet[genSpecViewBase, " + view + "](ds, t.buildDynSSZSpecSet_" + view + ")"
+		if n := strings.Count(code, fetch); n != 4 {
+			t.Fatalf("fetched the set of %s in %d methods, want 4:\n%s", view, n, code)
+		}
+	}
+	if strings.Contains(code, "func (t *genSpecViewBase) buildDynSSZSpecSet(") {
+		t.Fatalf("the data type without expressions builds a set:\n%s", code)
+	}
+}
+
+// A floor entry resolves as a bound and never a refusal, so the builder has
+// no error to return for it and declares err only when a value entry needs
+// it; a value and a floor of the same expression are separate entries.
+func TestSpecSetBuilderFloors(t *testing.T) {
+	set := newSpecSetGenerator("*T", "T", "T", "buildDynSSZSpecSet")
+	first := set.indexOf("VEC_LEN*8+4", 36, true)
+	if again := set.indexOf("VEC_LEN*8+4", 36, true); first != 0 || again != first {
+		t.Fatalf("floor entries %d and %d, want one entry at 0", first, again)
+	}
+	var code strings.Builder
+	set.emit(&code)
+	floor := `if floor, floorErr := sszutils.ResolveSpecValueWithDefault(ds, "VEC_LEN*8+4", 36); floorErr == nil && floor <= sszutils.MaxSszSize {`
+	if !strings.Contains(code.String(), floor) || !strings.Contains(code.String(), "exprs[0] = floor") {
+		t.Fatalf("floor not resolved as a bound:\n%s", code.String())
+	}
+	if strings.Contains(code.String(), "var err error") {
+		t.Fatalf("a floor-only builder declares err:\n%s", code.String())
+	}
+
+	if set.indexOf("VEC_LEN*8+4", 36, false) != 1 {
+		t.Fatal("a value of the floor's expression shares its entry")
+	}
+	code.Reset()
+	set.emit(&code)
+	if !strings.Contains(code.String(), "var err error") || !strings.Contains(code.String(), `if exprs[1], err = sszutils.ResolveSpecValueWithDefault(ds, "VEC_LEN*8+4", 36); err != nil {`) {
+		t.Fatalf("value entry not resolved with its error:\n%s", code.String())
 	}
 }

@@ -53,7 +53,7 @@ func TestGenerateMarshalUnsupportedType(t *testing.T) {
 			typePrinter := NewTypePrinter("test/package")
 			options := &CodeGeneratorOptions{}
 
-			err := generateMarshal(desc, codeBuilder, typePrinter, "", options)
+			err := generateMarshal(desc, codeBuilder, typePrinter, "", options, testSpecSet())
 			if err == nil {
 				t.Error("expected error for unsupported SSZ type, got nil")
 			}
@@ -91,7 +91,7 @@ func TestMarshalContainerWithNestedUnsupportedType(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateMarshal(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateMarshal(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for nested unsupported type, got nil")
 	}
@@ -136,7 +136,7 @@ func TestMarshalDynamicContainerFieldError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateMarshal(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateMarshal(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for dynamic field with nested unsupported type, got nil")
 	}
@@ -166,7 +166,7 @@ func TestMarshalVectorWithNestedUnsupportedType(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateMarshal(vectorDesc, codeBuilder, typePrinter, "", options)
+	err := generateMarshal(vectorDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for nested unsupported element type in vector, got nil")
 	}
@@ -197,7 +197,7 @@ func TestMarshalListWithNestedUnsupportedType(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateMarshal(listDesc, codeBuilder, typePrinter, "", options)
+	err := generateMarshal(listDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for nested unsupported element type in list, got nil")
 	}
@@ -229,7 +229,7 @@ func TestMarshalUnionWithNestedUnsupportedType(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateMarshal(unionDesc, codeBuilder, typePrinter, "", options)
+	err := generateMarshal(unionDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for nested unsupported variant type in union, got nil")
 	}
@@ -258,7 +258,7 @@ func TestMarshalTypeWrapperWithNestedUnsupportedType(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateMarshal(wrapperDesc, codeBuilder, typePrinter, "", options)
+	err := generateMarshal(wrapperDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for nested unsupported type in TypeWrapper, got nil")
 	}
@@ -294,7 +294,7 @@ func TestMarshalProgressiveContainerError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateMarshal(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateMarshal(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for progressive container with unsupported field, got nil")
 	}
@@ -324,7 +324,7 @@ func TestMarshalOptionalError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{ExtendedTypes: true}
 
-	err := generateMarshal(optionalDesc, codeBuilder, typePrinter, "", options)
+	err := generateMarshal(optionalDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for optional with unsupported inner type")
 	}
@@ -344,7 +344,7 @@ func TestMarshalBigIntType(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{ExtendedTypes: true}
 
-	err := generateMarshal(bigIntDesc, codeBuilder, typePrinter, "", options)
+	err := generateMarshal(bigIntDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -365,7 +365,7 @@ func TestMarshalBigIntTypeWithMax(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{ExtendedTypes: true}
 
-	if err := generateMarshal(bigIntDesc, codeBuilder, typePrinter, "", options); err != nil {
+	if err := generateMarshal(bigIntDesc, codeBuilder, typePrinter, "", options, testSpecSet()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(codeBuilder.String(), "exceeds maximum") {
@@ -397,7 +397,7 @@ func TestMarshalCustomType(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateMarshal(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateMarshal(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -424,7 +424,7 @@ func TestMarshalProgressiveListError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateMarshal(listDesc, codeBuilder, typePrinter, "", options)
+	err := generateMarshal(listDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for progressive list with unsupported element type, got nil")
 	}
@@ -463,7 +463,7 @@ func TestMarshalOptionalWithUnsupportedInner(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{ExtendedTypes: true}
 
-	err := generateMarshal(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateMarshal(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for optional with unsupported inner type")
 	}
@@ -483,7 +483,7 @@ func TestMarshalBitlistError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateMarshal(bitlistDesc, codeBuilder, typePrinter, "", options)
+	err := generateMarshal(bitlistDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err != nil {
 		t.Errorf("unexpected error for bitlist: %v", err)
 	}
@@ -511,7 +511,7 @@ func TestMarshalUnionWithUnsupportedVariant(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateMarshal(unionDesc, codeBuilder, typePrinter, "", options)
+	err := generateMarshal(unionDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for union with unsupported variant type")
 	}
@@ -548,7 +548,7 @@ func TestMarshalTypeWrapperWithUnsupportedInner(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateMarshal(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateMarshal(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for wrapper with unsupported inner type")
 	}
@@ -578,7 +578,7 @@ func TestMarshalContainerDynamicFieldError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateMarshal(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateMarshal(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for container with unsupported dynamic field")
 	}
@@ -617,7 +617,7 @@ func TestMarshalContainerWithVectorOfUnsupported(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateMarshal(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateMarshal(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for container with vector of unsupported elements")
 	}
@@ -657,7 +657,7 @@ func TestMarshalContainerWithListOfUnsupported(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateMarshal(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateMarshal(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for container with list of unsupported elements")
 	}
@@ -698,7 +698,7 @@ func TestMarshalNestedContainerUnsupportedField(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateMarshal(outerContainer, codeBuilder, typePrinter, "", options)
+	err := generateMarshal(outerContainer, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for nested container with unsupported field")
 	}
@@ -738,7 +738,7 @@ func TestMarshalContainerStaticPlusDynamicError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateMarshal(desc, codeBuilder, typePrinter, "", options)
+	err := generateMarshal(desc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for container with static + dynamic unsupported field")
 	}

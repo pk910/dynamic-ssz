@@ -71,7 +71,7 @@ type decoderContext struct {
 //
 // Returns:
 //   - error: An error if code generation fails
-func generateDecoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions) error {
+func generateDecoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions, set *specSetGenerator) error {
 	// Streaming code always uses dynamic expressions since the decoder interface
 	// requires DynamicSpecs. Override WithoutDynamicExpressions for this generator.
 	// The no-*Dyn-buffer-call invariant is preserved separately via
@@ -99,7 +99,7 @@ func generateDecoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 	ctx.recursion = newRecursionBound(rootTypeDesc, options)
 	ctx.depthAware = ctx.recursion.threads(rootTypeDesc)
 
-	ctx.exprVars = newExprVarGenerator("expr", typePrinter, options)
+	ctx.exprVars = newExprVarGenerator("expr", set)
 	ctx.staticSizeVars = newStaticSizeVarGenerator(typePrinter, options, ctx.exprVars)
 
 	// Generate main function signature
@@ -110,7 +110,7 @@ func generateDecoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 		return err
 	}
 
-	if ctx.exprVars.varCounter > 0 {
+	if ctx.exprVars.used {
 		ctx.usedDynSpecs = true
 	}
 

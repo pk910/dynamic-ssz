@@ -48,3 +48,20 @@ types:
     output: gen_viewtypes4.go
   - name: SpecOnlyList
     output: gen_viewtypes4.go
+  - name: SpecViewIsolation_Base
+    output: gen_viewtypes4.go
+    views:
+      - SpecViewIsolation_ViewA
+      - SpecViewIsolation_ViewB
+  - name: SpecViewShared_ChildGen
+    output: gen_viewtypes4.go
+    views:
+      - SpecViewShared_ChildView
+  - name: SpecViewShared_T1
+    output: gen_viewtypes4.go
+    views:
+      - SpecViewShared_View
+  - name: SpecViewShared_T2
+    output: gen_viewtypes4.go
+    views:
+      - SpecViewShared_View
