@@ -595,8 +595,8 @@ func (f declFloor) expression() string {
 // computes them for a traversed type: a static type holds exactly its size, a
 // container's fixed section holds every static field and four offset bytes per
 // dynamic field, a vector of dynamic elements holds one offset and one
-// element floor per element, a bit list or a union holds one byte, and
-// everything else can serialize to nothing. A static build declares no
+// element floor per element, a bit list, a union, an optional or a big.Int
+// holds one byte, and everything else can serialize to nothing. A static build declares no
 // expression: its sizes are baked. A child described
 // without its subtree contributes the floor its own generation declared. The
 // result is false when the floor overflows.
@@ -629,8 +629,10 @@ func floorDeclaration(desc *ssztypes.TypeDescriptor, options *CodeGeneratorOptio
 		perElem.lit += 4
 		perElem.constant += 4
 		return scaleFloorDeclaration(desc, options, perElem)
-	case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType, ssztypes.SszUnionType, ssztypes.SszCompatibleUnionType:
-		// The termination bit's byte, or the selector byte.
+	case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType, ssztypes.SszUnionType, ssztypes.SszCompatibleUnionType,
+		ssztypes.SszOptionalType, ssztypes.SszBigIntType:
+		// The termination bit's byte, the selector byte, the presence byte or
+		// the sign byte.
 		return declFloor{lit: 1, constant: 1}, true
 	default:
 		return declFloor{}, true

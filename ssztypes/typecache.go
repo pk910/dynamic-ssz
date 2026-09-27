@@ -1341,9 +1341,10 @@ func unresolvedReason(resolved bool) string {
 // serialize to. Decoders use it to reject an offset table that declares more
 // elements than the region can hold, before that count sizes an allocation.
 //
-// A type with no floor -- a list, an optional -- keeps 0, which states no
-// bound rather than a wrong one. A bit list holds its termination bit and a
-// union its selector, so each holds at least one byte.
+// A type with no floor -- a list, an optional list -- keeps 0, which states
+// no bound rather than a wrong one. A bit list holds its termination bit, a
+// union its selector, an optional its presence byte and a big.Int its sign
+// byte, so each holds at least one byte.
 //
 // It is stored rather than derived at decode time because Len carries different
 // meanings per type (bytes for a container's fixed section, elements for a
@@ -1372,8 +1373,9 @@ func (td *TypeDescriptor) SetMinSize() {
 		// The fixed section: every field's own size, and four offset bytes for
 		// each dynamic one.
 		td.MinSize = td.Len
-	case SszBitlistType, SszProgressiveBitlistType, SszUnionType, SszCompatibleUnionType:
-		// The termination bit's byte, or the selector byte.
+	case SszBitlistType, SszProgressiveBitlistType, SszUnionType, SszCompatibleUnionType, SszOptionalType, SszBigIntType:
+		// The termination bit's byte, the selector byte, the presence byte or
+		// the sign byte.
 		td.MinSize = 1
 	case SszVectorType:
 		// A vector of dynamic elements leads with one 4-byte offset per element,
@@ -1391,7 +1393,7 @@ func (td *TypeDescriptor) SetMinSize() {
 		}
 	default:
 		// Everything else can serialize to nothing -- an empty list, an absent
-		// optional -- so it states no floor.
+		// optional list -- so it states no floor.
 	}
 }
 

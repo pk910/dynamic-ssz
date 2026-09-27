@@ -727,12 +727,11 @@ const sszutilsPkgPath = "github.com/pk910/dynamic-ssz/sszutils"
 
 // annotationIndex resolves the sszutils.Annotate registrations of a named type
 // the way the runtime registry sees them: the calls of every loaded package,
-// in dependency order, merged newest first. Every package in the generated
-// package's import graph is linked into any binary running its code, and a
-// view package loaded separately is linked wherever its views are served, so
-// a registration in any of them applies at run time, wherever the type is
-// declared. Packages are visited with their imports first, siblings by import
-// path, which is the order their init functions run in.
+// in the order their init functions run, merged newest first. Every package
+// in the generated package's import graph is linked into any binary running
+// its code, and a view package loaded separately is linked wherever its views
+// are served, so a registration in any of them applies at run time, wherever
+// the type is declared.
 type annotationIndex struct {
 	order  []*packages.Package
 	owners map[*types.Package]*packages.Package
@@ -741,7 +740,11 @@ type annotationIndex struct {
 }
 
 // newAnnotationIndex indexes root and extra (separately loaded view packages)
-// with all their dependencies. A package that imports sszutils but was loaded
+// with all their dependencies, ordered as Go initializes them: repeatedly the
+// package first by import path among those whose imports are initialized.
+// The generated code serving the views imports the extra packages, so they
+// count as imports of root. A package both loads hold a copy of is read once,
+// as it initializes once. A package that imports sszutils but was loaded
 // without syntax could hold registrations the generator cannot read, so it is
 // refused rather than treated as unannotated.
 func newAnnotationIndex(root *packages.Package, extra ...*packages.Package) (*annotationIndex, error) {
@@ -749,39 +752,61 @@ func newAnnotationIndex(root *packages.Package, extra ...*packages.Package) (*an
 		owners: make(map[*types.Package]*packages.Package),
 		cache:  make(map[*types.Named]string),
 	}
+	byPath := make(map[string]*packages.Package)
+	imports := make(map[string][]string)
 	var err error
-	// A separately loaded view package is imported by the generated code that
-	// serves its views, so it initializes before root: it is visited first,
-	// and root's registrations merge last. Separately loaded packages
-	// initialize in import path order, so they are visited in that order,
-	// each once. A package both loads hold a copy of is read once, as it
-	// initializes once.
-	roots := make([]*packages.Package, 0, len(extra)+1)
-	seen := make(map[string]bool)
-	for _, p := range extra {
-		if !seen[p.PkgPath] {
-			seen[p.PkgPath] = true
-			roots = append(roots, p)
-		}
-	}
-	sort.Slice(roots, func(i, j int) bool { return roots[i].PkgPath < roots[j].PkgPath })
-	roots = append(roots, root)
-	read := make(map[string]bool)
-	packages.Visit(roots, nil, func(p *packages.Package) {
+	packages.Visit(append(append([]*packages.Package{}, extra...), root), nil, func(p *packages.Package) {
 		if p.Types == nil {
 			return
-		}
-		if !read[p.PkgPath] {
-			read[p.PkgPath] = true
-			idx.order = append(idx.order, p)
 		}
 		idx.owners[p.Types] = p
 		if err == nil && p.Imports[sszutilsPkgPath] != nil && (len(p.Syntax) == 0 || p.TypesInfo == nil) {
 			err = fmt.Errorf("package %s imports sszutils but was loaded without syntax: its Annotate registrations cannot be read", p.PkgPath)
 		}
+		if byPath[p.PkgPath] != nil {
+			return
+		}
+		byPath[p.PkgPath] = p
+		for path := range p.Imports {
+			imports[p.PkgPath] = append(imports[p.PkgPath], path)
+		}
 	})
 	if err != nil {
 		return nil, err
+	}
+	for _, p := range extra {
+		imports[root.PkgPath] = append(imports[root.PkgPath], p.PkgPath)
+	}
+	paths := make([]string, 0, len(byPath))
+	for path := range byPath {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	initialized := make(map[string]bool, len(paths))
+	for len(idx.order) < len(paths) {
+		next := ""
+		for _, path := range paths {
+			if initialized[path] {
+				continue
+			}
+			ready := true
+			for _, dep := range imports[path] {
+				if byPath[dep] != nil && !initialized[dep] {
+					ready = false
+					break
+				}
+			}
+			if ready {
+				next = path
+				break
+			}
+		}
+		if next == "" {
+			// Import cycles do not compile; nothing is left to order.
+			break
+		}
+		initialized[next] = true
+		idx.order = append(idx.order, byPath[next])
 	}
 	return idx, nil
 }

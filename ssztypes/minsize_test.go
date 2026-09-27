@@ -58,16 +58,19 @@ func TestMinSizeDeclaration(t *testing.T) {
 	}
 }
 
-// A bit list holds its termination bit and a union its selector, so each
-// states a one-byte floor; a list or an optional states none.
+// A bit list holds its termination bit, a union its selector, an optional its
+// presence byte and a big.Int its sign byte, so each states a one-byte
+// floor; a list or an optional list states none.
 func TestSetMinSizeOneByteFloors(t *testing.T) {
 	for sszType, want := range map[SszType]int64{
 		SszBitlistType:            1,
 		SszProgressiveBitlistType: 1,
 		SszUnionType:              1,
 		SszCompatibleUnionType:    1,
+		SszOptionalType:           1,
+		SszBigIntType:             1,
 		SszListType:               0,
-		SszOptionalType:           0,
+		SszOptionalListType:       0,
 	} {
 		desc := &TypeDescriptor{SszType: sszType, SszTypeFlags: SszTypeFlagIsDynamic}
 		desc.SetMinSize()

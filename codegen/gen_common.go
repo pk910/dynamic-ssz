@@ -576,8 +576,10 @@ func minSizeExpr(desc *ssztypes.TypeDescriptor, sizeVars *staticSizeVarGenerator
 	case ssztypes.SszTypeWrapperType:
 		return minSizeExpr(desc.ElemDesc, sizeVars, options)
 
-	case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType, ssztypes.SszUnionType, ssztypes.SszCompatibleUnionType:
-		// The termination bit's byte, or the selector byte.
+	case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType, ssztypes.SszUnionType, ssztypes.SszCompatibleUnionType,
+		ssztypes.SszOptionalType, ssztypes.SszBigIntType:
+		// The termination bit's byte, the selector byte, the presence byte or
+		// the sign byte.
 		return "1", "", true
 
 	case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
