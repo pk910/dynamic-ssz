@@ -2118,11 +2118,13 @@ func TestWriteOutputFilesReportsBackupRenameFailure(t *testing.T) {
 
 // TestAnnotationIndex_CrossPackage covers annotations registered in packages
 // other than the generated one: a field type from an imported package
-// (testpkg.Holder's fields are declared in viewfix/sub), a registration for
-// such a type in a third package testpkg imports (third registers sub.Nums,
-// merged newest first behind the declaring package's), and a view field type
-// from a separately loaded view package (sub.DataView over viewfix.Data, whose
-// package imports neither sub nor third). Without them the generator describes
+// (testpkg.Holder's fields are declared in viewfix/sub), registrations for
+// such a type in a third package testpkg imports and in testpkg itself (both
+// register sub.Nums; merged newest first, the generated package's wins), a
+// separately loaded package (extra) that initializes before the generated
+// one, and a view field type from a separately loaded view package
+// (sub.DataView over viewfix.Data, whose package imports neither sub nor
+// third). Without them the generator describes
 // the vector as a list and drops the list limit, diverging from the reflection
 // type cache.
 func TestAnnotationIndex_CrossPackage(t *testing.T) {
@@ -2142,10 +2144,20 @@ func TestAnnotationIndex_CrossPackage(t *testing.T) {
 	if !ok {
 		t.Fatal("testpkg.Holder is not a struct")
 	}
-	for i, tag := range []string{`ssz-size:"2,32"`, `ssz-minsize:"9" ssz-max:"3"`} {
+	for i, tag := range []string{`ssz-size:"2,32"`, `ssz-minsize:"11" ssz-minsize:"9" ssz-max:"3"`} {
 		if got := idx.resolve(holder.Field(i).Type()); got != tag {
 			t.Errorf("imported %v: annotation = %q, want %q", holder.Field(i).Type(), got, tag)
 		}
+	}
+
+	// A separately loaded package initializes before the generated one at
+	// run time, so its registration merges behind the generated package's.
+	idx, err = newAnnotationIndex(root, loadTestPackage(t, testPkgPath+"/extra"))
+	if err != nil {
+		t.Fatalf("annotation index with an extra package: %v", err)
+	}
+	if got, want := idx.resolve(holder.Field(1).Type()), `ssz-minsize:"11" ssz-minsize:"9" ssz-minsize:"7" ssz-max:"3"`; got != want {
+		t.Errorf("with an extra package: annotation = %q, want %q", got, want)
 	}
 
 	views := loadTestPackage(t, subPath)

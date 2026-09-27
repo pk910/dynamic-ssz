@@ -4165,13 +4165,17 @@ func TestViewShallowDelegation(t *testing.T) {
 
 	t.Run("dynamic view of a dynamic type", func(t *testing.T) {
 		p := NewParser()
-		p.AnnotationResolver = resolver(declared)
+		p.AnnotationResolver = resolver(map[types.Type]string{base: dynamic, view2: `ssz-static:"false" ssz-minsize:"16" dynssz-minsize:"(X):2*8"`})
 		desc, err := p.buildTypeDescriptor(types.NewPointer(base), types.NewPointer(view2), nil, nil, nil)
 		if err != nil {
 			t.Fatalf("descriptor: %v", err)
 		}
 		if !isShallow(desc) || desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 			t.Fatalf("shallow = %v, ssz flags = %b, want a shallow dynamic view", isShallow(desc), desc.SszTypeFlags)
+		}
+		// The declared literal is recorded, as the type cache records it.
+		if desc.MinSize != 16 {
+			t.Fatalf("MinSize = %d, want the declared 16", desc.MinSize)
 		}
 	})
 

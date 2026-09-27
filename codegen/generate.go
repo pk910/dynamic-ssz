@@ -14,6 +14,7 @@ import (
 	"math/bits"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
@@ -548,13 +549,14 @@ const staticTrueDeclaration = `ssz-static:"true"`
 // spec value is defined; dynssz-minsize holds the expression the spec resolves
 // to it, in which every spec-decided part carries the :fallback the type's
 // own code resolves it with, so the parts resolve on their own. A static
-// type's size is read from its own sizer.
+// type declares its size the same way, for the floors of the types that hold
+// it; its own decoding reads the size from its sizer.
 func delegateAnnotationFor(desc *ssztypes.TypeDescriptor, options *CodeGeneratorOptions) string {
-	if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
-		return staticTrueDeclaration
-	}
 	annotation := `ssz-static:"false"`
-	f, ok := floorDeclaration(desc, options.WithoutDynamicExpressions)
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
+		annotation = staticTrueDeclaration
+	}
+	f, ok := floorDeclaration(desc, options)
 	if !ok {
 		return annotation
 	}
@@ -594,44 +596,93 @@ func (f declFloor) expression() string {
 // container's fixed section holds every static field and four offset bytes per
 // dynamic field, a vector of dynamic elements holds one offset and one
 // element floor per element, and everything else can serialize to nothing. A
-// static build declares no expression: its sizes are baked. The result is
-// false when the floor overflows.
-func floorDeclaration(desc *ssztypes.TypeDescriptor, static bool) (declFloor, bool) {
+// static build declares no expression: its sizes are baked. A child described
+// without its subtree contributes the floor its own generation declared. The
+// result is false when the floor overflows.
+func floorDeclaration(desc *ssztypes.TypeDescriptor, options *CodeGeneratorOptions) (declFloor, bool) {
 	if desc == nil {
 		return declFloor{}, true
 	}
+	if isShallowDelegatedDescriptor(desc) {
+		return declaredFloor(desc, options)
+	}
 	if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
-		return staticFloorDeclaration(desc, static)
+		return staticFloorDeclaration(desc, options)
 	}
 	switch desc.SszType {
 	case ssztypes.SszTypeWrapperType:
-		return floorDeclaration(desc.ElemDesc, static)
+		return floorDeclaration(desc.ElemDesc, options)
 	case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
 		if desc.ContainerDesc == nil {
 			return declFloor{}, true
 		}
-		return sumFloorDeclarations(desc.ContainerDesc.Fields, static)
+		return sumFloorDeclarations(desc.ContainerDesc.Fields, options)
 	case ssztypes.SszVectorType:
 		if desc.ElemDesc == nil {
 			return declFloor{}, true
 		}
-		perElem, ok := floorDeclaration(desc.ElemDesc, static)
+		perElem, ok := floorDeclaration(desc.ElemDesc, options)
 		if !ok {
 			return declFloor{}, false
 		}
 		perElem.lit += 4
 		perElem.constant += 4
-		return scaleFloorDeclaration(desc, static, perElem)
+		return scaleFloorDeclaration(desc, options, perElem)
 	default:
 		return declFloor{}, true
 	}
 }
 
+// declaredFloor is the floor a child described without its subtree declared
+// (see delegateFloor), as a part of the floor of the type holding it. The
+// constant its expression ends with folds into the holder's; a static build
+// keeps the literal only.
+func declaredFloor(desc *ssztypes.TypeDescriptor, options *CodeGeneratorOptions) (declFloor, bool) {
+	lit, expr, ok := delegateFloor(desc, options)
+	if !ok {
+		return declFloor{}, true
+	}
+	if expr == "" || options.WithoutDynamicExpressions {
+		return declFloor{lit: lit, constant: lit}, true
+	}
+	f := declFloor{lit: lit}
+	if tail := trailingConstant(expr); tail != "" {
+		constant, err := strconv.ParseUint(tail, 10, 64)
+		if err != nil {
+			return declFloor{}, true
+		}
+		f.constant = constant
+		expr = strings.TrimSuffix(strings.TrimSuffix(expr, tail), "+")
+	}
+	if expr != "" {
+		f.parts = []string{expr}
+	}
+	return f, true
+}
+
+// trailingConstant returns the integer a floor expression ends with as a
+// top-level "+N" term, or "".
+func trailingConstant(expr string) string {
+	i := strings.LastIndex(expr, "+")
+	if i < 0 || i == len(expr)-1 {
+		return ""
+	}
+	for _, c := range expr[i+1:] {
+		if c < '0' || c > '9' {
+			return ""
+		}
+	}
+	return expr[i+1:]
+}
+
 // staticFloorDeclaration is floorDeclaration for a static type: its size,
 // which a spec value may feed through a vector length or a spec-sized field.
 // A width read from a sizer at run time is not expressed.
-func staticFloorDeclaration(desc *ssztypes.TypeDescriptor, static bool) (declFloor, bool) {
-	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr == 0 || static {
+func staticFloorDeclaration(desc *ssztypes.TypeDescriptor, options *CodeGeneratorOptions) (declFloor, bool) {
+	if isShallowDelegatedDescriptor(desc) {
+		return declaredFloor(desc, options)
+	}
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr == 0 || options.WithoutDynamicExpressions {
 		return declFloor{lit: uint64(desc.Size), constant: uint64(desc.Size)}, true
 	}
 	if desc.SszTypeFlags&ssztypes.SszTypeFlagSizerWidth != 0 {
@@ -639,12 +690,12 @@ func staticFloorDeclaration(desc *ssztypes.TypeDescriptor, static bool) (declFlo
 	}
 	switch desc.SszType {
 	case ssztypes.SszTypeWrapperType:
-		return staticFloorDeclaration(desc.ElemDesc, static)
+		return staticFloorDeclaration(desc.ElemDesc, options)
 	case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
 		if desc.ContainerDesc == nil {
 			return declFloor{}, true
 		}
-		return sumFloorDeclarations(desc.ContainerDesc.Fields, static)
+		return sumFloorDeclarations(desc.ContainerDesc.Fields, options)
 	case ssztypes.SszVectorType, ssztypes.SszBitvectorType:
 		if desc.ElemDesc == nil {
 			return declFloor{}, true
@@ -654,11 +705,11 @@ func staticFloorDeclaration(desc *ssztypes.TypeDescriptor, static bool) (declFlo
 			// rounded up as the fallback operator rounds its operand.
 			return declFloor{lit: uint64(desc.Size), parts: []string{fmt.Sprintf("(%s/8):%d", *desc.SizeExpression, desc.Size)}}, true
 		}
-		perElem, ok := staticFloorDeclaration(desc.ElemDesc, static)
+		perElem, ok := staticFloorDeclaration(desc.ElemDesc, options)
 		if !ok {
 			return declFloor{}, false
 		}
-		return scaleFloorDeclaration(desc, static, perElem)
+		return scaleFloorDeclaration(desc, options, perElem)
 	default:
 		return declFloor{lit: uint64(desc.Size), constant: uint64(desc.Size)}, true
 	}
@@ -666,7 +717,7 @@ func staticFloorDeclaration(desc *ssztypes.TypeDescriptor, static bool) (declFlo
 
 // sumFloorDeclarations sums a container's fixed section: every static field's
 // floor and four offset bytes per dynamic field.
-func sumFloorDeclarations(fields []ssztypes.FieldDescriptor, static bool) (declFloor, bool) {
+func sumFloorDeclarations(fields []ssztypes.FieldDescriptor, options *CodeGeneratorOptions) (declFloor, bool) {
 	var f declFloor
 	for _, field := range fields {
 		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
@@ -674,7 +725,7 @@ func sumFloorDeclarations(fields []ssztypes.FieldDescriptor, static bool) (declF
 			f.constant += 4
 			continue
 		}
-		fieldFloor, ok := floorDeclaration(field.Type, static)
+		fieldFloor, ok := floorDeclaration(field.Type, options)
 		if !ok {
 			return declFloor{}, false
 		}
@@ -689,24 +740,43 @@ func sumFloorDeclarations(fields []ssztypes.FieldDescriptor, static bool) (declF
 	return f, true
 }
 
+// groupSum parenthesizes a part that is a top-level sum, so it multiplies as
+// a whole.
+func groupSum(part string) string {
+	depth := 0
+	for _, c := range part {
+		switch c {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case '+', '-':
+			if depth == 0 {
+				return "(" + part + ")"
+			}
+		}
+	}
+	return part
+}
+
 // scaleFloorDeclaration multiplies a per-element floor by a vector's element
 // count. A literal count distributes over the parts and the constant; a count
 // a spec value decides, with the literal as its fallback, multiplies the
 // element's whole expression.
-func scaleFloorDeclaration(desc *ssztypes.TypeDescriptor, static bool, perElem declFloor) (declFloor, bool) {
+func scaleFloorDeclaration(desc *ssztypes.TypeDescriptor, options *CodeGeneratorOptions, perElem declFloor) (declFloor, bool) {
 	count := uint64(desc.Len)
 	hi, lo := bits.Mul64(count, perElem.lit)
 	if hi != 0 {
 		return declFloor{}, false
 	}
 	f := declFloor{lit: lo}
-	if desc.SizeExpression == nil || static {
+	if desc.SizeExpression == nil || options.WithoutDynamicExpressions {
 		if len(perElem.parts) == 0 {
 			f.constant = lo
 			return f, true
 		}
 		for _, part := range perElem.parts {
-			f.parts = append(f.parts, fmt.Sprintf("%d*%s", count, part))
+			f.parts = append(f.parts, fmt.Sprintf("%d*%s", count, groupSum(part)))
 		}
 		f.constant = count * perElem.constant
 		return f, true

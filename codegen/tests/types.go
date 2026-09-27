@@ -459,6 +459,23 @@ type SpecPairList struct {
 	Items []*SpecPairElem `ssz-max:"4"`
 }
 
+// SpecPairVec holds children generated in an earlier batch: a vector of
+// SpecPairElem, a dynamic field whose body is not part of the fixed section,
+// and a VecSpecLen, a static child whose declared, spec-decided size the
+// declaration imports. A list of SpecPairVec generated later is bounded by
+// that declaration.
+type SpecPairVec struct {
+	Pair [2]*SpecPairElem
+	V    VecSpecLen
+	L    []uint64 `ssz-max:"4"`
+}
+
+// SpecPairVecList is generated in-process by the codegen tests only; it
+// lists SpecPairVec elements, whose declaration imports SpecPairElem's.
+type SpecPairVecList struct {
+	Items []*SpecPairVec `ssz-max:"4"`
+}
+
 var SpecSizedList_Payload = SpecSizedList{
 	Items: []*SpecSizedElem{
 		{V: [8]uint64{1, 2, 3, 4, 5, 6, 7, 8}},

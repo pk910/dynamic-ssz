@@ -1001,8 +1001,20 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 				delete(p.cache, typeKey)
 			}
 			// A shallow descriptor has no traversed subtree: a static one still
-			// knows its size, a dynamic one states no floor.
+			// knows its size, a dynamic one holds the literal its generation
+			// declared, as the reflection type cache records it, so both
+			// front ends describe the type alike; the emitters resolve the
+			// declaration themselves (see delegateFloor).
 			desc.SetMinSize()
+			if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+				if literal, expr, ok := ssztypes.ParseMinSizeDeclaration(reflect.StructTag(annotation)); ok {
+					floor, floorErr := ssztypes.EvaluateMinSize(nil, literal, expr)
+					if floorErr != nil {
+						return nil, floorErr
+					}
+					desc.MinSize = floor
+				}
+			}
 			return desc, nil
 		}
 	}

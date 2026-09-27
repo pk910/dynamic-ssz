@@ -750,11 +750,19 @@ func newAnnotationIndex(root *packages.Package, extra ...*packages.Package) (*an
 		cache:  make(map[*types.Named]string),
 	}
 	var err error
-	packages.Visit(append([]*packages.Package{root}, extra...), nil, func(p *packages.Package) {
+	// A separately loaded view package is imported by the generated code that
+	// serves its views, so it initializes before root: it is visited first,
+	// and root's registrations merge last. A package both loads hold a copy
+	// of is read once, as it initializes once.
+	read := make(map[string]bool)
+	packages.Visit(append(append([]*packages.Package{}, extra...), root), nil, func(p *packages.Package) {
 		if p.Types == nil {
 			return
 		}
-		idx.order = append(idx.order, p)
+		if !read[p.PkgPath] {
+			read[p.PkgPath] = true
+			idx.order = append(idx.order, p)
+		}
 		idx.owners[p.Types] = p
 		if err == nil && p.Imports[sszutilsPkgPath] != nil && (len(p.Syntax) == 0 || p.TypesInfo == nil) {
 			err = fmt.Errorf("package %s imports sszutils but was loaded without syntax: its Annotate registrations cannot be read", p.PkgPath)
@@ -809,9 +817,10 @@ func annotatedNamedType(t types.Type) *types.Named {
 // annotateTypeArgMatches reports whether the type argument of an Annotate call
 // is target. With type information the argument is resolved the way the
 // runtime registration resolves it (an alias is transparent, one pointer level
-// is stripped) and compared as a type, so instantiations of one generic type
-// and same-named types of other packages stay apart; without it the argument
-// has to be spelled as the target's own name.
+// is stripped) and compared by its qualified name, so instantiations of one
+// generic type and same-named types of other packages stay apart while a
+// separately loaded package's copy of the same type matches; without it the
+// argument has to be spelled as the target's own name.
 func annotateTypeArgMatches(pkg *packages.Package, arg ast.Expr, target *types.Named) bool {
 	if pkg != nil && pkg.TypesInfo != nil {
 		if typ := pkg.TypesInfo.TypeOf(arg); typ != nil {
@@ -819,7 +828,7 @@ func annotateTypeArgMatches(pkg *packages.Package, arg ast.Expr, target *types.N
 			if ptr, ok := typ.(*types.Pointer); ok {
 				typ = types.Unalias(ptr.Elem())
 			}
-			return types.Identical(typ, target)
+			return types.Identical(typ, target) || types.TypeString(typ, nil) == types.TypeString(target, nil)
 		}
 	}
 	ident, ok := arg.(*ast.Ident)

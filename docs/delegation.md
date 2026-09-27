@@ -73,7 +73,10 @@ In a generated declaration every spec-decided part carries the `:fallback`
 the type's own code resolves it with, such as
 `(SPEC_A):32+(SPEC_B):4*8+(SPEC_BITS/8):3+4`, so the parts resolve on their
 own however the spec defines them (a static build declares the literal it
-baked). A hand-written type may declare its floor the same way.
+baked). A fixed-size type declares its size the same way, for the floors of
+the types that hold it. A type that holds a child described without its
+subtree imports the child's declaration into its own. A hand-written type
+may declare its floor the same way.
 Generated code decoding a list of such children reads that declaration and
 refuses an offset table whose element count the region cannot hold, before
 the count sizes an allocation, with the same region gate every other list

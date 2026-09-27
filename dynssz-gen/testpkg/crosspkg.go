@@ -6,10 +6,15 @@ package testpkg
 
 import (
 	"github.com/pk910/dynamic-ssz/dynssz-gen/testpkg/viewfix/sub"
+	"github.com/pk910/dynamic-ssz/sszutils"
 
 	// third registers an annotation for a sub type; linked with this package.
 	_ "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg/third"
 )
+
+// This package registers a key third registers too; initialized last, it
+// wins.
+var _ = sszutils.Annotate[sub.Nums](`ssz-minsize:"11"`)
 
 // Holder references types declared and annotated in an imported package.
 type Holder struct {

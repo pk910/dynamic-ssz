@@ -3251,10 +3251,13 @@ func TestDelegateAnnotationFor(t *testing.T) {
 	}
 	want := []string{
 		"sszutils.Annotate[ViewTypes1_Base](`ssz-static:\"false\" ssz-minsize:\"20\"`)",
-		"sszutils.Annotate[*ViewTypes1_View1](`ssz-static:\"true\"`)",
+		"sszutils.Annotate[*ViewTypes1_View1](`ssz-static:\"true\" ssz-minsize:\"96\"`)",
 		"sszutils.Annotate[*ViewTypes1_View2](`ssz-static:\"false\" ssz-minsize:\"16\"`)",
 		"sszutils.Annotate[SpecSizedElem](`ssz-static:\"false\" ssz-minsize:\"36\" dynssz-minsize:\"(VECSPEC_LEN):4*8+4\"`)",
 		"sszutils.Annotate[SpecPairElem](`ssz-static:\"false\" ssz-minsize:\"71\" dynssz-minsize:\"(SPEC_A):32+(SPEC_B):4*8+(SPEC_BITS/8):3+4\"`)",
+		// A static child described without its subtree contributes its
+		// declared size; a vector of dynamic children only its offset.
+		"sszutils.Annotate[SpecPairVec](`ssz-static:\"false\" ssz-minsize:\"44\" dynssz-minsize:\"(VECSPEC_LEN):4*8+(VECSPEC_LEN):4+8\"`)",
 	}
 	check := func(t *testing.T, files map[string]string, want []string) {
 		t.Helper()
@@ -3271,6 +3274,7 @@ func TestDelegateAnnotationFor(t *testing.T) {
 			WithGoTypesType(lookup("ViewTypes1_Base"), WithGoTypesViewTypes(lookup("ViewTypes1_View1"), lookup("ViewTypes1_View2"))),
 			WithGoTypesType(lookup("SpecSizedElem")),
 			WithGoTypesType(lookup("SpecPairElem")),
+			WithGoTypesType(lookup("SpecPairVec")),
 		)
 		files, err := cg.GenerateToMap()
 		if err != nil {
@@ -3288,6 +3292,7 @@ func TestDelegateAnnotationFor(t *testing.T) {
 			WithReflectType(reflect.TypeFor[reflectDeclSpecElem]()),
 			WithReflectType(reflect.TypeFor[reflectDeclPairElem]()),
 			WithReflectType(reflect.TypeFor[reflectDeclNested]()),
+			WithReflectType(reflect.TypeFor[reflectDeclPairVec]()),
 		)
 		files, err := cg.GenerateToMap()
 		if err != nil {
@@ -3297,8 +3302,9 @@ func TestDelegateAnnotationFor(t *testing.T) {
 			// A nested container's constant folds into the parent's, and a
 			// literal count distributes over the parts.
 			"sszutils.Annotate[reflectDeclNested](`ssz-static:\"false\" ssz-minsize:\"516\" dynssz-minsize:\"(SYNC_COMMITTEE_SIZE/8):64+2*(SYNC_COMMITTEE_SIZE/8):64+324\"`)",
+			"sszutils.Annotate[reflectDeclPairVec](`ssz-static:\"false\" ssz-minsize:\"44\" dynssz-minsize:\"(VECSPEC_LEN):4*8+(VECSPEC_LEN):4+8\"`)",
 			"sszutils.Annotate[reflectDeclBase](`ssz-static:\"false\" ssz-minsize:\"20\"`)",
-			"sszutils.Annotate[*reflectDeclStaticView](`ssz-static:\"true\"`)",
+			"sszutils.Annotate[*reflectDeclStaticView](`ssz-static:\"true\" ssz-minsize:\"96\"`)",
 			"sszutils.Annotate[*reflectDeclDynamicView](`ssz-static:\"false\" ssz-minsize:\"16\"`)",
 			"sszutils.Annotate[reflectDeclSpecElem](`ssz-static:\"false\" ssz-minsize:\"36\" dynssz-minsize:\"(VECSPEC_LEN):4*8+4\"`)",
 			"sszutils.Annotate[reflectDeclPairElem](`ssz-static:\"false\" ssz-minsize:\"71\" dynssz-minsize:\"(SPEC_A):32+(SPEC_B):4*8+(SPEC_BITS/8):3+4\"`)",
@@ -3344,6 +3350,7 @@ func TestGenerateDelegatedListFloor(t *testing.T) {
 		"ViewTypes1_View2": reflect.TypeFor[tests.ViewTypes1_View2](),
 		"SpecSizedElem":    reflect.TypeFor[tests.SpecSizedElem](),
 		"SpecPairElem":     reflect.TypeFor[tests.SpecPairElem](),
+		"SpecPairVec":      reflect.TypeFor[tests.SpecPairVec](),
 	}
 	resolver := func(t types.Type) string {
 		if ptr, ok := types.Unalias(t).(*types.Pointer); ok {
@@ -3362,6 +3369,7 @@ func TestGenerateDelegatedListFloor(t *testing.T) {
 		"if itemCount > (len(buf)-startOffset)/(16) {",
 		`sszutils.ResolveSpecValueWithDefault(ds, "(VECSPEC_LEN):4*8+4", 36)`,
 		`sszutils.ResolveSpecValueWithDefault(ds, "(SPEC_A):32+(SPEC_B):4*8+(SPEC_BITS/8):3+4", 71)`,
+		`sszutils.ResolveSpecValueWithDefault(ds, "(VECSPEC_LEN):4*8+(VECSPEC_LEN):4+8", 44)`,
 		"if expr0 > 0 && uint64(itemCount) > uint64(len(buf)-startOffset)/(expr0) {",
 	}
 	check := func(t *testing.T, files map[string]string) {
@@ -3380,6 +3388,7 @@ func TestGenerateDelegatedListFloor(t *testing.T) {
 			WithGoTypesType(lookup("ViewList_Base"), WithGoTypesViewTypes(lookup("ViewList_View"))),
 			WithGoTypesType(lookup("SpecSizedList")),
 			WithGoTypesType(lookup("SpecPairList")),
+			WithGoTypesType(lookup("SpecPairVecList")),
 		)
 		files, err := cg.GenerateToMap()
 		if err != nil {
@@ -3397,6 +3406,7 @@ func TestGenerateDelegatedListFloor(t *testing.T) {
 			WithReflectType(reflect.TypeFor[reflectViewList](), WithReflectViewTypes(reflect.TypeFor[reflectViewListView]())),
 			WithReflectType(reflect.TypeFor[reflectSpecSizedList]()),
 			WithReflectType(reflect.TypeFor[reflectSpecPairList]()),
+			WithReflectType(reflect.TypeFor[reflectSpecPairVecList]()),
 		)
 		files, err := cg.GenerateToMap()
 		if err != nil {
@@ -3449,6 +3459,14 @@ type (
 		Root [32]byte
 		L    []uint64 `ssz-max:"4"`
 	}
+	reflectDeclPairVec struct {
+		Pair [2]*tests.SpecPairElem
+		V    tests.VecSpecLen
+		L    []uint64 `ssz-max:"4"`
+	}
+	reflectSpecPairVecList struct {
+		Items []*tests.SpecPairVec `ssz-max:"4"`
+	}
 	reflectDeclPairElem struct {
 		A    []byte    `ssz-size:"32" dynssz-size:"SPEC_A"`
 		B    [8]uint64 `ssz-size:"4" dynssz-size:"SPEC_B"`
@@ -3470,3 +3488,33 @@ type (
 		Items []*tests.SpecSizedElem `ssz-max:"4"`
 	}
 )
+
+// A type described without its subtree records the literal its generation
+// declared on both front ends.
+func TestShallowFloorFrontEndParity(t *testing.T) {
+	scope := loadTestsPackage(t).Types.Scope()
+	obj := scope.Lookup("SpecPairElem")
+	if obj == nil {
+		t.Fatal("SpecPairElem not found")
+	}
+	elem := types.NewPointer(obj.Type())
+	p := NewParser()
+	if !p.fullyDelegatesSSZ(elem) {
+		t.Skip("generated code not present; SpecPairElem delegates nothing")
+	}
+	p.AnnotationResolver = func(types.Type) string {
+		tag, _ := sszutils.LookupAnnotation(reflect.TypeFor[tests.SpecPairElem]())
+		return tag
+	}
+	parsed, err := p.GetTypeDescriptor(elem, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("parser: %v", err)
+	}
+	cached, err := ssztypes.NewTypeCache(nil).GetTypeDescriptor(reflect.TypeFor[*tests.SpecPairElem](), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("type cache: %v", err)
+	}
+	if parsed.MinSize != 71 || cached.MinSize != 71 {
+		t.Fatalf("MinSize: parser %d, type cache %d, want the declared 71 on both", parsed.MinSize, cached.MinSize)
+	}
+}

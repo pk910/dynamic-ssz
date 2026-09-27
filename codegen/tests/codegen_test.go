@@ -1393,6 +1393,37 @@ func TestSpecPairListEngineFloors(t *testing.T) {
 	}
 }
 
+// TestSpecPairVecReflectionFloor: a reflection-decoded list of SpecPairVec is
+// bounded by its declaration, 44 bytes under the default specs and 20 under
+// VECSPEC_LEN=2, and decodes the elements' own bytes.
+func TestSpecPairVecReflectionFloor(t *testing.T) {
+	if _, generated := any(&SpecPairVec{}).(sszutils.DynamicSizer); !generated {
+		t.Skip("no generated code present")
+	}
+	type list struct {
+		Items []*SpecPairVec `ssz-max:"4"`
+	}
+	ds := dynssz.NewDynSsz(nil)
+	// One element declared in a 40-byte region.
+	buf := append([]byte{4, 0, 0, 0, 4, 0, 0, 0}, make([]byte, 36)...)
+	if err := ds.UnmarshalSSZ(&list{}, buf); !errors.Is(err, sszutils.ErrOffset) || !strings.Contains(err.Error(), "elements of at least 44 bytes") {
+		t.Fatalf("err = %v, want the region refused by the 44-byte floor", err)
+	}
+	if err := dynssz.NewDynSsz(map[string]any{"VECSPEC_LEN": uint64(2)}).UnmarshalSSZ(&list{}, buf); err == nil || strings.Contains(err.Error(), "elements of at least") {
+		t.Fatalf("VECSPEC_LEN=2: err = %v, want the 20-byte floor to admit the table", err)
+	}
+	elem := func() *SpecPairElem { return &SpecPairElem{A: make([]byte, 32), Bits: make([]byte, 3)} }
+	payload := list{Items: []*SpecPairVec{{Pair: [2]*SpecPairElem{elem(), elem()}, L: []uint64{1}}}}
+	encoded, err := ds.MarshalSSZ(&payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded list
+	if err := ds.UnmarshalSSZ(&decoded, encoded); err != nil || len(decoded.Items) != 1 {
+		t.Fatalf("decode of the elements' own bytes: err = %v, items = %d", err, len(decoded.Items))
+	}
+}
+
 // testCodegenPayloadWithView tests a payload serialized through a view.
 // It marshals via the view, unmarshals, and verifies roundtrip hash consistency.
 func testCodegenPayloadWithView(t *testing.T, payload, view any) {
