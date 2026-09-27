@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -2116,13 +2117,17 @@ func TestWriteOutputFilesReportsBackupRenameFailure(t *testing.T) {
 	}
 }
 
-// TestAnnotationIndex_CrossPackage covers annotations registered in the package
-// declaring a type other than the generated one: a field type from an imported
-// package (testpkg.Holder's fields are declared in viewfix/sub) and a view
-// field type from a separately loaded view package (sub.DataView over
-// viewfix.Data, whose package does not import sub). Without them the generator
-// describes the vector as a list and drops the list limit, diverging from the
-// reflection type cache.
+// TestAnnotationIndex_CrossPackage covers annotations registered in packages
+// other than the generated one: a field type from an imported package
+// (testpkg.Holder's fields are declared in viewfix/sub), registrations for
+// such a type in a third package testpkg imports and in testpkg itself (both
+// register sub.Nums; merged newest first, the generated package's wins), a
+// separately loaded package (extra) that initializes before the generated
+// one, and a view field type from a separately loaded view package
+// (sub.DataView over viewfix.Data, whose package imports neither sub nor
+// third). Without them the generator describes
+// the vector as a list and drops the list limit, diverging from the reflection
+// type cache.
 func TestAnnotationIndex_CrossPackage(t *testing.T) {
 	const (
 		testPkgPath = "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg"
@@ -2140,10 +2145,20 @@ func TestAnnotationIndex_CrossPackage(t *testing.T) {
 	if !ok {
 		t.Fatal("testpkg.Holder is not a struct")
 	}
-	for i, tag := range want {
+	for i, tag := range []string{`ssz-size:"2,32"`, `ssz-minsize:"11" ssz-minsize:"9" ssz-max:"3"`} {
 		if got := idx.resolve(holder.Field(i).Type()); got != tag {
 			t.Errorf("imported %v: annotation = %q, want %q", holder.Field(i).Type(), got, tag)
 		}
+	}
+
+	// A separately loaded package initializes before the generated one at
+	// run time, so its registration merges behind the generated package's.
+	idx, err = newAnnotationIndex(root, loadTestPackage(t, testPkgPath+"/extra"))
+	if err != nil {
+		t.Fatalf("annotation index with an extra package: %v", err)
+	}
+	if got, want := idx.resolve(holder.Field(1).Type()), `ssz-minsize:"11" ssz-minsize:"9" ssz-minsize:"7" ssz-max:"3"`; got != want {
+		t.Errorf("with an extra package: annotation = %q, want %q", got, want)
 	}
 
 	views := loadTestPackage(t, subPath)
@@ -2203,6 +2218,54 @@ func TestAnnotationIndex_Unreadable(t *testing.T) {
 	}
 	if idx.err == nil || !strings.Contains(idx.err.Error(), "example.com/other") {
 		t.Errorf("type from an unloaded package: err = %v, want it named", idx.err)
+	}
+}
+
+// TestAnnotationIndex_InitializationOrder: the index reads packages in the
+// order Go initializes them, repeatedly the first by import path among those
+// whose imports are initialized, with separately loaded packages as imports
+// of the root. With a importing z and b importing y that is y, b, z, a, not
+// the depth-first z, a, y, b; a package both loads hold is read once; and
+// packages importing each other never initialize, so none of them is ordered.
+func TestAnnotationIndex_InitializationOrder(t *testing.T) {
+	synthetic := func(path string, imports ...*packages.Package) *packages.Package {
+		p := &packages.Package{PkgPath: path, Types: types.NewPackage(path, path[strings.LastIndex(path, "/")+1:]), Imports: map[string]*packages.Package{}}
+		for _, imp := range imports {
+			p.Imports[imp.PkgPath] = imp
+		}
+		return p
+	}
+	order := func(idx *annotationIndex) []string {
+		paths := make([]string, len(idx.order))
+		for i, p := range idx.order {
+			paths[i] = p.PkgPath
+		}
+		return paths
+	}
+
+	shared := synthetic("example.com/shared")
+	y := synthetic("example.com/y", shared)
+	z := synthetic("example.com/z", shared)
+	a := synthetic("example.com/a", z)
+	b := synthetic("example.com/b", y)
+	root := synthetic("example.com/root", synthetic("example.com/shared"))
+	idx, err := newAnnotationIndex(root, b, a)
+	if err != nil {
+		t.Fatalf("annotation index: %v", err)
+	}
+	if got, want := order(idx), []string{"example.com/shared", "example.com/y", "example.com/b", "example.com/z", "example.com/a", "example.com/root"}; !slices.Equal(got, want) {
+		t.Errorf("order = %v, want %v", got, want)
+	}
+
+	first := synthetic("example.com/first")
+	second := synthetic("example.com/second", first)
+	first.Imports[second.PkgPath] = second
+	idx, err = newAnnotationIndex(first)
+	if err != nil {
+		t.Fatalf("annotation index: %v", err)
+	}
+	if len(idx.order) != 0 {
+		t.Errorf("ordered %d packages of an import cycle, want none", len(idx.order))
 	}
 }
 

@@ -5839,6 +5839,51 @@ func TestCustomStaticWithoutSizerErrors(t *testing.T) {
 	}
 }
 
+// staticOversizedCustom is a static custom type whose sizer states a size past
+// the SSZ size range; sizing it must surface delegatedStaticSize's error.
+type staticOversizedCustom struct{}
+
+func (staticOversizedCustom) SizeSSZ() int { return math.MaxInt }
+func (staticOversizedCustom) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return b, nil
+}
+func (staticOversizedCustom) UnmarshalSSZDyn(sszutils.DynamicSpecs, []byte) error { return nil }
+func (staticOversizedCustom) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
+var _ = sszutils.Annotate[staticOversizedCustom](`ssz-type:"custom" ssz-static:"true"`)
+
+func TestCustomStaticOversizedSizerErrors(t *testing.T) {
+	if sszutils.MaxSszSize == math.MaxInt {
+		t.Skip("no int exceeds the SSZ size range on this platform")
+	}
+	tc := NewTypeCache(nil)
+	tc.NoDelegation = true
+	_, err := tc.GetTypeDescriptor(reflect.TypeOf(staticOversizedCustom{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("static custom with an out-of-range sizer should error")
+	}
+	if !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+		t.Errorf("error = %v, want a size limit error", err)
+	}
+}
+
+// A cache that builds for generation and walks the type itself has no static
+// width to bake for a static custom type without an ssz-size; it refuses.
+func TestCustomStaticNoSizeForGenerationErrors(t *testing.T) {
+	tc := NewTypeCache(nil)
+	tc.DisableSpecResolution()
+	tc.NoDelegation = true
+	_, err := tc.GetTypeDescriptor(reflect.TypeOf(customStaticAll{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("static custom without ssz-size should error when built for generation without delegation")
+	}
+	if !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Errorf("error = %v, want an invalid constraint error", err)
+	}
+}
+
 // staticRefusingCustom is a static custom type whose sizer refuses to state a
 // size. A refusal carries no size, so the type is described as dynamic and the
 // reason is given where a caller asks for the size.

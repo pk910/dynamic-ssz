@@ -92,7 +92,7 @@ The tag string uses the same `key:"value"` syntax as Go struct field tags. All S
 **How it works:**
 - `Annotate[T]()` registers the tag string in a global registry at package init time
 - Both the code generator and the runtime reflection path read from this registry
-- The code generator discovers `Annotate` calls by scanning the source AST
+- The code generator discovers `Annotate` calls by scanning the source of every package it loads, the generated package and its whole import graph plus separately loaded view packages, and merges them in initialization order, as the runtime registry does
 
 **Important:**
 - Call `Annotate[T]()` at package level (in a `var` block or `init()` function) so the annotation is registered before any SSZ operation
@@ -399,6 +399,14 @@ Dynamic annotations (`dynssz-size`, `dynssz-max`, `dynssz-bitsize`) support expr
 3. Addition/Subtraction: `+`, `-`
 
 **Features**: Integer arithmetic only. Spec value substitution. Automatic rounding up for partial bytes.
+
+**Fallback**: an identifier or parenthesized group followed by `:N` resolves
+on its own, the way a size tag resolves against its static fallback: it takes
+its value rounded up to a whole unit, or `N` when the spec does not define it
+or resolves it to zero (with `:0` it is then simply zero). It binds tighter than the arithmetic around it, so
+`(A/8):4*8+B:2` reads `((A/8):4)*8+(B:2)`. This is how a generated type
+declares its minimum size (`dynssz-minsize`) from several independently
+resolved parts.
 
 ```go
 // Simple reference

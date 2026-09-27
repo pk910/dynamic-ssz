@@ -920,10 +920,10 @@ func ParseTags(tag string) (typeHints []SszTypeHint, sizeHints []SszSizeHint, ma
 				}
 			}
 
+			// The checks above leave a dimension both tags name holding the
+			// same value, so only a dimension ssz-max did not name is added.
 			if i >= len(maxSizeHints) {
 				maxSizeHints = append(maxSizeHints, sszMaxSize)
-			} else if maxSizeHints[i].Size != sszMaxSize.Size {
-				maxSizeHints[i] = sszMaxSize
 			}
 
 			if isExpr {

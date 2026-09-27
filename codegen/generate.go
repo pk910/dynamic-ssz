@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"go/build"
 	"go/types"
+	"math/bits"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
@@ -536,16 +538,265 @@ func dataCompatFlags(opts *CodeGeneratorOptions) ssztypes.SszCompatFlag {
 	return flags
 }
 
-// staticAnnotationFor returns the ssz-static annotation declaring whether a
-// generated type is fixed-size (static) or variable-size (dynamic). The
-// reflection typecache uses it to shallow-build the fully-delegated type without
-// descending into its subtree; for static types it reads the fixed size from the
-// type's own sizer.
-func staticAnnotationFor(desc *ssztypes.TypeDescriptor) string {
-	if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
-		return `ssz-static:"false"`
+// staticTrueDeclaration is what a fixed-size generated type registers.
+const staticTrueDeclaration = `ssz-static:"true"`
+
+// delegateAnnotationFor returns the declaration a generated type registers for
+// the runs that reach it fully delegated: whether it is fixed-size (ssz-static),
+// which lets both engines describe it without descending into its subtree,
+// and, for a variable-size type, the bytes every value holds in its fixed
+// section as the emitted code frames it. ssz-minsize holds the floor when no
+// spec value is defined; dynssz-minsize holds the expression the spec resolves
+// to it, in which every spec-decided part carries the :fallback the type's
+// own code resolves it with, so the parts resolve on their own. A static
+// type declares its size the same way, for the floors of the types that hold
+// it; its own decoding reads the size from its sizer.
+func delegateAnnotationFor(desc *ssztypes.TypeDescriptor, options *CodeGeneratorOptions) string {
+	annotation := `ssz-static:"false"`
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
+		annotation = staticTrueDeclaration
 	}
-	return `ssz-static:"true"`
+	f, ok := floorDeclaration(desc, options)
+	if !ok {
+		return annotation
+	}
+	if f.lit > 0 {
+		annotation += fmt.Sprintf(` ssz-minsize:"%d"`, f.lit)
+	}
+	if expr := f.expression(); expr != "" {
+		annotation += fmt.Sprintf(" dynssz-minsize:%q", expr)
+	}
+	return annotation
+}
+
+// declFloor is the floor a type declares: the bytes when no spec value is
+// defined, and, when one takes part, the spec-decided parts and the bytes no
+// spec value decides, which the expression states as one constant.
+type declFloor struct {
+	lit      uint64
+	parts    []string
+	constant uint64
+}
+
+// expression returns the spec expression resolving the floor, or "" when no
+// spec value takes part.
+func (f declFloor) expression() string {
+	if len(f.parts) == 0 {
+		return ""
+	}
+	expr := strings.Join(f.parts, "+")
+	if f.constant > 0 {
+		expr += fmt.Sprintf("+%d", f.constant)
+	}
+	return expr
+}
+
+// floorDeclaration returns the bytes every value of desc holds, as minSizeExpr
+// computes them for a traversed type: a static type holds exactly its size, a
+// container's fixed section holds every static field and four offset bytes per
+// dynamic field, a vector of dynamic elements holds one offset and one
+// element floor per element, a bit list, a union, an optional or a big.Int
+// holds one byte, and everything else can serialize to nothing. A static build declares no
+// expression: its sizes are baked. A child described
+// without its subtree contributes the floor its own generation declared. The
+// result is false when the floor overflows.
+func floorDeclaration(desc *ssztypes.TypeDescriptor, options *CodeGeneratorOptions) (declFloor, bool) {
+	if desc == nil {
+		return declFloor{}, true
+	}
+	if isShallowDelegatedDescriptor(desc) {
+		return declaredFloor(desc, options)
+	}
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
+		return staticFloorDeclaration(desc, options)
+	}
+	switch desc.SszType {
+	case ssztypes.SszTypeWrapperType:
+		return floorDeclaration(desc.ElemDesc, options)
+	case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
+		if desc.ContainerDesc == nil {
+			return declFloor{}, true
+		}
+		return sumFloorDeclarations(desc.ContainerDesc.Fields, options)
+	case ssztypes.SszVectorType:
+		if desc.ElemDesc == nil {
+			return declFloor{}, true
+		}
+		perElem, ok := floorDeclaration(desc.ElemDesc, options)
+		if !ok {
+			return declFloor{}, false
+		}
+		perElem.lit += 4
+		perElem.constant += 4
+		return scaleFloorDeclaration(desc, options, perElem)
+	case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType, ssztypes.SszUnionType, ssztypes.SszCompatibleUnionType,
+		ssztypes.SszOptionalType, ssztypes.SszBigIntType:
+		// The termination bit's byte, the selector byte, the presence byte or
+		// the sign byte.
+		return declFloor{lit: 1, constant: 1}, true
+	default:
+		return declFloor{}, true
+	}
+}
+
+// declaredFloor is the floor a child described without its subtree declared
+// (see delegateFloor), as a part of the floor of the type holding it. The
+// constant its expression ends with folds into the holder's; a static build
+// keeps the literal only.
+func declaredFloor(desc *ssztypes.TypeDescriptor, options *CodeGeneratorOptions) (declFloor, bool) {
+	lit, expr, ok := delegateFloor(desc, options)
+	if !ok {
+		return declFloor{}, true
+	}
+	if expr == "" || options.WithoutDynamicExpressions {
+		return declFloor{lit: lit, constant: lit}, true
+	}
+	f := declFloor{lit: lit}
+	if tail := trailingConstant(expr); tail != "" {
+		constant, err := strconv.ParseUint(tail, 10, 64)
+		if err != nil {
+			return declFloor{}, true
+		}
+		f.constant = constant
+		expr = strings.TrimSuffix(strings.TrimSuffix(expr, tail), "+")
+	}
+	if expr != "" {
+		f.parts = []string{expr}
+	}
+	return f, true
+}
+
+// trailingConstant returns the integer a floor expression ends with as a
+// top-level "+N" term, or "".
+func trailingConstant(expr string) string {
+	i := strings.LastIndex(expr, "+")
+	if i < 0 || i == len(expr)-1 {
+		return ""
+	}
+	for _, c := range expr[i+1:] {
+		if c < '0' || c > '9' {
+			return ""
+		}
+	}
+	return expr[i+1:]
+}
+
+// staticFloorDeclaration is floorDeclaration for a static type: its size,
+// which a spec value may feed through a vector length or a spec-sized field.
+// A width read from a sizer at run time is not expressed.
+func staticFloorDeclaration(desc *ssztypes.TypeDescriptor, options *CodeGeneratorOptions) (declFloor, bool) {
+	if isShallowDelegatedDescriptor(desc) {
+		return declaredFloor(desc, options)
+	}
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr == 0 || options.WithoutDynamicExpressions {
+		return declFloor{lit: uint64(desc.Size), constant: uint64(desc.Size)}, true
+	}
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagSizerWidth != 0 {
+		return declFloor{}, true
+	}
+	switch desc.SszType {
+	case ssztypes.SszTypeWrapperType:
+		return staticFloorDeclaration(desc.ElemDesc, options)
+	case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
+		if desc.ContainerDesc == nil {
+			return declFloor{}, true
+		}
+		return sumFloorDeclarations(desc.ContainerDesc.Fields, options)
+	case ssztypes.SszVectorType, ssztypes.SszBitvectorType:
+		if desc.ElemDesc == nil {
+			return declFloor{}, true
+		}
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 && desc.SizeExpression != nil {
+			// A bit count occupies the bytes that hold it: the quotient,
+			// rounded up as the fallback operator rounds its operand.
+			return declFloor{lit: uint64(desc.Size), parts: []string{fmt.Sprintf("(%s/8):%d", *desc.SizeExpression, desc.Size)}}, true
+		}
+		perElem, ok := staticFloorDeclaration(desc.ElemDesc, options)
+		if !ok {
+			return declFloor{}, false
+		}
+		return scaleFloorDeclaration(desc, options, perElem)
+	default:
+		return declFloor{lit: uint64(desc.Size), constant: uint64(desc.Size)}, true
+	}
+}
+
+// sumFloorDeclarations sums a container's fixed section: every static field's
+// floor and four offset bytes per dynamic field.
+func sumFloorDeclarations(fields []ssztypes.FieldDescriptor, options *CodeGeneratorOptions) (declFloor, bool) {
+	var f declFloor
+	for _, field := range fields {
+		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+			f.lit += 4
+			f.constant += 4
+			continue
+		}
+		fieldFloor, ok := floorDeclaration(field.Type, options)
+		if !ok {
+			return declFloor{}, false
+		}
+		sum, carry := bits.Add64(f.lit, fieldFloor.lit, 0)
+		if carry != 0 {
+			return declFloor{}, false
+		}
+		f.lit = sum
+		f.parts = append(f.parts, fieldFloor.parts...)
+		f.constant += fieldFloor.constant
+	}
+	return f, true
+}
+
+// groupSum parenthesizes a part that is a top-level sum, so it multiplies as
+// a whole.
+func groupSum(part string) string {
+	depth := 0
+	for _, c := range part {
+		switch c {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case '+', '-':
+			if depth == 0 {
+				return "(" + part + ")"
+			}
+		}
+	}
+	return part
+}
+
+// scaleFloorDeclaration multiplies a per-element floor by a vector's element
+// count. A literal count distributes over the parts and the constant; a count
+// a spec value decides, with the literal as its fallback, multiplies the
+// element's whole expression.
+func scaleFloorDeclaration(desc *ssztypes.TypeDescriptor, options *CodeGeneratorOptions, perElem declFloor) (declFloor, bool) {
+	count := uint64(desc.Len)
+	hi, lo := bits.Mul64(count, perElem.lit)
+	if hi != 0 {
+		return declFloor{}, false
+	}
+	f := declFloor{lit: lo}
+	if desc.SizeExpression == nil || options.WithoutDynamicExpressions {
+		if len(perElem.parts) == 0 {
+			f.constant = lo
+			return f, true
+		}
+		for _, part := range perElem.parts {
+			f.parts = append(f.parts, fmt.Sprintf("%d*%s", count, groupSum(part)))
+		}
+		f.constant = count * perElem.constant
+		return f, true
+	}
+	countExpr := fmt.Sprintf("(%s):%d", *desc.SizeExpression, count)
+	switch {
+	case len(perElem.parts) > 0:
+		f.parts = []string{fmt.Sprintf("%s*(%s)", countExpr, perElem.expression())}
+	case perElem.constant == 1:
+		f.parts = []string{countExpr}
+	case perElem.constant > 0:
+		f.parts = []string{fmt.Sprintf("%s*%d", countExpr, perElem.constant)}
+	}
+	return f, true
 }
 
 // packageScopeNames returns the top-level identifier names declared in the
@@ -647,6 +898,7 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 		}
 
 		t.Options.generated = cg.compatFlags
+		t.Options.annotationResolver = cg.annotationResolver
 
 		if !t.IsViewOnly {
 			hash := t.Descriptor.GetTypeHash()
@@ -659,7 +911,7 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 
 			// Declare static/dynamic so the reflection typecache can shallow-build
 			// this fully-delegated type without descending into its subtree.
-			fmt.Fprintf(&annotationsBuilder, "var _ = sszutils.Annotate[%s](`%s`)\n", typePrinter.InnerTypeString(t.Descriptor), staticAnnotationFor(t.Descriptor))
+			fmt.Fprintf(&annotationsBuilder, "var _ = sszutils.Annotate[%s](`%s`)\n", typePrinter.InnerTypeString(t.Descriptor), delegateAnnotationFor(t.Descriptor, &t.Options))
 		}
 
 		// View methods bake spec expressions into their bodies; without dynamic
@@ -680,7 +932,7 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 			// Each view schema type may have its own static/dynamic shape, so the
 			// annotation is emitted per view schema type (not the base type).
 			for _, viewDesc := range t.ViewDescriptors {
-				fmt.Fprintf(&annotationsBuilder, "var _ = sszutils.Annotate[%s](`%s`)\n", typePrinter.ViewTypeString(viewDesc, false), staticAnnotationFor(viewDesc))
+				fmt.Fprintf(&annotationsBuilder, "var _ = sszutils.Annotate[%s](`%s`)\n", typePrinter.ViewTypeString(viewDesc, false), delegateAnnotationFor(viewDesc, &t.Options))
 			}
 		}
 	}

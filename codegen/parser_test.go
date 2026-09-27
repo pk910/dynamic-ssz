@@ -4115,3 +4115,283 @@ func TestParserStaticBuildRefusesSpecOnlyBounds(t *testing.T) {
 		t.Fatalf("length with a fallback: desc = %+v, err = %v, want length 4", desc, err)
 	}
 }
+
+// A view is built shallow when its data type serves views through the view
+// method set, and it reads its own ssz-static declaration from the view type,
+// as the reflection type cache does. A data type that delegates only its plain
+// SSZ operations is traversed when viewed. The type-hint override and a custom
+// type's static declaration read the view type as well.
+func TestViewShallowDelegation(t *testing.T) {
+	pkg := loadTestsPackage(t)
+	lookup := func(name string) types.Type {
+		obj := pkg.Types.Scope().Lookup(name)
+		if obj == nil {
+			t.Fatalf("%s not found", name)
+		}
+		return obj.Type()
+	}
+	stripPointer := func(typ types.Type) types.Type {
+		if ptr, ok := typ.(*types.Pointer); ok {
+			return ptr.Elem()
+		}
+		return typ
+	}
+	resolver := func(annotations map[types.Type]string) func(types.Type) string {
+		return func(typ types.Type) string { return annotations[stripPointer(types.Unalias(typ))] }
+	}
+	isShallow := func(desc *ssztypes.TypeDescriptor) bool { return desc.ContainerDesc == nil }
+
+	base, view1, view2 := lookup("ViewTypes1_Base"), lookup("ViewTypes1_View1"), lookup("ViewTypes1_View2")
+	if !NewParser().fullyDelegatesSSZView(types.NewPointer(base)) {
+		t.Skip("generated code not present; ViewTypes1_Base serves no views")
+	}
+	const dynamic, static = `ssz-static:"false"`, `ssz-static:"true"`
+	declared := map[types.Type]string{base: dynamic, view1: static, view2: dynamic}
+
+	t.Run("static view of a dynamic type", func(t *testing.T) {
+		p := NewParser()
+		p.AnnotationResolver = resolver(declared)
+		desc, err := p.buildTypeDescriptor(types.NewPointer(base), types.NewPointer(view1), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("descriptor: %v", err)
+		}
+		if !isShallow(desc) || desc.GoTypeFlags&ssztypes.GoTypeFlagIsView == 0 || desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+			t.Fatalf("shallow = %v, go flags = %b, ssz flags = %b, want a shallow static view", isShallow(desc), desc.GoTypeFlags, desc.SszTypeFlags)
+		}
+		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewSizer == 0 {
+			t.Fatalf("compat flags = %b, want the view sizer", desc.SszCompatFlags)
+		}
+	})
+
+	t.Run("dynamic view of a dynamic type", func(t *testing.T) {
+		p := NewParser()
+		p.AnnotationResolver = resolver(map[types.Type]string{base: dynamic, view2: `ssz-static:"false" ssz-minsize:"16" dynssz-minsize:"(X):2*8"`})
+		desc, err := p.buildTypeDescriptor(types.NewPointer(base), types.NewPointer(view2), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("descriptor: %v", err)
+		}
+		if !isShallow(desc) || desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
+			t.Fatalf("shallow = %v, ssz flags = %b, want a shallow dynamic view", isShallow(desc), desc.SszTypeFlags)
+		}
+		// The declared literal is recorded, as the type cache records it.
+		if desc.MinSize != 16 {
+			t.Fatalf("MinSize = %d, want the declared 16", desc.MinSize)
+		}
+	})
+
+	t.Run("plain reference reads the data type", func(t *testing.T) {
+		p := NewParser()
+		p.AnnotationResolver = resolver(declared)
+		desc, err := p.buildTypeDescriptor(types.NewPointer(base), types.NewPointer(base), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("descriptor: %v", err)
+		}
+		if !isShallow(desc) || desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0 || desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
+			t.Fatalf("shallow = %v, go flags = %b, ssz flags = %b, want a shallow dynamic value", isShallow(desc), desc.GoTypeFlags, desc.SszTypeFlags)
+		}
+	})
+
+	t.Run("view-only data type", func(t *testing.T) {
+		viewOnly, view := lookup("ViewTypes3_Base"), lookup("ViewTypes3_View1")
+		p := NewParser()
+		p.AnnotationResolver = resolver(map[types.Type]string{view: dynamic})
+		if p.fullyDelegatesSSZ(types.NewPointer(viewOnly)) {
+			t.Fatal("ViewTypes3_Base is expected to serve views only")
+		}
+		desc, err := p.buildTypeDescriptor(types.NewPointer(viewOnly), types.NewPointer(view), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("view: %v", err)
+		}
+		if !isShallow(desc) {
+			t.Fatal("view: want a shallow descriptor through the view method set")
+		}
+		desc, err = p.buildTypeDescriptor(types.NewPointer(viewOnly), types.NewPointer(viewOnly), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("plain: %v", err)
+		}
+		if isShallow(desc) {
+			t.Fatal("plain: want the type traversed, it delegates no plain operation")
+		}
+	})
+
+	t.Run("plain delegate viewed through another type", func(t *testing.T) {
+		container := lookup("NestedDelegatedContainer")
+		containerNamed, ok := container.(*types.Named)
+		if !ok {
+			t.Fatal("NestedDelegatedContainer is not a named type")
+		}
+		// The view has the data type's layout under another name. The pair
+		// is traversed, which reaches the fixture's invalid inner vector.
+		view := types.NewNamed(types.NewTypeName(0, nil, "NestedDelegatedView", nil), containerNamed.Underlying(), nil)
+		p := NewParser()
+		p.AnnotationResolver = resolver(map[types.Type]string{container: static, view: static})
+		_, err := p.buildTypeDescriptor(types.NewPointer(container), types.NewPointer(view), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "zero length") {
+			t.Fatalf("err = %v, want the traversed subtree refused", err)
+		}
+	})
+
+	t.Run("type hint against the view's declaration", func(t *testing.T) {
+		containerHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszContainerType}}
+		for _, tt := range []struct {
+			name    string
+			base    string
+			view    string
+			shallow bool
+		}{
+			{"hint matches the view", `ssz-static:"false" ssz-type:"progressive-container"`, `ssz-static:"true" ssz-type:"container"`, true},
+			{"hint matches the data type only", `ssz-static:"false" ssz-type:"container"`, `ssz-static:"true" ssz-type:"progressive-container"`, false},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				p := NewParser()
+				p.AnnotationResolver = resolver(map[types.Type]string{base: tt.base, view1: tt.view})
+				desc, err := p.buildTypeDescriptor(types.NewPointer(base), types.NewPointer(view1), containerHint, nil, nil)
+				if err != nil {
+					t.Fatalf("descriptor: %v", err)
+				}
+				if got := isShallow(desc); got != tt.shallow {
+					t.Fatalf("shallow = %v, want %v", got, tt.shallow)
+				}
+			})
+		}
+	})
+
+	t.Run("custom type static declaration", func(t *testing.T) {
+		custom := []ssztypes.SszTypeHint{{Type: ssztypes.SszCustomType}}
+		opaque := lookup("CustomType1")
+		view := types.NewNamed(types.NewTypeName(0, nil, "CustomView", nil), opaque.Underlying(), nil)
+		staticFlags := ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagSizerWidth
+		for _, tt := range []struct {
+			name  string
+			data  string
+			view  string
+			flags ssztypes.SszTypeFlag
+		}{
+			{"ssz-static on the view", "", static, staticFlags},
+			{"ssz-static on the data type only", static, "", ssztypes.SszTypeFlagIsDynamic},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				p := NewParser()
+				p.AnnotationResolver = resolver(map[types.Type]string{opaque: tt.data, view: tt.view})
+				desc, err := p.buildTypeDescriptor(opaque, view, custom, nil, nil)
+				if err != nil {
+					t.Fatalf("descriptor: %v", err)
+				}
+				if got := desc.SszTypeFlags & (staticFlags | ssztypes.SszTypeFlagIsDynamic); got != tt.flags {
+					t.Fatalf("flags = %b, want %b", got, tt.flags)
+				}
+			})
+		}
+	})
+}
+
+// The basic shapes a Go type states, with and without extended types.
+func TestBasicShape(t *testing.T) {
+	type shape struct {
+		kind    reflect.Kind
+		sszType ssztypes.SszType
+		width   int64
+	}
+	none := shape{reflect.Invalid, ssztypes.SszUnspecifiedType, 0}
+	for _, tt := range []struct {
+		name     string
+		typ      types.Type
+		plain    shape
+		extended shape
+	}{
+		{"bool", types.Typ[types.Bool], shape{reflect.Bool, ssztypes.SszBoolType, 1}, shape{reflect.Bool, ssztypes.SszBoolType, 1}},
+		{"uint8", types.Typ[types.Uint8], shape{reflect.Uint8, ssztypes.SszUint8Type, 1}, shape{reflect.Uint8, ssztypes.SszUint8Type, 1}},
+		{"uint16", types.Typ[types.Uint16], shape{reflect.Uint16, ssztypes.SszUint16Type, 2}, shape{reflect.Uint16, ssztypes.SszUint16Type, 2}},
+		{"uint32", types.Typ[types.Uint32], shape{reflect.Uint32, ssztypes.SszUint32Type, 4}, shape{reflect.Uint32, ssztypes.SszUint32Type, 4}},
+		{"uint64", types.Typ[types.Uint64], shape{reflect.Uint64, ssztypes.SszUint64Type, 8}, shape{reflect.Uint64, ssztypes.SszUint64Type, 8}},
+		{"named uint64", types.NewNamed(types.NewTypeName(0, nil, "Slot", nil), types.Typ[types.Uint64], nil), shape{reflect.Uint64, ssztypes.SszUint64Type, 8}, shape{reflect.Uint64, ssztypes.SszUint64Type, 8}},
+		{"alias of uint32", types.NewAlias(types.NewTypeName(0, nil, "Epoch", nil), types.Typ[types.Uint32]), shape{reflect.Uint32, ssztypes.SszUint32Type, 4}, shape{reflect.Uint32, ssztypes.SszUint32Type, 4}},
+		{"int8", types.Typ[types.Int8], none, shape{reflect.Int8, ssztypes.SszInt8Type, 1}},
+		{"int16", types.Typ[types.Int16], none, shape{reflect.Int16, ssztypes.SszInt16Type, 2}},
+		{"int32", types.Typ[types.Int32], none, shape{reflect.Int32, ssztypes.SszInt32Type, 4}},
+		{"int64", types.Typ[types.Int64], none, shape{reflect.Int64, ssztypes.SszInt64Type, 8}},
+		{"float32", types.Typ[types.Float32], none, shape{reflect.Float32, ssztypes.SszFloat32Type, 4}},
+		{"float64", types.Typ[types.Float64], none, shape{reflect.Float64, ssztypes.SszFloat64Type, 8}},
+		{"int", types.Typ[types.Int], none, none},
+		{"uint", types.Typ[types.Uint], none, none},
+		{"uintptr", types.Typ[types.Uintptr], none, none},
+		{"complex64", types.Typ[types.Complex64], none, none},
+		{"string", types.Typ[types.String], none, none},
+		{"struct", types.NewStruct(nil, nil), none, none},
+		{"slice", types.NewSlice(types.Typ[types.Uint8]), none, none},
+		{"array", types.NewArray(types.Typ[types.Uint8], 4), none, none},
+		{"pointer", types.NewPointer(types.Typ[types.Uint64]), none, none},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			for extended, want := range map[bool]shape{false: tt.plain, true: tt.extended} {
+				kind, sszType, width := basicShape(tt.typ, extended)
+				if got := (shape{kind, sszType, width}); got != want {
+					t.Errorf("extended=%v: shape = %+v, want %+v", extended, got, want)
+				}
+			}
+		})
+	}
+}
+
+// The byte width of every basic SSZ type, with and without extended types;
+// anything else is zero.
+func TestSszBasicWidth(t *testing.T) {
+	for _, tt := range []struct {
+		sszType  ssztypes.SszType
+		plain    int64
+		extended int64
+	}{
+		{ssztypes.SszBoolType, 1, 1},
+		{ssztypes.SszUint8Type, 1, 1},
+		{ssztypes.SszUint16Type, 2, 2},
+		{ssztypes.SszUint32Type, 4, 4},
+		{ssztypes.SszUint64Type, 8, 8},
+		{ssztypes.SszUint128Type, 16, 16},
+		{ssztypes.SszUint256Type, 32, 32},
+		{ssztypes.SszInt8Type, 0, 1},
+		{ssztypes.SszInt16Type, 0, 2},
+		{ssztypes.SszInt32Type, 0, 4},
+		{ssztypes.SszInt64Type, 0, 8},
+		{ssztypes.SszFloat32Type, 0, 4},
+		{ssztypes.SszFloat64Type, 0, 8},
+		{ssztypes.SszUnspecifiedType, 0, 0},
+		{ssztypes.SszContainerType, 0, 0},
+		{ssztypes.SszListType, 0, 0},
+		{ssztypes.SszVectorType, 0, 0},
+		{ssztypes.SszBitvectorType, 0, 0},
+		{ssztypes.SszCustomType, 0, 0},
+		{ssztypes.SszBigIntType, 0, 0},
+	} {
+		if got := sszBasicWidth(tt.sszType, false); got != tt.plain {
+			t.Errorf("%v: width = %d, want %d", tt.sszType, got, tt.plain)
+		}
+		if got := sszBasicWidth(tt.sszType, true); got != tt.extended {
+			t.Errorf("%v extended: width = %d, want %d", tt.sszType, got, tt.extended)
+		}
+	}
+}
+
+// The Go kinds a shallow descriptor can carry; anything else is invalid.
+func TestGoKind(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		typ  types.Type
+		want reflect.Kind
+	}{
+		{"array", types.NewArray(types.Typ[types.Uint8], 4), reflect.Array},
+		{"slice", types.NewSlice(types.Typ[types.Uint8]), reflect.Slice},
+		{"struct", types.NewStruct(nil, nil), reflect.Struct},
+		{"string", types.Typ[types.String], reflect.String},
+		{"named string", types.NewNamed(types.NewTypeName(0, nil, "Name", nil), types.Typ[types.String], nil), reflect.String},
+		{"alias of a slice", types.NewAlias(types.NewTypeName(0, nil, "Bytes", nil), types.NewSlice(types.Typ[types.Uint8])), reflect.Slice},
+		{"uint64", types.Typ[types.Uint64], reflect.Invalid},
+		{"bool", types.Typ[types.Bool], reflect.Invalid},
+		{"pointer", types.NewPointer(types.NewStruct(nil, nil)), reflect.Invalid},
+		{"map", types.NewMap(types.Typ[types.String], types.Typ[types.Uint64]), reflect.Invalid},
+		{"interface", types.NewInterfaceType(nil, nil), reflect.Invalid},
+	} {
+		if got := goKind(tt.typ); got != tt.want {
+			t.Errorf("%s: kind = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}

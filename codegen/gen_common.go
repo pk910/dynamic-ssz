@@ -8,12 +8,15 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"go/types"
 	"math"
 	"math/bits"
+	"reflect"
 	"strconv"
 	"strings"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 const (
@@ -87,6 +90,37 @@ func (g *exprVarGenerator) getExprVar(expr string, defaultValue uint64) string {
 	appendCode(g.codeBuf, 0, "%s, err %s= sszutils.ResolveSpecValueWithDefault(ds, \"%s\", %d)\n", exprVar, varDefColon, expr, defaultValue)
 	appendCode(g.codeBuf, 0, "if err != nil {\n")
 	appendCode(g.codeBuf, 1, "return %s\n", g.retVars)
+	appendCode(g.codeBuf, 0, "}\n")
+
+	g.varMap[exprKey] = exprVar
+
+	return exprVar
+}
+
+// getFloorExprVar resolves a declared floor (see delegateFloor) into a
+// variable the region gate divides by. A floor is a bound and never a refusal:
+// one that does not resolve, or lies beyond the SSZ size limit, leaves the
+// variable at zero, which the gate skips.
+func (g *exprVarGenerator) getFloorExprVar(expr string, fallback uint64) string {
+	exprKey := sha256.Sum256(fmt.Appendf(nil, "floor\n%s\n%v", expr, fallback))
+	if exprVar, ok := g.varMap[exprKey]; ok {
+		return exprVar
+	}
+
+	varNamePattern := "%s%d"
+	if g.isSlice {
+		varNamePattern = "%s[%d]"
+	}
+	exprVar := fmt.Sprintf(varNamePattern, g.prefix, g.varCounter)
+	g.varCounter++
+
+	if g.isSlice {
+		appendCode(g.codeBuf, 0, "%s = 0\n", exprVar)
+	} else {
+		appendCode(g.codeBuf, 0, "%s := uint64(0)\n", exprVar)
+	}
+	appendCode(g.codeBuf, 0, "if floor, floorErr := sszutils.ResolveSpecValueWithDefault(ds, \"%s\", %d); floorErr == nil && floor <= sszutils.MaxSszSize {\n", expr, fallback)
+	appendCode(g.codeBuf, 1, "%s = floor\n", exprVar)
 	appendCode(g.codeBuf, 0, "}\n")
 
 	g.varMap[exprKey] = exprVar
@@ -252,6 +286,13 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 	// the dedup key; otherwise two different delegated types would share one
 	// size variable.
 	descJson = append(descJson, g.typePrinter.TypeStringWithoutTracking(desc, false)...)
+	isView := desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
+	if isView {
+		// A view's size is the view's, so two views of one type keep
+		// separate size variables.
+		descJson = append(descJson, '|')
+		descJson = append(descJson, g.typePrinter.TypeStringWithoutTracking(desc, true)...)
+	}
 	descHash := sha256.Sum256(descJson)
 
 	if sizeVar, ok := g.varMap[descHash]; ok {
@@ -264,15 +305,18 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 	// A shallow-built, fully-delegated type (parser gate) has no traversed subtree
 	// to sum: it computes its own (possibly spec-dependent) fixed size, so query
 	// the type's sizer on a zero value at runtime. The gate only admits types that
-	// implement DynamicSizer (fullyDelegatesSSZ requires it), so that is the only
-	// case to handle here.
+	// implement DynamicSizer (fullyDelegatesSSZ requires it), or the view sizer
+	// for a view (fullyDelegatesSSZView requires it), so those are the only
+	// cases to handle here; a view is sized by its view sizer, as the reflection
+	// type cache sizes it.
 	// A custom type whose width is not a literal is the same case: its width
 	// is fixed for one spec but unknown here, so it is read from the sizer too,
 	// whatever static fallback it declares. The zero value never leaves the
 	// stack: a static type's sizer does not keep its receiver.
 	dynamicSizer := desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0
 	staticSizer := desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszSizer != 0
-	widthFromSizer := (dynamicSizer && desc.SszType == ssztypes.SszUnspecifiedType) ||
+	viewSizer := isView && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewSizer != 0
+	widthFromSizer := ((dynamicSizer || viewSizer) && desc.SszType == ssztypes.SszUnspecifiedType) ||
 		(desc.SszType == ssztypes.SszCustomType && desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 &&
 			desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 && (dynamicSizer || staticSizer))
 	if widthFromSizer {
@@ -284,9 +328,20 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 		if retVars == "" {
 			retVars = g.exprVarGenerator.retVars
 		}
-		if dynamicSizer {
+		switch {
+		case viewSizer:
+			// The view sizer is nil for a view the type does not serve.
+			appendCode(g.codeBuf, 0, "%sFn := new(%s).SizeSSZDynView((%s)(nil))\n", sizeVar, typeName, g.typePrinter.ViewTypeString(desc, true))
+			appendCode(g.codeBuf, 0, "if %sFn == nil {\n", sizeVar)
+			if strings.Contains(retVars, "err") {
+				appendCode(g.codeBuf, 1, "err := sszutils.ErrNotImplemented\n")
+			}
+			appendCode(g.codeBuf, 1, "return %s\n", retVars)
+			appendCode(g.codeBuf, 0, "}\n")
+			appendCode(g.codeBuf, 0, "%sSigned := %sFn(ds)\n", sizeVar, sizeVar)
+		case dynamicSizer:
 			appendCode(g.codeBuf, 0, "%sSigned := new(%s).SizeSSZDyn(ds)\n", sizeVar, typeName)
-		} else {
+		default:
 			appendCode(g.codeBuf, 0, "%sSigned := new(%s).SizeSSZ()\n", sizeVar, typeName)
 		}
 		appendCode(g.codeBuf, 0, "if %sSigned < 0 || %sSigned > sszutils.MaxSszSize {\n", sizeVar, sizeVar)
@@ -502,14 +557,32 @@ func minSizeExpr(desc *ssztypes.TypeDescriptor, sizeVars *staticSizeVarGenerator
 		return sizeVar, sizeVar, true
 	}
 
+	// A fully delegated type is described without its subtree; its floor is
+	// what its own generation declared (see delegateAnnotationFor), resolved
+	// here as that code resolves it. A declaration without one bounds nothing.
+	if isShallowDelegatedDescriptor(desc) {
+		lit, floorExpr, ok := delegateFloor(desc, options)
+		if !ok {
+			return "", "", false
+		}
+		if floorExpr == "" || options.WithoutDynamicExpressions {
+			return fmt.Sprintf("%d", lit), "", lit > 0
+		}
+		floorVar := sizeVars.exprVarGenerator.getFloorExprVar(floorExpr, lit)
+		return floorVar, floorVar, true
+	}
+
 	switch desc.SszType {
 	case ssztypes.SszTypeWrapperType:
 		return minSizeExpr(desc.ElemDesc, sizeVars, options)
 
+	case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType, ssztypes.SszUnionType, ssztypes.SszCompatibleUnionType,
+		ssztypes.SszOptionalType, ssztypes.SszBigIntType:
+		// The termination bit's byte, the selector byte, the presence byte or
+		// the sign byte.
+		return "1", "", true
+
 	case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
-		// A fully delegated container is described without its fields, so
-		// nothing bounds its minimum; the go/types front end reports the same
-		// shape as unspecified.
 		if desc.ContainerDesc == nil {
 			return "", "", false
 		}
@@ -573,6 +646,34 @@ func minSizeExpr(desc *ssztypes.TypeDescriptor, sizeVars *staticSizeVarGenerator
 	default:
 		return "", "", false
 	}
+}
+
+// delegateFloor reads the floor a fully-delegated type declared (see
+// delegateAnnotationFor), from the annotation the generator's resolver reads
+// for a go/types type or the registry holds for a reflect type.
+func delegateFloor(desc *ssztypes.TypeDescriptor, options *CodeGeneratorOptions) (uint64, string, bool) {
+	// A descriptor the parser built carries its go/types schema type; one the
+	// type cache built carries a reflect type (and, for a view, the view
+	// pointer where the parser keeps its info).
+	annotation := ""
+	if info, ok := codegenInfoOf(desc); ok && info.SchemaType != nil {
+		if options.annotationResolver != nil {
+			annotation = options.annotationResolver(types.Unalias(info.SchemaType))
+		}
+	} else if desc.SchemaType != nil {
+		annotation, _ = sszutils.LookupAnnotation(desc.SchemaType)
+	}
+	return ssztypes.ParseMinSizeDeclaration(reflect.StructTag(annotation))
+}
+
+// codegenInfoOf returns the go/types information the parser attached to a
+// descriptor, if the parser built it.
+func codegenInfoOf(desc *ssztypes.TypeDescriptor) (*CodegenInfo, bool) {
+	if desc.CodegenInfo == nil {
+		return nil, false
+	}
+	info, ok := (*desc.CodegenInfo).(*CodegenInfo)
+	return info, ok
 }
 
 // bigIntLimit states the payload limit of a big.Int as the generated code must

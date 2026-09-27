@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/codegen/tests"
 	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
 	"golang.org/x/tools/go/packages"
@@ -3176,5 +3177,374 @@ func TestStaticBuildRefusesSpecOnlyBounds(t *testing.T) {
 				t.Fatalf("err = %v, want %q", err, tt.want)
 			}
 		})
+	}
+}
+
+// A view whose data type serves views is emitted through the data type's
+// view surface without its subtree, framed by the view type's own ssz-static
+// declaration: a static view is inlined and sized by the view sizer, while the
+// plain reference to the same dynamic data type keeps its offset.
+func TestGenerateStaticViewOfDynamicDelegate(t *testing.T) {
+	scope := loadTestsPackage(t).Types.Scope()
+	lookup := func(name string) types.Type {
+		obj := scope.Lookup(name)
+		if obj == nil {
+			t.Fatalf("%s not found", name)
+		}
+		return obj.Type()
+	}
+	child := lookup("ViewTypes1_Base")
+	if !NewParser().fullyDelegatesSSZView(types.NewPointer(child)) {
+		t.Skip("generated code not present; ViewTypes1_Base serves no views")
+	}
+
+	cg := NewCodeGenerator(nil)
+	// The declarations gen_views.go registers for the child and its views.
+	cg.SetAnnotationResolver(func(t types.Type) string {
+		if ptr, ok := types.Unalias(t).(*types.Pointer); ok {
+			t = ptr.Elem()
+		}
+		named, ok := types.Unalias(t).(*types.Named)
+		if !ok {
+			return ""
+		}
+		switch named.Obj().Name() {
+		case "ViewTypes1_Base", "ViewTypes1_View2":
+			return `ssz-static:"false"`
+		case "ViewTypes1_View1":
+			return `ssz-static:"true"`
+		}
+		return ""
+	})
+	cg.BuildFile("gen_viewtypes4.go", WithGoTypesType(lookup("ViewTypes4_Base"), WithGoTypesViewTypes(lookup("ViewTypes4_View1"))))
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("GenerateToMap failed: %v", err)
+	}
+	code := files["gen_viewtypes4.go"]
+	for _, want := range []string{
+		"Fn := new(ViewTypes1_Base).SizeSSZDynView((*ViewTypes1_View1)(nil))",
+		"// Static Field #1 'Child'",
+		"// Offset Field #1 'Child'",
+	} {
+		if !strings.Contains(code, want) {
+			t.Errorf("generated code lacks %q", want)
+		}
+	}
+	if strings.Contains(code, "new(ViewTypes1_Base).SizeSSZDyn(ds)") {
+		t.Error("the view is sized by the child's plain sizer")
+	}
+}
+
+// A generated type declares, with its ssz-static declaration, the floor of
+// its fixed section as the emitted code frames it: a literal, and the
+// expression a spec value feeds. A static build declares the literal it
+// baked. Both front ends declare alike.
+func TestDelegateAnnotationFor(t *testing.T) {
+	scope := loadTestsPackage(t).Types.Scope()
+	lookup := func(name string) types.Type {
+		obj := scope.Lookup(name)
+		if obj == nil {
+			t.Fatalf("%s not found", name)
+		}
+		return obj.Type()
+	}
+	want := []string{
+		"sszutils.Annotate[ViewTypes1_Base](`ssz-static:\"false\" ssz-minsize:\"20\"`)",
+		"sszutils.Annotate[*ViewTypes1_View1](`ssz-static:\"true\" ssz-minsize:\"96\"`)",
+		"sszutils.Annotate[*ViewTypes1_View2](`ssz-static:\"false\" ssz-minsize:\"16\"`)",
+		"sszutils.Annotate[SpecSizedElem](`ssz-static:\"false\" ssz-minsize:\"36\" dynssz-minsize:\"(VECSPEC_LEN):4*8+4\"`)",
+		"sszutils.Annotate[SpecPairElem](`ssz-static:\"false\" ssz-minsize:\"71\" dynssz-minsize:\"(SPEC_A):32+(SPEC_B):4*8+(SPEC_BITS/8):3+4\"`)",
+		// A static child described without its subtree contributes its
+		// declared size; a vector of dynamic children only its offset.
+		"sszutils.Annotate[SpecPairVec](`ssz-static:\"false\" ssz-minsize:\"44\" dynssz-minsize:\"(VECSPEC_LEN):4*8+(VECSPEC_LEN):4+8\"`)",
+		// A vector with no static fallback declares a :0 part, nothing until
+		// its spec value is defined.
+		"sszutils.Annotate[SpecOnlyElem](`ssz-static:\"false\" ssz-minsize:\"4\" dynssz-minsize:\"(VLEN):0+4\"`)",
+	}
+	check := func(t *testing.T, files map[string]string, want []string) {
+		t.Helper()
+		for _, want := range want {
+			if !strings.Contains(files["gen_decl.go"], want) {
+				t.Errorf("generated code lacks %q", want)
+			}
+		}
+	}
+
+	t.Run("go/types", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_decl.go",
+			WithGoTypesType(lookup("ViewTypes1_Base"), WithGoTypesViewTypes(lookup("ViewTypes1_View1"), lookup("ViewTypes1_View2"))),
+			WithGoTypesType(lookup("SpecSizedElem")),
+			WithGoTypesType(lookup("SpecPairElem")),
+			WithGoTypesType(lookup("SpecPairVec")),
+			WithGoTypesType(lookup("SpecOnlyElem")),
+		)
+		files, err := cg.GenerateToMap()
+		if err != nil {
+			t.Fatalf("GenerateToMap failed: %v", err)
+		}
+		check(t, files, want)
+	})
+
+	// The reflect front end regenerates no type that has generated methods,
+	// so it declares types of this package shaped like the fixtures.
+	t.Run("reflect", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_decl.go",
+			WithReflectType(reflect.TypeFor[reflectDeclBase](), WithReflectViewTypes(reflect.TypeFor[reflectDeclStaticView](), reflect.TypeFor[reflectDeclDynamicView]())),
+			WithReflectType(reflect.TypeFor[reflectDeclSpecElem]()),
+			WithReflectType(reflect.TypeFor[reflectDeclPairElem]()),
+			WithReflectType(reflect.TypeFor[reflectDeclNested]()),
+			WithReflectType(reflect.TypeFor[reflectDeclPairVec]()),
+			WithReflectType(reflect.TypeFor[reflectDeclOnlyElem]()),
+		)
+		files, err := cg.GenerateToMap()
+		if err != nil {
+			t.Fatalf("GenerateToMap failed: %v", err)
+		}
+		check(t, files, []string{
+			// A nested container's constant folds into the parent's, and a
+			// literal count distributes over the parts.
+			"sszutils.Annotate[reflectDeclNested](`ssz-static:\"false\" ssz-minsize:\"516\" dynssz-minsize:\"(SYNC_COMMITTEE_SIZE/8):64+2*(SYNC_COMMITTEE_SIZE/8):64+324\"`)",
+			"sszutils.Annotate[reflectDeclPairVec](`ssz-static:\"false\" ssz-minsize:\"44\" dynssz-minsize:\"(VECSPEC_LEN):4*8+(VECSPEC_LEN):4+8\"`)",
+			"sszutils.Annotate[reflectDeclOnlyElem](`ssz-static:\"false\" ssz-minsize:\"4\" dynssz-minsize:\"(VLEN):0+4\"`)",
+			"sszutils.Annotate[reflectDeclBase](`ssz-static:\"false\" ssz-minsize:\"20\"`)",
+			"sszutils.Annotate[*reflectDeclStaticView](`ssz-static:\"true\" ssz-minsize:\"96\"`)",
+			"sszutils.Annotate[*reflectDeclDynamicView](`ssz-static:\"false\" ssz-minsize:\"16\"`)",
+			"sszutils.Annotate[reflectDeclSpecElem](`ssz-static:\"false\" ssz-minsize:\"36\" dynssz-minsize:\"(VECSPEC_LEN):4*8+4\"`)",
+			"sszutils.Annotate[reflectDeclPairElem](`ssz-static:\"false\" ssz-minsize:\"71\" dynssz-minsize:\"(SPEC_A):32+(SPEC_B):4*8+(SPEC_BITS/8):3+4\"`)",
+		})
+	})
+
+	t.Run("static build", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_decl.go", WithGoTypesType(lookup("SpecSizedElem"), WithoutDynamicExpressions()))
+		files, err := cg.GenerateToMap()
+		if err != nil {
+			t.Fatalf("GenerateToMap failed: %v", err)
+		}
+		check(t, files, []string{"sszutils.Annotate[SpecSizedElem](`ssz-static:\"false\" ssz-minsize:\"36\"`)"})
+		if strings.Contains(files["gen_decl.go"], "dynssz-minsize") {
+			t.Error("a static build declared a spec expression")
+		}
+	})
+}
+
+// A list of elements delegated without their subtree is bounded by the floor
+// the elements declared: 20 bytes for ViewTypes1_Base, 16 for its View2 view,
+// and for SpecSizedElem the declared expression resolved at run time with its
+// literal as the fallback. Both front ends read the declaration.
+func TestGenerateDelegatedListFloor(t *testing.T) {
+	scope := loadTestsPackage(t).Types.Scope()
+	lookup := func(name string) types.Type {
+		obj := scope.Lookup(name)
+		if obj == nil {
+			t.Fatalf("%s not found", name)
+		}
+		return obj.Type()
+	}
+	elem := types.NewPointer(lookup("ViewTypes1_Base"))
+	p := NewParser()
+	if !p.fullyDelegatesSSZ(elem) || !p.fullyDelegatesSSZView(elem) || !p.fullyDelegatesSSZ(types.NewPointer(lookup("SpecSizedElem"))) || !p.fullyDelegatesSSZ(types.NewPointer(lookup("SpecPairElem"))) {
+		t.Skip("generated code not present; the elements delegate nothing")
+	}
+	// The declarations the elements' generation registered, as the CLI's
+	// source scan reads them.
+	registered := map[string]reflect.Type{
+		"ViewTypes1_Base":  reflect.TypeFor[tests.ViewTypes1_Base](),
+		"ViewTypes1_View2": reflect.TypeFor[tests.ViewTypes1_View2](),
+		"SpecSizedElem":    reflect.TypeFor[tests.SpecSizedElem](),
+		"SpecPairElem":     reflect.TypeFor[tests.SpecPairElem](),
+		"SpecPairVec":      reflect.TypeFor[tests.SpecPairVec](),
+		"SpecOnlyElem":     reflect.TypeFor[tests.SpecOnlyElem](),
+	}
+	resolver := func(t types.Type) string {
+		if ptr, ok := types.Unalias(t).(*types.Pointer); ok {
+			t = ptr.Elem()
+		}
+		if named, ok := types.Unalias(t).(*types.Named); ok {
+			if typ, ok := registered[named.Obj().Name()]; ok {
+				tag, _ := sszutils.LookupAnnotation(typ)
+				return tag
+			}
+		}
+		return ""
+	}
+	want := []string{
+		"if itemCount > (len(buf)-startOffset)/(20) {",
+		"if itemCount > (len(buf)-startOffset)/(16) {",
+		`sszutils.ResolveSpecValueWithDefault(ds, "(VECSPEC_LEN):4*8+4", 36)`,
+		`sszutils.ResolveSpecValueWithDefault(ds, "(SPEC_A):32+(SPEC_B):4*8+(SPEC_BITS/8):3+4", 71)`,
+		`sszutils.ResolveSpecValueWithDefault(ds, "(VECSPEC_LEN):4*8+(VECSPEC_LEN):4+8", 44)`,
+		// A floor is a bound, never a refusal: one that does not resolve
+		// leaves its variable at zero, which the gate skips.
+		`if floor, floorErr := sszutils.ResolveSpecValueWithDefault(ds, "(VLEN):0+4", 4); floorErr == nil && floor <= sszutils.MaxSszSize {`,
+		"if expr0 > 0 && uint64(itemCount) > uint64(len(buf)-startOffset)/(expr0) {",
+		// A bit list or a union element holds at least one byte.
+		"if itemCount > (len(buf)-startOffset)/(1) {",
+	}
+	check := func(t *testing.T, files map[string]string) {
+		t.Helper()
+		for _, want := range want {
+			if !strings.Contains(files["gen_viewlist.go"], want) {
+				t.Errorf("generated code lacks %q", want)
+			}
+		}
+	}
+
+	t.Run("go/types", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.SetAnnotationResolver(resolver)
+		cg.BuildFile("gen_viewlist.go",
+			WithGoTypesType(lookup("ViewList_Base"), WithGoTypesViewTypes(lookup("ViewList_View"))),
+			WithGoTypesType(lookup("SpecSizedList")),
+			WithGoTypesType(lookup("SpecPairList")),
+			WithGoTypesType(lookup("SpecPairVecList")),
+			WithGoTypesType(lookup("SpecOnlyList")),
+			WithGoTypesType(lookup("OneByteLists")),
+		)
+		files, err := cg.GenerateToMap()
+		if err != nil {
+			t.Fatalf("GenerateToMap failed: %v", err)
+		}
+		check(t, files)
+	})
+
+	// The reflect front end regenerates no type that has generated methods,
+	// so the lists are types of this package over the fixtures' elements,
+	// whose declarations it reads from the registry.
+	t.Run("reflect", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_viewlist.go",
+			WithReflectType(reflect.TypeFor[reflectViewList](), WithReflectViewTypes(reflect.TypeFor[reflectViewListView]())),
+			WithReflectType(reflect.TypeFor[reflectSpecSizedList]()),
+			WithReflectType(reflect.TypeFor[reflectSpecPairList]()),
+			WithReflectType(reflect.TypeFor[reflectSpecPairVecList]()),
+			WithReflectType(reflect.TypeFor[reflectSpecOnlyList]()),
+			WithReflectType(reflect.TypeFor[reflectOneByteLists]()),
+		)
+		files, err := cg.GenerateToMap()
+		if err != nil {
+			t.Fatalf("GenerateToMap failed: %v", err)
+		}
+		check(t, files)
+	})
+}
+
+// Types of this package shaped like the codegen/tests fixtures, for the
+// reflect front end, which regenerates no type that has generated methods.
+type (
+	reflectDeclBase struct {
+		F1 uint64
+		F2 []uint64    `ssz-max:"64"`
+		F3 [2][]uint64 `ssz-max:"?,64"`
+		C1 *reflectDeclC1
+	}
+	reflectDeclC1 struct {
+		F1 uint64
+		F2 []uint64 `ssz-max:"64"`
+	}
+	reflectDeclStaticView struct {
+		F1 uint64
+		F3 [2][]uint64 `ssz-size:"2,5"`
+		C1 *reflectDeclStaticViewC1
+	}
+	reflectDeclStaticViewC1 struct {
+		F1 uint64
+	}
+	reflectDeclDynamicView struct {
+		F1 uint64
+		F2 []uint64 `ssz-max:"64"`
+		C1 *reflectDeclDynamicViewC1
+	}
+	reflectDeclDynamicViewC1 struct {
+		F2 []uint64 `ssz-max:"64"`
+	}
+	reflectDeclSpecElem struct {
+		V [8]uint64 `ssz-size:"4" dynssz-size:"VECSPEC_LEN"`
+		L []uint64  `ssz-max:"4"`
+	}
+	reflectDeclSync struct {
+		Bits []byte `ssz-size:"64" dynssz-size:"SYNC_COMMITTEE_SIZE/8"`
+		Sig  [96]byte
+	}
+	reflectDeclNested struct {
+		S    reflectDeclSync
+		Pair [2]reflectDeclSync
+		Root [32]byte
+		L    []uint64 `ssz-max:"4"`
+	}
+	reflectDeclPairVec struct {
+		Pair [2]*tests.SpecPairElem
+		V    tests.VecSpecLen
+		L    []uint64 `ssz-max:"4"`
+	}
+	reflectSpecPairVecList struct {
+		Items []*tests.SpecPairVec `ssz-max:"4"`
+	}
+	reflectDeclOnlyElem struct {
+		V []byte   `dynssz-size:"VLEN"`
+		L []uint64 `ssz-max:"4"`
+	}
+	reflectSpecOnlyList struct {
+		Items []*tests.SpecOnlyElem `ssz-max:"4"`
+	}
+	reflectOneByteLists struct {
+		Bits   [][]byte `ssz-type:"list,bitlist" ssz-max:"4,64"`
+		Unions []dynssz.CompatibleUnion[struct {
+			A uint32
+			B uint64
+		}] `ssz-max:"4"`
+	}
+	reflectDeclPairElem struct {
+		A    []byte    `ssz-size:"32" dynssz-size:"SPEC_A"`
+		B    [8]uint64 `ssz-size:"4" dynssz-size:"SPEC_B"`
+		Bits []byte    `ssz-type:"bitvector" ssz-bitsize:"20" dynssz-bitsize:"SPEC_BITS"`
+		L    []uint64  `ssz-max:"4"`
+	}
+	reflectSpecPairList struct {
+		Items []*tests.SpecPairElem `ssz-max:"4"`
+	}
+	reflectViewList struct {
+		Items []*tests.ViewTypes1_Base `ssz-max:"4"`
+		Tail  uint8
+	}
+	reflectViewListView struct {
+		Items []*tests.ViewTypes1_View2 `ssz-max:"4"`
+		Tail  uint8
+	}
+	reflectSpecSizedList struct {
+		Items []*tests.SpecSizedElem `ssz-max:"4"`
+	}
+)
+
+// A type described without its subtree records the literal its generation
+// declared on both front ends.
+func TestShallowFloorFrontEndParity(t *testing.T) {
+	scope := loadTestsPackage(t).Types.Scope()
+	obj := scope.Lookup("SpecPairElem")
+	if obj == nil {
+		t.Fatal("SpecPairElem not found")
+	}
+	elem := types.NewPointer(obj.Type())
+	p := NewParser()
+	if !p.fullyDelegatesSSZ(elem) {
+		t.Skip("generated code not present; SpecPairElem delegates nothing")
+	}
+	p.AnnotationResolver = func(types.Type) string {
+		tag, _ := sszutils.LookupAnnotation(reflect.TypeFor[tests.SpecPairElem]())
+		return tag
+	}
+	parsed, err := p.GetTypeDescriptor(elem, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("parser: %v", err)
+	}
+	cached, err := ssztypes.NewTypeCache(nil).GetTypeDescriptor(reflect.TypeFor[*tests.SpecPairElem](), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("type cache: %v", err)
+	}
+	if parsed.MinSize != 71 || cached.MinSize != 71 {
+		t.Fatalf("MinSize: parser %d, type cache %d, want the declared 71 on both", parsed.MinSize, cached.MinSize)
 	}
 }

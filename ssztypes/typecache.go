@@ -893,8 +893,15 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			desc.SszCompatFlags &^= SszCompatFlagFastsszSurface | SszCompatFlagFastsszHashRoot | SszCompatFlagFastsszHashRootWith
 			desc.HashTreeRootWithMethod = nil
 			// A shallow descriptor has no traversed subtree: a static one still
-			// knows its size, a dynamic one states no floor.
+			// knows its size, a dynamic one holds the floor its generation
+			// declared, resolved against the specs as generated code resolves
+			// it (see ParseMinSizeDeclaration).
 			desc.SetMinSize()
+			if desc.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
+				if literal, expr, ok := ParseMinSizeDeclaration(reflect.StructTag(annotationTag)); ok {
+					desc.MinSize = EvaluateMinSize(tc.specs, literal, expr)
+				}
+			}
 
 			return nil
 		}
@@ -1334,8 +1341,10 @@ func unresolvedReason(resolved bool) string {
 // serialize to. Decoders use it to reject an offset table that declares more
 // elements than the region can hold, before that count sizes an allocation.
 //
-// A type with no floor -- a list, a union, an optional -- keeps 0, which states
-// no bound rather than a wrong one.
+// A type with no floor -- a list, an optional list -- keeps 0, which states
+// no bound rather than a wrong one. A bit list holds its termination bit, a
+// union its selector, an optional its presence byte and a big.Int its sign
+// byte, so each holds at least one byte.
 //
 // It is stored rather than derived at decode time because Len carries different
 // meanings per type (bytes for a container's fixed section, elements for a
@@ -1364,6 +1373,10 @@ func (td *TypeDescriptor) SetMinSize() {
 		// The fixed section: every field's own size, and four offset bytes for
 		// each dynamic one.
 		td.MinSize = td.Len
+	case SszBitlistType, SszProgressiveBitlistType, SszUnionType, SszCompatibleUnionType, SszOptionalType, SszBigIntType:
+		// The termination bit's byte, the selector byte, the presence byte or
+		// the sign byte.
+		td.MinSize = 1
 	case SszVectorType:
 		// A vector of dynamic elements leads with one 4-byte offset per element,
 		// and every element costs at least its own minimum on top of that. Len is
@@ -1380,7 +1393,7 @@ func (td *TypeDescriptor) SetMinSize() {
 		}
 	default:
 		// Everything else can serialize to nothing -- an empty list, an absent
-		// optional, a union's smallest variant -- so it states no floor.
+		// optional list -- so it states no floor.
 	}
 }
 
