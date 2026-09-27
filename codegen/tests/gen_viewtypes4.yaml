@@ -36,3 +36,11 @@ types:
     output: gen_viewtypes4.go
     views:
       - ViewMixHolder_View
+  - name: ViewList_Base
+    output: gen_viewtypes4.go
+    views:
+      - ViewList_View
+  - name: SpecSizedList
+    output: gen_viewtypes4.go
+  - name: SpecPairList
+    output: gen_viewtypes4.go

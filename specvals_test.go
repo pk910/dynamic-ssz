@@ -18,12 +18,13 @@ import (
 func TestEvalIntSpecExpression(t *testing.T) {
 	type namedCarrierF float64
 	specs := map[string]any{
-		"A":   uint64(10),
-		"B":   uint64(3),
-		"BIG": uint64(1) << 40,
-		"MAX": ^uint64(0),
-		"NEG": int(-5),
-		"F":   3.5, // float rounds up to 4
+		"A":    uint64(10),
+		"B":    uint64(3),
+		"ZERO": uint64(0),
+		"BIG":  uint64(1) << 40,
+		"MAX":  ^uint64(0),
+		"NEG":  int(-5),
+		"F":    3.5, // float rounds up to 4
 		// Fractional operands stay exact until the single final rounding; JSON
 		// spec files decode every number as float64, so this is the common shape.
 		"HALF": 0.5,
@@ -58,6 +59,20 @@ func TestEvalIntSpecExpression(t *testing.T) {
 		// 12 and 4 respectively).
 		{"div_mul_evaluate_once", "9 / 4 * 4", true, true, 9, false},
 		{"div_mul_half", "3 / 2 * 2", true, true, 3, false},
+		// A :N fallback resolves its operand on its own: the value rounded up
+		// to a whole unit, or N when undefined or zero; it binds tighter than
+		// the arithmetic around it.
+		{"fallback_undefined", "X:8", true, true, 8, false},
+		{"fallback_defined", "A:8", true, true, 10, false},
+		{"fallback_zero", "ZERO:8", true, true, 8, false},
+		{"fallback_group", "(A/B):3", true, true, 4, false},
+		{"fallback_group_undefined", "(A/X):3", true, true, 3, false},
+		{"fallback_binds_tighter", "X:8*B", true, true, 24, false},
+		{"fallback_nested", "(X:5)*((Y:4)*8+4)", true, true, 180, false},
+		{"fallback_rounds_each_operand", "(A/B):1+(A/B):1", true, true, 8, false},
+		{"fallback_undefined_zero", "X:0", true, false, 0, true},
+		{"fallback_missing", "X:", false, false, 0, false},
+		{"fallback_negative_operand", "(B-A):1", true, false, 0, true},
 		// A chained division agrees with per-division ceil (10/3/2 -> ceil 2).
 		{"chained_div", "A / B / 2", true, true, 2, false},
 		// The exact value is negative -> rejected (a size cannot be negative).

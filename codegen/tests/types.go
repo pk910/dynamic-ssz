@@ -431,6 +431,43 @@ var VecSpecLen_Payload = VecSpecLen{
 // fallback truncates.
 var VecSpecLen_Specs = map[string]any{"VECSPEC_LEN": 8}
 
+// SpecSizedElem is a dynamic element whose fixed section a spec value
+// decides. A list of them generated in a later batch (SpecSizedList) describes
+// the element without its subtree and must not bound the list by the static
+// fallback, which a preset can shrink below.
+type SpecSizedElem struct {
+	V [8]uint64 `ssz-size:"4" dynssz-size:"VECSPEC_LEN"`
+	L []uint64  `ssz-max:"4"`
+}
+
+type SpecSizedList struct {
+	Items []*SpecSizedElem `ssz-max:"4"`
+}
+
+// SpecPairElem is a dynamic element with three spec-decided widths. A list of
+// them generated in a later batch (SpecPairList) resolves each on its own, as
+// the element's code does, so a spec that defines only some of them, or sets
+// a bit count the byte count rounds up, still decodes.
+type SpecPairElem struct {
+	A    []byte    `ssz-size:"32" dynssz-size:"SPEC_A"`
+	B    [8]uint64 `ssz-size:"4" dynssz-size:"SPEC_B"`
+	Bits []byte    `ssz-type:"bitvector" ssz-bitsize:"20" dynssz-bitsize:"SPEC_BITS"`
+	L    []uint64  `ssz-max:"4"`
+}
+
+type SpecPairList struct {
+	Items []*SpecPairElem `ssz-max:"4"`
+}
+
+var SpecSizedList_Payload = SpecSizedList{
+	Items: []*SpecSizedElem{
+		{V: [8]uint64{1, 2, 3, 4, 5, 6, 7, 8}},
+		{V: [8]uint64{9}, L: []uint64{10}},
+		{},
+		{},
+	},
+}
+
 // WrappedElemLists holds lists whose elements are type wrappers around basic
 // values, alongside the plain lists they must hash identically to. A wrapper is
 // transparent to SSZ: the list packs the wrapped values and merkleizes them
@@ -707,6 +744,30 @@ var ViewTypes1_Payload = ViewTypes1_Base{
 		F1: 12345,
 		F2: []uint64{12345, 67890},
 	},
+}
+
+// ViewList_Base holds a list of ViewTypes1_Base served through the dynamic
+// ViewTypes1_View2. The elements are generated in an earlier batch, so the
+// ViewList batch describes them without their subtree and bounds the list's
+// offset table by the fixed section their structure guarantees: 20 bytes for
+// the data type, 16 for the view.
+type ViewList_Base struct {
+	Items []*ViewTypes1_Base `ssz-max:"4"`
+	Tail  uint8
+}
+
+type ViewList_View struct {
+	Items []*ViewTypes1_View2 `ssz-max:"4"`
+	Tail  uint8
+}
+
+var ViewList_Payload = ViewList_Base{
+	Items: []*ViewTypes1_Base{
+		{F1: 1, F2: []uint64{2, 3}, F3: [2][]uint64{{4}, {5, 6}}, C1: &ViewTypes1_C1{F1: 7, F2: []uint64{8}}},
+		{F1: 9, C1: &ViewTypes1_C1{F1: 10}},
+		{},
+	},
+	Tail: 11,
 }
 
 // OptionalListTypes exercises ssz-type:"optional-list" — pointers encoded as

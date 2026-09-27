@@ -117,6 +117,10 @@ type CodeGeneratorOptions struct {
 	// name; the generator fills it in before emitting a type, so the emitters
 	// know which types get depth-carrying methods in this run.
 	generated map[string]ssztypes.SszCompatFlag
+	// annotationResolver is the generator's go/types annotation resolver,
+	// filled in before emitting a type, so the emitters can read the floor a
+	// delegated type declared (see delegateFloor).
+	annotationResolver func(types.Type) string
 }
 
 // CodeGeneratorTypeOption specifies a type to include in code generation with its specific options.

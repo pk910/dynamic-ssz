@@ -8,12 +8,15 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"go/types"
 	"math"
 	"math/bits"
+	"reflect"
 	"strconv"
 	"strings"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 const (
@@ -523,14 +526,26 @@ func minSizeExpr(desc *ssztypes.TypeDescriptor, sizeVars *staticSizeVarGenerator
 		return sizeVar, sizeVar, true
 	}
 
+	// A fully delegated type is described without its subtree; its floor is
+	// what its own generation declared (see delegateAnnotationFor), resolved
+	// here as that code resolves it. A declaration without one bounds nothing.
+	if isShallowDelegatedDescriptor(desc) {
+		lit, floorExpr, ok := delegateFloor(desc, options)
+		if !ok {
+			return "", "", false
+		}
+		if floorExpr == "" || options.WithoutDynamicExpressions {
+			return fmt.Sprintf("%d", lit), "", lit > 0
+		}
+		floorVar := sizeVars.exprVarGenerator.getVectorLenExprVar(floorExpr, lit, false, false, "")
+		return floorVar, floorVar, true
+	}
+
 	switch desc.SszType {
 	case ssztypes.SszTypeWrapperType:
 		return minSizeExpr(desc.ElemDesc, sizeVars, options)
 
 	case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
-		// A fully delegated container is described without its fields, so
-		// nothing bounds its minimum; the go/types front end reports the same
-		// shape as unspecified.
 		if desc.ContainerDesc == nil {
 			return "", "", false
 		}
@@ -594,6 +609,34 @@ func minSizeExpr(desc *ssztypes.TypeDescriptor, sizeVars *staticSizeVarGenerator
 	default:
 		return "", "", false
 	}
+}
+
+// delegateFloor reads the floor a fully-delegated type declared (see
+// delegateAnnotationFor), from the annotation the generator's resolver reads
+// for a go/types type or the registry holds for a reflect type.
+func delegateFloor(desc *ssztypes.TypeDescriptor, options *CodeGeneratorOptions) (uint64, string, bool) {
+	// A descriptor the parser built carries its go/types schema type; one the
+	// type cache built carries a reflect type (and, for a view, the view
+	// pointer where the parser keeps its info).
+	annotation := ""
+	if info, ok := codegenInfoOf(desc); ok && info.SchemaType != nil {
+		if options.annotationResolver != nil {
+			annotation = options.annotationResolver(types.Unalias(info.SchemaType))
+		}
+	} else if desc.SchemaType != nil {
+		annotation, _ = sszutils.LookupAnnotation(desc.SchemaType)
+	}
+	return ssztypes.ParseMinSizeDeclaration(reflect.StructTag(annotation))
+}
+
+// codegenInfoOf returns the go/types information the parser attached to a
+// descriptor, if the parser built it.
+func codegenInfoOf(desc *ssztypes.TypeDescriptor) (*CodegenInfo, bool) {
+	if desc.CodegenInfo == nil {
+		return nil, false
+	}
+	info, ok := (*desc.CodegenInfo).(*CodegenInfo)
+	return info, ok
 }
 
 // bigIntLimit states the payload limit of a big.Int as the generated code must

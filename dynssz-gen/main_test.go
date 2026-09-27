@@ -2116,13 +2116,15 @@ func TestWriteOutputFilesReportsBackupRenameFailure(t *testing.T) {
 	}
 }
 
-// TestAnnotationIndex_CrossPackage covers annotations registered in the package
-// declaring a type other than the generated one: a field type from an imported
-// package (testpkg.Holder's fields are declared in viewfix/sub) and a view
-// field type from a separately loaded view package (sub.DataView over
-// viewfix.Data, whose package does not import sub). Without them the generator
-// describes the vector as a list and drops the list limit, diverging from the
-// reflection type cache.
+// TestAnnotationIndex_CrossPackage covers annotations registered in packages
+// other than the generated one: a field type from an imported package
+// (testpkg.Holder's fields are declared in viewfix/sub), a registration for
+// such a type in a third package testpkg imports (third registers sub.Nums,
+// merged newest first behind the declaring package's), and a view field type
+// from a separately loaded view package (sub.DataView over viewfix.Data, whose
+// package imports neither sub nor third). Without them the generator describes
+// the vector as a list and drops the list limit, diverging from the reflection
+// type cache.
 func TestAnnotationIndex_CrossPackage(t *testing.T) {
 	const (
 		testPkgPath = "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg"
@@ -2140,7 +2142,7 @@ func TestAnnotationIndex_CrossPackage(t *testing.T) {
 	if !ok {
 		t.Fatal("testpkg.Holder is not a struct")
 	}
-	for i, tag := range want {
+	for i, tag := range []string{`ssz-size:"2,32"`, `ssz-minsize:"9" ssz-max:"3"`} {
 		if got := idx.resolve(holder.Field(i).Type()); got != tag {
 			t.Errorf("imported %v: annotation = %q, want %q", holder.Field(i).Type(), got, tag)
 		}

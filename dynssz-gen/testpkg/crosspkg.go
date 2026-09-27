@@ -4,7 +4,12 @@
 
 package testpkg
 
-import "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg/viewfix/sub"
+import (
+	"github.com/pk910/dynamic-ssz/dynssz-gen/testpkg/viewfix/sub"
+
+	// third registers an annotation for a sub type; linked with this package.
+	_ "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg/third"
+)
 
 // Holder references types declared and annotated in an imported package.
 type Holder struct {

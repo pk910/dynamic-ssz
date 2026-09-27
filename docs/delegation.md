@@ -64,6 +64,27 @@ is fixed-size is the view type's own `ssz-static` declaration, not the data
 type's: a static view is framed inline and sized by the child's view sizer, a
 dynamic one is placed behind an offset.
 
+A generated variable-size type declares, beside `ssz-static:"false"`, the
+bytes every value holds in its fixed section as its code frames it:
+`ssz-minsize` with the floor when no spec value is defined, and
+`dynssz-minsize` with the expression the spec resolves to it, resolved with
+`ssz-minsize` as its fallback, as `dynssz-size` is resolved with `ssz-size`.
+In a generated declaration every spec-decided part carries the `:fallback`
+the type's own code resolves it with, such as
+`(SPEC_A):32+(SPEC_B):4*8+(SPEC_BITS/8):3+4`, so the parts resolve on their
+own however the spec defines them (a static build declares the literal it
+baked). A hand-written type may declare its floor the same way.
+Generated code decoding a list of such children reads that declaration and
+refuses an offset table whose element count the region cannot hold, before
+the count sizes an allocation, with the same region gate every other list
+has. A child without the declaration, from an older generation or written by
+hand, bounds nothing there; regenerate a child's package before the packages
+that list it.
+
+The reflection engine reads the same declaration when it describes such a
+child, resolved against its own specs, so a reflection-decoded container
+refuses the same offset table with the same error.
+
 A static build reaching a child that has no static surface inlines the child's
 structure. A child with no traversable structure, a custom type or an
 external fully-delegated type built without its subtree, cannot be inlined and

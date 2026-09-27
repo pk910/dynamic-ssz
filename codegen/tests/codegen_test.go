@@ -1213,6 +1213,186 @@ func TestCodegenViewTypes4(t *testing.T) {
 	testCodegenPayloadWithView(t, ViewTypes4_Payload, (*ViewTypes4_View1)(nil))
 }
 
+// TestCodegenViewList covers a list of elements generated in an earlier batch,
+// through the data type and through a view: the elements are delegated
+// without their subtree, and the offset table is bounded by the fixed section
+// their structure guarantees before it sizes an allocation.
+func TestCodegenViewList(t *testing.T) {
+	testCodegenPayloadWithView(t, ViewList_Payload, (*ViewList_View)(nil))
+
+	gen := dynssz.NewDynSsz(nil)
+	reflection := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+	genBytes, err := gen.MarshalSSZ(&ViewList_Payload)
+	if err != nil {
+		t.Fatalf("MarshalSSZ failed: %v", err)
+	}
+	reflectionBytes, err := reflection.MarshalSSZ(&ViewList_Payload)
+	if err != nil {
+		t.Fatalf("reflection MarshalSSZ failed: %v", err)
+	}
+	if !bytes.Equal(genBytes, reflectionBytes) {
+		t.Fatalf("generated code and reflection disagree:\n  gen=%x\n  refl=%x", genBytes, reflectionBytes)
+	}
+	var decoded ViewList_Base
+	if err := gen.UnmarshalSSZ(&decoded, genBytes); err != nil {
+		t.Fatalf("UnmarshalSSZ failed: %v", err)
+	}
+	if roundtrip, _ := gen.MarshalSSZ(&decoded); !bytes.Equal(roundtrip, genBytes) {
+		t.Fatalf("roundtrip mismatch:\n  gen=%x\n  roundtrip=%x", genBytes, roundtrip)
+	}
+
+	// A container of one offset and Tail, then an offset table declaring three
+	// elements in a 12-byte region: no element body fits. The floor is 20
+	// bytes for the data type and 16 for the view, so the count is refused
+	// before it sizes an allocation.
+	buf := []byte{5, 0, 0, 0, 11, 12, 0, 0, 0, 16, 0, 0, 0, 20, 0, 0, 0}
+	for _, tt := range []struct {
+		name string
+		opts []dynssz.CallOption
+	}{
+		{"data", nil},
+		{"view", []dynssz.CallOption{dynssz.WithViewDescriptor((*ViewList_View)(nil))}},
+	} {
+		err := gen.UnmarshalSSZ(&ViewList_Base{}, buf, tt.opts...)
+		if !errors.Is(err, sszutils.ErrOffset) || !strings.Contains(err.Error(), "elements of at least") {
+			t.Fatalf("%s: err = %v, want the region refused", tt.name, err)
+		}
+	}
+}
+
+// TestCodegenSpecSizedList covers a list of elements generated in an earlier
+// batch whose fixed section a spec value decides: the list is bounded by what
+// every preset guarantees, so a preset that shrinks the element below its
+// static fallback still decodes.
+func TestCodegenSpecSizedList(t *testing.T) {
+	for _, size := range []uint64{8, 4, 2} {
+		t.Run(fmt.Sprintf("VECSPEC_LEN=%d", size), func(t *testing.T) {
+			specs := map[string]any{"VECSPEC_LEN": size}
+			testCodegenPayloadByReflection(t, SpecSizedList_Payload, specs)
+
+			ds := dynssz.NewDynSsz(specs)
+			encoded, err := ds.MarshalSSZ(&SpecSizedList_Payload)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var decoded SpecSizedList
+			if err := ds.UnmarshalSSZ(&decoded, encoded); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if roundtrip, _ := ds.MarshalSSZ(&decoded); !bytes.Equal(roundtrip, encoded) {
+				t.Fatalf("roundtrip mismatch:\n  encoded=%x\n  roundtrip=%x", encoded, roundtrip)
+			}
+		})
+	}
+
+	// Two elements of 20 bytes each, the fixed section under VECSPEC_LEN=2:
+	// the container's offset, the list's two-entry table, then each element's
+	// two-word vector and its empty list's offset. Under VECSPEC_LEN=8 the
+	// declared floor resolves to 68 bytes and the table is refused before any
+	// element decodes.
+	elem := append(make([]byte, 16), 20, 0, 0, 0)
+	buf := append([]byte{4, 0, 0, 0, 8, 0, 0, 0, 28, 0, 0, 0}, append(elem, elem...)...)
+	var decoded SpecSizedList
+	if err := dynssz.NewDynSsz(map[string]any{"VECSPEC_LEN": 2}).UnmarshalSSZ(&decoded, buf); err != nil || len(decoded.Items) != 2 {
+		t.Fatalf("VECSPEC_LEN=2: err = %v, items = %d, want the two elements decoded", err, len(decoded.Items))
+	}
+	err := dynssz.NewDynSsz(map[string]any{"VECSPEC_LEN": 8}).UnmarshalSSZ(&SpecSizedList{}, buf)
+	if !errors.Is(err, sszutils.ErrOffset) || !strings.Contains(err.Error(), "elements of at least 68 bytes") {
+		t.Fatalf("VECSPEC_LEN=8: err = %v, want the region refused by the declared floor", err)
+	}
+}
+
+// TestCodegenSpecPairList covers a list of elements with three spec-decided
+// widths generated in an earlier batch: the list resolves each on its own
+// with its own fallback, as the element's code does, so a spec that defines
+// only some of them, or a bit count the byte count rounds up, decodes the
+// element's own bytes.
+func TestCodegenSpecPairList(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		specs map[string]any
+	}{
+		{"defaults", nil},
+		{"only A", map[string]any{"SPEC_A": uint64(8)}},
+		{"only B", map[string]any{"SPEC_B": uint64(2)}},
+		{"A and B", map[string]any{"SPEC_A": uint64(8), "SPEC_B": uint64(2)}},
+		{"bits 4", map[string]any{"SPEC_BITS": uint64(4)}},
+		{"bits 12", map[string]any{"SPEC_BITS": uint64(12)}},
+		{"bits 16", map[string]any{"SPEC_BITS": uint64(16)}},
+		{"bits 17", map[string]any{"SPEC_BITS": uint64(17)}},
+		{"bits 64", map[string]any{"SPEC_BITS": uint64(64)}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sizeA, sizeBits := 32, 20
+			if v, ok := tt.specs["SPEC_A"].(uint64); ok {
+				sizeA = int(v)
+			}
+			if v, ok := tt.specs["SPEC_BITS"].(uint64); ok {
+				sizeBits = int(v)
+			}
+			elem := func(fill byte, list ...uint64) *SpecPairElem {
+				e := &SpecPairElem{A: make([]byte, sizeA), Bits: make([]byte, (sizeBits+7)/8), L: list}
+				for i := range e.A {
+					e.A[i] = fill
+				}
+				return e
+			}
+			payload := SpecPairList{Items: []*SpecPairElem{elem(1, 2, 3), elem(4), {A: make([]byte, sizeA), Bits: make([]byte, (sizeBits+7)/8)}}}
+			testCodegenPayloadByReflection(t, payload, tt.specs)
+
+			ds := dynssz.NewDynSsz(tt.specs)
+			encoded, err := ds.MarshalSSZ(&payload)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var decoded SpecPairList
+			if err := ds.UnmarshalSSZ(&decoded, encoded); err != nil {
+				t.Fatalf("unmarshal of the element's own bytes: %v", err)
+			}
+			if roundtrip, _ := ds.MarshalSSZ(&decoded); !bytes.Equal(roundtrip, encoded) {
+				t.Fatalf("roundtrip mismatch:\n  encoded=%x\n  roundtrip=%x", encoded, roundtrip)
+			}
+		})
+	}
+}
+
+// reflectionSpecPairList has no generated code, so the reflection engine
+// decodes it and describes its elements, generated in the main batch, without
+// their subtree.
+type reflectionSpecPairList struct {
+	Items []*SpecPairElem `ssz-max:"4"`
+}
+
+// TestSpecPairListEngineFloors: both engines bound a list of delegated
+// elements by the same declared floor, resolved against the same specs, and
+// refuse the same offset table with the same error.
+func TestSpecPairListEngineFloors(t *testing.T) {
+	if _, generated := any(&SpecPairList{}).(sszutils.DynamicSizer); !generated {
+		t.Skip("no generated code present")
+	}
+	specs := map[string]any{"SPEC_A": uint64(8), "SPEC_B": uint64(2)}
+	// Two elements declared in a 40-byte region; each holds at least
+	// 8 + 16 + 3 + 4 = 31 bytes under these specs.
+	buf := append([]byte{4, 0, 0, 0, 8, 0, 0, 0, 28, 0, 0, 0}, make([]byte, 40)...)
+	ds := dynssz.NewDynSsz(specs)
+	generatedErr := ds.UnmarshalSSZ(&SpecPairList{}, buf)
+	reflectionErr := ds.UnmarshalSSZ(&reflectionSpecPairList{}, buf)
+	for name, err := range map[string]error{"generated": generatedErr, "reflection": reflectionErr} {
+		if !errors.Is(err, sszutils.ErrOffset) || !strings.Contains(err.Error(), "elements of at least 31 bytes") {
+			t.Errorf("%s: err = %v, want the region refused by the 31-byte floor", name, err)
+		}
+	}
+	payload := reflectionSpecPairList{Items: []*SpecPairElem{{A: make([]byte, 8), Bits: make([]byte, 3)}, {A: make([]byte, 8), Bits: make([]byte, 3), L: []uint64{1}}}}
+	encoded, err := ds.MarshalSSZ(&payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded reflectionSpecPairList
+	if err := ds.UnmarshalSSZ(&decoded, encoded); err != nil || len(decoded.Items) != 2 {
+		t.Fatalf("reflection decode of the elements' own bytes: err = %v, items = %d", err, len(decoded.Items))
+	}
+}
+
 // testCodegenPayloadWithView tests a payload serialized through a view.
 // It marshals via the view, unmarshals, and verifies roundtrip hash consistency.
 func testCodegenPayloadWithView(t *testing.T, payload, view any) {

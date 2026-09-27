@@ -893,8 +893,19 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			desc.SszCompatFlags &^= SszCompatFlagFastsszSurface | SszCompatFlagFastsszHashRoot | SszCompatFlagFastsszHashRootWith
 			desc.HashTreeRootWithMethod = nil
 			// A shallow descriptor has no traversed subtree: a static one still
-			// knows its size, a dynamic one states no floor.
+			// knows its size, a dynamic one holds the floor its generation
+			// declared, resolved against the specs as generated code resolves
+			// it (see ParseMinSizeDeclaration).
 			desc.SetMinSize()
+			if desc.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
+				if literal, expr, ok := ParseMinSizeDeclaration(reflect.StructTag(annotationTag)); ok {
+					floor, err := EvaluateMinSize(tc.specs, literal, expr)
+					if err != nil {
+						return err
+					}
+					desc.MinSize = floor
+				}
+			}
 
 			return nil
 		}

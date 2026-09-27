@@ -726,13 +726,15 @@ func runGeneration(config *Config, typeSpecs []typeSpec) error {
 const sszutilsPkgPath = "github.com/pk910/dynamic-ssz/sszutils"
 
 // annotationIndex resolves the sszutils.Annotate registrations of a named type
-// the way the runtime registry sees them: the calls in the package declaring
-// the type (initialized first, as a dependency) followed by those in the
-// generated package, which is linked into every binary running its code. A
-// type is looked up in the loaded package that owns its *types.Package, so the
-// Annotate type arguments resolve to the very *types.Named the parser holds.
+// the way the runtime registry sees them: the calls of every loaded package,
+// in dependency order, merged newest first. Every package in the generated
+// package's import graph is linked into any binary running its code, and a
+// view package loaded separately is linked wherever its views are served, so
+// a registration in any of them applies at run time, wherever the type is
+// declared. Packages are visited with their imports first, siblings by import
+// path, which is the order their init functions run in.
 type annotationIndex struct {
-	root   *packages.Package
+	order  []*packages.Package
 	owners map[*types.Package]*packages.Package
 	cache  map[*types.Named]string
 	err    error
@@ -744,7 +746,6 @@ type annotationIndex struct {
 // refused rather than treated as unannotated.
 func newAnnotationIndex(root *packages.Package, extra ...*packages.Package) (*annotationIndex, error) {
 	idx := &annotationIndex{
-		root:   root,
 		owners: make(map[*types.Package]*packages.Package),
 		cache:  make(map[*types.Named]string),
 	}
@@ -753,6 +754,7 @@ func newAnnotationIndex(root *packages.Package, extra ...*packages.Package) (*an
 		if p.Types == nil {
 			return
 		}
+		idx.order = append(idx.order, p)
 		idx.owners[p.Types] = p
 		if err == nil && p.Imports[sszutilsPkgPath] != nil && (len(p.Syntax) == 0 || p.TypesInfo == nil) {
 			err = fmt.Errorf("package %s imports sszutils but was loaded without syntax: its Annotate registrations cannot be read", p.PkgPath)
@@ -775,8 +777,7 @@ func (idx *annotationIndex) resolve(t types.Type) string {
 	if tag, ok := idx.cache[named]; ok {
 		return tag
 	}
-	owner := idx.owners[named.Obj().Pkg()]
-	if owner == nil {
+	if idx.owners[named.Obj().Pkg()] == nil {
 		// Every type the parser reaches comes from an indexed package; one
 		// that does not cannot be vouched for, so generation is failed.
 		if idx.err == nil {
@@ -784,9 +785,9 @@ func (idx *annotationIndex) resolve(t types.Type) string {
 		}
 		return ""
 	}
-	tags := annotateCallTags(owner, named)
-	if owner != idx.root {
-		tags = append(tags, annotateCallTags(idx.root, named)...)
+	var tags []string
+	for _, pkg := range idx.order {
+		tags = append(tags, annotateCallTags(pkg, named)...)
 	}
 	tag := mergeAnnotateTags(tags)
 	idx.cache[named] = tag
