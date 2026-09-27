@@ -937,7 +937,7 @@ func TestAnnotationResolver(t *testing.T) {
 
 // TestRun_ShallowBuildGate generates types that reference external, fully-delegated
 // types, exercising end-to-end: the annotation resolver (annotatedNamedType +
-// findAnnotateCall), the parser's shallow-build gate for both ssz-static:"true"
+// annotateCallTags), the parser's shallow-build gate for both ssz-static:"true"
 // (static, runtime delegated size) and ssz-static:"false" (dynamic), and the
 // streaming offset header for an under-filled fixed vector of dynamic elements.
 func TestRun_ShallowBuildGate(t *testing.T) {
@@ -1018,7 +1018,7 @@ func TestParseAnnotateTag_Multiple(t *testing.T) {
 	}
 }
 
-// findAnnotateCall tests
+// annotateCallTags tests
 
 // One go/packages load is cached per target: loading a fixture package
 // type-checks it and its dependencies, which costs seconds, and the tests
@@ -1052,7 +1052,7 @@ func TestFindAnnotateCall_Found(t *testing.T) {
 	pkg := loadTestPackage(t, "github.com/pk910/dynamic-ssz/codegen/tests")
 
 	// The merged tag also carries the generated ssz-static declaration.
-	tag := findAnnotateCall(pkg, lookupNamed(pkg, "AnnotatedList"))
+	tag := mergeAnnotateTags(annotateCallTags(pkg, lookupNamed(pkg, "AnnotatedList")))
 	if !strings.Contains(tag, `ssz-max:"20"`) {
 		t.Fatalf("expected tag to contain ssz-max:\"20\", got: %q", tag)
 	}
@@ -1061,7 +1061,7 @@ func TestFindAnnotateCall_Found(t *testing.T) {
 func TestFindAnnotateCall_Found2(t *testing.T) {
 	pkg := loadTestPackage(t, "github.com/pk910/dynamic-ssz/codegen/tests")
 
-	tag := findAnnotateCall(pkg, lookupNamed(pkg, "AnnotatedList2"))
+	tag := mergeAnnotateTags(annotateCallTags(pkg, lookupNamed(pkg, "AnnotatedList2")))
 	if !strings.Contains(tag, `ssz-max:"10"`) {
 		t.Fatalf("expected tag to contain ssz-max:\"10\", got: %q", tag)
 	}
@@ -1070,7 +1070,7 @@ func TestFindAnnotateCall_Found2(t *testing.T) {
 func TestFindAnnotateCall_NotFound(t *testing.T) {
 	pkg := loadTestPackage(t, "github.com/pk910/dynamic-ssz/codegen/tests")
 
-	tag := findAnnotateCall(pkg, lookupNamed(pkg, "NonExistentType"))
+	tag := mergeAnnotateTags(annotateCallTags(pkg, lookupNamed(pkg, "NonExistentType")))
 	if tag != "" {
 		t.Fatalf("expected empty tag for non-existent type, got: %q", tag)
 	}
@@ -1130,7 +1130,7 @@ func TestFindAnnotateCall_InitFunction(t *testing.T) {
 	// Covers main.go:373-380 (init() function body scanning)
 	pkg := loadTestPackage(t, "github.com/pk910/dynamic-ssz/codegen/tests")
 
-	tag := findAnnotateCall(pkg, lookupNamed(pkg, "InitAnnotatedList"))
+	tag := mergeAnnotateTags(annotateCallTags(pkg, lookupNamed(pkg, "InitAnnotatedList")))
 	if tag != `ssz-max:"8"` {
 		t.Fatalf("expected tag from init(), got: %q", tag)
 	}
@@ -1140,7 +1140,7 @@ func TestFindAnnotateCall_InterpretedString(t *testing.T) {
 	// Covers main.go:432-437 (interpreted string literal path)
 	pkg := loadTestPackage(t, "github.com/pk910/dynamic-ssz/codegen/tests")
 
-	tag := findAnnotateCall(pkg, lookupNamed(pkg, "InterpretedAnnotatedList"))
+	tag := mergeAnnotateTags(annotateCallTags(pkg, lookupNamed(pkg, "InterpretedAnnotatedList")))
 	if tag != `ssz-max:"12"` {
 		t.Fatalf("expected tag from interpreted string, got: %q", tag)
 	}
@@ -1491,19 +1491,19 @@ func TestRun_BadAnnotateTagInSource(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// findAnnotateCall: aliased sszutils import. testpkg/aliased.go imports the
+// annotateCallTags: aliased sszutils import. testpkg/aliased.go imports the
 // package as `szs`, so the scanner picks up the alias from imp.Name.
 // -----------------------------------------------------------------------------
 
 func TestFindAnnotateCall_AliasedImport(t *testing.T) {
 	pkg := loadTestPackage(t, "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg")
-	tag := findAnnotateCall(pkg, lookupNamed(pkg, "AliasedAnnotated"))
+	tag := mergeAnnotateTags(annotateCallTags(pkg, lookupNamed(pkg, "AliasedAnnotated")))
 	if tag != `ssz-max:"16"` {
 		t.Fatalf("expected aliased tag, got %q", tag)
 	}
 }
 
-// findAnnotateCall for a type whose Annotate lives inside an init() body
+// annotateCallTags for a type whose Annotate lives inside an init() body
 // alongside an AssignStmt — covers the non-ExprStmt continue branch in
 // findAnnotateCallInDecl.
 func TestFindAnnotateCall_InitMixedStmts(t *testing.T) {
@@ -1512,14 +1512,14 @@ func TestFindAnnotateCall_InitMixedStmts(t *testing.T) {
 	// scanner only finds Annotate in ExprStmts, so it must NOT match.
 	// But the loop must still iterate past the assign stmt without crashing
 	// and past the unrelated-call ExprStmt.
-	tag := findAnnotateCall(pkg, lookupNamed(pkg, "NonExprInitMarker"))
+	tag := mergeAnnotateTags(annotateCallTags(pkg, lookupNamed(pkg, "NonExprInitMarker")))
 	if tag != "" {
 		t.Fatalf("expected empty tag (Annotate was in AssignStmt not ExprStmt), got %q", tag)
 	}
 
 	// Meanwhile InvalidAnnotated still resolves correctly, proving the
 	// scanner didn't get confused by the mixed init() body.
-	tag = findAnnotateCall(pkg, lookupNamed(pkg, "InvalidAnnotated"))
+	tag = mergeAnnotateTags(annotateCallTags(pkg, lookupNamed(pkg, "InvalidAnnotated")))
 	if tag == "" {
 		t.Fatal("expected InvalidAnnotated tag to still be found")
 	}
@@ -1933,7 +1933,7 @@ func TestFindAnnotateCall_RepeatedRegistrations(t *testing.T) {
 		{"RepeatedBlock", reflect.TypeOf(testpkg.RepeatedBlock(nil)), "ssz-max", "8"},
 		{"RepeatedSame", reflect.TypeOf(testpkg.RepeatedSame(nil)), "ssz-max", "4"},
 	} {
-		generated := findAnnotateCall(pkg, lookupNamed(pkg, tc.name))
+		generated := mergeAnnotateTags(annotateCallTags(pkg, lookupNamed(pkg, tc.name)))
 		runtime, ok := sszutils.LookupAnnotation(tc.typ)
 		if !ok {
 			t.Fatalf("%s: no runtime annotation", tc.name)
@@ -2118,48 +2118,59 @@ func TestWriteOutputFilesReportsBackupRenameFailure(t *testing.T) {
 
 // TestAnnotationIndex_CrossPackage covers annotations registered in the package
 // declaring a type other than the generated one: a field type from an imported
-// package, and a view field type from a separately loaded view package. Both
-// used to resolve to no annotation, so the generator described the vector as a
-// list and dropped the list limit, diverging from the reflection type cache.
+// package (testpkg.Holder's fields are declared in viewfix/sub) and a view
+// field type from a separately loaded view package (sub.DataView over
+// viewfix.Data, whose package does not import sub). Without them the generator
+// describes the vector as a list and drops the list limit, diverging from the
+// reflection type cache.
 func TestAnnotationIndex_CrossPackage(t *testing.T) {
-	cfg := &packages.Config{Mode: packages.NeedName | packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedImports | packages.NeedDeps}
-	root, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg/xann")
-	if err != nil || len(root) != 1 {
-		t.Fatalf("load xann: %v", err)
-	}
-	views, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg/xann/xviews")
-	if err != nil || len(views) != 1 {
-		t.Fatalf("load xviews: %v", err)
-	}
-	idx, err := newAnnotationIndex(root[0], views[0])
+	const (
+		testPkgPath = "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg"
+		viewfixPath = "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg/viewfix"
+		subPath     = "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg/viewfix/sub"
+	)
+	want := []string{`ssz-size:"2,32"`, `ssz-max:"3"`}
+
+	root := loadTestPackage(t, testPkgPath)
+	idx, err := newAnnotationIndex(root)
 	if err != nil {
 		t.Fatalf("annotation index: %v", err)
 	}
-
-	holder, ok := root[0].Types.Scope().Lookup("Holder").Type().Underlying().(*types.Struct)
+	holder, ok := root.Types.Scope().Lookup("Holder").Type().Underlying().(*types.Struct)
 	if !ok {
-		t.Fatal("xann.Holder is not a struct")
+		t.Fatal("testpkg.Holder is not a struct")
 	}
-	for i, want := range []string{`ssz-size:"2,32"`, `ssz-max:"3"`} {
-		if got := idx.resolve(holder.Field(i).Type()); got != want {
-			t.Errorf("imported %v: annotation = %q, want %q", holder.Field(i).Type(), got, want)
+	for i, tag := range want {
+		if got := idx.resolve(holder.Field(i).Type()); got != tag {
+			t.Errorf("imported %v: annotation = %q, want %q", holder.Field(i).Type(), got, tag)
 		}
 	}
-	for name, want := range map[string]string{"RootsV": `ssz-size:"2,32"`, "NumsV": `ssz-max:"3"`} {
-		if got := idx.resolve(views[0].Types.Scope().Lookup(name).Type()); got != want {
-			t.Errorf("view package %s: annotation = %q, want %q", name, got, want)
+
+	views := loadTestPackage(t, subPath)
+	idx, err = newAnnotationIndex(loadTestPackage(t, viewfixPath), views)
+	if err != nil {
+		t.Fatalf("annotation index: %v", err)
+	}
+	dataView, ok := views.Types.Scope().Lookup("DataView").Type().Underlying().(*types.Struct)
+	if !ok {
+		t.Fatal("sub.DataView is not a struct")
+	}
+	for i, tag := range want {
+		if got := idx.resolve(dataView.Field(i).Type()); got != tag {
+			t.Errorf("view package %v: annotation = %q, want %q", dataView.Field(i).Type(), got, tag)
 		}
 	}
 
 	// End to end under default flags: without the annotations the vector is
 	// read as a list without a limit, which has no SSZ hash tree root.
-	out := filepath.Join(t.TempDir(), "out.go")
-	if err := run(&Config{
-		PackagePath: "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg/xann",
-		TypeNames:   "Holder,Data:views=github.com/pk910/dynamic-ssz/dynssz-gen/testpkg/xann/xviews.View:viewonly",
-		OutputFile:  out,
-	}); err != nil {
-		t.Fatalf("generation with cross-package annotations failed: %v", err)
+	for _, config := range []Config{
+		{PackagePath: testPkgPath, TypeNames: "Holder"},
+		{PackagePath: viewfixPath, TypeNames: "Data:views=" + subPath + ".DataView:viewonly"},
+	} {
+		config.OutputFile = filepath.Join(t.TempDir(), "out.go")
+		if err := run(&config); err != nil {
+			t.Fatalf("generation of %s with cross-package annotations failed: %v", config.TypeNames, err)
+		}
 	}
 }
 

@@ -692,11 +692,13 @@ func runGeneration(config *Config, typeSpecs []typeSpec) error {
 	}
 
 	codeMap, err := codeGen.GenerateToMap()
-	if err != nil {
-		return fmt.Errorf("failed to generate code: %v", err)
-	}
+	// A type whose annotations could not be read makes any generation error
+	// a consequence, so it is reported first.
 	if annotations.err != nil {
 		return fmt.Errorf("failed to generate code: %v", annotations.err)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to generate code: %v", err)
 	}
 
 	codeSize, err := writeOutputFiles(codeMap, config.Verbose)
@@ -823,18 +825,10 @@ func annotateTypeArgMatches(pkg *packages.Package, arg ast.Expr, target *types.N
 	return ok && ident.Name == target.Obj().Name()
 }
 
-// findAnnotateCall scans package AST for sszutils.Annotate[target]("...")
-// calls and returns the merged tag, or "" if not found. The calls are taken
-// in the package's initialization order (package-level variables of every
-// file in file order, then the init functions) and merged newest first, as
-// the runtime registration does, so a key registered twice resolves to the
-// same registration in both.
-func findAnnotateCall(pkg *packages.Package, target *types.Named) string {
-	return mergeAnnotateTags(annotateCallTags(pkg, target))
-}
-
-// annotateCallTags returns the tags of pkg's Annotate calls for target in
-// initialization order.
+// annotateCallTags scans pkg's AST for sszutils.Annotate[target]("...")
+// calls and returns their tags in the package's initialization order:
+// package-level variables of every file in file order, then the init
+// functions.
 func annotateCallTags(pkg *packages.Package, target *types.Named) []string {
 	if pkg == nil || target == nil {
 		return nil
