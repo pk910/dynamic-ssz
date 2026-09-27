@@ -7371,3 +7371,95 @@ func TestCustomWidthForStaticBuild(t *testing.T) {
 		t.Fatalf("same-run type that cannot be described: err = %v, want its own refusal", err)
 	}
 }
+
+// For this process, a custom width named only by an expression takes the
+// value the specs supply. A value nobody supplied leaves the type's sizer as
+// the width, which is what generated code frames the value with, rather than
+// offsets the sizer never writes.
+func TestCustomWidthExpressionOnlyForProcess(t *testing.T) {
+	type exprOnly struct {
+		C widthCustom `ssz-type:"custom" dynssz-size:"W"`
+	}
+	type exprOnlyList struct {
+		L []widthCustom `ssz-type:"?,custom" dynssz-size:"?,W" ssz-max:"4"`
+	}
+
+	defined := NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"W": 4}})
+	desc, err := defined.GetTypeDescriptor(reflect.TypeOf(exprOnly{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("process, width from a defined expression: %v", err)
+	}
+	if field := desc.ContainerDesc.Fields[0].Type; field.Size != 4 || field.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
+		t.Fatalf("process, width from a defined expression: field = %+v, want a static 4-byte custom", field)
+	}
+
+	undefined := NewTypeCache(&dummyDynamicSpecs{})
+	desc, err = undefined.GetTypeDescriptor(reflect.TypeOf(exprOnly{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("process, width from an undefined expression: %v", err)
+	}
+	if field := desc.ContainerDesc.Fields[0].Type; field.Size != 4 || field.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagSizerWidth) != SszTypeFlagSizerWidth {
+		t.Fatalf("process, width from an undefined expression: field = %+v, want a static custom sized from the sizer", field)
+	}
+	desc, err = undefined.GetTypeDescriptor(reflect.TypeOf(exprOnlyList{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("process, list element width from an undefined expression: %v", err)
+	}
+	if elem := desc.ContainerDesc.Fields[0].Type.ElemDesc; elem.Size != 4 || elem.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagSizerWidth) != SszTypeFlagSizerWidth {
+		t.Fatalf("process, list element width from an undefined expression: elem = %+v, want a static custom sized from the sizer", elem)
+	}
+}
+
+// annExprCustom names its width by an expression on its own annotation.
+type annExprCustom struct{ V uint32 }
+
+var _ = sszutils.Annotate[annExprCustom](`ssz-type:"custom" dynssz-size:"W"`)
+
+func (*annExprCustom) SizeSSZDyn(sszutils.DynamicSpecs) int                            { return 4 }
+func (*annExprCustom) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) { return b, nil }
+func (*annExprCustom) UnmarshalSSZDyn(sszutils.DynamicSpecs, []byte) error             { return nil }
+func (*annExprCustom) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
+// annExprCustomList names its elements' width the same way, one dimension in.
+type annExprCustomList []annExprCustom
+
+var _ = sszutils.Annotate[annExprCustomList](`ssz-type:"?,custom" dynssz-size:"?,W" ssz-max:"4"`)
+
+// A custom width named only by an expression on the type's own annotation is
+// sized like the same width on a field tag: by the value the specs supply,
+// or by the type's sizer when nobody supplied one.
+func TestCustomWidthExpressionOnlyByAnnotation(t *testing.T) {
+	type holder struct {
+		V annExprCustom
+		L annExprCustomList
+	}
+
+	for _, tt := range []struct {
+		name  string
+		specs map[string]uint64
+		flags SszTypeFlag
+	}{
+		{"defined", map[string]uint64{"W": 4}, 0},
+		{"undefined", nil, SszTypeFlagSizerWidth},
+	} {
+		desc, err := NewTypeCache(&dummyDynamicSpecs{specValues: tt.specs}).GetTypeDescriptor(reflect.TypeOf(holder{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", tt.name, err)
+		}
+		if field := desc.ContainerDesc.Fields[0].Type; field.Size != 4 || field.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagSizerWidth) != tt.flags {
+			t.Fatalf("%s: field = %+v, want a static 4-byte custom with flags %b", tt.name, field, tt.flags)
+		}
+		if elem := desc.ContainerDesc.Fields[1].Type.ElemDesc; elem.Size != 4 || elem.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagSizerWidth) != tt.flags {
+			t.Fatalf("%s: list element = %+v, want a static 4-byte custom with flags %b", tt.name, elem, tt.flags)
+		}
+	}
+
+	// A value that resolves to zero names no width, on the annotation as on a
+	// field tag.
+	zero := NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"W": 0}})
+	if _, err := zero.GetTypeDescriptor(reflect.TypeOf(holder{}), nil, nil, nil); err == nil || !strings.Contains(err.Error(), "resolved to 0 with no positive static fallback") {
+		t.Fatalf("resolved to zero: err = %v, want the refusal", err)
+	}
+}

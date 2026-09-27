@@ -535,6 +535,11 @@ func WithExtendedTypes() CodeGeneratorOption {
 //	    WithNoHashTreeRoot(), // Skip hash tree root for this type only
 //	    WithCreateLegacyFn(), // But include legacy methods
 //	),
+//
+// A referenced static type from another package that delegates to its own
+// generated methods is sized with the type cache's specs at generation time;
+// a width that depends on a spec value is baked for that preset. dynssz-gen
+// reads such a width from the type's sizer at run time instead.
 func WithReflectType(t reflect.Type, typeOpts ...CodeGeneratorOption) CodeGeneratorOption {
 	return func(opts *CodeGeneratorOptions) {
 		opts.Types = append(opts.Types, CodeGeneratorTypeOption{

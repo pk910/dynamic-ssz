@@ -1191,6 +1191,14 @@ func (h *Hasher) Merkleize(indx int) {
 		// how legacy Index-driven scopes (fastssz-generated code) batch.
 		deferrable := !layer.incremental ||
 			(!layer.progressive && !layer.collapsed && layer.pendCount == 0)
+		// A deferred run is read by its parent's flush without draining, so a
+		// scope is only deferrable once no background reduction still writes
+		// into it: an undeclared scope keeps its layer untouched after an
+		// async flush of its own run, and its holes below the highest
+		// outstanding hole end are filled by the close path below instead.
+		if deferrable && h.jobCount > 0 && indx < h.jobMaxEnd {
+			deferrable = false
+		}
 		if deferrable && h.layerCount >= 1 {
 			parent := &h.layers[h.layerCount-1]
 			if parent.incremental {

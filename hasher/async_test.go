@@ -1126,3 +1126,44 @@ func TestAsyncHashErrorReachesCaller(t *testing.T) {
 		t.Errorf("root after Reset %x, want %x", got, want)
 	}
 }
+
+// TestAsyncUndeclaredScopeHolesNotDeferred closes Index-opened (fastssz-style)
+// vectors whose element run was reduced in the background. The closing scope
+// still holds the holes those jobs write into, and its parent reads a
+// deferred run without draining, so the scope has to close in place. Shapes
+// on both sides of the run cap, async against sync.
+func TestAsyncUndeclaredScopeHolesNotDeferred(t *testing.T) {
+	defer DisableAsyncHashing()
+
+	walk := func(hh *Hasher, elems, fields int) [32]byte {
+		outer := hh.Index()
+		vec := hh.Index()
+		for i := 0; i < elems; i++ {
+			e := hh.Index()
+			for f := 0; f < fields; f++ {
+				hh.PutUint64(uint64(i*1000 + f))
+			}
+			hh.Merkleize(e)
+		}
+		hh.Merkleize(vec)
+		hh.PutUint64(7)
+		hh.Merkleize(outer)
+		root, err := hh.HashRoot()
+		if err != nil {
+			t.Fatalf("%d x %d: HashRoot: %v", elems, fields, err)
+		}
+		return root
+	}
+
+	for _, shape := range [][2]int{{256, 65}, {256, 128}, {128, 129}, {128, 256}, {256, 64}, {128, 128}, {384, 200}, {512, 128}} {
+		DisableAsyncHashing()
+		want := walk(NewHasher(), shape[0], shape[1])
+
+		EnableAsyncHashing(4)
+		hh := NewHasher()
+		hh.SetAsyncHashing(true)
+		if got := walk(hh, shape[0], shape[1]); got != want {
+			t.Errorf("%d elements of %d chunks: async root %x != sync root %x", shape[0], shape[1], got, want)
+		}
+	}
+}
