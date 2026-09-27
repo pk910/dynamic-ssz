@@ -76,7 +76,7 @@ type Phase0BeaconState struct {
 	Slashings                   []Gwei                      `dynssz-size:"EPOCHS_PER_SLASHINGS_VECTOR"     ssz-size:"8192"`
 	PreviousEpochAttestations   []*Phase0PendingAttestation `dynssz-max:"MAX_ATTESTATIONS*SLOTS_PER_EPOCH" ssz-max:"4096"`
 	CurrentEpochAttestations    []*Phase0PendingAttestation `dynssz-max:"MAX_ATTESTATIONS*SLOTS_PER_EPOCH" ssz-max:"4096"`
-	JustificationBits           bitfield.Bitvector4         `ssz-size:"1"`
+	JustificationBits           bitfield.Bitvector4         `ssz-type:"bitvector" ssz-bitsize:"4"`
 	PreviousJustifiedCheckpoint *Phase0Checkpoint
 	CurrentJustifiedCheckpoint  *Phase0Checkpoint
 	FinalizedCheckpoint         *Phase0Checkpoint
@@ -216,7 +216,7 @@ type AltairBeaconState struct {
 	Slashings                   []Gwei               `dynssz-size:"EPOCHS_PER_SLASHINGS_VECTOR"     ssz-size:"8192"`
 	PreviousEpochParticipation  []ParticipationFlags `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	CurrentEpochParticipation   []ParticipationFlags `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
-	JustificationBits           bitfield.Bitvector4  `ssz-size:"1"`
+	JustificationBits           bitfield.Bitvector4  `ssz-type:"bitvector" ssz-bitsize:"4"`
 	PreviousJustifiedCheckpoint *Phase0Checkpoint
 	CurrentJustifiedCheckpoint  *Phase0Checkpoint
 	FinalizedCheckpoint         *Phase0Checkpoint
@@ -306,7 +306,7 @@ type BellatrixBeaconState struct {
 	Slashings                    []Gwei               `dynssz-size:"EPOCHS_PER_SLASHINGS_VECTOR"     ssz-size:"8192"`
 	PreviousEpochParticipation   []ParticipationFlags `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	CurrentEpochParticipation    []ParticipationFlags `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
-	JustificationBits            bitfield.Bitvector4  `ssz-size:"1"`
+	JustificationBits            bitfield.Bitvector4  `ssz-type:"bitvector" ssz-bitsize:"4"`
 	PreviousJustifiedCheckpoint  *Phase0Checkpoint
 	CurrentJustifiedCheckpoint   *Phase0Checkpoint
 	FinalizedCheckpoint          *Phase0Checkpoint
@@ -396,7 +396,7 @@ type CapellaBeaconState struct {
 	Slashings                    []Gwei               `dynssz-size:"EPOCHS_PER_SLASHINGS_VECTOR"     ssz-size:"8192"`
 	PreviousEpochParticipation   []ParticipationFlags `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	CurrentEpochParticipation    []ParticipationFlags `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
-	JustificationBits            bitfield.Bitvector4  `ssz-size:"1"`
+	JustificationBits            bitfield.Bitvector4  `ssz-type:"bitvector" ssz-bitsize:"4"`
 	PreviousJustifiedCheckpoint  *Phase0Checkpoint
 	CurrentJustifiedCheckpoint   *Phase0Checkpoint
 	FinalizedCheckpoint          *Phase0Checkpoint
@@ -515,7 +515,7 @@ type DenebBeaconState struct {
 	Slashings                    []Gwei               `dynssz-size:"EPOCHS_PER_SLASHINGS_VECTOR"     ssz-size:"8192"`
 	PreviousEpochParticipation   []ParticipationFlags `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	CurrentEpochParticipation    []ParticipationFlags `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
-	JustificationBits            bitfield.Bitvector4  `ssz-size:"1"`
+	JustificationBits            bitfield.Bitvector4  `ssz-type:"bitvector" ssz-bitsize:"4"`
 	PreviousJustifiedCheckpoint  *Phase0Checkpoint
 	CurrentJustifiedCheckpoint   *Phase0Checkpoint
 	FinalizedCheckpoint          *Phase0Checkpoint
@@ -648,7 +648,7 @@ type ElectraBeaconState struct {
 	Slashings                     []Gwei               `dynssz-size:"EPOCHS_PER_SLASHINGS_VECTOR"     ssz-size:"8192"`
 	PreviousEpochParticipation    []ParticipationFlags `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	CurrentEpochParticipation     []ParticipationFlags `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
-	JustificationBits             bitfield.Bitvector4  `ssz-size:"1"`
+	JustificationBits             bitfield.Bitvector4  `ssz-type:"bitvector" ssz-bitsize:"4"`
 	PreviousJustifiedCheckpoint   *Phase0Checkpoint
 	CurrentJustifiedCheckpoint    *Phase0Checkpoint
 	FinalizedCheckpoint           *Phase0Checkpoint
@@ -756,7 +756,7 @@ type FuluBeaconState struct {
 	Slashings                     []Gwei               `dynssz-size:"EPOCHS_PER_SLASHINGS_VECTOR"     ssz-size:"8192"`
 	PreviousEpochParticipation    []ParticipationFlags `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	CurrentEpochParticipation     []ParticipationFlags `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
-	JustificationBits             bitfield.Bitvector4  `ssz-size:"1"`
+	JustificationBits             bitfield.Bitvector4  `ssz-type:"bitvector" ssz-bitsize:"4"`
 	PreviousJustifiedCheckpoint   *Phase0Checkpoint
 	CurrentJustifiedCheckpoint    *Phase0Checkpoint
 	FinalizedCheckpoint           *Phase0Checkpoint
@@ -840,7 +840,7 @@ type GloasBeaconState struct {
 	Slashings                     []Gwei                             `ssz-index:"14" dynssz-size:"EPOCHS_PER_SLASHINGS_VECTOR" ssz-size:"8192"`
 	PreviousEpochParticipation    []ParticipationFlags               `ssz-index:"15" ssz-type:"progressive-list"`
 	CurrentEpochParticipation     []ParticipationFlags               `ssz-index:"16" ssz-type:"progressive-list"`
-	JustificationBits             bitfield.Bitvector4                `ssz-index:"17" ssz-size:"1"`
+	JustificationBits             bitfield.Bitvector4                `ssz-index:"17" ssz-type:"bitvector" ssz-bitsize:"4"`
 	PreviousJustifiedCheckpoint   *Phase0Checkpoint                  `ssz-index:"18"`
 	CurrentJustifiedCheckpoint    *Phase0Checkpoint                  `ssz-index:"19"`
 	FinalizedCheckpoint           *Phase0Checkpoint                  `ssz-index:"20"`

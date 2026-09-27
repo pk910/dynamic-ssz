@@ -1121,3 +1121,41 @@ func TestMerkleizeProgressiveUnalignedBranchParity(t *testing.T) {
 		t.Fatalf("incremental root diverges from standard root for unaligned content: %x != %x", inc, std)
 	}
 }
+
+// A Collapse hint on a scope opened without a declared shape reduces only
+// its deferred children: the scope may still close as either tree, so its
+// own chunks are left for the close, and the root is the hint-free root
+// whichever close follows.
+func TestCollapseHintOnUndeclaredScope(t *testing.T) {
+	for _, n := range []int{64, 256, 1000} {
+		for _, close := range []struct {
+			name string
+			fn   func(hh *Hasher, idx int)
+		}{
+			{"progressive", func(hh *Hasher, idx int) { hh.MerkleizeProgressive(idx) }},
+			{"binary", func(hh *Hasher, idx int) { hh.Merkleize(idx) }},
+			{"binary mixin", func(hh *Hasher, idx int) { hh.MerkleizeWithMixin(idx, uint64(n), 1<<40) }},
+		} {
+			walk := func(hint bool) [32]byte {
+				hh := NewHasher()
+				defer hh.Reset()
+				idx := hh.Index()
+				for i := 0; i < n; i++ {
+					hh.PutUint64(uint64(i + 1))
+					if hint {
+						hh.Collapse()
+					}
+				}
+				close.fn(hh, idx)
+				root, err := hh.HashRoot()
+				if err != nil {
+					t.Fatalf("%s, %d chunks: HashRoot: %v", close.name, n, err)
+				}
+				return root
+			}
+			if want, got := walk(false), walk(true); got != want {
+				t.Errorf("%s close of %d chunks: root with hints %x != root without %x", close.name, n, got, want)
+			}
+		}
+	}
+}
