@@ -292,6 +292,12 @@ types:
     output: gen_edgecases.go
   - name: AmountList
     output: gen_edgecases.go
+  - name: WordAmount
+    output: gen_edgecases.go
+  - name: WideWordAmount
+    output: gen_edgecases.go
+  - name: WordAmountHolder
+    output: gen_edgecases.go
   - name: ShallowBasicHolder
     output: gen_edgecases.go
   - name: ShallowBasicList

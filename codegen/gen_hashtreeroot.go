@@ -815,7 +815,14 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 	} else {
 		// Hash individual elements
 		packed := packedElemSize(desc.ElemDesc) > 0
-		if !pack {
+		// A large uint in uint64 words is one basic value, not a vector of
+		// words: it opens no scope, and PadChunk closes it by the walker's
+		// scope (its chunk on its own, its packed bytes among packed
+		// neighbours), so a generated hasher that does not know its caller's
+		// scope lays it out right either way. The byte form goes through
+		// PutBytes above, which packs or pads the same way.
+		largeUint := desc.SszType == ssztypes.SszUint128Type || desc.SszType == ssztypes.SszUint256Type
+		if !pack && !largeUint {
 			// Start vector merkleization
 			ctx.appendCode(indent, "idx := hh.StartTree(%s)\n", treeTypeExpr(sszutils.TreeTypeBinary, packed))
 		}
@@ -856,7 +863,11 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 			appendElemPaddingCheck(ctx.appendCode, indent, desc.ElemDesc, getValueVar(false, ""), lenVar, bitlimitVar, sizeExpression != nil, fullLen, "return "+typePath.getErrorWith(errCodeBitvectorPadding))
 		}
 
-		if !pack {
+		switch {
+		case pack:
+		case largeUint:
+			ctx.appendCode(indent, "hh.PadChunk()\n")
+		default:
 			// Finalize vector with bit limit
 			ctx.appendCode(indent, "hh.Merkleize(idx)\n")
 		}

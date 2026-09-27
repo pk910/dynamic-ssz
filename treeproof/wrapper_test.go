@@ -2014,3 +2014,43 @@ func TestWalkerConstructorsResolveTheBackendDifferently(t *testing.T) {
 		t.Errorf("NewWrapper answered the built-in root %x, want the pool's backend", got)
 	}
 }
+
+// PadChunk closes a basic value appended word by word: a chunk outside a
+// packed scope, the packed bytes inside one, as on hasher.Hasher.
+func TestWrapperPadChunk(t *testing.T) {
+	plain := NewWrapper()
+	idx := plain.StartTree(sszutils.TreeTypeBinary)
+	plain.AppendUint64(1)
+	plain.AppendUint64(2)
+	plain.PadChunk()
+	if got := plain.CurrentIndex() - idx; got != 32 {
+		t.Fatalf("plain scope holds %d bytes after PadChunk, want 32", got)
+	}
+	plain.PadChunk()
+	if got := plain.CurrentIndex() - idx; got != 32 {
+		t.Fatalf("plain scope holds %d bytes after a second PadChunk, want 32", got)
+	}
+
+	packed := NewWrapper()
+	idx = packed.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+	packed.AppendUint64(1)
+	packed.AppendUint64(2)
+	packed.PadChunk()
+	if got := packed.CurrentIndex() - idx; got != 16 {
+		t.Fatalf("packed scope holds %d bytes after PadChunk, want 16", got)
+	}
+	packed.AppendUint64(3)
+	packed.AppendUint64(4)
+	packed.PadChunk()
+	if got := packed.CurrentIndex() - idx; got != 32 {
+		t.Fatalf("packed scope holds %d bytes after two values, want 32", got)
+	}
+	packed.Merkleize(idx)
+	var want [32]byte
+	for i, w := range []uint64{1, 2, 3, 4} {
+		binary.LittleEndian.PutUint64(want[i*8:], w)
+	}
+	if !bytes.Equal(packed.Hash(), want[:]) {
+		t.Fatalf("packed values %x, want %x", packed.Hash(), want)
+	}
+}

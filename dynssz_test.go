@@ -9683,3 +9683,46 @@ func TestAsyncHashingOldGeneratedProgressiveList(t *testing.T) {
 		}
 	}
 }
+
+// packedWordU128 is a 16-byte basic value in uint64 words, hashed by
+// reflection.
+type packedWordU128 [2]uint64
+
+var _ = sszutils.Annotate[packedWordU128](`ssz-type:"uint128"`)
+
+// A large uint hashed through a caller's walker takes the walker's scope:
+// inside a packed scope it leaves its packed words for the scope to pack,
+// outside one it takes its own chunk.
+func TestHashTreeRootWithLargeUintFollowsWalkerScope(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	packed := hasher.NewHasher()
+	defer packed.Reset()
+	idx := packed.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+	for i, v := range []packedWordU128{{1, 2}, {3, 4}} {
+		if err := ds.HashTreeRootWith(&v, packed); err != nil {
+			t.Fatal(err)
+		}
+		if got := packed.CurrentIndex() - idx; got != 16*(i+1) {
+			t.Fatalf("packed scope holds %d bytes after %d values, want %d", got, i+1, 16*(i+1))
+		}
+	}
+	packed.Merkleize(idx)
+	var want [32]byte
+	for i, w := range []uint64{1, 2, 3, 4} {
+		binary.LittleEndian.PutUint64(want[i*8:], w)
+	}
+	if !bytes.Equal(packed.Hash(), want[:]) {
+		t.Fatalf("packed values %x, want %x", packed.Hash(), want)
+	}
+
+	plain := hasher.NewHasher()
+	defer plain.Reset()
+	idx = plain.StartTree(sszutils.TreeTypeNone)
+	if err := ds.HashTreeRootWith(&packedWordU128{1, 2}, plain); err != nil {
+		t.Fatal(err)
+	}
+	if got := plain.CurrentIndex() - idx; got != 32 {
+		t.Fatalf("plain scope holds %d bytes, want 32", got)
+	}
+}

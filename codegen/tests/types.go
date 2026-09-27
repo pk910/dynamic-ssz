@@ -2996,6 +2996,37 @@ type AmountListRefl struct {
 	L []amount `ssz-max:"8"`
 }
 
+// WordAmount spells a 16-byte basic value in uint64 words and is generated
+// itself, so its hasher runs as a delegate that does not know its caller's
+// scope: it leaves the packed words inside a packed scope and one chunk
+// outside it.
+type WordAmount [2]uint64
+
+var _ = sszutils.Annotate[WordAmount](`ssz-type:"uint128"`)
+
+// WideWordAmount is the 32-byte counterpart, whose chunk and packed bytes
+// coincide.
+type WideWordAmount [4]uint64
+
+var _ = sszutils.Annotate[WideWordAmount](`ssz-type:"uint256"`)
+
+type WordAmountHolder struct {
+	L []WordAmount `ssz-max:"8"`
+	V [3]WordAmount
+	P []*WordAmount `ssz-max:"8"`
+	X WordAmount
+	W []WideWordAmount `ssz-max:"4"`
+}
+
+// WordAmountHolderRefl is the same shape without generated methods.
+type WordAmountHolderRefl struct {
+	L [][2]uint64  `ssz-type:"?,uint128" ssz-max:"8"`
+	V [3][2]uint64 `ssz-type:"?,uint128"`
+	P []*[2]uint64 `ssz-type:"?,uint128" ssz-max:"8"`
+	X [2]uint64    `ssz-type:"uint128"`
+	W [][4]uint64  `ssz-type:"?,uint256" ssz-max:"4"`
+}
+
 // noAnnDelegate delegates every operation but carries no annotation, so
 // neither engine builds it shallow and the cycle it closes with NoAnnParent
 // is an ordinary recursive cycle.

@@ -194,6 +194,7 @@ type HashWalker interface {
 
 	// Buffer manipulation methods
 	FillUpTo32()
+	PadChunk()
 	Append(i []byte)
 	Index() int                      // deprecated: opens a scope like StartTree(TreeTypeNone) but without flushing the enclosing scope's pending reductions
 	CurrentIndex() int               // returns the current buffer index (debug only)

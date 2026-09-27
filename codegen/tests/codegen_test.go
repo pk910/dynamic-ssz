@@ -5094,6 +5094,86 @@ func TestCodegenDeclaredBasicShape(t *testing.T) {
 	}
 }
 
+// A generated large uint spelled in uint64 words is one basic value wherever
+// it lands. Its own hasher leaves the packed words inside a packed scope and
+// one chunk outside it, so a list, a vector, a list of pointers and a field
+// of it hash alike through delegation, through reflection without it, and
+// through the proof tree, all matching an independent sha256 oracle.
+func TestCodegenWordLargeUintShape(t *testing.T) {
+	if _, generated := any(&WordAmountHolder{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+	chunk := func(words ...uint64) [32]byte {
+		var c [32]byte
+		for i, w := range words {
+			binary.LittleEndian.PutUint64(c[i*8:], w)
+		}
+		return c
+	}
+	mixin := func(root [32]byte, length uint64) [32]byte {
+		var l [32]byte
+		binary.LittleEndian.PutUint64(l[:], length)
+		return sha256.Sum256(append(root[:], l[:]...))
+	}
+	// L: three 16-byte values fill one and a half of the four chunks of an
+	// 8-element list; V: three values in two chunks; P: two values in one of
+	// four chunks; X: one value in its own chunk; W: two 32-byte values in
+	// two of four chunks.
+	want := merkleRoot([][32]byte{
+		mixin(merkleRoot([][32]byte{chunk(1, 2, 3, 4), chunk(5, 6)}, 4), 3),
+		merkleRoot([][32]byte{chunk(7, 8, 9, 10), chunk(11, 12)}, 2),
+		mixin(merkleRoot([][32]byte{chunk(13, 14, 15, 16)}, 4), 2),
+		chunk(17, 18),
+		mixin(merkleRoot([][32]byte{chunk(1, 2, 3, 4), chunk(5, 6, 7, 8)}, 4), 2),
+	}, 8)
+
+	holder := &WordAmountHolder{
+		L: []WordAmount{{1, 2}, {3, 4}, {5, 6}},
+		V: [3]WordAmount{{7, 8}, {9, 10}, {11, 12}},
+		P: []*WordAmount{{13, 14}, {15, 16}},
+		X: WordAmount{17, 18},
+		W: []WideWordAmount{{1, 2, 3, 4}, {5, 6, 7, 8}},
+	}
+	refl := &WordAmountHolderRefl{
+		L: [][2]uint64{{1, 2}, {3, 4}, {5, 6}},
+		V: [3][2]uint64{{7, 8}, {9, 10}, {11, 12}},
+		P: []*[2]uint64{{13, 14}, {15, 16}},
+		X: [2]uint64{17, 18},
+		W: [][4]uint64{{1, 2, 3, 4}, {5, 6, 7, 8}},
+	}
+	for _, tc := range []struct {
+		name string
+		ds   *dynssz.DynSsz
+		v    any
+	}{
+		{"delegated", dynssz.NewDynSsz(nil), holder},
+		{"reflected", dynssz.NewDynSsz(nil, dynssz.WithNoDelegation()), holder},
+		{"twin", dynssz.NewDynSsz(nil), refl},
+	} {
+		root, err := tc.ds.HashTreeRoot(tc.v)
+		if err != nil || root != want {
+			t.Fatalf("%s root = %x, %v, want %x", tc.name, root, err, want)
+		}
+		tree, err := tc.ds.GetTree(tc.v)
+		if err != nil || !bytes.Equal(tree.Hash(), want[:]) {
+			t.Fatalf("%s tree = %x, %v, want %x", tc.name, tree.Hash(), err, want)
+		}
+	}
+
+	// On its own the value is one chunk, through its generated hasher and
+	// through reflection alike.
+	value := &WordAmount{17, 18}
+	wantValue := chunk(17, 18)
+	root, err := any(value).(interface{ HashTreeRoot() ([32]byte, error) }).HashTreeRoot()
+	if err != nil || root != wantValue {
+		t.Fatalf("generated value root = %x, %v, want %x", root, err, wantValue)
+	}
+	root, err = dynssz.NewDynSsz(nil, dynssz.WithNoDelegation()).HashTreeRoot(value)
+	if err != nil || root != wantValue {
+		t.Fatalf("reflected value root = %x, %v, want %x", root, err, wantValue)
+	}
+}
+
 // A delegated signed basic keeps its shape where extended types are enabled,
 // so both engines pack its list by the declared width and agree on the root.
 func TestCodegenExtendedBasicDelegateShape(t *testing.T) {

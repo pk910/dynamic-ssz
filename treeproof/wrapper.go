@@ -240,6 +240,16 @@ func (w *Wrapper) FillUpTo32() {
 	}
 }
 
+// PadChunk closes a basic value appended word by word: outside a packed scope
+// it pads the value to its chunk, inside one it leaves the packed bytes for
+// the scope to pack, as hasher.Hasher does.
+func (w *Wrapper) PadChunk() {
+	if w.inPackedScope() {
+		return
+	}
+	w.FillUpTo32()
+}
+
 // fillRegionUpTo32 pads the buffer so the region that began at indx holds a
 // whole number of chunks, which is the boundary its reduction counts from.
 func (w *Wrapper) fillRegionUpTo32(indx int) {

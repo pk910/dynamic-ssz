@@ -389,7 +389,7 @@ func (ctx *ReflectionCtx) buildRootFromLargeUint(sourceType *ssztypes.TypeDescri
 	// A short slice is zero-padded to the full large-uint width, matching the
 	// marshal paths and the generated hash tree root (which all pad rather than
 	// reject). Padding to Size keeps the packed layout correct even when pack
-	// is set (no trailing FillUpTo32 to absorb a short value).
+	// is set (no trailing pad to absorb a short value).
 
 	isUint64 := sourceType.ElemDesc.Kind == reflect.Uint64
 	if isUint64 {
@@ -410,8 +410,10 @@ func (ctx *ReflectionCtx) buildRootFromLargeUint(sourceType *ssztypes.TypeDescri
 			hh.Append(sszutils.ZeroBytes()[:pad])
 		}
 	}
+	// The pad is the walker's: a caller's walker inside a packed scope keeps
+	// the packed words, one outside it takes the chunk.
 	if !pack {
-		hh.FillUpTo32()
+		hh.PadChunk()
 	}
 
 	return nil

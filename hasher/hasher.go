@@ -224,6 +224,16 @@ func (h *Hasher) FillUpTo32() {
 	}
 }
 
+// PadChunk closes a basic value appended word by word, such as a uint128 or
+// uint256: outside a packed scope it pads the value to its chunk, inside one
+// it leaves the packed bytes for the scope to pack.
+func (h *Hasher) PadChunk() {
+	if h.inPackedScope() {
+		return
+	}
+	h.FillUpTo32()
+}
+
 // fillRegionUpTo32 pads the buffer so the region that began at indx holds a
 // whole number of chunks. A reduction counts chunks from the region's own
 // start, so that is the boundary its trailing bytes are padded to.

@@ -2448,3 +2448,57 @@ func TestResetClearsHashFnError(t *testing.T) {
 		t.Errorf("root after Reset %x, want %x", got, wantRoot)
 	}
 }
+
+// PadChunk closes a basic value appended word by word: outside a packed scope
+// it pads the value to its chunk, inside one it leaves the packed bytes for
+// the scope to pack. At a chunk boundary it adds nothing, and a scope opened
+// inside a packed scope is a plain scope again.
+func TestPadChunk(t *testing.T) {
+	plain := NewHasher()
+	defer plain.Reset()
+	idx := plain.StartTree(sszutils.TreeTypeBinary)
+	plain.AppendUint64(1)
+	plain.AppendUint64(2)
+	plain.PadChunk()
+	if got := plain.CurrentIndex() - idx; got != 32 {
+		t.Fatalf("plain scope holds %d bytes after PadChunk, want 32", got)
+	}
+	plain.PadChunk()
+	if got := plain.CurrentIndex() - idx; got != 32 {
+		t.Fatalf("plain scope holds %d bytes after a second PadChunk, want 32", got)
+	}
+
+	packed := NewHasher()
+	defer packed.Reset()
+	idx = packed.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+	packed.AppendUint64(1)
+	packed.AppendUint64(2)
+	packed.PadChunk()
+	if got := packed.CurrentIndex() - idx; got != 16 {
+		t.Fatalf("packed scope holds %d bytes after PadChunk, want 16", got)
+	}
+	packed.AppendUint64(3)
+	packed.AppendUint64(4)
+	packed.PadChunk()
+	if got := packed.CurrentIndex() - idx; got != 32 {
+		t.Fatalf("packed scope holds %d bytes after two values, want 32", got)
+	}
+	packed.Merkleize(idx)
+	var want [32]byte
+	for i, w := range []uint64{1, 2, 3, 4} {
+		binary.LittleEndian.PutUint64(want[i*8:], w)
+	}
+	if !bytes.Equal(packed.Hash(), want[:]) {
+		t.Fatalf("packed values %x, want %x", packed.Hash(), want)
+	}
+
+	nested := NewHasher()
+	defer nested.Reset()
+	nested.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+	inner := nested.StartTree(sszutils.TreeTypeNone)
+	nested.AppendUint64(1)
+	nested.PadChunk()
+	if got := nested.CurrentIndex() - inner; got != 32 {
+		t.Fatalf("scope inside a packed scope holds %d bytes after PadChunk, want 32", got)
+	}
+}
