@@ -291,7 +291,9 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 		}
 		appendCode(g.codeBuf, 0, "if %sSigned < 0 || %sSigned > sszutils.MaxSszSize {\n", sizeVar, sizeVar)
 		if strings.Contains(retVars, "err") {
-			appendCode(g.codeBuf, 1, "err = sszutils.NewSszErrorf(sszutils.ErrSszSizeExceeded, \"sizer of %s returned %%d, outside the SSZ size range\", %sSigned)\n", typeName, sizeVar)
+			// Declared in the block so the prelude reads alike in a method
+			// with a named error result and in one without.
+			appendCode(g.codeBuf, 1, "err := sszutils.NewSszErrorf(sszutils.ErrSszSizeExceeded, \"sizer of %s returned %%d, outside the SSZ size range\", %sSigned)\n", typeName, sizeVar)
 		}
 		appendCode(g.codeBuf, 1, "return %s\n", retVars)
 		appendCode(g.codeBuf, 0, "}\n")

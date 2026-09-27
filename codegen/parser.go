@@ -1791,7 +1791,7 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 			size += typeDesc.Size
 		}
 
-		desc.SszTypeFlags |= fieldDesc.Type.SszTypeFlags & (ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
+		desc.SszTypeFlags |= fieldDesc.Type.SszTypeFlags & (ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr | ssztypes.SszTypeFlagSizerWidth)
 		fields = append(fields, fieldDesc)
 		fieldHasIndex = append(fieldHasIndex, hasIndex)
 	}
@@ -1988,7 +1988,7 @@ func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, dataType, 
 		desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
 	}
 
-	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
+	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr | ssztypes.SszTypeFlagSizerWidth)
 
 	// Calculate size
 	// A vector's length is a size itself; a vector of variable-size elements
@@ -2093,7 +2093,7 @@ func (p *Parser) buildListDescriptor(desc *ssztypes.TypeDescriptor, dataType, sc
 		desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
 	}
 
-	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
+	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr | ssztypes.SszTypeFlagSizerWidth)
 
 	// The reflection type cache applies the same rule, so a type either
 	// hashes in both engines or in neither.
@@ -2263,7 +2263,7 @@ func (p *Parser) buildCompatibleUnionDescriptor(desc *ssztypes.TypeDescriptor, d
 
 		variantInfo[variantIndex] = variantDesc
 		// The flags say whether any nested value depends on a spec value.
-		desc.SszTypeFlags |= variantDesc.SszTypeFlags & (ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
+		desc.SszTypeFlags |= variantDesc.SszTypeFlags & (ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr | ssztypes.SszTypeFlagSizerWidth)
 	}
 
 	if len(variantInfo) == 0 {
@@ -2376,7 +2376,7 @@ func (p *Parser) buildUnionDescriptor(desc *ssztypes.TypeDescriptor, dataNamed, 
 
 		variantInfo[uint8(i)] = variantDesc
 		// The flags say whether any nested value depends on a spec value.
-		desc.SszTypeFlags |= variantDesc.SszTypeFlags & (ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
+		desc.SszTypeFlags |= variantDesc.SszTypeFlags & (ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr | ssztypes.SszTypeFlagSizerWidth)
 	}
 
 	desc.UnionVariants = variantInfo
@@ -2477,7 +2477,7 @@ func (p *Parser) buildTypeWrapperDescriptor(desc *ssztypes.TypeDescriptor, dataN
 
 	// The TypeWrapper inherits properties from the wrapped type
 	desc.Size = wrappedDesc.Size
-	desc.SszTypeFlags |= wrappedDesc.SszTypeFlags & (ssztypes.SszTypeFlagIsDynamic | ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
+	desc.SszTypeFlags |= wrappedDesc.SszTypeFlags & (ssztypes.SszTypeFlagIsDynamic | ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr | ssztypes.SszTypeFlagSizerWidth)
 
 	return nil
 }
@@ -2517,7 +2517,7 @@ func (p *Parser) buildOptionalDescriptor(desc *ssztypes.TypeDescriptor, dataType
 	desc.ElemDesc = elemDesc
 
 	// The Optional inherits properties from the child type
-	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (ssztypes.SszTypeFlagIsDynamic | ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
+	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (ssztypes.SszTypeFlagIsDynamic | ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr | ssztypes.SszTypeFlagSizerWidth)
 
 	return nil
 }
@@ -2566,7 +2566,7 @@ func (p *Parser) buildOptionalListDescriptor(desc *ssztypes.TypeDescriptor, data
 	}
 
 	desc.ElemDesc = elemDesc
-	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
+	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr | ssztypes.SszTypeFlagSizerWidth)
 
 	// A present element of zero size would leave the region as empty as an
 	// absent one. No static zero-size element can be built here: a custom

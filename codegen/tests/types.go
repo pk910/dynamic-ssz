@@ -5777,3 +5777,49 @@ type FsWidthHolder struct {
 }
 
 var FsWidthHolder_Payload = FsWidthHolder{A: 7, C: fsWidthCustom{X: 1}, L: []fsWidthCustom{{X: 2}, {X: 3}}}
+
+// zeroWidthCustom is static by annotation and reports a width of zero.
+type zeroWidthCustom struct{}
+
+var _ = sszutils.Annotate[zeroWidthCustom](`ssz-type:"custom" ssz-static:"true"`)
+
+func (*zeroWidthCustom) SizeSSZ() int                          { return 0 }
+func (*zeroWidthCustom) MarshalSSZ() ([]byte, error)           { return nil, nil }
+func (*zeroWidthCustom) MarshalSSZTo(b []byte) ([]byte, error) { return b, nil }
+func (*zeroWidthCustom) UnmarshalSSZ([]byte) error             { return nil }
+func (*zeroWidthCustom) HashTreeRoot() ([32]byte, error)       { return [32]byte{}, nil }
+
+// ZeroWidthList holds a list of zero-width elements: no length has a wire
+// form of its own, so the type is refused wherever it is used.
+type ZeroWidthList struct {
+	L []zeroWidthCustom `ssz-max:"4"`
+}
+
+// ZeroWidthShell is a static container whose only field has a zero width.
+type ZeroWidthShell struct{ Z zeroWidthCustom }
+
+// ZeroWidthWrapperList, ZeroWidthShellList and ZeroWidthOptionalList reach a
+// zero-width custom type through a wrapper element, a container element and
+// an optional-list; each shape is refused wherever it is used.
+type ZeroWidthWrapperList struct {
+	W []dynssz.TypeWrapper[struct {
+		Data zeroWidthCustom
+	}, zeroWidthCustom] `ssz-max:"4" ssz-type:"?,wrapper"`
+}
+
+type ZeroWidthShellList struct {
+	S []ZeroWidthShell `ssz-max:"4"`
+}
+
+type ZeroWidthOptionalList struct {
+	O *zeroWidthCustom `ssz-type:"optional-list"`
+}
+
+// ZeroWidthOptional holds a zero-width custom type in a regular optional,
+// whose presence byte keeps the encoding unambiguous.
+type ZeroWidthOptional struct {
+	A uint8
+	O *zeroWidthCustom `ssz-type:"optional"`
+}
+
+var ZeroWidthOptional_Payload = ZeroWidthOptional{A: 1, O: &zeroWidthCustom{}}

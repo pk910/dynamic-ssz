@@ -6092,3 +6092,89 @@ func TestCodegenFastsszWidthCustom(t *testing.T) {
 	}
 	testCodegenPayloadByReflection(t, FsWidthHolder_Payload, nil)
 }
+
+// TestCodegenZeroWidthListElement checks that a list of custom elements whose
+// run-time width is zero is refused on every generated path, as the reflection
+// engine refuses the type: two lengths would otherwise share one encoding.
+func TestCodegenZeroWidthListElement(t *testing.T) {
+	if _, generated := any(&ZeroWidthList{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	value := &ZeroWidthList{L: []zeroWidthCustom{{}, {}}}
+
+	if _, err := ds.MarshalSSZ(value); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Errorf("MarshalSSZ err = %v, want the zero-width refusal", err)
+	}
+	if err := ds.MarshalSSZWriter(value, &bytes.Buffer{}); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Errorf("MarshalSSZWriter err = %v, want the zero-width refusal", err)
+	}
+	if _, err := ds.HashTreeRoot(value); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Errorf("HashTreeRoot err = %v, want the zero-width refusal", err)
+	}
+	if err := ds.UnmarshalSSZ(&ZeroWidthList{}, []byte{4, 0, 0, 0}); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Errorf("UnmarshalSSZ err = %v, want the zero-width refusal", err)
+	}
+	if err := ds.UnmarshalSSZReader(&ZeroWidthList{}, bytes.NewReader([]byte{4, 0, 0, 0}), 4); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Errorf("UnmarshalSSZReader err = %v, want the zero-width refusal", err)
+	}
+	if _, err := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz()).MarshalSSZ(value); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Errorf("reflection err = %v, want the zero-width refusal", err)
+	}
+}
+
+// TestCodegenZeroWidthShapes checks that a zero-width custom type reached
+// through a wrapper element, a container element or an optional-list is
+// refused on every generated path and by the reflection engine, one holder
+// per shape so that each guard is the one that answers.
+func TestCodegenZeroWidthShapes(t *testing.T) {
+	if _, generated := any(&ZeroWidthWrapperList{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	shapes := map[string]struct {
+		value any
+		fresh func() any
+	}{
+		"wrapper element": {
+			&ZeroWidthWrapperList{W: []dynssz.TypeWrapper[struct{ Data zeroWidthCustom }, zeroWidthCustom]{{}, {}}},
+			func() any { return &ZeroWidthWrapperList{} },
+		},
+		"container element": {&ZeroWidthShellList{S: []ZeroWidthShell{{}, {}}}, func() any { return &ZeroWidthShellList{} }},
+		"optional-list":     {&ZeroWidthOptionalList{O: &zeroWidthCustom{}}, func() any { return &ZeroWidthOptionalList{} }},
+	}
+	ds := dynssz.NewDynSsz(nil)
+	refl := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+	raw := []byte{4, 0, 0, 0}
+	for name, shape := range shapes {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ds.MarshalSSZ(shape.value); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+				t.Errorf("MarshalSSZ err = %v, want the zero-width refusal", err)
+			}
+			if err := ds.MarshalSSZWriter(shape.value, &bytes.Buffer{}); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+				t.Errorf("MarshalSSZWriter err = %v, want the zero-width refusal", err)
+			}
+			if _, err := ds.HashTreeRoot(shape.value); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+				t.Errorf("HashTreeRoot err = %v, want the zero-width refusal", err)
+			}
+			if err := ds.UnmarshalSSZ(shape.fresh(), raw); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+				t.Errorf("UnmarshalSSZ err = %v, want the zero-width refusal", err)
+			}
+			if err := ds.UnmarshalSSZReader(shape.fresh(), bytes.NewReader(raw), len(raw)); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+				t.Errorf("UnmarshalSSZReader err = %v, want the zero-width refusal", err)
+			}
+			if _, err := refl.MarshalSSZ(shape.value); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+				t.Errorf("reflection err = %v, want the zero-width refusal", err)
+			}
+		})
+	}
+}
+
+// TestCodegenZeroWidthOptional checks that a zero-width custom type in a
+// regular optional, whose presence byte keeps the encoding unambiguous,
+// marshals, hashes and round-trips like the reflection engine.
+func TestCodegenZeroWidthOptional(t *testing.T) {
+	if _, generated := any(&ZeroWidthOptional{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	testCodegenPayloadByReflection(t, ZeroWidthOptional_Payload, nil, dynssz.WithExtendedTypes())
+}

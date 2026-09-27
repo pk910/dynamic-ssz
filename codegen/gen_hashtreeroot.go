@@ -516,6 +516,17 @@ func (ctx *hashTreeRootContext) hashOptional(desc *ssztypes.TypeDescriptor, varN
 	// that inner declaration shadow ours, so the mixin length assignment would
 	// target the value's local and leave the outer length at 0 -- mixing in a
 	// length of 0 for a present value and producing the wrong root.
+	// A present optional-list element whose width a sizer reports as zero has
+	// no wire form apart from an absent one, so it has no root either; a
+	// regular optional carries a presence byte and is unaffected.
+	if desc.SszType == ssztypes.SszOptionalListType &&
+		desc.ElemDesc.SszTypeFlags&(ssztypes.SszTypeFlagIsDynamic|ssztypes.SszTypeFlagSizerWidth) == ssztypes.SszTypeFlagSizerWidth && !ctx.options.WithoutDynamicExpressions {
+		sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
+		if err != nil {
+			return err
+		}
+		ctx.appendCode(indent, "if %s == 0 {\n\treturn %s\n}\n", sizeVar, typePath.getErrorWith(`sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "optional-list element size resolved to 0")`))
+	}
 	packed := packedElemSize(desc.ElemDesc) > 0
 	ctx.appendCode(indent, "{\n")
 	ctx.appendCode(indent+1, "idx := hh.StartTree(%s)\n", treeTypeExpr(sszutils.TreeTypeBinary, packed))
@@ -913,6 +924,17 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 		errCode := fmt.Sprintf("sszutils.ErrListLengthFn(vlen, %s)", uintLitArg(maxVar))
 		ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
+	}
+
+	// A static element whose width a sizer reports cannot be zero: such a
+	// list has no wire form, so it has no root either. A width a spec
+	// expression supplies is refused at resolution.
+	if desc.ElemDesc.SszTypeFlags&(ssztypes.SszTypeFlagIsDynamic|ssztypes.SszTypeFlagSizerWidth) == ssztypes.SszTypeFlagSizerWidth && !ctx.options.WithoutDynamicExpressions {
+		sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
+		if err != nil {
+			return err
+		}
+		ctx.appendCode(indent, "if %s == 0 {\n\treturn %s\n}\n", sizeVar, typePath.getErrorWith(`sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "list element size resolved to 0")`))
 	}
 
 	// Start list merkleization. The chunk count of a packed list derives from

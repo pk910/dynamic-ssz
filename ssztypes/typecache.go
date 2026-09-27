@@ -1607,7 +1607,7 @@ func (tc *TypeCache) buildTypeWrapperDescriptor(desc *TypeDescriptor, runtimeTyp
 
 	// The TypeWrapper inherits properties from the wrapped type
 	desc.Size = wrappedDesc.Size
-	desc.SszTypeFlags |= wrappedDesc.SszTypeFlags & (SszTypeFlagIsDynamic | SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
+	desc.SszTypeFlags |= wrappedDesc.SszTypeFlags & (SszTypeFlagIsDynamic | SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr | SszTypeFlagSizerWidth)
 
 	return nil
 }
@@ -1855,7 +1855,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 			})
 		}
 
-		desc.SszTypeFlags |= fieldDesc.Type.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
+		desc.SszTypeFlags |= fieldDesc.Type.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr | SszTypeFlagSizerWidth)
 		// A fixed section is addressed by 32-bit offsets, so it is bounded to
 		// the SSZ size limit like every other size.
 		if totalSize > sszutils.MaxSszSize-sszSize {
@@ -2118,7 +2118,7 @@ func (tc *TypeCache) buildOptionalDescriptor(desc *TypeDescriptor, runtimeType, 
 	desc.ElemDesc = elemDesc
 
 	// The Optional inherits properties from the child type
-	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagIsDynamic | SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
+	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagIsDynamic | SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr | SszTypeFlagSizerWidth)
 
 	return nil
 }
@@ -2169,7 +2169,7 @@ func (tc *TypeCache) buildOptionalListDescriptor(desc *TypeDescriptor, runtimeTy
 	}
 
 	desc.ElemDesc = elemDesc
-	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
+	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr | SszTypeFlagSizerWidth)
 
 	// A present element of zero size leaves the region as empty as an absent
 	// one, so presence could never be decoded. Only reachable through custom
@@ -2327,7 +2327,7 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 	}
 
 	desc.ElemDesc = elemDesc
-	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
+	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr | SszTypeFlagSizerWidth)
 
 	// A bitvector is a sequence of bits stored in bytes; a string holds text.
 	if desc.SszType == SszBitvectorType && desc.GoTypeFlags&GoTypeFlagIsString != 0 {
@@ -2426,7 +2426,7 @@ func (tc *TypeCache) buildListDescriptor(desc *TypeDescriptor, runtimeType, sche
 	}
 
 	desc.ElemDesc = elemDesc
-	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
+	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr | SszTypeFlagSizerWidth)
 
 	// A static element of zero size makes the element count underivable from
 	// the wire format (region length / element size), so such a list can never

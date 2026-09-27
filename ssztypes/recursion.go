@@ -15,7 +15,7 @@ import (
 // children during the build (see buildContainerDescriptor and the collection
 // builders). They mark spec-dependence anywhere in a type's subtree and gate
 // fastssz delegation, which bakes in spec-independent preset values.
-const childDerivedFlags = SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr
+const childDerivedFlags = SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr | SszTypeFlagSizerWidth
 
 // FixupRecursiveFlags re-derives the child-propagated type flags across a
 // descriptor graph that contains at least one recursive cycle. It is shared by

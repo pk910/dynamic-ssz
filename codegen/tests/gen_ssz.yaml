@@ -420,3 +420,11 @@ types:
     output: gen_edgecases.go
   - name: FsWidthHolder
     output: gen_edgecases.go
+  - name: ZeroWidthList
+    output: gen_edgecases.go
+  - name: ZeroWidthWrapperList
+    output: gen_edgecases.go
+  - name: ZeroWidthShellList
+    output: gen_edgecases.go
+  - name: ZeroWidthOptionalList
+    output: gen_edgecases.go
