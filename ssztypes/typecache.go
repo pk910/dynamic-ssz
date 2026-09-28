@@ -1855,9 +1855,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 		// A field tag is joined in front of the type's registered annotation
 		// (Lookup returns the first occurrence, so the field overrides per key)
 		// and the joined tag is read like any other.
-		if annTag, ok := sszutils.LookupAnnotation(schemaField.Type); ok {
-			schemaField.Tag = JoinFieldAnnotationTag(schemaField.Tag, annTag)
-		}
+		joinFieldAnnotation(&schemaField)
 
 		sizeHints, err := getSszSizeTag(tc.specs, &schemaField)
 		if err != nil {

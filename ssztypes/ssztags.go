@@ -716,6 +716,14 @@ func JoinFieldAnnotationTag(fieldTag reflect.StructTag, annotationTag string) re
 	return reflect.StructTag(string(fieldTag) + " " + annotationTag)
 }
 
+// joinFieldAnnotation puts the field tag in front of its type's annotation, so
+// the field wins per key.
+func joinFieldAnnotation(field *reflect.StructField) {
+	if annTag, ok := sszutils.LookupAnnotation(field.Type); ok {
+		field.Tag = JoinFieldAnnotationTag(field.Tag, annTag)
+	}
+}
+
 // ParseTags parses SSZ annotations from a string in struct tag format.
 // This is used for extracting SSZ annotations from sources other than
 // struct fields, such as type-level annotations registered via

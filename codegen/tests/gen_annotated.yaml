@@ -18,3 +18,5 @@ types:
     output: gen_annotated.go
   - name: AnnotatedNestedContainer_S
     output: gen_annotated.go
+  - AnnotatedRootsField
+  - AnnotatedRootsHolder

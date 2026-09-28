@@ -6729,3 +6729,67 @@ func TestCodegenSpecSetSharedView(t *testing.T) {
 		})
 	}
 }
+
+// TestCodegenAnnotationJoin checks that the TypeWrapper and union fields of
+// AnnotatedRootsHolder keep the annotation's root size under their own limit,
+// in generated code and reflection. Expected bytes and root are built by hand.
+func TestCodegenAnnotationJoin(t *testing.T) {
+	if _, generated := any(&AnnotatedRootsHolder{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	roots := AnnotatedRoots{bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte{2}, 32)}
+	value := &AnnotatedRootsHolder{
+		C:  AnnotatedRootsField{Data: roots},
+		W:  dynssz.TypeWrapper[AnnotatedRootsField, AnnotatedRoots]{Data: roots},
+		U:  dynssz.Union[AnnotatedRootsField]{Variant: 0, Data: roots},
+		CU: dynssz.CompatibleUnion[AnnotatedRootsField]{Variant: 1, Data: roots},
+	}
+
+	// List[Vector[byte,32],4]: the two roots back to back, no inner offsets.
+	list := append(bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte{2}, 32)...)
+	hash := func(a, b []byte) []byte {
+		sum := sha256.Sum256(append(append([]byte{}, a...), b...))
+		return sum[:]
+	}
+	word := func(v byte) []byte { w := make([]byte, 32); w[0] = v; return w }
+	listRoot := hash(hash(hash(list[:32], list[32:]), hash(word(0), word(0))), word(2))
+
+	u32 := func(v uint32) []byte { return binary.LittleEndian.AppendUint32(nil, v) }
+	wantBytes := bytes.Join([][]byte{
+		u32(16), u32(84), u32(148), u32(213),
+		u32(4), list, // C
+		list,                       // W
+		append([]byte{0}, list...), // U
+		append([]byte{1}, list...), // CU
+	}, nil)
+	var wantRoot [32]byte
+	copy(wantRoot[:], hash(hash(listRoot, listRoot), hash(hash(listRoot, word(0)), hash(listRoot, word(1)))))
+
+	for name, ds := range map[string]*dynssz.DynSsz{
+		"generated":  dynssz.NewDynSsz(nil),
+		"reflection": dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz()),
+	} {
+		if got, err := ds.MarshalSSZ(value); err != nil || !bytes.Equal(got, wantBytes) {
+			t.Errorf("%s: MarshalSSZ = %x, %v; want %x", name, got, err, wantBytes)
+		}
+		var buf bytes.Buffer
+		if err := ds.MarshalSSZWriter(value, &buf); err != nil || !bytes.Equal(buf.Bytes(), wantBytes) {
+			t.Errorf("%s: MarshalSSZWriter = %x, %v; want %x", name, buf.Bytes(), err, wantBytes)
+		}
+		if size, err := ds.SizeSSZ(value); err != nil || size != len(wantBytes) {
+			t.Errorf("%s: SizeSSZ = %d, %v; want %d", name, size, err, len(wantBytes))
+		}
+		if got, err := ds.HashTreeRoot(value); err != nil || got != wantRoot {
+			t.Errorf("%s: HashTreeRoot = %x, %v; want %x", name, got, err, wantRoot)
+		}
+		decoded := &AnnotatedRootsHolder{}
+		if err := ds.UnmarshalSSZ(decoded, wantBytes); err != nil || !reflect.DeepEqual(decoded, value) {
+			t.Errorf("%s: UnmarshalSSZ = %+v, %v; want %+v", name, decoded, err, value)
+		}
+		decoded = &AnnotatedRootsHolder{}
+		if err := ds.UnmarshalSSZReader(decoded, bytes.NewReader(wantBytes), len(wantBytes)); err != nil || !reflect.DeepEqual(decoded, value) {
+			t.Errorf("%s: UnmarshalSSZReader = %+v, %v; want %+v", name, decoded, err, value)
+		}
+	}
+}
