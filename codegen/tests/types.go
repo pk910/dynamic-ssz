@@ -1202,6 +1202,26 @@ var AnnotatedNestedContainer_Payload = AnnotatedNestedContainer{
 	},
 }
 
+// AnnotatedRoots is a list of 32-byte roots declared through Annotate.
+type AnnotatedRoots [][]byte
+
+var _ = sszutils.Annotate[AnnotatedRoots](`ssz-size:"?,32" ssz-max:"8"`)
+
+// AnnotatedRootsField lowers the limit and keeps the root size from the
+// annotation. It also describes the wrapper and unions below.
+type AnnotatedRootsField struct {
+	Data AnnotatedRoots `ssz-max:"4"`
+}
+
+// AnnotatedRootsHolder holds the same field as a container, a TypeWrapper, a
+// Union and a CompatibleUnion.
+type AnnotatedRootsHolder struct {
+	C  AnnotatedRootsField
+	W  dynssz.TypeWrapper[AnnotatedRootsField, AnnotatedRoots]
+	U  dynssz.Union[AnnotatedRootsField]
+	CU dynssz.CompatibleUnion[AnnotatedRootsField]
+}
+
 // InitAnnotatedList tests Annotate calls inside init() functions.
 type InitAnnotatedList []uint16
 

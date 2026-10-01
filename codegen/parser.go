@@ -1745,23 +1745,7 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 		// Determine data and schema field types
 		schemaFieldType := schemaField.Type()
 
-		// A field tag is joined in front of the type's registered annotation
-		// (Lookup returns the first occurrence, so the field overrides per key)
-		// and the joined tag is read like any other.
-		fieldTag := schemaStruct.Tag(i)
-		if p.AnnotationResolver != nil {
-			// An alias is transparent: the annotation belongs to the type it
-			// names.
-			annotationType := types.Unalias(schemaFieldType)
-			if ptr, ok := annotationType.(*types.Pointer); ok {
-				annotationType = types.Unalias(ptr.Elem())
-			}
-			if annTag := p.AnnotationResolver(annotationType); annTag != "" {
-				fieldTag = string(ssztypes.JoinFieldAnnotationTag(reflect.StructTag(fieldTag), annTag))
-			}
-		}
-
-		typeHints, sizeHints, maxSizeHints, err := p.parseFieldTags(fieldTag)
+		typeHints, sizeHints, maxSizeHints, err := p.parseFieldTags(p.joinFieldAnnotation(schemaStruct.Tag(i), schemaFieldType))
 		if err != nil {
 			return fmt.Errorf("failed to parse tags for field %v: %v", schemaField.Name(), err)
 		}
@@ -2276,7 +2260,7 @@ func (p *Parser) buildCompatibleUnionDescriptor(desc *ssztypes.TypeDescriptor, d
 		}
 
 		// Extract SSZ annotations from the schema field
-		typeHints, sizeHints, maxSizeHints, err := p.parseFieldTags(schemaDescriptorStruct.Tag(i))
+		typeHints, sizeHints, maxSizeHints, err := p.parseFieldTags(p.joinFieldAnnotation(schemaDescriptorStruct.Tag(i), schemaField.Type()))
 		if err != nil {
 			return fmt.Errorf("failed to parse union variant field %s tags: %v", schemaField.Name(), err)
 		}
@@ -2391,7 +2375,7 @@ func (p *Parser) buildUnionDescriptor(desc *ssztypes.TypeDescriptor, dataNamed, 
 			continue
 		}
 
-		typeHints, sizeHints, maxSizeHints, err := p.parseFieldTags(schemaDescriptorStruct.Tag(i))
+		typeHints, sizeHints, maxSizeHints, err := p.parseFieldTags(p.joinFieldAnnotation(schemaDescriptorStruct.Tag(i), schemaField.Type()))
 		if err != nil {
 			return fmt.Errorf("failed to parse union variant field %s tags: %v", schemaField.Name(), err)
 		}
@@ -2463,7 +2447,7 @@ func (p *Parser) buildTypeWrapperDescriptor(desc *ssztypes.TypeDescriptor, dataN
 
 	// Extract SSZ annotations from the schema descriptor field
 	schemaField := schemaDescriptorStruct.Field(schemaFieldIndex)
-	fieldTypeHints, fieldSizeHints, fieldMaxSizeHints, err := p.parseFieldTags(schemaDescriptorStruct.Tag(schemaFieldIndex))
+	fieldTypeHints, fieldSizeHints, fieldMaxSizeHints, err := p.parseFieldTags(p.joinFieldAnnotation(schemaDescriptorStruct.Tag(schemaFieldIndex), schemaField.Type()))
 	if err != nil {
 		return fmt.Errorf("failed to parse TypeWrapper descriptor field tags: %v", err)
 	}
@@ -2625,6 +2609,23 @@ func (p *Parser) buildBigIntDescriptor(desc *ssztypes.TypeDescriptor, dataType t
 	desc.Size = 0
 	desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
 	return nil
+}
+
+// joinFieldAnnotation puts a field tag in front of its type's annotation, so
+// the field overrides it per key. An alias or pointer resolves to the type it
+// names, as at run time.
+func (p *Parser) joinFieldAnnotation(tag string, fieldType types.Type) string {
+	if p.AnnotationResolver == nil {
+		return tag
+	}
+	annotationType := types.Unalias(fieldType)
+	if ptr, ok := annotationType.(*types.Pointer); ok {
+		annotationType = types.Unalias(ptr.Elem())
+	}
+	if annTag := p.AnnotationResolver(annotationType); annTag != "" {
+		return string(ssztypes.JoinFieldAnnotationTag(reflect.StructTag(tag), annTag))
+	}
+	return tag
 }
 
 func (p *Parser) parseFieldTags(tag string) (typeHints []ssztypes.SszTypeHint, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint, err error) {
