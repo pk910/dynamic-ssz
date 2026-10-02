@@ -6079,3 +6079,37 @@ type SpecViewShared_T2 struct {
 	Child *SpecViewShared_ChildGen
 	V     []uint16 `ssz-size:"4"`
 }
+
+// UnionSpecOnlyVariants holds variants whose width is fixed purely by a spec
+// expression with no literal fallback: a uint16 vector, a bitvector and a byte
+// vector. Each has a static size of 0 at generation time, and the generated
+// decoders must still frame the variant at its resolved width.
+type UnionSpecOnlyVariants struct {
+	V  []uint16 `dynssz-size:"USO_LEN"`
+	BV []byte   `ssz-type:"bitvector" dynssz-bitsize:"USO_BITS"`
+	B  []byte   `dynssz-size:"USO_LEN"`
+}
+
+type UnionSpecOnlyCompat struct {
+	U dynssz.CompatibleUnion[UnionSpecOnlyVariants]
+}
+
+type UnionSpecOnlyClassic struct {
+	U dynssz.Union[UnionSpecOnlyVariants]
+}
+
+var UnionSpecOnly_Specs = map[string]any{
+	"USO_LEN":  uint64(4),
+	"USO_BITS": uint64(12),
+}
+
+// UnionSpecOnly_Values lists one value per variant with its serialized width
+// under UnionSpecOnly_Specs.
+var UnionSpecOnly_Values = []struct {
+	Data any
+	Size int
+}{
+	{Data: []uint16{1, 2, 3, 4}, Size: 8},
+	{Data: []byte{0xff, 0x0f}, Size: 2},
+	{Data: []byte{1, 2, 3, 4}, Size: 4},
+}

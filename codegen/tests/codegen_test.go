@@ -6793,3 +6793,71 @@ func TestCodegenAnnotationJoin(t *testing.T) {
 		}
 	}
 }
+
+// A union variant sized purely by a spec expression occupies exactly its
+// resolved width in the union region: the generated decoders must reject a
+// short region and a region with trailing bytes as the reflection engine does,
+// on every variant kind and both union flavours.
+func TestCodegenUnionSpecOnlyVariants(t *testing.T) {
+	refDs := dynssz.NewDynSsz(UnionSpecOnly_Specs, dynssz.WithNoFastSsz(), dynssz.WithNoFastHash(), dynssz.WithNoDelegation())
+	genDs := dynssz.NewDynSsz(UnionSpecOnly_Specs)
+
+	for i, value := range UnionSpecOnly_Values {
+		compat := UnionSpecOnlyCompat{U: dynssz.CompatibleUnion[UnionSpecOnlyVariants]{Variant: uint8(i + 1), Data: value.Data}}
+		classic := UnionSpecOnlyClassic{U: dynssz.Union[UnionSpecOnlyVariants]{Variant: uint8(i), Data: value.Data}}
+		testCodegenPayloadByReflection(t, compat, UnionSpecOnly_Specs)
+		testCodegenPayloadByReflection(t, classic, UnionSpecOnly_Specs)
+
+		for _, tc := range []struct {
+			name    string
+			target  func() any
+			encoded []byte
+		}{
+			{"compat", func() any { return &UnionSpecOnlyCompat{} }, mustMarshal(t, genDs, compat)},
+			{"classic", func() any { return &UnionSpecOnlyClassic{} }, mustMarshal(t, genDs, classic)},
+		} {
+			exact := tc.encoded
+			if len(exact) != 4+1+value.Size {
+				t.Fatalf("variant %d %s: encoded to %d bytes, want %d", i, tc.name, len(exact), 4+1+value.Size)
+			}
+			for _, in := range []struct {
+				name string
+				buf  []byte
+				want error
+			}{
+				{"selector only", exact[:5], sszutils.ErrUnexpectedEOF},
+				{"short", exact[:len(exact)-1], sszutils.ErrUnexpectedEOF},
+				{"trailing", append(append([]byte{}, exact...), 0, 0, 0, 0, 0), sszutils.ErrOffset},
+			} {
+				for _, engine := range []struct {
+					name string
+					ds   *dynssz.DynSsz
+				}{{"reflection", refDs}, {"generated", genDs}} {
+					for _, path := range []struct {
+						name   string
+						decode func(any, []byte) error
+					}{
+						{"buffer", func(v any, b []byte) error { return engine.ds.UnmarshalSSZ(v, b) }},
+						{"reader", func(v any, b []byte) error { return engine.ds.UnmarshalSSZReader(v, bytes.NewReader(b), len(b)) }},
+					} {
+						err := path.decode(tc.target(), in.buf)
+						if err == nil {
+							t.Errorf("variant %d %s %s %s %s: accepted %x", i, tc.name, in.name, engine.name, path.name, in.buf)
+						} else if engine.name == "generated" && path.name == "buffer" && !errors.Is(err, in.want) {
+							t.Errorf("variant %d %s %s %s %s: got %v, want %v", i, tc.name, in.name, engine.name, path.name, err, in.want)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func mustMarshal(t *testing.T, ds *dynssz.DynSsz, v any) []byte {
+	t.Helper()
+	out, err := ds.MarshalSSZ(v)
+	if err != nil {
+		t.Fatalf("MarshalSSZ: %v", err)
+	}
+	return out
+}

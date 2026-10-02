@@ -98,6 +98,10 @@ types:
     output: gen_unions.go
   - name: SizeUnionExprVariant
     output: gen_unions.go
+  - name: UnionSpecOnlyCompat
+    output: gen_unions.go
+  - name: UnionSpecOnlyClassic
+    output: gen_unions.go
   - name: UnionDynVariant
     output: gen_unions.go
   - name: UnionTaggedSelectors
