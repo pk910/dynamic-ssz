@@ -399,13 +399,13 @@ func (h *Hasher) drainJobsOverlapping(indx int) {
 // counts are only meaningful once the layer has collapsed — a reused layer
 // slot carries stale counts until then — so an uncollapsed layer is only
 // compatible while nothing precedes the run at all.
-func (h *Hasher) asyncRootCompatible(layer *treeLayer, pendStart, nodeDepth int) bool {
+func (h *Hasher) asyncRootCompatible(layer *treeLayer, pendStart int, nodeDepth uint8) bool {
 	before := (pendStart - h.binaryRegionStart(layer)) / 32
 	if !layer.collapsed {
 		return before == 0
 	}
 	accounted := 0
-	for d := 0; d <= layer.maxDepth; d++ {
+	for d := uint8(0); d <= layer.maxDepth; d++ {
 		if d < nodeDepth && layer.counts[d] != 0 {
 			return false
 		}
@@ -427,14 +427,14 @@ func (h *Hasher) asyncRootCompatible(layer *treeLayer, pendStart, nodeDepth int)
 // whose node would not be compatible with what precedes it), the caller
 // reduces synchronously.
 func (h *Hasher) flushPendingAsync(st *asyncShared, layer *treeLayer) bool {
-	elem := layer.pendElemChunks
+	elem := int(layer.pendElemChunks)
 	batchElems := lazyFlushChunks / elem
-	nodeDepth := 0
+	nodeDepth := uint8(0)
 	for c := batchElems; c > 1; c >>= 1 {
 		nodeDepth++
 	}
 	emitted := false
-	for layer.pendCount >= batchElems {
+	for int(layer.pendCount) >= batchElems {
 		start := layer.pendStart
 		// A layer opened without a declared shape may be closed as either
 		// tree, and only element roots suit both closers; a subtree node
@@ -460,7 +460,7 @@ func (h *Hasher) flushPendingAsync(st *asyncShared, layer *treeLayer) bool {
 			}
 			layer.pendStart = start + 32
 		}
-		layer.pendCount -= batchElems
+		layer.pendCount -= int32(batchElems)
 		emitted = true
 	}
 	return emitted
@@ -496,7 +496,7 @@ func (h *Hasher) precollapseCapRun(st *asyncShared, layer *treeLayer) bool {
 	// deepest-first node order intact when the new nodes are recorded at
 	// cap depth (nodes at depths in between would sit left of the new ones
 	// positionally but be consumed after them).
-	for d := 1; d <= layer.maxDepth; d++ {
+	for d := uint8(1); d <= layer.maxDepth; d++ {
 		if d != asyncCapDepth && layer.counts[d] != 0 {
 			return false
 		}

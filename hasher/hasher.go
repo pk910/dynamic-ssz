@@ -57,13 +57,13 @@ type treeLayer struct {
 
 	// Binary collapse state (active subtree)
 	counts   [maxTreeDepth]uint32
-	maxDepth int
+	maxDepth uint8 // highest depth with a count, below maxTreeDepth
 
 	// Progressive state: completed binary subtree roots stored at the
 	// left side of the buffer. Each root has depth = progressiveLevel*2.
 	// Progressive base sizes: 1, 4, 16, 64, 256, 1024, ...  (1 << level*2)
-	progressiveCount int // number of completed progressive roots at buf left
-	progressiveLevel int // current level (determines base_size for active subtree)
+	progressiveCount int   // number of completed progressive roots at buf left
+	progressiveLevel uint8 // current level (determines base_size for active subtree)
 
 	// Deferred child-subtree batching. When a child container scope is closed via
 	// Merkleize and this (parent) layer is incremental, the child's raw leaf
@@ -73,9 +73,9 @@ type treeLayer struct {
 	// and far larger hash calls than reducing each child on its own. All pending
 	// subtrees in a layer are uniform (pendElemChunks chunks each, a power of
 	// two), which holds because list/vector elements share a single type.
-	pendCount      int // number of deferred child subtrees not yet reduced to roots
-	pendElemChunks int // chunk count of each deferred subtree (power of two)
-	pendStart      int // byte offset of the first deferred subtree in the buffer
+	pendCount      int32  // number of deferred child subtrees not yet reduced to roots, below the job cap
+	pendElemChunks uint16 // chunk count of each deferred subtree (power of two, at most incrementalBatchSize)
+	pendStart      int    // byte offset of the first deferred subtree in the buffer
 }
 
 // Hasher is a utility tool to hash SSZ structs
@@ -538,7 +538,7 @@ func (h *Hasher) flushPending(layer *treeLayer, allowAsync bool) {
 			return
 		}
 	}
-	count := layer.pendCount
+	count := int(layer.pendCount)
 	start := layer.pendStart
 	layer.pendCount = 0
 	layer.pendElemChunks = 0
@@ -546,7 +546,7 @@ func (h *Hasher) flushPending(layer *treeLayer, allowAsync bool) {
 	if count == 0 {
 		return
 	}
-	width := count * elem
+	width := count * int(elem)
 	for width > count {
 		half := (width / 2) * 32
 		h.setHashErr(h.hash(h.buf[start:start+half], h.buf[start:start+width*32]))
@@ -554,7 +554,7 @@ func (h *Hasher) flushPending(layer *treeLayer, allowAsync bool) {
 	}
 	// Move anything that was appended after the pending run down so the buffer
 	// stays contiguous after the run shrank to count roots.
-	runEnd := start + count*elem*32
+	runEnd := start + count*int(elem)*32
 	rootsEnd := start + count*32
 	if tail := len(h.buf) - runEnd; tail > 0 {
 		copy(h.buf[rootsEnd:], h.buf[runEnd:])
@@ -646,7 +646,7 @@ func (h *Hasher) Collapse() {
 		// With async hashing, Collapse is treated as a hint: the pending run
 		// keeps accumulating until it is wide enough that its reduction is
 		// worth a background job.
-		if async && layer.pendCount*layer.pendElemChunks < lazyFlushChunks {
+		if async && int(layer.pendCount)*int(layer.pendElemChunks) < lazyFlushChunks {
 			return
 		}
 		h.flushPending(layer, async)
@@ -719,7 +719,7 @@ func (h *Hasher) maybeCollapseBinary(layer *treeLayer) {
 	// collapsing them early would stall on their in-flight reductions.
 	d0Chunks := totalChunks
 	if layer.collapsed {
-		for d := 1; d <= layer.maxDepth; d++ {
+		for d := uint8(1); d <= layer.maxDepth; d++ {
 			d0Chunks -= int(layer.counts[d])
 		}
 	}
@@ -738,7 +738,7 @@ func (h *Hasher) maybeCollapseBinary(layer *treeLayer) {
 		h.syncCollapseState(layer)
 	}
 
-	for d := 0; d < maxTreeDepth-1; d++ {
+	for d := uint8(0); d < maxTreeDepth-1; d++ {
 		if layer.counts[d] < incrementalBatchSize {
 			break
 		}
@@ -820,7 +820,7 @@ func (h *Hasher) maybeCollapseProgressive(layer *treeLayer) {
 	for {
 		// Compute leaf count from current counts
 		var leafCount uint64
-		for d := 0; d <= layer.maxDepth; d++ {
+		for d := uint8(0); d <= layer.maxDepth; d++ {
 			leafCount += uint64(layer.counts[d]) << uint(d)
 		}
 
@@ -835,8 +835,8 @@ func (h *Hasher) maybeCollapseProgressive(layer *treeLayer) {
 		consumePos := readPos
 		consumed := uint64(0)
 		var consumedCounts [maxTreeDepth]uint32
-		consumedMaxDepth := 0
-		for d := layer.maxDepth; d >= 0; d-- {
+		consumedMaxDepth := uint8(0)
+		for d := layer.maxDepth; d != 0xff; d-- {
 			for layer.counts[d] > 0 && consumed+uint64(1<<uint(d)) <= baseSize {
 				consumed += uint64(1 << uint(d))
 				layer.counts[d]--
@@ -917,9 +917,9 @@ func (h *Hasher) maybeCollapseProgressive(layer *treeLayer) {
 	// Step 2: compact remainder from readPos to writePos with depth-aware hash-copy
 	// Remainder is buf[readPos:len(h.buf)] with layout [high-depth...low-depth]
 	var newCounts [maxTreeDepth]uint32
-	newMaxDepth := 0
+	newMaxDepth := uint8(0)
 
-	for d := layer.maxDepth; d >= 0; d-- {
+	for d := layer.maxDepth; d != 0xff; d-- {
 		n := int(layer.counts[d])
 		if n == 0 {
 			continue
@@ -968,8 +968,8 @@ func (h *Hasher) maybeCollapseProgressive(layer *treeLayer) {
 
 // progressiveBaseSize returns the leaf count for a progressive level:
 // 1, 4, 16, 64, 256, 1024, ... (1 << level*2).
-func progressiveBaseSize(level int) uint64 {
-	return 1 << (uint(level) * 2)
+func progressiveBaseSize(level uint8) uint64 {
+	return 1 << (uint64(level) * 2)
 }
 
 // activeSubtreeStart returns the buffer offset where the active binary
@@ -998,7 +998,7 @@ func (h *Hasher) syncCollapseState(layer *treeLayer) {
 func (h *Hasher) syncCollapseStateWithEnd(layer *treeLayer, bufEnd int) {
 	totalChunks := (bufEnd - h.binaryRegionStart(layer)) / 32
 	var accounted int
-	for d := 0; d <= layer.maxDepth; d++ {
+	for d := uint8(0); d <= layer.maxDepth; d++ {
 		accounted += int(layer.counts[d])
 	}
 	if diff := totalChunks - accounted; diff > 0 {
@@ -1028,7 +1028,7 @@ func (h *Hasher) collapseAllDepths(layer *treeLayer, indx, bufEnd int, limit uin
 	// walk is refused.
 	if limit > 0 {
 		var chunks uint64
-		for d := 0; d <= layer.maxDepth; d++ {
+		for d := uint8(0); d <= layer.maxDepth; d++ {
 			chunks += uint64(layer.counts[d]) << uint(d)
 		}
 		if chunks > limit {
@@ -1037,14 +1037,14 @@ func (h *Hasher) collapseAllDepths(layer *treeLayer, indx, bufEnd int, limit uin
 	}
 
 	for {
-		lowestDepth := -1
-		for d := 0; d <= layer.maxDepth; d++ {
+		lowestDepth := uint8(0xff)
+		for d := uint8(0); d <= layer.maxDepth; d++ {
 			if layer.counts[d] > 0 {
 				lowestDepth = d
 				break
 			}
 		}
-		if lowestDepth < 0 {
+		if lowestDepth == 0xff {
 			break
 		}
 
@@ -1087,9 +1087,9 @@ func (h *Hasher) collapseAllDepths(layer *treeLayer, indx, bufEnd int, limit uin
 	if limit > 0 {
 		targetDepth := h.getDepth(limit)
 		currentDepth := uint8(0)
-		for d := 0; d <= layer.maxDepth; d++ {
+		for d := uint8(0); d <= layer.maxDepth; d++ {
 			if layer.counts[d] == 1 {
-				currentDepth = uint8(d)
+				currentDepth = d
 				break
 			}
 		}
@@ -1227,15 +1227,15 @@ func (h *Hasher) Merkleize(indx int) {
 					// between), flush the old run first — that shifts this
 					// scope's chunks down, so adjust indx accordingly.
 					if parent.pendCount > 0 &&
-						(parent.pendElemChunks != c || parent.pendStart+parent.pendCount*c*32 != indx) {
-						shift := parent.pendCount * (parent.pendElemChunks - 1) * 32
+						(int(parent.pendElemChunks) != c || parent.pendStart+int(parent.pendCount)*c*32 != indx) {
+						shift := int(parent.pendCount) * (int(parent.pendElemChunks) - 1) * 32
 						h.flushPending(parent, false)
 						indx -= shift
 					}
 					if parent.pendCount == 0 {
 						parent.pendStart = indx
 					}
-					parent.pendElemChunks = c
+					parent.pendElemChunks = uint16(c)
 					parent.pendCount++
 					h.popTopLayer()
 					// Legacy callers never send Collapse hints, so the run is
@@ -1243,7 +1243,7 @@ func (h *Hasher) Merkleize(indx int) {
 					// in the background when async hashing is on, otherwise as
 					// one wide synchronous pass. Collapse-driven engines flush
 					// before this ever fires in synchronous mode.
-					if parent.pendCount*c >= lazyFlushChunks {
+					if int(parent.pendCount)*c >= lazyFlushChunks {
 						h.flushPending(parent, true)
 					}
 					return

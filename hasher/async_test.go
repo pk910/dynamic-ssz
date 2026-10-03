@@ -440,8 +440,8 @@ func TestAsyncCollapseSubCapRemainder(t *testing.T) {
 		}
 		layer := &hh.layers[hh.layerCount]
 		layer.pendStart = idx
-		layer.pendElemChunks = elemChunks
-		layer.pendCount = n
+		layer.pendElemChunks = uint16(elemChunks)
+		layer.pendCount = int32(n)
 	}
 
 	t.Run("binary", func(t *testing.T) {
