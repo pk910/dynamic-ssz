@@ -152,9 +152,12 @@ The rest is the delegate's contract:
   the offset write that follows panics.
 - `SizeSSZ` and `SizeSSZDyn` report the exact byte count the marshal writes.
   Two size errors that cancel pass the length check and encode a wrong value.
-- `HashTreeRootWith` and `HashTreeRootWithDyn` leave one scope's root on the
-  walker. A delegate that reads a root back with `Hash` keeps it only while
-  `HashErr`, read after `Hash`, is nil.
+- `HashTreeRootWith` and `HashTreeRootWithDyn` of a composite leave one scope's
+  root on the walker. Those of a basic-shaped value (a basic value, a large uint
+  held as words, or a wrapper around either) leave the value's packed bytes,
+  which the engines pad to a chunk outside a packed scope. A delegate that
+  reads a root back with `Hash` keeps it only while `HashErr`, read after
+  `Hash`, is nil.
 - Nothing compares the bytes or the root a delegate produces against the
   schema.
 

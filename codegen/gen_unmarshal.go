@@ -1464,8 +1464,11 @@ func (ctx *unmarshalContext) unmarshalUnion(desc *ssztypes.TypeDescriptor, varNa
 		// A fixed-size variant occupies exactly 1+variantSize bytes of the union
 		// region, so any extra bytes are trailing data and must be rejected
 		// (matching the reflection and streaming-decoder paths).
+		// A variant whose width comes purely from a spec expression carries a
+		// static size of 0, so the check is keyed on the expression as well.
 		elemSize := variantDesc.Size
-		if elemSize > 0 {
+		hasSizeExpr := variantDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
+		if variantDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 && (elemSize > 0 || hasSizeExpr) {
 			// When the variant's serialized size comes from a spec expression, its
 			// byte length is resolved at runtime and must not be baked to the
 			// static default: doing so under-/over-reads the union region for any
@@ -1475,7 +1478,7 @@ func (ctx *unmarshalContext) unmarshalUnion(desc *ssztypes.TypeDescriptor, varNa
 			// the same domain, so a declaration past the target's int range
 			// neither narrows the check nor the figure the error carries.
 			var sizeExpr string
-			if variantDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+			if hasSizeExpr {
 				sizeVar, serr := ctx.staticSizeVars.getStaticSizeVar(variantDesc)
 				if serr != nil {
 					return serr

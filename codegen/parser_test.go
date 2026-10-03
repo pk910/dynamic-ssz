@@ -3944,9 +3944,10 @@ func TestParserWalkerParameterAcceptsHashWalker(t *testing.T) {
 	}
 }
 
-// A field that carries no tag, or repeats its type's annotation, keeps the
-// type's delegation flags; a field that changes the declared shape drops them.
-// Mirrors the reflection type cache.
+// A field that carries no tag, repeats its type's annotation, or names the
+// SSZ type the type resolves to on its own keeps the type's delegation flags;
+// a field that changes the declared shape drops them. Mirrors the reflection
+// type cache.
 func TestFieldTagRepeatingAnnotationKeepsDelegation(t *testing.T) {
 	pkg := types.NewPackage("annfield", "annfield")
 	elem := types.NewNamed(types.NewTypeName(token.NoPos, pkg, "annList", nil), types.NewSlice(types.Typ[types.Uint64]), nil)
@@ -3972,8 +3973,8 @@ func TestFieldTagRepeatingAnnotationKeepsDelegation(t *testing.T) {
 		{"no tag", elem, "", "", true, 4},
 		{"same tag", elem, "", `ssz-max:"4"`, true, 4},
 		{"other tag", elem, "", `ssz-max:"8"`, false, 8},
-		{"type hint the annotation lacks", elem, "", `ssz-type:"list"`, false, 4},
-		{"ssz alias the annotation lacks", elem, "", `ssz:"list"`, false, 4},
+		{"type hint naming the type's own shape", elem, "", `ssz-type:"list"`, true, 4},
+		{"ssz alias naming the type's own shape", elem, "", `ssz:"list"`, true, 4},
 		{"ssz alias naming the annotation's type", typed, "", `ssz:"list"`, true, 4},
 		{"ssz alias with another limit", typed, "", `ssz:"list" ssz-max:"8"`, false, 8},
 		{"field-only ssz-index", elem, `ssz-index:"0"`, `ssz-index:"1"`, true, 4},
@@ -4392,6 +4393,77 @@ func TestGoKind(t *testing.T) {
 	} {
 		if got := goKind(tt.typ); got != tt.want {
 			t.Errorf("%s: kind = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+// time.Time hinted as the uint64 it resolves to on its own is accepted, with
+// the time flag, as the type cache accepts it.
+func TestTimeWithExplicitUint64Hint(t *testing.T) {
+	timeType := types.NewNamed(types.NewTypeName(token.NoPos, types.NewPackage("time", "time"), "Time", nil), types.NewStruct(nil, nil), nil)
+	desc, err := NewParser().GetTypeDescriptorWithSchema(timeType, timeType, []ssztypes.SszTypeHint{{Type: ssztypes.SszUint64Type}}, nil, nil)
+	if err != nil {
+		t.Fatalf("time.Time with ssz-type uint64: %v", err)
+	}
+	if desc.SszType != ssztypes.SszUint64Type || desc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
+		t.Fatalf("SSZ type %v, time flag %v, want a uint64 time", desc.SszType, desc.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0)
+	}
+}
+
+// The hint matcher resolves each dimension as the descriptor build does: an
+// outer annotation's remaining dimensions stay in force below it, and an
+// element's own annotation takes over only where they are open.
+func TestHintsMatchDefaultWithAnnotations(t *testing.T) {
+	elem := types.NewNamed(types.NewTypeName(token.NoPos, nil, "Elem", nil), types.NewSlice(types.Typ[types.Uint64]), nil)
+	outer := types.NewNamed(types.NewTypeName(token.NoPos, nil, "Outer", nil), types.NewArray(elem, 2), nil)
+	outerAnn := types.NewNamed(types.NewTypeName(token.NoPos, nil, "OuterAnn", nil), types.NewArray(elem, 2), nil)
+	bits := types.NewNamed(types.NewTypeName(token.NoPos, nil, "Bits", nil), types.NewSlice(types.Typ[types.Uint8]), nil)
+	middle := types.NewNamed(types.NewTypeName(token.NoPos, nil, "Middle", nil), types.NewArray(bits, 2), nil)
+	deep := types.NewNamed(types.NewTypeName(token.NoPos, nil, "Deep", nil), types.NewArray(middle, 2), nil)
+	p := NewParser()
+	p.AnnotationResolver = func(typ types.Type) string {
+		switch typ {
+		case elem:
+			return `ssz-size:"4"`
+		case outerAnn:
+			return `ssz-type:"vector,list"`
+		case bits:
+			return `ssz-type:"bitlist" ssz-max:"64"`
+		case middle:
+			// The limit on the element dimension keeps Bits' own bitlist
+			// declaration from taking over: the element is a list of 4.
+			return `ssz-type:"vector,?" ssz-max:"?,4"`
+		}
+		return ""
+	}
+	hints := func(spec string) []ssztypes.SszTypeHint {
+		th, _, _, err := ssztypes.ParseTags(`ssz-type:"` + spec + `"`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return th
+	}
+	for _, tc := range []struct {
+		typ  types.Type
+		spec string
+		want bool
+	}{
+		{outer, "vector,vector", true},
+		{outer, "vector,?", true},
+		{outer, "vector,list", false},
+		{outerAnn, "vector,list", true},
+		{outerAnn, "vector,?", true},
+		{outerAnn, "vector,vector", false},
+		{outerAnn, "?", true},
+		{outerAnn, "list", false},
+		{deep, "vector,vector,list", true},
+		{deep, "vector,vector,?", true},
+		{deep, "vector,vector,bitlist", false},
+		{middle, "vector,list", true},
+		{middle, "vector,bitlist", false},
+	} {
+		if got := p.hintsMatchDefault(tc.typ, hints(tc.spec)); got != tc.want {
+			t.Errorf("%v with %q: match = %v, want %v", tc.typ, tc.spec, got, tc.want)
 		}
 	}
 }

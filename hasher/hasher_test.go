@@ -2370,10 +2370,11 @@ func TestHashReportsARefusalNoEarlierCallCould(t *testing.T) {
 		return good(dst, src)
 	})
 
-	// A scope nested in an open one leaves its reduction pending for Hash.
+	// A scope nested in an open incremental one leaves its reduction pending
+	// for Hash.
 	fill := func() {
-		outer := hh.Index()
-		inner := hh.Index()
+		outer := hh.StartTree(sszutils.TreeTypeBinary)
+		inner := hh.StartTree(sszutils.TreeTypeNone)
 		hh.PutUint64(1)
 		hh.FillUpTo32()
 		hh.PutUint64(2)
@@ -2446,5 +2447,59 @@ func TestResetClearsHashFnError(t *testing.T) {
 	}
 	if got != wantRoot {
 		t.Errorf("root after Reset %x, want %x", got, wantRoot)
+	}
+}
+
+// A deferred run holds uniform, contiguous subtrees: a child of another
+// chunk count, or one that follows raw chunks appended after the run, flushes
+// the run first and still lands at the position its parent expects, so the
+// root equals that of the same scopes reduced in place.
+func TestDeferredRunFlushedOnShapeChange(t *testing.T) {
+	child := func(hh *Hasher, open func() int, chunks int, seed uint64) {
+		idx := open()
+		for c := 0; c < chunks; c++ {
+			hh.PutUint64(seed + uint64(c))
+		}
+		hh.Merkleize(idx)
+	}
+	for _, tc := range []struct {
+		name string
+		walk func(hh *Hasher, open func() int)
+	}{
+		{"child of another chunk count", func(hh *Hasher, open func() int) {
+			child(hh, open, 2, 1)
+			child(hh, open, 2, 3)
+			child(hh, open, 4, 5)
+			child(hh, open, 4, 9)
+		}},
+		{"raw chunk after the run", func(hh *Hasher, open func() int) {
+			child(hh, open, 2, 1)
+			child(hh, open, 2, 3)
+			hh.PutUint64(7)
+			child(hh, open, 2, 8)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deferred := NewHasher()
+			outer := deferred.StartTree(sszutils.TreeTypeBinary)
+			tc.walk(deferred, func() int { return deferred.StartTree(sszutils.TreeTypeNone) })
+			deferred.MerkleizeWithMixin(outer, 4, 16)
+			got, err := deferred.HashRoot()
+			if err != nil {
+				t.Fatalf("deferred HashRoot: %v", err)
+			}
+
+			inPlace := NewHasher()
+			outer = inPlace.StartTree(sszutils.TreeTypeBinary)
+			tc.walk(inPlace, inPlace.Index)
+			inPlace.MerkleizeWithMixin(outer, 4, 16)
+			want, err := inPlace.HashRoot()
+			if err != nil {
+				t.Fatalf("in-place HashRoot: %v", err)
+			}
+			if got != want {
+				t.Fatalf("deferred root %x != in-place root %x", got[:8], want[:8])
+			}
+		})
 	}
 }
