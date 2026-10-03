@@ -48,8 +48,7 @@ const maxTreeDepth = 40
 // to half as many at the next depth. This cascades without memory movement.
 type treeLayer struct {
 	bufIdx      int  // byte offset where this scope started
-	incremental bool // true if opened via StartTree(), supports collapse
-	declared    bool // true if opened with an explicit tree shape, which the reduction must match
+	incremental bool // true if opened via StartTree() with a tree shape, which the reduction must match; supports collapse
 	legacy      bool // true if opened via Index(): reduced in place, never deferred into the parent
 	collapsed   bool // true once at least one binary batch has been collapsed
 	progressive bool // true if using progressive tree shape
@@ -586,7 +585,6 @@ func (h *Hasher) StartTree(treeType sszutils.TreeType) int {
 	layer := h.pushLayer()
 	layer.bufIdx = idx
 	layer.incremental = treeType != sszutils.TreeTypeNone
-	layer.declared = treeType != sszutils.TreeTypeNone
 	layer.legacy = false
 	layer.progressive = treeType == sszutils.TreeTypeProgressive
 	layer.packed = packed
@@ -610,7 +608,6 @@ func (h *Hasher) Index() int {
 	layer := h.pushLayer()
 	layer.bufIdx = idx
 	layer.incremental = false
-	layer.declared = false
 	layer.legacy = true
 	return idx
 }
@@ -669,15 +666,6 @@ func (h *Hasher) Collapse() {
 		if layer.pendCount > 0 {
 			// Sub-cap remainder from the capped async flush; it accumulates
 			// toward the next cap-sized job.
-			return
-		}
-		// A scope opened without a declared shape may still close as either
-		// tree, and only element roots suit both closers: a binary node
-		// would be taken for a leaf by a progressive close, and a node
-		// reduced in the background would be built over the holes of the
-		// element-root jobs above. The hint has reduced this scope's
-		// deferred children; its own chunks wait for the close.
-		if !layer.declared {
 			return
 		}
 		if async {
@@ -1191,7 +1179,7 @@ func (h *Hasher) Merkleize(indx int) {
 	layer := h.getMatchingLayer(indx)
 
 	if layer != nil {
-		if layer.progressive && layer.declared {
+		if layer.progressive {
 			h.setHashErr(sszutils.ErrScopeShapeMismatch)
 		}
 		// Defer a container scope into its incremental parent so it batches with
@@ -1203,14 +1191,6 @@ func (h *Hasher) Merkleize(indx int) {
 		// reduce the region again.
 		deferrable := !layer.legacy && (!layer.incremental ||
 			(!layer.progressive && !layer.collapsed && layer.pendCount == 0))
-		// A deferred run is read by its parent's flush without draining, so a
-		// scope is only deferrable once no background reduction still writes
-		// into it: an undeclared scope keeps its layer untouched after an
-		// async flush of its own run, and its holes below the highest
-		// outstanding hole end are filled by the close path below instead.
-		if deferrable && h.jobCount > 0 && indx < h.jobMaxEnd {
-			deferrable = false
-		}
 		if deferrable && h.layerCount >= 1 {
 			parent := &h.layers[h.layerCount-1]
 			if parent.incremental {
@@ -1303,7 +1283,7 @@ func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 	layer := h.getMatchingLayer(indx)
 
 	if layer != nil {
-		if layer.progressive && layer.declared {
+		if layer.progressive {
 			h.setHashErr(sszutils.ErrScopeShapeMismatch)
 		}
 		if layer.pendCount > 0 {
@@ -1353,7 +1333,7 @@ func (h *Hasher) MerkleizeProgressive(indx int) {
 	layer := h.getMatchingLayer(indx)
 
 	if layer != nil {
-		if !layer.progressive && layer.declared {
+		if !layer.progressive && layer.incremental {
 			h.setHashErr(sszutils.ErrScopeShapeMismatch)
 		}
 		if layer.pendCount > 0 {
@@ -1400,7 +1380,7 @@ func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 	layer := h.getMatchingLayer(indx)
 
 	if layer != nil {
-		if !layer.progressive && layer.declared {
+		if !layer.progressive && layer.incremental {
 			h.setHashErr(sszutils.ErrScopeShapeMismatch)
 		}
 		if layer.pendCount > 0 {
@@ -1452,7 +1432,7 @@ func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []b
 	layer := h.getMatchingLayer(indx)
 
 	if layer != nil {
-		if !layer.progressive && layer.declared {
+		if !layer.progressive && layer.incremental {
 			h.setHashErr(sszutils.ErrScopeShapeMismatch)
 		}
 		if layer.pendCount > 0 {
