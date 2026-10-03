@@ -6113,3 +6113,47 @@ var UnionSpecOnly_Values = []struct {
 	{Data: []byte{0xff, 0x0f}, Size: 2},
 	{Data: []byte{1, 2, 3, 4}, Size: 4},
 }
+
+// GenU128 is a uint128 held as two words with generated methods. As a list
+// or vector element its root method must leave the packed 16 bytes, and as a
+// field or standalone root a whole chunk.
+type GenU128 [2]uint64
+
+var _ = sszutils.Annotate[GenU128](`ssz-type:"uint128"`)
+
+// GenU128Wrap is a generated wrapper around a word-form uint128.
+type GenU128Wrap struct {
+	Data [2]uint64 `ssz-type:"uint128"`
+}
+
+var _ = sszutils.Annotate[GenU128Wrap](`ssz-type:"wrapper"`)
+
+type GenU128Holder struct {
+	L []GenU128 `ssz-max:"8"`
+	V [2]GenU128
+	F GenU128
+	W []GenU128Wrap `ssz-max:"8" ssz-type:"?,wrapper"`
+}
+
+// GenU128HolderRef is the same shape with inline element types and no
+// generated methods.
+type GenU128HolderRef struct {
+	L [][2]uint64  `ssz-type:"?,uint128" ssz-max:"8"`
+	V [2][2]uint64 `ssz-type:"?,uint128"`
+	F [2]uint64    `ssz-type:"uint128"`
+	W [][2]uint64  `ssz-type:"?,uint128" ssz-max:"8"`
+}
+
+var GenU128Holder_Payload = GenU128Holder{
+	L: []GenU128{{1, 0}, {2, 0}, {3, 4}, {5, 6}, {7, 8}, {9, 10}},
+	V: [2]GenU128{{3, 0}, {4, 0}},
+	F: GenU128{11, 12},
+	W: []GenU128Wrap{{Data: [2]uint64{13, 0}}, {Data: [2]uint64{14, 15}}, {Data: [2]uint64{16, 0}}, {Data: [2]uint64{17, 0}}, {Data: [2]uint64{18, 0}}, {Data: [2]uint64{19, 20}}},
+}
+
+var GenU128HolderRef_Payload = GenU128HolderRef{
+	L: [][2]uint64{{1, 0}, {2, 0}, {3, 4}, {5, 6}, {7, 8}, {9, 10}},
+	V: [2][2]uint64{{3, 0}, {4, 0}},
+	F: [2]uint64{11, 12},
+	W: [][2]uint64{{13, 0}, {14, 15}, {16, 0}, {17, 0}, {18, 0}, {19, 20}},
+}

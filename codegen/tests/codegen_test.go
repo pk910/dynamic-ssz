@@ -6861,3 +6861,48 @@ func mustMarshal(t *testing.T, ds *dynssz.DynSsz, v any) []byte {
 	}
 	return out
 }
+
+// A named uint128 held as words with generated methods must hash like its
+// inline twin wherever it sits: packed as a list or vector element, as a
+// whole chunk as a field, and as a standalone root.
+func TestCodegenWordUint128Element(t *testing.T) {
+	if _, generated := any(&GenU128{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+
+	testCodegenPayloadByReflection(t, GenU128Holder_Payload, nil)
+
+	ds := dynssz.NewDynSsz(nil)
+	got, err := ds.HashTreeRoot(&GenU128Holder_Payload)
+	if err != nil {
+		t.Fatalf("HashTreeRoot: %v", err)
+	}
+	want, err := ds.HashTreeRoot(&GenU128HolderRef_Payload)
+	if err != nil {
+		t.Fatalf("reference HashTreeRoot: %v", err)
+	}
+	if got != want {
+		t.Fatalf("holder root %x != inline reference %x", got[:8], want[:8])
+	}
+	tree, err := ds.GetTree(&GenU128Holder_Payload)
+	if err != nil {
+		t.Fatalf("GetTree: %v", err)
+	}
+	if !bytes.Equal(tree.Hash(), want[:]) {
+		t.Fatalf("tree root %x != inline reference %x", tree.Hash()[:8], want[:8])
+	}
+
+	for _, elem := range []any{&GenU128{11, 12}, &GenU128Wrap{Data: [2]uint64{11, 12}}} {
+		standalone, err := elem.(sszutils.FastsszHashRoot).HashTreeRoot()
+		if err != nil {
+			t.Fatalf("%T standalone HashTreeRoot: %v", elem, err)
+		}
+		engine, err := ds.HashTreeRoot(elem)
+		if err != nil {
+			t.Fatalf("%T engine HashTreeRoot: %v", elem, err)
+		}
+		if standalone != engine {
+			t.Fatalf("%T standalone root %x != engine root %x", elem, standalone[:8], engine[:8])
+		}
+	}
+}
