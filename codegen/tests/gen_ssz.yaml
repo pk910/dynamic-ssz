@@ -108,6 +108,8 @@ types:
     output: gen_edgecases.go
   - name: GenU128Holder
     output: gen_edgecases.go
+  - name: ProbeHintedHolder
+    output: gen_edgecases.go
   - name: UnionDynVariant
     output: gen_unions.go
   - name: UnionTaggedSelectors

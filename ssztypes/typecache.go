@@ -346,7 +346,9 @@ func (tc *TypeCache) getTypeDescriptor(runtimeType, schemaType reflect.Type, siz
 	// nothing new about the type: it is built as a bare reference, so the
 	// type's declaration and methods stand and its plain descriptor is shared.
 	// The annotation is read through the same readers as a tag, so the two
-	// sides compare like for like.
+	// sides compare like for like. Type hints that name, dimension by
+	// dimension, what the annotated type resolves to say nothing new either,
+	// beside the annotation's own sizes and limits.
 	if len(sizeHints) > 0 || len(maxSizeHints) > 0 || len(typeHints) > 0 {
 		annotatedType := schemaType
 		if annotatedType.Kind() == reflect.Pointer {
@@ -357,7 +359,10 @@ func (tc *TypeCache) getTypeDescriptor(runtimeType, schemaType reflect.Type, siz
 			annSize, sizeErr := getSszSizeTag(tc.specs, &annField)
 			annMax, maxErr := getSszMaxSizeTag(tc.specs, &annField)
 			annType, typeErr := getSszTypeTag(&annField)
-			if sizeErr == nil && maxErr == nil && typeErr == nil && SameHints(typeHints, annType, sizeHints, annSize, maxSizeHints, annMax) {
+			switch {
+			case sizeErr == nil && maxErr == nil && typeErr == nil && SameHints(typeHints, annType, sizeHints, annSize, maxSizeHints, annMax):
+				sizeHints, maxSizeHints, typeHints = nil, nil, nil
+			case sizeErr == nil && maxErr == nil && (len(sizeHints) == 0 || slices.Equal(sizeHints, annSize)) && (len(maxSizeHints) == 0 || slices.Equal(maxSizeHints, annMax)) && hintsMatchDefault(annotatedType, typeHints):
 				sizeHints, maxSizeHints, typeHints = nil, nil, nil
 			}
 		}
@@ -507,6 +512,115 @@ func (tc *TypeCache) getCompatFlag(runtimeType, schemaType reflect.Type) SszComp
 	}
 
 	return tc.CompatFlags[runtimeTypeKey]
+}
+
+// hintsMatchDefault reports whether a reference's type hints name, dimension
+// by dimension, the SSZ types the Go type and its element types resolve to on
+// their own, with the type's own annotation in force. Below the type, the
+// hints in force are what that annotation passes down; an element type's own
+// annotation takes over only where the inherited hints are consistent with
+// it, as the descriptor build applies it. Otherwise a dimension resolves to
+// the kind. An open dimension names its own. A hint past the last element
+// type names nothing the type has.
+func hintsMatchDefault(t reflect.Type, typeHints []SszTypeHint) bool {
+	var inForceTypes []SszTypeHint
+	var inForceSizes []SszSizeHint
+	var inForceMax []SszMaxSizeHint
+	for i, hint := range typeHints {
+		if t != nil {
+			for t.Kind() == reflect.Ptr {
+				t = t.Elem()
+			}
+			if tag, ok := sszutils.LookupAnnotation(t); ok {
+				annTypes, annSizes, annMax, err := ParseTags(tag)
+				if err != nil {
+					return false
+				}
+				if i == 0 || ((len(inForceSizes) == 0 || slices.Equal(inForceSizes, annSizes)) &&
+					(len(inForceMax) == 0 || slices.Equal(inForceMax, annMax)) &&
+					hintsMatchDefault(t, inForceTypes)) {
+					inForceTypes, inForceSizes, inForceMax = annTypes, annSizes, annMax
+				}
+			}
+		}
+		natural := SszUnspecifiedType
+		if len(inForceTypes) > 0 {
+			natural = inForceTypes[0].Type
+			inForceTypes = inForceTypes[1:]
+		}
+		if natural == SszUnspecifiedType && t != nil {
+			natural = defaultSszType(t, inForceSizes)
+		}
+		if len(inForceSizes) > 0 {
+			inForceSizes = inForceSizes[1:]
+		}
+		if len(inForceMax) > 0 {
+			inForceMax = inForceMax[1:]
+		}
+		if hint.Type != SszUnspecifiedType && hint.Type != natural {
+			return false
+		}
+		if t != nil {
+			switch t.Kind() {
+			case reflect.Array, reflect.Slice:
+				t = t.Elem()
+			default:
+				t = nil
+			}
+		}
+	}
+	return true
+}
+
+// defaultSszType returns the SSZ type a Go type resolves to without a type
+// hint: a well-known external type by its name, otherwise by its kind. A
+// slice or string is a vector under a static size hint and a list otherwise
+// (`?` is what makes a dimension a list; any other tag names a length, and
+// reading the resolved value instead would let the same type encode as a
+// vector or as a list depending on which spec values a process happened to
+// have loaded), and a named list whose name contains "Bitlist" is a bitlist.
+// A kind without an SSZ type stays unspecified.
+func defaultSszType(t reflect.Type, sizeHints []SszSizeHint) SszType {
+	if sszType := WellKnownExternalType(t.PkgPath(), t.Name()); sszType != SszUnspecifiedType {
+		return sszType
+	}
+	switch t.Kind() {
+	case reflect.Bool:
+		return SszBoolType
+	case reflect.Uint8:
+		return SszUint8Type
+	case reflect.Uint16:
+		return SszUint16Type
+	case reflect.Uint32:
+		return SszUint32Type
+	case reflect.Uint64:
+		return SszUint64Type
+	case reflect.Struct:
+		return SszContainerType
+	case reflect.Array:
+		return SszVectorType
+	case reflect.Slice, reflect.String:
+		if len(sizeHints) > 0 && !sizeHints[0].Dynamic {
+			return SszVectorType
+		}
+		if strings.Contains(t.Name(), "Bitlist") {
+			return SszBitlistType
+		}
+		return SszListType
+	case reflect.Int8:
+		return SszInt8Type
+	case reflect.Int16:
+		return SszInt16Type
+	case reflect.Int32:
+		return SszInt32Type
+	case reflect.Int64:
+		return SszInt64Type
+	case reflect.Float32:
+		return SszFloat32Type
+	case reflect.Float64:
+		return SszFloat64Type
+	}
+	return SszUnspecifiedType
 }
 
 // buildTypeDescriptor computes a type descriptor for a (runtime, schema) type pair.
@@ -673,17 +787,18 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		}
 	}
 
-	// A reference that declares an SSZ type the type's own annotation does not
-	// overrides the type, so it is described inline and its own methods are not
-	// used, as a size or limit the reference supplies is. The field tag is
-	// joined in front of the annotation, so an annotation-declared type arrives
-	// here unchanged; a type without an annotation declares no type at all.
+	// A reference that declares an SSZ type other than the type's own overrides
+	// the type, so it is described inline and its own methods are not used, as
+	// a size or limit the reference supplies is. The type's own SSZ type is
+	// what its annotation declares, or what it resolves to on its own when the
+	// annotation declares none; a reference naming that type says nothing new.
+	// The field tag is joined in front of the annotation, so an
+	// annotation-declared type arrives here unchanged.
 	if !hasExternalHints && len(typeHints) > 0 {
-		annTypeHints, _, _, parseErr := ParseTags(annotationTag)
-		if parseErr != nil {
+		if _, _, _, parseErr := ParseTags(annotationTag); parseErr != nil {
 			return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "failed to parse annotation for type %v: %v", t, parseErr)
 		}
-		hasExternalHints = !SameSszTypes(typeHints, annTypeHints)
+		hasExternalHints = !hintsMatchDefault(t, typeHints)
 	}
 
 	desc.Kind = t.Kind()
@@ -755,59 +870,10 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 
 	// auto-detect ssz type if not specified
 	if sszType == SszUnspecifiedType {
-		// detect some well-known and widely used types
-		sszType = getWellKnownExternalType(t.PkgPath(), t.Name())
+		sszType = defaultSszType(t, sizeHints)
 	}
 	if sszType == SszUnspecifiedType {
 		switch desc.Kind {
-		// basic types
-		case reflect.Bool:
-			sszType = SszBoolType
-		case reflect.Uint8:
-			sszType = SszUint8Type
-		case reflect.Uint16:
-			sszType = SszUint16Type
-		case reflect.Uint32:
-			sszType = SszUint32Type
-		case reflect.Uint64:
-			sszType = SszUint64Type
-
-		// complex types
-		case reflect.Struct:
-			sszType = SszContainerType
-		case reflect.Array:
-			sszType = SszVectorType
-		case reflect.Slice:
-			// `?` is what makes a dimension a list; any other tag names a length
-			// and so makes it a vector. Reading the resolved value instead would
-			// let the same type encode as a vector or as a list depending on which
-			// spec values a process happened to have loaded.
-			if len(sizeHints) > 0 && !sizeHints[0].Dynamic {
-				sszType = SszVectorType
-			} else {
-				sszType = SszListType
-			}
-		case reflect.String:
-			if len(sizeHints) > 0 && !sizeHints[0].Dynamic {
-				sszType = SszVectorType
-			} else {
-				sszType = SszListType
-			}
-
-		// extended types (not supported by SSZ spec)
-		case reflect.Int8:
-			sszType = SszInt8Type
-		case reflect.Int16:
-			sszType = SszInt16Type
-		case reflect.Int32:
-			sszType = SszInt32Type
-		case reflect.Int64:
-			sszType = SszInt64Type
-		case reflect.Float32:
-			sszType = SszFloat32Type
-		case reflect.Float64:
-			sszType = SszFloat64Type
-
 		// unsupported types
 		case reflect.Int, reflect.Uint:
 			return sszutils.NewSszError(sszutils.ErrUnsupportedType, "signed or unsigned integers with unspecified size are not supported in SSZ")
@@ -825,11 +891,6 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			return sszutils.NewSszError(sszutils.ErrUnsupportedType, "unsafe pointers are not supported in SSZ")
 		default:
 			break
-		}
-
-		// special case for bitlists
-		if sszType == SszListType && strings.Contains(t.Name(), "Bitlist") {
-			sszType = SszBitlistType
 		}
 	}
 
