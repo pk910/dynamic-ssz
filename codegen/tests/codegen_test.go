@@ -6893,7 +6893,11 @@ func TestCodegenWordUint128Element(t *testing.T) {
 	}
 
 	for _, elem := range []any{&GenU128{11, 12}, &GenU128Wrap{Data: [2]uint64{11, 12}}} {
-		standalone, err := elem.(sszutils.FastsszHashRoot).HashTreeRoot()
+		hasher, ok := elem.(sszutils.FastsszHashRoot)
+		if !ok {
+			t.Fatalf("%T has no generated HashTreeRoot", elem)
+		}
+		standalone, err := hasher.HashTreeRoot()
 		if err != nil {
 			t.Fatalf("%T standalone HashTreeRoot: %v", elem, err)
 		}

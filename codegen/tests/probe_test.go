@@ -331,9 +331,9 @@ func TestTypeHintOverridesOnlyAnotherType(t *testing.T) {
 		if obj == nil {
 			t.Fatalf("%s not found in the tests package", name)
 		}
-		goDesc, err := parser.GetTypeDescriptor(obj.Type(), nil, nil, nil)
-		if err != nil {
-			t.Fatalf("parser descriptor of %s: %v", name, err)
+		goDesc, descErr := parser.GetTypeDescriptor(obj.Type(), nil, nil, nil)
+		if descErr != nil {
+			t.Fatalf("parser descriptor of %s: %v", name, descErr)
 		}
 		for _, field := range goDesc.ContainerDesc.Fields {
 			if got := field.Type.SszCompatFlags & surface; got != want[field.Name] {
@@ -350,9 +350,9 @@ func TestTypeHintOverridesOnlyAnotherType(t *testing.T) {
 	outer := ProbeHintedOuter{{9, 10, 11, 12}, {13, 14, 15, 16}}
 	annotated := ProbeHintedOuterAnn{{17, 18}, {19}}
 	limited := ProbeHintedLimited{{20}, {21, 22}}
-	refRoot, err := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()).HashTreeRoot(&ProbeHintedWalked{Plain: ProbeHinted{1}, Same: ProbeHinted{2}, Other: ProbeHinted{3}, GridSame: grid, GridElem: grid, GridOpen: grid, OuterSame: outer, OuterOpen: outer, AnnList: annotated, LimSame: limited, LimOther: limited})
-	if err != nil {
-		t.Fatalf("reflection HashTreeRoot: %v", err)
+	refRoot, refErr := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()).HashTreeRoot(&ProbeHintedWalked{Plain: ProbeHinted{1}, Same: ProbeHinted{2}, Other: ProbeHinted{3}, GridSame: grid, GridElem: grid, GridOpen: grid, OuterSame: outer, OuterOpen: outer, AnnList: annotated, LimSame: limited, LimOther: limited})
+	if refErr != nil {
+		t.Fatalf("reflection HashTreeRoot: %v", refErr)
 	}
 	for _, holder := range []any{
 		&ProbeHintedHolder{Plain: ProbeHinted{1}, Same: ProbeHinted{2}, Other: ProbeHinted{3}, GridSame: grid, GridElem: grid, GridOpen: grid, OuterSame: outer, OuterOpen: outer, AnnList: annotated, LimSame: limited, LimOther: limited},
@@ -367,7 +367,7 @@ func TestTypeHintOverridesOnlyAnotherType(t *testing.T) {
 			t.Errorf("%T: MarshalSSZ reached the methods %d times, want 7 (Plain, Same, GridSame, OuterSame, OuterOpen, AnnList and LimSame)", holder, got)
 		}
 		back := reflect.New(reflect.TypeOf(holder).Elem()).Interface()
-		if err := ds.UnmarshalSSZ(back, encoded); err != nil {
+		if err = ds.UnmarshalSSZ(back, encoded); err != nil {
 			t.Fatalf("%T: UnmarshalSSZ: %v", holder, err)
 		}
 		if got := ProbeUnmarshalSSZCalls.Load(); got != 7 {

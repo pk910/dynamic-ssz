@@ -619,8 +619,9 @@ func defaultSszType(t reflect.Type, sizeHints []SszSizeHint) SszType {
 		return SszFloat32Type
 	case reflect.Float64:
 		return SszFloat64Type
+	default:
+		return SszUnspecifiedType
 	}
-	return SszUnspecifiedType
 }
 
 // buildTypeDescriptor computes a type descriptor for a (runtime, schema) type pair.

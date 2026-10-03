@@ -711,6 +711,7 @@ func (p *Parser) goKind(underlying types.Type) reflect.Kind {
 			return reflect.Uint64
 		case types.String:
 			return reflect.String
+		default:
 		}
 		if p.ExtendedTypes {
 			switch t.Kind() {
@@ -726,6 +727,7 @@ func (p *Parser) goKind(underlying types.Type) reflect.Kind {
 				return reflect.Float32
 			case types.Float64:
 				return reflect.Float64
+			default:
 			}
 		}
 	case *types.Array:
@@ -856,8 +858,9 @@ func (p *Parser) defaultSszType(schemaType types.Type, kind reflect.Kind, sizeHi
 		return ssztypes.SszFloat32Type
 	case reflect.Float64:
 		return ssztypes.SszFloat64Type
+	default:
+		return ssztypes.SszUnspecifiedType
 	}
-	return ssztypes.SszUnspecifiedType
 }
 
 // buildTypeDescriptor builds the descriptor of a type pair.
@@ -1281,7 +1284,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			named.Obj().Pkg().Path() == pkgPathBig && named.Obj().Name() == typeNameExternalInt && !p.ExtendedTypes {
 			return nil, fmt.Errorf("big.Int is not supported in SSZ (use unsigned integers instead)")
 		}
-		if (desc.Kind == reflect.Slice || desc.Kind == reflect.String) && !(len(sizeHints) > 0 && (sizeHints[0].Size > 0 || sizeHints[0].Expr != "")) {
+		if (desc.Kind == reflect.Slice || desc.Kind == reflect.String) && (len(sizeHints) == 0 || (sizeHints[0].Size == 0 && sizeHints[0].Expr == "")) {
 			if err := rejectZeroSizeHint(sizeHints); err != nil {
 				return nil, err
 			}
@@ -1299,34 +1302,30 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	}
 
 	if sszType == ssztypes.SszUnspecifiedType {
-		switch desc.Kind {
-		// unsupported types
-		default:
-			// Check for unsupported basic types
-			if basic, ok := schemaType.(*types.Basic); ok {
-				switch basic.Kind() {
-				case types.Int, types.Uint:
-					return nil, fmt.Errorf("signed or unsigned integers with unspecified size are not supported in SSZ")
-				case types.Float32, types.Float64:
-					return nil, fmt.Errorf("floating-point numbers are not supported in SSZ")
-				case types.Complex64, types.Complex128:
-					return nil, fmt.Errorf("complex numbers are not supported in SSZ")
-				default:
-				}
-			}
-			// Check for other unsupported types
-			switch schemaType.(type) {
-			case *types.Map:
-				return nil, fmt.Errorf("maps are not supported in SSZ (use structs or arrays instead)")
-			case *types.Chan:
-				return nil, fmt.Errorf("channels are not supported in SSZ")
-			case *types.Signature:
-				return nil, fmt.Errorf("functions are not supported in SSZ")
-			case *types.Interface:
-				return nil, fmt.Errorf("interfaces are not supported in SSZ (use concrete types)")
+		// Check for unsupported basic types
+		if basic, ok := schemaType.(*types.Basic); ok {
+			switch basic.Kind() {
+			case types.Int, types.Uint:
+				return nil, fmt.Errorf("signed or unsigned integers with unspecified size are not supported in SSZ")
+			case types.Float32, types.Float64:
+				return nil, fmt.Errorf("floating-point numbers are not supported in SSZ")
+			case types.Complex64, types.Complex128:
+				return nil, fmt.Errorf("complex numbers are not supported in SSZ")
 			default:
-				return nil, fmt.Errorf("unsupported type kind: %v", desc.Kind)
 			}
+		}
+		// Check for other unsupported types
+		switch schemaType.(type) {
+		case *types.Map:
+			return nil, fmt.Errorf("maps are not supported in SSZ (use structs or arrays instead)")
+		case *types.Chan:
+			return nil, fmt.Errorf("channels are not supported in SSZ")
+		case *types.Signature:
+			return nil, fmt.Errorf("functions are not supported in SSZ")
+		case *types.Interface:
+			return nil, fmt.Errorf("interfaces are not supported in SSZ (use concrete types)")
+		default:
+			return nil, fmt.Errorf("unsupported type kind: %v", desc.Kind)
 		}
 	}
 
