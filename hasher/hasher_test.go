@@ -2370,10 +2370,11 @@ func TestHashReportsARefusalNoEarlierCallCould(t *testing.T) {
 		return good(dst, src)
 	})
 
-	// A scope nested in an open one leaves its reduction pending for Hash.
+	// A scope nested in an open incremental one leaves its reduction pending
+	// for Hash.
 	fill := func() {
-		outer := hh.Index()
-		inner := hh.Index()
+		outer := hh.StartTree(sszutils.TreeTypeBinary)
+		inner := hh.StartTree(sszutils.TreeTypeNone)
 		hh.PutUint64(1)
 		hh.FillUpTo32()
 		hh.PutUint64(2)

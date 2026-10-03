@@ -50,6 +50,7 @@ type treeLayer struct {
 	bufIdx      int  // byte offset where this scope started
 	incremental bool // true if opened via StartTree(), supports collapse
 	declared    bool // true if opened with an explicit tree shape, which the reduction must match
+	legacy      bool // true if opened via Index(): reduced in place, never deferred into the parent
 	collapsed   bool // true once at least one binary batch has been collapsed
 	progressive bool // true if using progressive tree shape
 	packed      bool // true if the scope packs basic values: Put* appends packed bytes
@@ -586,6 +587,7 @@ func (h *Hasher) StartTree(treeType sszutils.TreeType) int {
 	layer.bufIdx = idx
 	layer.incremental = treeType != sszutils.TreeTypeNone
 	layer.declared = treeType != sszutils.TreeTypeNone
+	layer.legacy = false
 	layer.progressive = treeType == sszutils.TreeTypeProgressive
 	layer.packed = packed
 	return idx
@@ -597,19 +599,19 @@ func (h *Hasher) inPackedScope() bool {
 	return h.layerCount >= 0 && h.layers[h.layerCount].packed
 }
 
-// Index returns the current buffer position and pushes a binary incremental
-// layer. This is how legacy/external code (fastssz-generated methods) opens
-// scopes: such callers never send Collapse hints, so the deferral path in
-// Merkleize batches their uniform children and flushes the pending run
-// itself once it reaches the job cap. Unlike StartTree, no pending flush is
-// forced on the enclosing scope — a scope opened via Index may itself end
-// up deferred into its parent.
+// Index returns the current buffer position and pushes a non-incremental
+// layer that is reduced in place when it closes and never deferred into the
+// enclosing scope. This is how legacy/external code (fastssz-generated
+// methods) opens scopes: after Merkleize the region holds the scope's root,
+// so a caller may mix further chunks into it and reduce it again. Unlike
+// StartTree, no pending flush is forced on the enclosing scope.
 func (h *Hasher) Index() int {
 	idx := len(h.buf)
 	layer := h.pushLayer()
 	layer.bufIdx = idx
-	layer.incremental = true
+	layer.incremental = false
 	layer.declared = false
+	layer.legacy = true
 	return idx
 }
 
@@ -1196,10 +1198,11 @@ func (h *Hasher) Merkleize(indx int) {
 		// its siblings (single getMatchingLayer keeps the hot path cheap for the
 		// many small containers in a block). A scope holds plain chunks — and is
 		// therefore deferrable — when it is non-incremental, or incremental but
-		// still untouched by any collapse or deferral of its own; the latter is
-		// how legacy Index-driven scopes (fastssz-generated code) batch.
-		deferrable := !layer.incremental ||
-			(!layer.progressive && !layer.collapsed && layer.pendCount == 0)
+		// still untouched by any collapse or deferral of its own. A scope opened
+		// through Index is reduced in place instead: its caller may read or
+		// reduce the region again.
+		deferrable := !layer.legacy && (!layer.incremental ||
+			(!layer.progressive && !layer.collapsed && layer.pendCount == 0))
 		// A deferred run is read by its parent's flush without draining, so a
 		// scope is only deferrable once no background reduction still writes
 		// into it: an undeclared scope keeps its layer untouched after an
