@@ -588,7 +588,11 @@ value's packed bytes instead of a padded chunk, so a method declared on such an
 element type (`type Slot uint64` with generated methods, or a hand-written
 `hh.PutUint64(...)`) packs the value with its neighbours as the SSZ
 specification requires, and the same method leaves a whole chunk as a field or
-root. A method that merkleizes a leaf of its own inside a packed scope shifts
+root. A generated method of a large uint held as words (`[2]uint64` or
+`[4]uint64` declared `uint128` or `uint256`, or a wrapper around one) leaves
+the value's packed bytes everywhere, and the caller pads them to a chunk
+outside a packed scope, as the engines and the generated standalone
+`HashTreeRoot` methods do. A method that merkleizes a leaf of its own inside a packed scope shifts
 the elements that follow; the engines do not check this, and both walkers
 produce the same shifted root. A method that only
 returns a root (`HashTreeRoot()`) contributes the packed prefix of that root,
