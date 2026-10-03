@@ -5,6 +5,7 @@
 package ssztypes
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -3702,7 +3703,7 @@ func TestGetWellKnownExternalType(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.pkgPath+"."+tt.name, func(t *testing.T) {
-			got := getWellKnownExternalType(tt.pkgPath, tt.name)
+			got := WellKnownExternalType(tt.pkgPath, tt.name)
 			if got != tt.expected {
 				t.Errorf("expected %v, got %v", tt.expected, got)
 			}
@@ -7126,8 +7127,9 @@ func (*flagPlainContainer) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils.H
 	return nil
 }
 
-// A field that carries no tag, or repeats its type's annotation, keeps the
-// type's delegation flags; a field that changes the declared shape drops them.
+// A field that carries no tag, repeats its type's annotation, or names the
+// SSZ type the type resolves to on its own keeps the type's delegation flags;
+// a field that changes the declared shape drops them.
 func TestFieldTagRepeatingAnnotationKeepsDelegation(t *testing.T) {
 	type noTag struct {
 		L flagAnnDelegate
@@ -7177,8 +7179,8 @@ func TestFieldTagRepeatingAnnotationKeepsDelegation(t *testing.T) {
 		{"no tag", noTag{}, 0, true, 4},
 		{"same tag", sameTag{}, 0, true, 4},
 		{"other tag", otherTag{}, 0, false, 8},
-		{"type hint the annotation lacks", typeHintOnly{}, 0, false, 4},
-		{"ssz alias the annotation lacks", aliasHintOnly{}, 0, false, 4},
+		{"type hint naming the type's own shape", typeHintOnly{}, 0, true, 4},
+		{"ssz alias naming the type's own shape", aliasHintOnly{}, 0, true, 4},
 		{"ssz alias naming the annotation's type", aliasOfTyped{}, 0, true, 4},
 		{"ssz alias with another limit", aliasOfTypedOther{}, 0, false, 8},
 		{"field-only ssz-index", indexOnly{}, 1, true, 4},
@@ -7506,5 +7508,194 @@ func TestCustomWidthExpressionOnlyByAnnotation(t *testing.T) {
 	zero := NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"W": 0}})
 	if _, err := zero.GetTypeDescriptor(reflect.TypeOf(holder{}), nil, nil, nil); err == nil || !strings.Contains(err.Error(), "resolved to 0 with no positive static fallback") {
 		t.Fatalf("resolved to zero: err = %v, want the refusal", err)
+	}
+}
+
+// hintedWords has fastssz-style methods and no annotation; it resolves to a
+// vector on its own.
+type hintedWords [4]uint64
+
+func (w *hintedWords) MarshalSSZ() ([]byte, error) {
+	buf := make([]byte, 0, 32)
+	for _, v := range w {
+		buf = binary.LittleEndian.AppendUint64(buf, v)
+	}
+	return buf, nil
+}
+
+func (w *hintedWords) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 32 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	for i := range w {
+		w[i] = binary.LittleEndian.Uint64(buf[i*8:])
+	}
+	return nil
+}
+
+func (w *hintedWords) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	buf, _ := w.MarshalSSZ()
+	copy(root[:], buf)
+	return root, nil
+}
+
+// hintedGrid and hintedTxs carry the same methods over nested collections.
+type hintedGrid [2][4]uint64
+
+func (g *hintedGrid) MarshalSSZ() ([]byte, error)     { return nil, nil }
+func (g *hintedGrid) UnmarshalSSZ([]byte) error       { return nil }
+func (g *hintedGrid) HashTreeRoot() ([32]byte, error) { return [32]byte{}, nil }
+
+type hintedTxs [][]byte
+
+func (x *hintedTxs) MarshalSSZ() ([]byte, error)     { return nil, nil }
+func (x *hintedTxs) UnmarshalSSZ([]byte) error       { return nil }
+func (x *hintedTxs) HashTreeRoot() ([32]byte, error) { return [32]byte{}, nil }
+
+// A field type hint overrides a type's own methods only when, in some
+// dimension, it names an SSZ type other than the one the type or its element
+// type resolves to on its own.
+func TestTypeHintOverridesOnlyAnotherType(t *testing.T) {
+	type holder struct {
+		Plain    hintedWords
+		Same     hintedWords `ssz-type:"vector"`
+		Other    hintedWords `ssz-type:"uint256"`
+		Open     hintedWords `ssz-type:"?"`
+		GridSame hintedGrid  `ssz-type:"vector,vector"`
+		GridElem hintedGrid  `ssz-type:"vector,uint256"`
+		GridOpen hintedGrid  `ssz-type:"?,uint256"`
+		TxsSame  hintedTxs   `ssz-type:"list" ssz-max:"4,8"`
+		TxsDeep  hintedTxs   `ssz-type:"list,bitlist" ssz-max:"4,8"`
+		When     time.Time   `ssz-type:"uint64"`
+	}
+	desc, err := NewTypeCache(nil).GetTypeDescriptor(reflect.TypeOf(holder{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("descriptor: %v", err)
+	}
+	const surface = SszCompatFlagFastsszValueMarshaler | SszCompatFlagFastsszUnmarshaler | SszCompatFlagFastsszHashRoot
+	kept := map[string]bool{"Plain": true, "Same": true, "Open": true, "GridSame": true}
+	for _, field := range desc.ContainerDesc.Fields {
+		if field.Name == "When" {
+			if field.Type.SszType != SszUint64Type || field.Type.GoTypeFlags&GoTypeFlagIsTime == 0 {
+				t.Errorf("When: SSZ type %v, time flag %v, want a uint64 time", field.Type.SszType, field.Type.GoTypeFlags&GoTypeFlagIsTime != 0)
+			}
+			continue
+		}
+		if strings.HasPrefix(field.Name, "Txs") {
+			// A limit on the field drops the methods whatever the type hint says.
+			if got := field.Type.SszCompatFlags & surface; got != 0 {
+				t.Errorf("%s: flags %b, want the methods dropped under a limit", field.Name, got)
+			}
+			continue
+		}
+		got := field.Type.SszCompatFlags & surface
+		if kept[field.Name] && got != surface {
+			t.Errorf("%s: flags %b, want the methods kept", field.Name, got)
+		}
+		if !kept[field.Name] && got != 0 {
+			t.Errorf("%s: flags %b, want the methods dropped for a different SSZ type", field.Name, got)
+		}
+	}
+	if desc.ContainerDesc.Fields[5].Type.ElemDesc.SszType != SszUint256Type || desc.ContainerDesc.Fields[6].Type.ElemDesc.SszType != SszUint256Type {
+		t.Errorf("GridElem/GridOpen elements are %v/%v, want uint256", desc.ContainerDesc.Fields[5].Type.ElemDesc.SszType, desc.ContainerDesc.Fields[6].Type.ElemDesc.SszType)
+	}
+}
+
+// hintedElem and hintedBits declare their SSZ shape through annotations; the
+// outer types carry the methods.
+type hintedElem []uint64
+
+var _ = sszutils.Annotate[hintedElem](`ssz-size:"4"`)
+
+type hintedBits []byte
+
+var _ = sszutils.Annotate[hintedBits](`ssz-type:"bitlist" ssz-max:"64"`)
+
+type hintedOuter [2]hintedElem
+
+func (o *hintedOuter) MarshalSSZ() ([]byte, error)     { return nil, nil }
+func (o *hintedOuter) UnmarshalSSZ([]byte) error       { return nil }
+func (o *hintedOuter) HashTreeRoot() ([32]byte, error) { return [32]byte{}, nil }
+
+// hintedOuterAnn declares its element dimension as a list, which takes the
+// place of hintedElem's own vector declaration below it.
+type hintedOuterAnn [2]hintedElem
+
+var _ = sszutils.Annotate[hintedOuterAnn](`ssz-type:"vector,list"`)
+
+func (o *hintedOuterAnn) MarshalSSZ() ([]byte, error)     { return nil, nil }
+func (o *hintedOuterAnn) UnmarshalSSZ([]byte) error       { return nil }
+func (o *hintedOuterAnn) HashTreeRoot() ([32]byte, error) { return [32]byte{}, nil }
+
+// hintedLimited declares its limit through its annotation; a field repeating
+// its type keeps the methods, the annotation's limit joined in.
+type hintedLimited []hintedWords
+
+var _ = sszutils.Annotate[hintedLimited](`ssz-max:"4"`)
+
+func (l *hintedLimited) MarshalSSZ() ([]byte, error)     { return nil, nil }
+func (l *hintedLimited) UnmarshalSSZ([]byte) error       { return nil }
+func (l *hintedLimited) HashTreeRoot() ([32]byte, error) { return [32]byte{}, nil }
+
+// hintedMiddle limits its element dimension, which keeps hintedBits' own
+// bitlist declaration from taking over below it; hintedDeep carries the
+// methods.
+type hintedMiddle [2]hintedBits
+
+var _ = sszutils.Annotate[hintedMiddle](`ssz-type:"vector,?" ssz-max:"?,4"`)
+
+type hintedDeep [2]hintedMiddle
+
+func (d *hintedDeep) MarshalSSZ() ([]byte, error)     { return nil, nil }
+func (d *hintedDeep) UnmarshalSSZ([]byte) error       { return nil }
+func (d *hintedDeep) HashTreeRoot() ([32]byte, error) { return [32]byte{}, nil }
+
+type hintedBitsOuter [2]hintedBits
+
+func (o *hintedBitsOuter) MarshalSSZ() ([]byte, error)     { return nil, nil }
+func (o *hintedBitsOuter) UnmarshalSSZ([]byte) error       { return nil }
+func (o *hintedBitsOuter) HashTreeRoot() ([32]byte, error) { return [32]byte{}, nil }
+
+// Without a limit on the field, a deeper hint alone decides: naming the
+// element's own type, which its annotation declares when it has one, keeps
+// the methods; naming another drops them.
+func TestTypeHintDeeperDimensionOverrides(t *testing.T) {
+	type holder struct {
+		Same      hintedTxs       `ssz-type:"list"`
+		Deep      hintedTxs       `ssz-type:"list,bitlist"`
+		OuterSame hintedOuter     `ssz-type:"vector,vector"`
+		OuterOpen hintedOuter     `ssz-type:"vector,?"`
+		OuterList hintedOuter     `ssz-type:"vector,list"`
+		BitsSame  hintedBitsOuter `ssz-type:"vector,bitlist"`
+		BitsList  hintedBitsOuter `ssz-type:"vector,list"`
+		AnnVector hintedOuterAnn  `ssz-type:"vector,vector"`
+		AnnList   hintedOuterAnn  `ssz-type:"vector,list"`
+		AnnOpen   hintedOuterAnn  `ssz-type:"vector,?"`
+		LimSame   hintedLimited   `ssz-type:"list"`
+		LimDeep   hintedLimited   `ssz-type:"list,vector"`
+		LimOther  hintedLimited   `ssz-type:"list,uint256"`
+		LimMax    hintedLimited   `ssz-type:"list" ssz-max:"8"`
+		DeepList  hintedDeep      `ssz-type:"vector,vector,list"`
+		DeepOpen  hintedDeep      `ssz-type:"vector,vector,?"`
+		DeepBits  hintedDeep      `ssz-type:"vector,vector,bitlist"`
+	}
+	desc, err := NewTypeCache(nil).GetTypeDescriptor(reflect.TypeOf(holder{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("descriptor: %v", err)
+	}
+	const surface = SszCompatFlagFastsszValueMarshaler | SszCompatFlagFastsszUnmarshaler | SszCompatFlagFastsszHashRoot
+	kept := map[string]bool{"Same": true, "OuterSame": true, "OuterOpen": true, "BitsSame": true, "AnnList": true, "AnnOpen": true, "LimSame": true, "LimDeep": true, "DeepList": true, "DeepOpen": true}
+	for _, field := range desc.ContainerDesc.Fields {
+		got := field.Type.SszCompatFlags & surface
+		if kept[field.Name] && got != surface {
+			t.Errorf("%s: flags %b, want the methods kept", field.Name, got)
+		}
+		if !kept[field.Name] && got != 0 {
+			t.Errorf("%s: flags %b, want the methods dropped for another element type", field.Name, got)
+		}
+	}
+	if elem := desc.ContainerDesc.Fields[1].Type.ElemDesc.SszType; elem != SszBitlistType {
+		t.Errorf("Deep element is %v, want bitlist", elem)
 	}
 }

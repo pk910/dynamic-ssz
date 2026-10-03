@@ -97,7 +97,7 @@ The tag string uses the same `key:"value"` syntax as Go struct field tags. All S
 **Important:**
 - Call `Annotate[T]()` at package level (in a `var` block or `init()` function) so the annotation is registered before any SSZ operation
 - The tag string must use the exact struct tag format with quoted values: `ssz-max:"4096"`, not `ssz-max:4096`
-- When a struct field uses an annotated type but also has its own field tags, the field tags take precedence key by key, and the field is then processed inline rather than through the type's own SSZ methods. A field tag that repeats the annotation's values changes nothing: the type's declaration and methods stay in charge
+- When a struct field uses an annotated type but also has its own field tags, the field tags take precedence key by key, and the field is then processed inline rather than through the type's own SSZ methods. A field tag that repeats the annotation's values changes nothing, and neither does an `ssz-type` that names, in every dimension, the SSZ type the Go type and its element types resolve to on their own (a well-known mapping, such as `uint256` for `uint256.Int`, or the Go kind): the type's declaration and methods stay in charge
 
 ## Size Annotations
 

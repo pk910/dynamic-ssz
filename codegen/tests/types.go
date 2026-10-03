@@ -5625,6 +5625,7 @@ var (
 	ProbeMarshalSSZToCalls atomic.Int64
 	ProbeSizeSSZCalls      atomic.Int64
 	ProbeUnmarshalSSZCalls atomic.Int64
+	ProbeHashTreeRootCalls atomic.Int64
 )
 
 // ResetProbeCounts clears the probe call counters.
@@ -5633,6 +5634,7 @@ func ResetProbeCounts() {
 	ProbeMarshalSSZToCalls.Store(0)
 	ProbeSizeSSZCalls.Store(0)
 	ProbeUnmarshalSSZCalls.Store(0)
+	ProbeHashTreeRootCalls.Store(0)
 }
 
 // ProbeMarshalOnly carries MarshalSSZ and nothing else, so marshalling reaches
@@ -6156,4 +6158,171 @@ var GenU128HolderRef_Payload = GenU128HolderRef{
 	V: [2][2]uint64{{3, 0}, {4, 0}},
 	F: [2]uint64{11, 12},
 	W: [][2]uint64{{13, 0}, {14, 15}, {16, 0}, {17, 0}, {18, 0}, {19, 20}},
+}
+
+// ProbeHinted has a partial fastssz surface and no annotation; it resolves to
+// a vector on its own, so a field hint naming a vector keeps its methods and
+// one naming another SSZ type drops them.
+type ProbeHinted [4]uint64
+
+func (t *ProbeHinted) MarshalSSZ() ([]byte, error) {
+	ProbeMarshalSSZCalls.Add(1)
+	return sszutils.MarshalUint64Slice(nil, (*t)[:]), nil
+}
+
+func (t *ProbeHinted) UnmarshalSSZ(buf []byte) error {
+	ProbeUnmarshalSSZCalls.Add(1)
+	if len(buf) != 32 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	sszutils.UnmarshalUint64Slice((*t)[:], buf)
+	return nil
+}
+
+func (t *ProbeHinted) HashTreeRoot() ([32]byte, error) {
+	ProbeHashTreeRootCalls.Add(1)
+	var root [32]byte
+	sszutils.MarshalUint64Slice(root[:0], (*t)[:])
+	return root, nil
+}
+
+// ProbeHintedGrid nests two vectors; a hint on its element dimension decides
+// like one on the type itself.
+type ProbeHintedGrid [2][4]uint64
+
+func (t *ProbeHintedGrid) MarshalSSZ() ([]byte, error) {
+	ProbeMarshalSSZCalls.Add(1)
+	buf := make([]byte, 0, 64)
+	for i := range t {
+		buf = sszutils.MarshalUint64Slice(buf, t[i][:])
+	}
+	return buf, nil
+}
+
+func (t *ProbeHintedGrid) UnmarshalSSZ(buf []byte) error {
+	ProbeUnmarshalSSZCalls.Add(1)
+	if len(buf) != 64 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	for i := range t {
+		sszutils.UnmarshalUint64Slice(t[i][:], buf[i*32:])
+	}
+	return nil
+}
+
+func (t *ProbeHintedGrid) HashTreeRoot() ([32]byte, error) {
+	ProbeHashTreeRootCalls.Add(1)
+	return dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()).HashTreeRoot(t)
+}
+
+// ProbeHintedElem declares its shape through an annotation; ProbeHintedOuter
+// carries the methods, so a hint on the element dimension is compared with
+// the annotation.
+type ProbeHintedElem []uint64
+
+var _ = sszutils.Annotate[ProbeHintedElem](`ssz-size:"4"`)
+
+type ProbeHintedOuter [2]ProbeHintedElem
+
+func (t *ProbeHintedOuter) MarshalSSZ() ([]byte, error) {
+	ProbeMarshalSSZCalls.Add(1)
+	buf := make([]byte, 0, 64)
+	for i := range t {
+		buf = sszutils.MarshalUint64Slice(buf, t[i])
+	}
+	return buf, nil
+}
+
+func (t *ProbeHintedOuter) UnmarshalSSZ(buf []byte) error {
+	ProbeUnmarshalSSZCalls.Add(1)
+	if len(buf) != 64 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	for i := range t {
+		t[i] = make(ProbeHintedElem, 4)
+		sszutils.UnmarshalUint64Slice(t[i], buf[i*32:])
+	}
+	return nil
+}
+
+func (t *ProbeHintedOuter) HashTreeRoot() ([32]byte, error) {
+	ProbeHashTreeRootCalls.Add(1)
+	return dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()).HashTreeRoot(t)
+}
+
+// ProbeHintedOuterAnn declares its element dimension as a list, which takes
+// the place of ProbeHintedElem's own vector declaration below it.
+type ProbeHintedOuterAnn [2]ProbeHintedElem
+
+var _ = sszutils.Annotate[ProbeHintedOuterAnn](`ssz-type:"vector,list" ssz-max:"?,4"`)
+
+func (t *ProbeHintedOuterAnn) MarshalSSZ() ([]byte, error) {
+	ProbeMarshalSSZCalls.Add(1)
+	return dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()).MarshalSSZ(t)
+}
+
+func (t *ProbeHintedOuterAnn) UnmarshalSSZ(buf []byte) error {
+	ProbeUnmarshalSSZCalls.Add(1)
+	return dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()).UnmarshalSSZ(t, buf)
+}
+
+func (t *ProbeHintedOuterAnn) HashTreeRoot() ([32]byte, error) {
+	ProbeHashTreeRootCalls.Add(1)
+	return dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()).HashTreeRoot(t)
+}
+
+// ProbeHintedLimited declares its limit through its annotation, which a
+// field's tag carries along with its own type hint.
+type ProbeHintedLimited []ProbeHinted
+
+var _ = sszutils.Annotate[ProbeHintedLimited](`ssz-max:"4"`)
+
+func (t *ProbeHintedLimited) MarshalSSZ() ([]byte, error) {
+	ProbeMarshalSSZCalls.Add(1)
+	return dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()).MarshalSSZ(t)
+}
+
+func (t *ProbeHintedLimited) UnmarshalSSZ(buf []byte) error {
+	ProbeUnmarshalSSZCalls.Add(1)
+	return dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()).UnmarshalSSZ(t, buf)
+}
+
+func (t *ProbeHintedLimited) HashTreeRoot() ([32]byte, error) {
+	ProbeHashTreeRootCalls.Add(1)
+	return dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()).HashTreeRoot(t)
+}
+
+// ProbeHintedHolder is generated; ProbeHintedWalked is walked by reflection.
+type ProbeHintedHolder struct {
+	Plain     ProbeHinted
+	Same      ProbeHinted         `ssz-type:"vector"`
+	Other     ProbeHinted         `ssz-type:"uint256"`
+	GridSame  ProbeHintedGrid     `ssz-type:"vector,vector"`
+	GridElem  ProbeHintedGrid     `ssz-type:"vector,uint256"`
+	GridOpen  ProbeHintedGrid     `ssz-type:"?,uint256"`
+	OuterSame ProbeHintedOuter    `ssz-type:"vector,vector"`
+	OuterOpen ProbeHintedOuter    `ssz-type:"vector,?"`
+	AnnList   ProbeHintedOuterAnn `ssz-type:"vector,list"`
+	LimSame   ProbeHintedLimited  `ssz-type:"list"`
+	LimOther  ProbeHintedLimited  `ssz-type:"list,uint256"`
+}
+
+type ProbeHintedWalked struct {
+	Plain     ProbeHinted
+	Same      ProbeHinted         `ssz-type:"vector"`
+	Other     ProbeHinted         `ssz-type:"uint256"`
+	GridSame  ProbeHintedGrid     `ssz-type:"vector,vector"`
+	GridElem  ProbeHintedGrid     `ssz-type:"vector,uint256"`
+	GridOpen  ProbeHintedGrid     `ssz-type:"?,uint256"`
+	OuterSame ProbeHintedOuter    `ssz-type:"vector,vector"`
+	OuterOpen ProbeHintedOuter    `ssz-type:"vector,?"`
+	AnnList   ProbeHintedOuterAnn `ssz-type:"vector,list"`
+	LimSame   ProbeHintedLimited  `ssz-type:"list"`
+	LimOther  ProbeHintedLimited  `ssz-type:"list,uint256"`
+}
+
+// ProbeHintedOverride re-declares the annotated element as a list; it is only
+// described, never hashed.
+type ProbeHintedOverride struct {
+	OuterList ProbeHintedOuter `ssz-type:"vector,list"`
 }
