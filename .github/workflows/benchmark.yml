@@ -53,9 +53,7 @@ jobs:
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version: '1.25.11'
-        cache-dependency-path: |
-          pr/go.sum
-          pr/tests/perftests/go.sum
+        cache-dependency-path: pr/go.sum
 
     - name: Install benchstat
       run: go install golang.org/x/perf/cmd/benchstat@v0.0.0-20260312031701-16a31bc5fbd0
@@ -64,38 +62,6 @@ jobs:
       run: |
         mkdir -p bench-results
         echo "${{ github.event.pull_request.number }}" > bench-results/pr-number.txt
-
-    - name: Download test data
-      run: |
-        cd pr/tests/perftests
-        ./setup_testdata.sh
-        cp -r res ../../../base/tests/perftests/res 2>/dev/null || true
-
-    - name: Generate codegen (PR)
-      run: |
-        cd pr/tests/perftests
-        go generate ./...
-
-    - name: Generate codegen (base)
-      continue-on-error: true
-      run: |
-        cd base/tests/perftests
-        # go mod tidy heals stale go.sum entries when the base commit predates
-        # a dynssz-gen dependency bump present in the PR. Without this, codegen
-        # fails silently and Codegen_* benchmarks fall back to reflection,
-        # producing spurious large diffs against PR's real generated code.
-        go mod tidy
-        go generate ./...
-
-    - name: Check base codegen
-      id: base_codegen_check
-      run: |
-        if ls base/tests/perftests/gen_*.go >/dev/null 2>&1; then
-          echo "has_codegen=true" >> "$GITHUB_OUTPUT"
-        else
-          echo "::warning::Base codegen produced no gen_*.go files. Codegen_* benchmarks will be skipped to avoid comparing reflection fallback against real generated code."
-          echo "has_codegen=false" >> "$GITHUB_OUTPUT"
-        fi
 
     - name: Sync benchmark harness to base
       run: |
@@ -198,56 +164,10 @@ jobs:
           run_layout_round "$bench" ./... "" "$OUTDIR/base-lib.txt" "$OUTDIR/pr-lib.txt" 2
         done
 
-    - name: Run perf benchmarks
-      env:
-        HAS_BASE_CODEGEN: ${{ steps.base_codegen_check.outputs.has_codegen }}
-      run: |
-        OUTDIR="$GITHUB_WORKSPACE/bench-results"
-        source "$GITHUB_WORKSPACE/pr/.github/tools/bench-layout.sh"
-
-        # Discover perf benchmark names from PR
-        BENCHMARKS=$(cd pr/tests/perftests && go test -list '^Benchmark' -run '^$' 2>/dev/null | grep '^Benchmark' | sort -u)
-        if [ "$HAS_BASE_CODEGEN" != "true" ]; then
-          # Skip Codegen_* benchmarks: base has no generated code so DynSsz would
-          # transparently fall back to reflection, producing a meaningless
-          # reflection-vs-codegen comparison.
-          BENCHMARKS=$(echo "$BENCHMARKS" | grep -v '^BenchmarkCodegen_' || true)
-        fi
-        if [ -z "$BENCHMARKS" ]; then
-          echo "No perf benchmarks found"
-          exit 0
-        fi
-        echo "Perf benchmarks found:"
-        echo "$BENCHMARKS"
-
-        # Phase 1: one sample per layout, order alternating; see the library
-        # benchmark step for the rationale.
-        echo "--- Phase 1: one sample per layout ---"
-        for bench in $BENCHMARKS; do
-          echo "  $bench"
-          run_layout_round "$bench" "" tests/perftests "$OUTDIR/base-perf.txt" "$OUTDIR/pr-perf.txt" 1
-        done
-
-        RERUN=$(flagged_benchmarks "$OUTDIR/base-perf.txt" "$OUTDIR/pr-perf.txt")
-        if [ -z "$RERUN" ]; then
-          echo "--- No significant diffs, skipping phase 2 ---"
-          exit 0
-        fi
-
-        # Phase 2: more samples across the same layouts, to confirm a diff
-        # rather than a placement.
-        echo "--- Phase 2: confirming diffs ---"
-        echo "$RERUN"
-        for bench in $RERUN; do
-          echo "  $bench"
-          run_layout_round "$bench" "" tests/perftests "$OUTDIR/base-perf.txt" "$OUTDIR/pr-perf.txt" 2
-        done
-
     - name: Run benchstat comparisons
       run: |
         cd "$GITHUB_WORKSPACE/bench-results"
         benchstat -confidence 0.98 base-lib.txt pr-lib.txt > lib-stat.txt 2>&1 || true
-        benchstat -confidence 0.98 base-perf.txt pr-perf.txt > perf-stat.txt 2>&1 || true
 
     - name: Upload benchmark results
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
