@@ -107,6 +107,9 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 		appendCode(codeBuilder, 1, "err = %s.WithDefaultHasher(func(hh sszutils.HashWalker) (err error) {\n", hasherAlias)
 		appendCode(codeBuilder, 2, "err = t.HashTreeRootWith(hh)\n")
 		appendCode(codeBuilder, 2, "if err == nil {\n")
+		if packedWordRoot(rootTypeDesc) {
+			appendCode(codeBuilder, 3, "hh.FillUpTo32()\n")
+		}
 		appendCode(codeBuilder, 3, "root, err = hh.HashRoot()\n")
 		appendCode(codeBuilder, 2, "}\n")
 		appendCode(codeBuilder, 2, "return\n")
@@ -144,6 +147,9 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 		appendCode(codeBuilder, 1, "err = %s.WithDefaultHasher(func(hh sszutils.HashWalker) (err error) {\n", hasherAlias)
 		appendCode(codeBuilder, 2, "err = t.HashTreeRootWithDyn(ds, hh)\n")
 		appendCode(codeBuilder, 2, "if err == nil {\n")
+		if packedWordRoot(rootTypeDesc) {
+			appendCode(codeBuilder, 3, "hh.FillUpTo32()\n")
+		}
 		appendCode(codeBuilder, 3, "root, err = hh.HashRoot()\n")
 		appendCode(codeBuilder, 2, "}\n")
 		appendCode(codeBuilder, 2, "return\n")
@@ -412,7 +418,9 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 		} else {
 			ctx.appendCode(indent, "\tt := %s%s.%s\n", ctx.getPtrPrefix(desc.ElemDesc, "&"), varName, fieldName)
 		}
-		if err := ctx.hashType(desc.ElemDesc, valVar, typePath, indent+1, false, pack); err != nil {
+		// The wrapped value is the root's own shape: a word-form large uint
+		// leaves its packed words, as it does as a root of its own.
+		if err := ctx.hashType(desc.ElemDesc, valVar, typePath, indent+1, false, pack || (isRoot && packedWordRoot(desc))); err != nil {
 			return err
 		}
 		ctx.appendCode(indent, "}\n")
@@ -424,7 +432,10 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 		return ctx.hashProgressiveContainer(desc, varName, typePath, indent)
 
 	case ssztypes.SszUint128Type, ssztypes.SszUint256Type:
-		return ctx.hashVector(desc, varName, typePath, indent, pack)
+		// A root method of a word-form large uint leaves the value's packed
+		// bytes and opens no scope: an enclosing packed scope takes them as
+		// they are, and every other caller pads them to a chunk.
+		return ctx.hashVector(desc, varName, typePath, indent, pack || (isRoot && packedWordRoot(desc)))
 
 	case ssztypes.SszVectorType, ssztypes.SszBitvectorType:
 		return ctx.hashVector(desc, varName, typePath, indent, false)
@@ -1133,6 +1144,17 @@ func (ctx *hashTreeRootContext) hashUnion(desc *ssztypes.TypeDescriptor, varName
 	ctx.appendCode(indent, "hh.Merkleize(idx)\n")
 
 	return nil
+}
+
+// packedWordRoot reports whether a root type is a large uint held as words,
+// or a wrapper around one, whose root method leaves the packed words and no
+// chunk.
+func packedWordRoot(desc *ssztypes.TypeDescriptor) bool {
+	for desc.SszType == ssztypes.SszTypeWrapperType && desc.ElemDesc != nil {
+		desc = desc.ElemDesc
+	}
+	return (desc.SszType == ssztypes.SszUint128Type || desc.SszType == ssztypes.SszUint256Type) &&
+		desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray == 0
 }
 
 // packedElemSize returns the packed byte size of a list, vector or optional

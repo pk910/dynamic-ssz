@@ -87,6 +87,80 @@ func TestWrapperWithTemp(t *testing.T) {
 	}
 }
 
+// A scope opened through Index is reduced in place, so a walker that reduces
+// the same index again after mixing in more chunks (a hand-written mix-in)
+// sees the first root as a leaf of the second reduction, on the hasher and
+// on the wrapper alike, whether the enclosing scope is a legacy one or an
+// engine-driven incremental one holding earlier chunks.
+func TestWrapperIndexReducedTwiceMatchesHasher(t *testing.T) {
+	chunk := func(v uint64) []byte {
+		b := make([]byte, 32)
+		binary.LittleEndian.PutUint64(b, v)
+		return b
+	}
+	hash := func(a, b []byte) []byte {
+		sum := sha256.Sum256(append(append([]byte{}, a...), b...))
+		return sum[:]
+	}
+	inner := hash(hash(chunk(1), chunk(2)), chunk(9))
+
+	for _, tc := range []struct {
+		name string
+		walk func(hh sszutils.HashWalker)
+		want []byte
+	}{
+		{
+			name: "legacy outer",
+			walk: func(hh sszutils.HashWalker) {
+				outer := hh.Index()
+				hh.PutUint64(0)
+				idx := hh.Index()
+				hh.PutUint64(1)
+				hh.PutUint64(2)
+				hh.Merkleize(idx)
+				hh.PutUint8(9)
+				hh.Merkleize(idx)
+				hh.PutUint64(3)
+				hh.Merkleize(outer)
+			},
+			want: hash(hash(chunk(0), inner), hash(chunk(3), make([]byte, 32))),
+		},
+		{
+			name: "incremental outer",
+			walk: func(hh sszutils.HashWalker) {
+				outer := hh.StartTree(sszutils.TreeTypeBinary)
+				hh.PutUint64(0)
+				idx := hh.Index()
+				hh.PutUint64(1)
+				hh.PutUint64(2)
+				hh.Merkleize(idx)
+				hh.PutUint8(9)
+				hh.Merkleize(idx)
+				hh.Merkleize(outer)
+			},
+			want: hash(chunk(0), inner),
+		},
+	} {
+		hh := hasher.NewHasher()
+		tc.walk(hh)
+		hasherRoot, err := hh.HashRoot()
+		if err != nil {
+			t.Fatalf("%s: hasher HashRoot: %v", tc.name, err)
+		}
+
+		w := NewWrapper()
+		tc.walk(w)
+		wrapperRoot := w.Node().Hash()
+
+		if !bytes.Equal(hasherRoot[:], tc.want) {
+			t.Errorf("%s: hasher root %x, want %x", tc.name, hasherRoot[:8], tc.want[:8])
+		}
+		if !bytes.Equal(wrapperRoot, tc.want) {
+			t.Errorf("%s: wrapper root %x, want %x", tc.name, wrapperRoot[:8], tc.want[:8])
+		}
+	}
+}
+
 func TestWrapperIndex(t *testing.T) {
 	w := NewWrapper()
 

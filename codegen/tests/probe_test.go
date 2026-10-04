@@ -16,6 +16,7 @@ import (
 	dynssz "github.com/pk910/dynamic-ssz"
 	"github.com/pk910/dynamic-ssz/codegen"
 	"github.com/pk910/dynamic-ssz/ssztypes"
+	"github.com/pk910/dynamic-ssz/sszutils"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -278,5 +279,112 @@ func TestFastsszPromotedSurfaceIsNotDelegated(t *testing.T) {
 	}
 	if *decoded != *holder {
 		t.Fatalf("round trip = %+v, want %+v", decoded, holder)
+	}
+}
+
+// A field type hint naming the SSZ type a method-carrying type resolves to on
+// its own leaves the type's methods in charge; a hint naming another SSZ type
+// describes the field inline. Both front ends decide alike, and both engines
+// reach the methods on the same fields.
+func TestTypeHintOverridesOnlyAnotherType(t *testing.T) {
+	const surface = ssztypes.SszCompatFlagFastsszValueMarshaler | ssztypes.SszCompatFlagFastsszUnmarshaler | ssztypes.SszCompatFlagFastsszHashRoot
+	want := map[string]ssztypes.SszCompatFlag{"Plain": surface, "Same": surface, "Other": 0, "GridSame": surface, "GridElem": 0, "GridOpen": 0, "OuterSame": surface, "OuterOpen": surface, "OuterList": 0, "AnnList": surface, "LimSame": surface, "LimOther": 0}
+
+	for _, typ := range []reflect.Type{reflect.TypeFor[ProbeHintedWalked](), reflect.TypeFor[ProbeHintedOverride]()} {
+		reflDesc, err := ssztypes.NewTypeCache(nil).GetTypeDescriptor(typ, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("reflect descriptor of %v: %v", typ, err)
+		}
+		for _, field := range reflDesc.ContainerDesc.Fields {
+			if got := field.Type.SszCompatFlags & surface; got != want[field.Name] {
+				t.Errorf("reflect front end, %s: flags %b, want %b", field.Name, got, want[field.Name])
+			}
+		}
+	}
+
+	cfg := &packages.Config{
+		Mode: packages.NeedTypes | packages.NeedSyntax | packages.NeedTypesInfo | packages.NeedDeps | packages.NeedImports | packages.NeedName,
+		Dir:  ".",
+	}
+	pkgs, err := packages.Load(cfg, ".")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load: %v", err)
+	}
+	parser := codegen.NewParser()
+	// The generator reads the package's Annotate calls; the parser is handed
+	// the one annotation these shapes carry.
+	parser.AnnotationResolver = func(typ types.Type) string {
+		if named, ok := typ.(*types.Named); ok {
+			switch named.Obj().Name() {
+			case "ProbeHintedElem":
+				return `ssz-size:"4"`
+			case "ProbeHintedOuterAnn":
+				return `ssz-type:"vector,list" ssz-max:"?,4"`
+			case "ProbeHintedLimited":
+				return `ssz-max:"4"`
+			}
+		}
+		return ""
+	}
+	for _, name := range []string{"ProbeHintedWalked", "ProbeHintedOverride"} {
+		obj := pkgs[0].Types.Scope().Lookup(name)
+		if obj == nil {
+			t.Fatalf("%s not found in the tests package", name)
+		}
+		goDesc, descErr := parser.GetTypeDescriptor(obj.Type(), nil, nil, nil)
+		if descErr != nil {
+			t.Fatalf("parser descriptor of %s: %v", name, descErr)
+		}
+		for _, field := range goDesc.ContainerDesc.Fields {
+			if got := field.Type.SszCompatFlags & surface; got != want[field.Name] {
+				t.Errorf("go/types front end, %s: flags %b, want %b", field.Name, got, want[field.Name])
+			}
+		}
+	}
+
+	if _, generated := any(&ProbeHintedHolder{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	grid := ProbeHintedGrid{{1, 2, 3, 4}, {5, 6, 7, 8}}
+	outer := ProbeHintedOuter{{9, 10, 11, 12}, {13, 14, 15, 16}}
+	annotated := ProbeHintedOuterAnn{{17, 18}, {19}}
+	limited := ProbeHintedLimited{{20}, {21, 22}}
+	refRoot, refErr := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()).HashTreeRoot(&ProbeHintedWalked{Plain: ProbeHinted{1}, Same: ProbeHinted{2}, Other: ProbeHinted{3}, GridSame: grid, GridElem: grid, GridOpen: grid, OuterSame: outer, OuterOpen: outer, AnnList: annotated, LimSame: limited, LimOther: limited})
+	if refErr != nil {
+		t.Fatalf("reflection HashTreeRoot: %v", refErr)
+	}
+	for _, holder := range []any{
+		&ProbeHintedHolder{Plain: ProbeHinted{1}, Same: ProbeHinted{2}, Other: ProbeHinted{3}, GridSame: grid, GridElem: grid, GridOpen: grid, OuterSame: outer, OuterOpen: outer, AnnList: annotated, LimSame: limited, LimOther: limited},
+		&ProbeHintedWalked{Plain: ProbeHinted{1}, Same: ProbeHinted{2}, Other: ProbeHinted{3}, GridSame: grid, GridElem: grid, GridOpen: grid, OuterSame: outer, OuterOpen: outer, AnnList: annotated, LimSame: limited, LimOther: limited},
+	} {
+		ResetProbeCounts()
+		encoded, err := ds.MarshalSSZ(holder)
+		if err != nil {
+			t.Fatalf("%T: MarshalSSZ: %v", holder, err)
+		}
+		if got := ProbeMarshalSSZCalls.Load(); got != 7 {
+			t.Errorf("%T: MarshalSSZ reached the methods %d times, want 7 (Plain, Same, GridSame, OuterSame, OuterOpen, AnnList and LimSame)", holder, got)
+		}
+		back := reflect.New(reflect.TypeOf(holder).Elem()).Interface()
+		if err = ds.UnmarshalSSZ(back, encoded); err != nil {
+			t.Fatalf("%T: UnmarshalSSZ: %v", holder, err)
+		}
+		if got := ProbeUnmarshalSSZCalls.Load(); got != 7 {
+			t.Errorf("%T: UnmarshalSSZ reached the methods %d times, want 7 (Plain, Same, GridSame, OuterSame, OuterOpen, AnnList and LimSame)", holder, got)
+		}
+		if !reflect.DeepEqual(back, holder) {
+			t.Errorf("%T: round trip changed the value", holder)
+		}
+		root, err := ds.HashTreeRoot(holder)
+		if err != nil {
+			t.Fatalf("%T: HashTreeRoot: %v", holder, err)
+		}
+		if got := ProbeHashTreeRootCalls.Load(); got != 7 {
+			t.Errorf("%T: HashTreeRoot reached the methods %d times, want 7 (Plain, Same, GridSame, OuterSame, OuterOpen, AnnList and LimSame)", holder, got)
+		}
+		if root != refRoot {
+			t.Errorf("%T: root %x != reflection root %x", holder, root[:8], refRoot[:8])
+		}
 	}
 }

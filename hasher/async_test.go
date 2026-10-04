@@ -699,7 +699,7 @@ func TestAsyncAccessorsDrain(t *testing.T) {
 	elems := make([][]byte, 4096)
 	idx := hh.StartTree(sszutils.TreeTypeBinary)
 	for i := range elems {
-		ci := hh.Index()
+		ci := hh.StartTree(sszutils.TreeTypeNone)
 		elems[i] = make([]byte, 0, 8*32)
 		for c := 0; c < 8; c++ {
 			rng.Read(chunk)
@@ -744,9 +744,8 @@ func TestAsyncAccessorsDrain(t *testing.T) {
 }
 
 // TestAsyncLegacyIndexDriven drives scopes the way fastssz-generated code
-// does — Index/Merkleize with no Collapse hints — and verifies the deferral
-// path batches and self-flushes those runs with identical roots in both
-// modes, matching the StartTree-driven root.
+// does — Index/Merkleize with no Collapse hints — and verifies those scopes,
+// which are reduced in place, give the StartTree-driven root in both modes.
 func TestAsyncLegacyIndexDriven(t *testing.T) {
 	defer DisableAsyncHashing()
 
@@ -1128,10 +1127,9 @@ func TestAsyncHashErrorReachesCaller(t *testing.T) {
 }
 
 // TestAsyncUndeclaredScopeHolesNotDeferred closes Index-opened (fastssz-style)
-// vectors whose element run was reduced in the background. The closing scope
-// still holds the holes those jobs write into, and its parent reads a
-// deferred run without draining, so the scope has to close in place. Shapes
-// on both sides of the run cap, async against sync.
+// vectors of Index-opened elements: every such scope is reduced in place and
+// hands no run to a background job, so async and sync agree on shapes on both
+// sides of the run cap.
 func TestAsyncUndeclaredScopeHolesNotDeferred(t *testing.T) {
 	defer DisableAsyncHashing()
 
@@ -1168,11 +1166,9 @@ func TestAsyncUndeclaredScopeHolesNotDeferred(t *testing.T) {
 	}
 }
 
-// TestAsyncCollapseHintOnUndeclaredScope hints a scope opened without a
-// declared shape while its deferred children are reduced in the background:
-// the hint must not hand the scope's own chunks to a job while the holes of
-// those reductions are still open, so the root is the synchronous hint-free
-// root past the job cap as well as below it.
+// TestAsyncCollapseHintOnUndeclaredScope hints a scope opened through Index:
+// the hint is a no-op on a non-incremental scope, so the root is the
+// synchronous hint-free root past the job cap as well as below it.
 func TestAsyncCollapseHintOnUndeclaredScope(t *testing.T) {
 	defer DisableAsyncHashing()
 
