@@ -1,1 +1,5 @@
 /fixtures/
+/gen_types.go
+/gen_illegal.go
+/gen_ssz.go
+/gen_ssz.yaml
