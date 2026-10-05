@@ -64,6 +64,8 @@ type DynSsz struct {
 	// lock, and a store publishes a copy under specCacheMutex.
 	specSets atomic.Pointer[map[unsafe.Pointer][]uint64]
 	options  *DynSszOptions
+
+	streamEncoders sync.Pool // idle stream encoders of MarshalSSZWriter
 }
 
 // defaultLogCb is where verbose logging goes when a caller names no sink.
@@ -544,7 +546,19 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "writer must not be nil")
 	}
 	cfg := applyCallOptions(opts)
-	encoder := sszutils.NewStreamEncoder(w, d.options.StreamWriterBufferSize)
+	// The encoder's buffers are reused across calls: a value with a child that
+	// marshals through the scratch buffer would otherwise grow it from nothing
+	// every time.
+	encoder, _ := d.streamEncoders.Get().(*sszutils.StreamEncoder)
+	if encoder == nil {
+		encoder = sszutils.NewStreamEncoder(w, d.options.StreamWriterBufferSize)
+	} else {
+		encoder.Reset(w)
+	}
+	defer func() {
+		encoder.Reset(nil)
+		d.streamEncoders.Put(encoder)
+	}()
 
 	// This entry point prefers the streaming form and bridges the buffer form
 	// through the encoder's buffer; the buffer entry point prefers the buffer

@@ -45,6 +45,24 @@ func NewStreamEncoder(writer io.Writer, bufSize int) *StreamEncoder {
 	}
 }
 
+// maxRetainedScratch bounds the scratch buffer a reset encoder keeps. A
+// delegate that marshals into the scratch buffer grows it to the size of its
+// encoding, which is worth keeping for the next value unless it is outsized.
+const maxRetainedScratch = 4 * 1024 * 1024
+
+// Reset readies the encoder to write another value to writer. It keeps the
+// write buffer and the scratch buffer, so an encoder that is reused does not
+// allocate them again.
+func (e *StreamEncoder) Reset(writer io.Writer) {
+	e.writer = writer
+	e.position = 0
+	e.bufPos = 0
+	e.writeErr = nil
+	if cap(e.scratch) > maxRetainedScratch {
+		e.scratch = make([]byte, 0, 32)
+	}
+}
+
 func (e *StreamEncoder) Seekable() bool {
 	return false
 }

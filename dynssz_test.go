@@ -770,6 +770,30 @@ func TestMarshalSSZWriterWriteError(t *testing.T) {
 	}
 }
 
+func TestMarshalSSZWriterReusesEncoder(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz())
+	container := &testSimpleContainer{Value: 42}
+
+	expected, err := ds.MarshalSSZ(container)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// A failed write must not leak into the calls that reuse its encoder.
+	if err := ds.MarshalSSZWriter(container, &errorWriter{err: fmt.Errorf("write failed")}); err == nil {
+		t.Fatal("expected write error")
+	}
+	for i := 0; i < 3; i++ {
+		var buf bytes.Buffer
+		if err := ds.MarshalSSZWriter(container, &buf); err != nil {
+			t.Fatalf("call %d: unexpected error: %v", i, err)
+		}
+		if !bytes.Equal(buf.Bytes(), expected) {
+			t.Fatalf("call %d: unexpected output: %x", i, buf.Bytes())
+		}
+	}
+}
+
 type errorWriter struct {
 	err error
 }

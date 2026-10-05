@@ -217,6 +217,39 @@ func TestStreamEncoder_SetBuffer(t *testing.T) {
 	}
 }
 
+func TestStreamEncoder_Reset(t *testing.T) {
+	testErr := errors.New("write error")
+	enc := NewStreamEncoder(&errWriter{errAfter: 0, err: testErr}, 0)
+	enc.SetBuffer(make([]byte, 100))
+	enc.Flush()
+	if !errors.Is(enc.GetWriteError(), testErr) {
+		t.Fatalf("expected error %v, got %v", testErr, enc.GetWriteError())
+	}
+
+	// A reset encoder writes to the new writer from position zero, without
+	// the error of the previous one, and keeps the grown scratch buffer.
+	var buf bytes.Buffer
+	enc.Reset(&buf)
+	if enc.GetPosition() != 0 || enc.GetWriteError() != nil {
+		t.Fatalf("reset left position %d, error %v", enc.GetPosition(), enc.GetWriteError())
+	}
+	if cap(enc.GetBuffer()) < 100 {
+		t.Errorf("reset dropped the scratch buffer (cap %d)", cap(enc.GetBuffer()))
+	}
+	enc.EncodeUint8(7)
+	enc.Flush()
+	if !bytes.Equal(buf.Bytes(), []byte{7}) || enc.GetWriteError() != nil {
+		t.Errorf("unexpected output %v, error %v", buf.Bytes(), enc.GetWriteError())
+	}
+
+	// An outsized scratch buffer is not kept.
+	enc.SetBuffer(make([]byte, maxRetainedScratch+1))
+	enc.Reset(&buf)
+	if cap(enc.GetBuffer()) > maxRetainedScratch {
+		t.Errorf("reset kept a scratch buffer of %d bytes", cap(enc.GetBuffer()))
+	}
+}
+
 func TestStreamEncoder_EncodeBool_WriteError(t *testing.T) {
 	testErr := errors.New("write error")
 	w := &errWriter{errAfter: 0, err: testErr}
