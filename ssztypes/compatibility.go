@@ -95,11 +95,10 @@ func (tc *TypeCache) PromotedDelegationMethods(targetType reflect.Type) map[stri
 	if cache := tc.promotedDelegation.Load(); cache != nil {
 		current = *cache
 	}
-	if cached, ok := current[word]; ok {
-		return cached
-	}
 
-	// Readers hold the published map without a lock, so it is never written.
+	// Readers hold the published map without a lock, so it is never written:
+	// a new entry publishes a copy. The result is a pure function of the
+	// type, so a caller that lost the race to another publishes an equal one.
 	next := make(map[unsafe.Pointer]map[string]bool, len(current)+1)
 	for k, v := range current {
 		next[k] = v
