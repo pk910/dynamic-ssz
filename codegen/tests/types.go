@@ -1461,7 +1461,7 @@ func (c *noDynStreamSpecCustom) HashTreeRoot() ([32]byte, error) {
 }
 func (c *noDynStreamSpecCustom) limit(ds sszutils.DynamicSpecs) (int, error) {
 	limit, err := sszutils.ResolveSpecValueWithDefault(ds, "NODYN_CUSTOM_MAX", 4)
-	return int(limit), err
+	return sszutils.CapToInt(limit), err
 }
 func (c *noDynStreamSpecCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return len(c.B) }
 func (c *noDynStreamSpecCustom) MarshalSSZEncoder(ds sszutils.DynamicSpecs, enc sszutils.Encoder) error {
