@@ -45,6 +45,14 @@ types:
     output: gen_specs.go
   - name: VecSpecLen
     output: gen_specs.go
+  - name: SpecSizedElem
+    output: gen_specs.go
+  - name: SpecPairElem
+    output: gen_specs.go
+  - name: SpecOnlyElem
+    output: gen_specs.go
+  - name: OneByteLists
+    output: gen_specs.go
   - name: SpecShrunkList
     output: gen_specs.go
   - name: SpecShrunkElem
@@ -54,6 +62,10 @@ types:
   - name: SpecVecElem
     output: gen_specs.go
   - name: DynSizeVectorNoStatic
+    output: gen_specs.go
+  - name: SpecLimitChild
+    output: gen_specs.go
+  - name: SpecLimitParent
     output: gen_specs.go
 
   # List, vector and optional-list shapes, including the wrappers that
@@ -86,6 +98,18 @@ types:
     output: gen_unions.go
   - name: SizeUnionExprVariant
     output: gen_unions.go
+  - name: UnionSpecOnlyCompat
+    output: gen_unions.go
+  - name: UnionSpecOnlyClassic
+    output: gen_unions.go
+  - name: GenU128
+    output: gen_edgecases.go
+  - name: GenU128Wrap
+    output: gen_edgecases.go
+  - name: GenU128Holder
+    output: gen_edgecases.go
+  - name: ProbeHintedHolder
+    output: gen_edgecases.go
   - name: UnionDynVariant
     output: gen_unions.go
   - name: UnionTaggedSelectors
@@ -135,6 +159,26 @@ types:
     view-only: true
     views:
       - ViewTypes5_View1
+  - name: ViewNumTypes_Base
+    output: gen_views.go
+    view-only: true
+    views:
+      - ViewNumTypes_View1
+  - name: ViewLeafTypes_Base
+    output: gen_views.go
+    view-only: true
+    views:
+      - ViewLeafTypes_View1
+  - name: ViewNum64Types_Base
+    output: gen_views.go
+    view-only: true
+    views:
+      - ViewNum64Types_View1
+  - name: PromotedViewInner
+    output: gen_views.go
+    view-only: true
+    views:
+      - PromotedViewSchema
 
   # Recursive shapes. Their cycles are what the depth bound is emitted
   # for, so the depth-method assertions read this file by name.
@@ -150,9 +194,32 @@ types:
     output: gen_recursive.go
     views:
       - RecursiveViewNode_View1
+  - name: RecursiveLeafNode
+    output: gen_recursive.go
+    views:
+      - RecursiveLeafNode_View1
+  # A cycle through a hand-written delegate that carries no annotation, so
+  # neither engine builds it shallow.
+  - name: NoAnnParent
+    output: gen_recursive.go
+  # A cycle whose members are generated together.
+  - name: CycleBatchA
+    output: gen_recursive.go
+  - name: CycleBatchB
+    output: gen_recursive.go
+  # The child of this holder is hand-written, so the holder reaches it through
+  # its public methods.
+  - name: HandRecursiveHolder
+    output: gen_recursive.go
   # The member of this cycle stays ungenerated on purpose: it pins the inline
   # depth charge for cycle members reached without delegation.
   - name: RecursiveInlineHolder
+    output: gen_recursive.go
+  - name: RecursiveOverlapA
+    output: gen_recursive.go
+  - name: RecursiveOverlapB
+    output: gen_recursive.go
+  - name: RecursiveOverlapC
     output: gen_recursive.go
 
   # Everything whose point is a shape rather than a feature: top-level
@@ -166,6 +233,138 @@ types:
   - name: StreamVecDynSize
     output: gen_edgecases.go
   - name: StreamVecElem
+    output: gen_edgecases.go
+  - name: OversizedArrayDynVec
+    output: gen_edgecases.go
+  - name: SizerOnlyHolder
+    output: gen_edgecases.go
+  - name: BasicMethodsHolder
+    output: gen_edgecases.go
+  - name: WrappedGenerated
+    output: gen_edgecases.go
+  - name: WrappedMethodsHolder
+    output: gen_edgecases.go
+  - name: WrappedMethodsPlain
+    output: gen_edgecases.go
+  - name: BasicSizedCustomHolder
+    output: gen_edgecases.go
+  - name: BasicSizedCustomPlain
+    output: gen_edgecases.go
+  - name: LeafCustomHolder
+    output: gen_edgecases.go
+  - name: CountedNumHolder
+    output: gen_edgecases.go
+  - name: OnlyWithHolder
+    output: gen_edgecases.go
+  - name: BitCfg
+    output: gen_edgecases.go
+  - name: BitCfgDyn
+    output: gen_edgecases.go
+  - name: HugeBitlistHolder
+    output: gen_edgecases.go
+  - name: EOFMatrixInner
+    output: gen_edgecases.go
+  - name: EOFMatrix
+    output: gen_edgecases.go
+  - name: KnownSizeLists
+    output: gen_edgecases.go
+  - name: RuntimeProduct
+    output: gen_edgecases.go
+  - name: NegShellHolder
+    output: gen_edgecases.go
+  - name: WideBesideDyn
+    output: gen_edgecases.go
+  - name: WideDynList
+    output: gen_edgecases.go
+  - name: WideUnionHolder
+    output: gen_edgecases.go
+  - name: WideExprAfterStatic
+    output: gen_edgecases.go
+  - name: WideSplitStatics
+    output: gen_edgecases.go
+  - name: WideListHolder
+  - name: GiBElem
+  - name: GiBList
+    output: gen_edgecases.go
+  - name: WideAggregate
+    output: gen_edgecases.go
+  - name: WideElems
+    output: gen_edgecases.go
+  - name: WideWrapperHolder
+    output: gen_edgecases.go
+  - name: PartialVecHolder
+    output: gen_edgecases.go
+  - name: PartialBitlistHolder
+    output: gen_edgecases.go
+  - name: PartialScopeHolder
+    output: gen_edgecases.go
+  - name: CustomPairList
+    output: gen_edgecases.go
+  - name: DynWidthList
+    output: gen_edgecases.go
+  - name: CustomPairField
+    output: gen_edgecases.go
+  - name: DeclaredU64Holder
+    output: gen_edgecases.go
+  - name: DeclaredU64Field
+    output: gen_edgecases.go
+  - name: PlainExtHolder
+    output: gen_edgecases.go
+  - name: AmountList
+    output: gen_edgecases.go
+  - name: ExprWidthHolder
+    output: gen_edgecases.go
+  - name: AnnExprWidthHolder
+    output: gen_edgecases.go
+  - name: ShallowBasicHolder
+    output: gen_edgecases.go
+  - name: ShallowBasicList
+    output: gen_edgecases.go
+  - name: OffsetTableSpec
+    output: gen_edgecases.go
+  - name: SpecSumInner
+    output: gen_edgecases.go
+  - name: SpecSumInline
+    output: gen_edgecases.go
+  - name: SpecSumDelegated
+    output: gen_edgecases.go
+  - name: FlushedHolder
+    output: gen_edgecases.go
+  - name: PartialHolder
+    output: gen_edgecases.go
+  - name: GoodHolder
+    output: gen_edgecases.go
+  - name: OctetParent
+    output: gen_edgecases.go
+  - name: WalkerOnlyOuter
+    output: gen_edgecases.go
+  - name: WrappedU256Holder
+    output: gen_edgecases.go
+  - name: NarrowWrappedU256Holder
+    output: gen_edgecases.go
+  - name: UnionSpecChild
+    output: gen_unions.go
+  - name: UnionSpecParent
+    output: gen_unions.go
+  - name: CompatUnionSpecChild
+    output: gen_unions.go
+  - name: CompatUnionSpecParent
+    output: gen_unions.go
+  - name: PackedCustomHolder
+    output: gen_edgecases.go
+  - name: BulkElems
+    output: gen_edgecases.go
+  - name: NamedBitlists
+    output: gen_edgecases.go
+  - name: ForeignHashWithHolder
+    output: gen_edgecases.go
+  - name: FastsszTagged
+    output: gen_edgecases.go
+  - name: AliasAnnotatedHolder
+    output: gen_edgecases.go
+  - name: SurplusTags
+    output: gen_edgecases.go
+  - name: ElemBitvectors
     output: gen_edgecases.go
   - name: MultiDimSpecVec
     output: gen_edgecases.go
@@ -223,5 +422,33 @@ types:
     output: gen_edgecases.go
   - name: GenCovWideOffsets
     output: gen_edgecases.go
+  - name: WidthCustomHolder
+    output: gen_edgecases.go
+  - name: ZeroSizeShellList
+    output: gen_edgecases.go
+  - name: WideByteCustomHolder
+    output: gen_edgecases.go
   - name: GenCovCustomHolder2
+    output: gen_edgecases.go
+  - name: ProbeHolder
+    output: gen_edgecases.go
+  - name: ProbeFailHolder
+    output: gen_edgecases.go
+  - name: TypeHintInner
+    output: gen_edgecases.go
+  - name: TypeHintOverride
+    output: gen_edgecases.go
+  - name: SpecWidthInner
+    output: gen_edgecases.go
+  - name: SpecWidthHolder
+    output: gen_edgecases.go
+  - name: FsWidthHolder
+    output: gen_edgecases.go
+  - name: ZeroWidthList
+    output: gen_edgecases.go
+  - name: ZeroWidthWrapperList
+    output: gen_edgecases.go
+  - name: ZeroWidthShellList
+    output: gen_edgecases.go
+  - name: ZeroWidthOptionalList
     output: gen_edgecases.go

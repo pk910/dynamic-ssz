@@ -39,16 +39,26 @@ echo "Generating code..."
 go generate ./...
 echo "Code generated!"
 
-# Run tests
+# Run tests. With TESTFMT set (CI), the formatter renders one line per
+# fork test with the subtests in a collapsed group instead of the raw -v
+# output.
+run_go_test() {
+    if [ -n "${TESTFMT:-}" ]; then
+        "${TESTFMT}" -per-test -title "Spec tests (${PRESET})" -cmd "${PRESET}: go test $*"
+    else
+        go test -v "$@"
+    fi
+}
+
 echo "Running tests..."
 if [ -n "${FORK}" ]; then
     echo "Running tests for fork: ${FORK}"
     # Convert fork name to match test function naming (capitalize first letter)
     FORK_CAPITALIZED="$(echo ${FORK} | sed 's/^./\U&/')"
-    go test -v -timeout=30m -coverprofile=spec-coverage.out -coverpkg=github.com/pk910/dynamic-ssz/... -run="TestConsensusSpec${FORK_CAPITALIZED}" ./...
+    run_go_test -timeout=30m -coverprofile=spec-coverage.out -coverpkg=github.com/pk910/dynamic-ssz/... -run=TestConsensusSpec${FORK_CAPITALIZED} ./...
 else
     echo "Running all tests for preset: ${PRESET}"
-    go test -v -timeout=30m -coverprofile=spec-coverage.out -coverpkg=github.com/pk910/dynamic-ssz/... -run="TestConsensusSpec" ./...
+    run_go_test -timeout=30m -coverprofile=spec-coverage.out -coverpkg=github.com/pk910/dynamic-ssz/... -run=TestConsensusSpec ./...
 fi
 
 echo "Tests completed!"

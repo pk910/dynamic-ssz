@@ -118,6 +118,8 @@ func extractUnionDescriptorInfo(descriptorType reflect.Type, ds sszutils.Dynamic
 	for i, variantIndex := range selectors {
 		field := descriptorType.Field(i)
 
+		joinFieldAnnotation(&field)
+
 		// Extract SSZ annotations using existing DynSsz methods
 		sizeHints, err := getSszSizeTag(ds, &field)
 		if err != nil {
@@ -198,6 +200,8 @@ func extractClassicUnionDescriptorInfo(descriptorType reflect.Type, ds sszutils.
 			hasNone = true
 			continue
 		}
+
+		joinFieldAnnotation(&field)
 
 		sizeHints, err := getSszSizeTag(ds, &field)
 		if err != nil {

@@ -38,7 +38,7 @@ import (
 //
 // The function handles:
 //   - Automatic nil pointer initialization
-//   - FastSSZ delegation for compatible types without dynamic sizing
+//   - Delegation to a type's own UnmarshalSSZ, unless its size depends on the spec
 //   - Primitive type decoding (bool, uint8, uint16, uint32, uint64)
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
 //   - Validation that consumed bytes match expected sizes
@@ -108,11 +108,11 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 		}
 	} else if targetType.SszCompatFlags != 0 || targetType.SszType == ssztypes.SszCustomType {
 		// Fast path: skip compat interface checks for types that don't implement any
-		hasDynamicSize := targetType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
-		isFastsszUnmarshaler := targetType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+		hasDynamicSpec := targetType.SszTypeFlags&(ssztypes.SszTypeFlagHasDynamicSize|ssztypes.SszTypeFlagHasDynamicMax) != 0
+		isFastsszUnmarshaler := targetType.SszCompatFlags&ssztypes.SszCompatFlagFastsszUnmarshaler != 0
 		useDynamicUnmarshal := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0
 		useDynamicDecoder := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0
-		useFastSsz := !ctx.noFastSsz && isFastsszUnmarshaler && !hasDynamicSize
+		useFastSsz := !ctx.noFastSsz && isFastsszUnmarshaler && !hasDynamicSpec
 		if !useFastSsz && targetType.SszType == ssztypes.SszCustomType {
 			useFastSsz = true
 		}
@@ -320,15 +320,16 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 //
 // Delegates (fastssz, DynamicUnmarshaler, view unmarshalers) take a []byte, so
 // unlike the streaming interfaces they cannot consume an open region
-// incrementally. A fixed-size type is read at its exact size; otherwise the
-// region is consumed to its end, which for an open region means reading to EOF.
-// That gives up streaming for this subtree only — the enclosing decode stays
-// incremental — and is bounded by the decoder's maximum stream size.
+// incrementally. A fixed-size type is read at its exact size, which may be zero
+// (a shell whose methods emit no bytes); a variable-size type consumes the
+// region to its end, which for an open region means reading to EOF. That gives
+// up streaming for this subtree only — the enclosing decode stays incremental —
+// and is bounded by the decoder's maximum stream size.
 func delegationBuffer(targetType *ssztypes.TypeDescriptor, decoder sszutils.Decoder) ([]byte, error) {
-	if targetType.Size > 0 {
+	if targetType.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 		typeSize := targetType.Size
 		if typeSize > math.MaxInt {
-			return nil, sszutils.ErrPlatformOverflowFn("type size", targetType.Size)
+			return nil, sszutils.ErrPlatformOverflowWidthFn("type size", uint64(targetType.Size))
 		}
 		return decoder.DecodeBytesBuf(int(typeSize))
 	}
@@ -637,7 +638,7 @@ func expandSliceValue(target reflect.Value, sliceType reflect.Type, size int) re
 func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth reflectionDepth) error {
 	vecLen := targetType.Len
 	if vecLen > math.MaxInt {
-		return sszutils.ErrPlatformOverflowFn("vector length", targetType.Len)
+		return sszutils.ErrPlatformOverflowWidthFn("vector length", uint64(targetType.Len))
 	}
 
 	fieldType := targetType.ElemDesc
@@ -646,6 +647,15 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 	var newValue reflect.Value
 	switch targetType.Kind {
 	case reflect.Slice:
+		// A vector's length comes from the type, so the slice is sized before
+		// any input is read: refuse one the region cannot hold instead of
+		// reserving it. An open region declares no extent to compare against.
+		// Arrays are allocated with the value holding them, so this is the
+		// only branch that reserves anything.
+		if size := targetType.Size; decoder.LengthKnown() && int64(decoder.GetLength()) < size {
+			return sszutils.ErrUnexpectedEOF
+		}
+
 		// For pointer types (e.g. a *NamedSlice root), unmarshalType already
 		// dereferenced targetValue, so create the underlying slice type.
 		sliceT := targetType.Type
@@ -710,6 +720,11 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 		if err := ctx.unmarshalFixedElements(fieldType, newValue, arrLen, decoder, depth); err != nil {
 			return err
 		}
+		// A bit-sized bitvector stored element-wise has its padding bits in
+		// the last element.
+		if targetType.BitSize > 0 && targetType.BitSize%8 != 0 && arrLen > 0 && bitvectorPaddingBits(targetType, newValue, arrLen) != 0 {
+			return sszutils.ErrBitvectorPaddingFn()
+		}
 	}
 
 	if targetType.Kind != reflect.Array {
@@ -739,9 +754,11 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 //   - No offset points outside the data bounds
 //   - Each element consumes exactly the expected bytes
 func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth reflectionDepth) error {
+	// The offset table holds four bytes per element and its size is computed
+	// in int below, so the length is bounded by what that product can hold.
 	dynVecLen := targetType.Len
-	if dynVecLen > math.MaxInt {
-		return sszutils.ErrPlatformOverflowFn("dynamic vector length", targetType.Len)
+	if dynVecLen > int64(math.MaxInt)/4 {
+		return sszutils.ErrPlatformOverflowWidthFn("dynamic vector length", uint64(targetType.Len))
 	}
 
 	vectorLen := int(dynVecLen)
@@ -763,9 +780,12 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 		startPos = decoder.GetPosition()
 		decoder.SkipBytes(requiredOffsetBytes)
 	} else {
-		// read all item offsets
-		sliceOffsets = sszutils.GetOffsetSlice(vectorLen)
-		defer sszutils.PutOffsetSlice(sliceOffsets)
+		// The length is declared by the type, not witnessed by the input, so an
+		// open region can declare far more offsets than it will deliver. Seed
+		// from what has arrived and grow as the offsets are read, as the list
+		// path does -- each one costs the sender four bytes.
+		sliceOffsets = sszutils.GetOffsetSlice(sszutils.CredibleCount(decoder, vectorLen, 4))
+		defer func() { sszutils.PutOffsetSlice(sliceOffsets) }()
 
 		for i := 0; i < vectorLen; i++ {
 			offset, err := decoder.DecodeOffset()
@@ -773,6 +793,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 				return sszutils.ErrorWithPathf(err, "[%d:o]", i)
 			}
 
+			sliceOffsets = sszutils.GrowSlice(sliceOffsets, i+1, vectorLen)
 			sliceOffsets[i] = offset
 		}
 	}
@@ -797,11 +818,19 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 		return sszutils.ErrFirstOffsetMismatchFn(offset, uint32(requiredOffsetBytes))
 	}
 
+	// A known region is backed by the caller's complete input and keeps the
+	// exact-allocation path. For an open stream region the offset table proves
+	// the element count but not that any element body exists, so reserve only a
+	// byte-bounded prefix and grow as bodies are reached.
 	var newValue reflect.Value
-	if targetType.Kind == reflect.Array {
+	switch {
+	case targetType.Kind == reflect.Array:
 		newValue = targetValue
-	} else {
+	case lengthKnown:
 		newValue = expandSliceValue(targetValue, fieldT, vectorLen)
+	default:
+		initialLen := dynamicListPreallocation(vectorLen, uint64(fieldT.Elem().Size()))
+		newValue = expandSliceValue(targetValue, fieldT, initialLen)
 	}
 
 	// Pointer elements (except optionals, which decode in place) get a fresh
@@ -810,6 +839,15 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 
 	// decode slice items
 	for i := 0; i < vectorLen; i++ {
+		if targetType.Kind != reflect.Array && i >= newValue.Len() {
+			// Make the whole geometric chunk addressable so this branch is
+			// taken only at chunk boundaries, as the list path does.
+			chunkLen := min(vectorLen, max(i+1, newValue.Len()*2))
+			grown := reflect.MakeSlice(fieldT, chunkLen, chunkLen)
+			reflect.Copy(grown, newValue)
+			newValue = grown
+		}
+
 		var itemVal reflect.Value
 		if allocPointerElems {
 			itemVal = reusePointerElem(newValue.Index(i), fieldType.Type.Elem())
@@ -885,7 +923,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 func (ctx *ReflectionCtx) unmarshalFixedElements(fieldType *ssztypes.TypeDescriptor, newValue reflect.Value, count int, decoder sszutils.Decoder, depth reflectionDepth) error {
 	fieldSize := fieldType.Size
 	if fieldSize > math.MaxInt {
-		return sszutils.ErrPlatformOverflowFn("field size", fieldType.Size)
+		return sszutils.ErrPlatformOverflowWidthFn("field size", uint64(fieldType.Size))
 	}
 
 	itemSize := int(fieldSize)
@@ -940,7 +978,7 @@ func (ctx *ReflectionCtx) unmarshalList(targetType *ssztypes.TypeDescriptor, tar
 
 	elemSize := fieldType.Size
 	if elemSize > math.MaxInt {
-		return sszutils.ErrPlatformOverflowFn("field size", fieldType.Size)
+		return sszutils.ErrPlatformOverflowWidthFn("field size", uint64(fieldType.Size))
 	}
 	itemSize := int(elemSize)
 
@@ -1083,7 +1121,7 @@ func (ctx *ReflectionCtx) unmarshalListUntilEOF(targetType *ssztypes.TypeDescrip
 	// allocated element instead would cost an allocation per item, which for a
 	// large trailing list is worse than the buffering this path exists to avoid.
 	// Seed from the bytes that have arrived rather than from the declaration.
-	initialLen := 8
+	initialLen := decoder.Available() / itemSize
 	if declared >= 0 {
 		initialLen = sszutils.CredibleCount(decoder, declared, itemSize)
 	}
@@ -1299,12 +1337,13 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 		fieldT = fieldT.Elem()
 	}
 
-	// A known region is already backed by the caller's complete input and keeps
-	// the existing exact-allocation path. For an open stream region, the offset
-	// table proves the element count but not that any element body exists, so
-	// reserve only a byte-bounded prefix and grow as bodies are reached.
+	// A known region is backed by the caller's complete input (a buffer or a
+	// declared stream length) and keeps the exact-allocation path. For an open
+	// stream region, the offset table proves the element count but not that
+	// any element body exists, so reserve only a byte-bounded prefix and grow
+	// as bodies are reached.
 	initialLen := sliceLen
-	if !lengthKnown {
+	if !decoder.LengthKnown() {
 		initialLen = dynamicListPreallocation(sliceLen, uint64(fieldT.Elem().Size()))
 	}
 	newValue := reflect.MakeSlice(fieldT, initialLen, initialLen)
@@ -1468,13 +1507,16 @@ func (ctx *ReflectionCtx) unmarshalBitlist(targetType *ssztypes.TypeDescriptor, 
 
 	if targetType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
 		msb := uint8(bits.Len8(byteSlice[sszLen-1])) - 1
-		bitCount := uint64(8*(sszLen-1)) + uint64(msb)
+		bitCount := uint64(sszLen-1)*8 + uint64(msb)
 		if bitCount > targetType.Limit {
 			return sszutils.ErrBitlistLengthFn(bitCount, targetType.Limit)
 		}
 	}
 
-	targetValue.Set(reflect.ValueOf(byteSlice))
+	// The type cache admits a bitlist only as a slice of non-pointer uint8,
+	// which is what SetBytes requires. It writes the header in place; boxing
+	// the slice or taking its address heap-allocates one per bitlist.
+	targetValue.SetBytes(byteSlice)
 
 	return nil
 }

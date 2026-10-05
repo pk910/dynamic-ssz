@@ -28,9 +28,12 @@ type Stats struct {
 	RandomInputs      atomic.Uint64
 	Panics            atomic.Uint64
 	MarshalMismatches atomic.Uint64
+	SizeMismatches    atomic.Uint64
 	HTRMismatches     atomic.Uint64
 	StreamMismatches  atomic.Uint64
 	UnmarshalDiffs    atomic.Uint64
+	WalkerPrograms    atomic.Uint64
+	WalkerMismatches  atomic.Uint64
 	Successes         atomic.Uint64
 	OracleChecks      atomic.Uint64 // deep-oracle checks run (native/size/reference/tree/proofs/...)
 }
@@ -516,7 +519,55 @@ func (e *Engine) compareMarshal(entry corpus.TypeEntry, ds *dynssz.DynSsz, reflT
 			ReflectionOutput: reflBytes,
 			CodegenOutput:    codegenBytes,
 		})
+
+		return
 	}
+
+	e.compareSize(entry, ds, reflTarget, codegenTarget, origData, len(reflBytes))
+}
+
+// compareSize holds each engine to the size it reports for a value that
+// encodes, which is the length its marshalling produced. A value that does not
+// encode is out of this contract: the size methods are documented to answer
+// with a number that means nothing there.
+func (e *Engine) compareSize(entry corpus.TypeEntry, ds *dynssz.DynSsz, reflTarget, codegenTarget any, origData []byte, marshalled int) {
+	var reflSize int64
+	var codegenSize int
+
+	reflSizeErr := e.catchPanic(fmt.Sprintf("reflection-size[%s]", entry.Name), entry, origData, func() error {
+		var err error
+		reflSize, err = e.sizeReflection(ds, reflTarget)
+		return err
+	})
+
+	codegenSizeErr := e.catchPanic(fmt.Sprintf("codegen-size[%s]", entry.Name), entry, origData, func() error {
+		var err error
+		codegenSize, err = e.sizeCodegen(ds, codegenTarget)
+		return err
+	})
+
+	if isPanicError(reflSizeErr) || isPanicError(codegenSizeErr) {
+		return
+	}
+
+	details := ""
+	switch {
+	case reflSizeErr != nil || codegenSizeErr != nil:
+		// The value marshalled, so neither engine may refuse to size it.
+		details = fmt.Sprintf("size of an encodable value failed: reflection err %v, codegen err %v", reflSizeErr, codegenSizeErr)
+	case reflSize != int64(marshalled) || codegenSize != marshalled:
+		details = fmt.Sprintf("size differs from the %d bytes marshalled: reflection=%d, codegen=%d", marshalled, reflSize, codegenSize)
+	default:
+		return
+	}
+
+	e.stats.SizeMismatches.Add(1)
+	e.reporter.Report(&Issue{
+		Type:     IssueSizeMismatch,
+		TypeName: entry.Name,
+		Data:     origData,
+		Details:  details,
+	})
 }
 
 func (e *Engine) compareHTR(entry corpus.TypeEntry, ds *dynssz.DynSsz, reflTarget, codegenTarget any, origData []byte) {
@@ -577,7 +628,7 @@ func (e *Engine) compareStreaming(entry corpus.TypeEntry, ds *dynssz.DynSsz, tar
 		return err
 	})
 
-	if isPanicError(bufErr) || bufErr != nil {
+	if isPanicError(bufErr) {
 		return
 	}
 
@@ -591,14 +642,23 @@ func (e *Engine) compareStreaming(entry corpus.TypeEntry, ds *dynssz.DynSsz, tar
 		return
 	}
 
-	if streamErr != nil {
+	// The two paths must agree on whether the value encodes at all. Either
+	// order of disagreement is a mismatch: the buffer path takes its offsets
+	// from the bytes it has written and the stream path takes them from the
+	// sizes it is told, so a value only one of them accepts is one whose
+	// declared and produced sizes differ.
+	if (bufErr == nil) != (streamErr == nil) {
 		e.stats.StreamMismatches.Add(1)
 		e.reporter.Report(&Issue{
 			Type:     IssueStreamMismatch,
 			TypeName: entry.Name,
 			Data:     origData,
-			Details:  fmt.Sprintf("buffer marshal succeeded but stream marshal failed: %v", streamErr),
+			Details:  fmt.Sprintf("buffer marshal err: %v, stream marshal err: %v", bufErr, streamErr),
 		})
+		return
+	}
+
+	if bufErr != nil {
 		return
 	}
 
@@ -919,6 +979,30 @@ func (e *Engine) marshalReflection(ds *dynssz.DynSsz, source any) ([]byte, error
 	return encoder.GetBuffer(), nil
 }
 
+// sizeReflection sizes through the reflection engine alone. The size stays in
+// the domain the engine answers in, so the comparison against the bytes
+// produced happens there rather than through a narrowing conversion.
+func (e *Engine) sizeReflection(ds *dynssz.DynSsz, source any) (int64, error) {
+	typeDesc, err := ds.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(source), nil, nil, nil)
+	if err != nil {
+		return 0, fmt.Errorf("get type descriptor: %w", err)
+	}
+
+	ctx := reflection.NewReflectionCtx(ds, nil, false, true, true, 0)
+
+	return ctx.SizeSSZ(typeDesc, reflect.ValueOf(source))
+}
+
+// sizeCodegen sizes through the generated methods.
+func (e *Engine) sizeCodegen(ds *dynssz.DynSsz, source any) (int, error) {
+	sizer, ok := source.(sszutils.DynamicSizer)
+	if !ok {
+		return 0, fmt.Errorf("type does not implement DynamicSizer")
+	}
+
+	return sizer.SizeSSZDyn(ds), nil
+}
+
 // marshalCodegen performs marshal using the codegen-generated methods.
 func (e *Engine) marshalCodegen(ds *dynssz.DynSsz, source any) ([]byte, error) {
 	if m, ok := source.(sszutils.DynamicMarshaler); ok {
@@ -1015,7 +1099,7 @@ func PrintStats(stats *Stats, elapsed time.Duration) {
 
 	fmt.Printf(
 		"\r[%s] iters: %d (%.0f/s) | valid: %d mutated: %d random: %d | "+
-			"ok: %d oracle: %d panic: %d marshal: %d htr: %d stream: %d unmarshal: %d | "+
+			"ok: %d panic: %d marshal: %d size: %d htr: %d stream: %d unmarshal: %d walker: %d/%d | "+
 			"mem: %s alloc, %s sys, %d gc",
 		elapsed.Truncate(time.Second),
 		iters, rate,
@@ -1026,9 +1110,12 @@ func PrintStats(stats *Stats, elapsed time.Duration) {
 		stats.OracleChecks.Load(),
 		stats.Panics.Load(),
 		stats.MarshalMismatches.Load(),
+		stats.SizeMismatches.Load(),
 		stats.HTRMismatches.Load(),
 		stats.StreamMismatches.Load(),
 		stats.UnmarshalDiffs.Load(),
+		stats.WalkerMismatches.Load(),
+		stats.WalkerPrograms.Load(),
 		formatBytes(mem.Alloc),
 		formatBytes(mem.Sys),
 		mem.NumGC,

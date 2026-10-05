@@ -48,9 +48,11 @@ const maxTreeDepth = 40
 // to half as many at the next depth. This cascades without memory movement.
 type treeLayer struct {
 	bufIdx      int  // byte offset where this scope started
-	incremental bool // true if opened via StartTree(), supports collapse
+	incremental bool // true if opened via StartTree() with a tree shape, which the reduction must match; supports collapse
+	legacy      bool // true if opened via Index(): reduced in place, never deferred into the parent
 	collapsed   bool // true once at least one binary batch has been collapsed
 	progressive bool // true if using progressive tree shape
+	packed      bool // true if the scope packs basic values: Put* appends packed bytes
 
 	// Binary collapse state (active subtree)
 	counts   [maxTreeDepth]uint32
@@ -87,6 +89,13 @@ type Hasher struct {
 	// sha256 hash function
 	hash HashFn
 
+	// hashErr holds the first failure recorded for this hasher: an error a
+	// hash function returned, or a reduction handed more chunks than its
+	// limit holds. Every reduction records it and carries on; HashRoot
+	// reports it instead of a root the walk did not properly produce.
+	// Cleared on Reset.
+	hashErr error
+
 	// layers is the stack of open SSZ object scopes. StartTree() pushes,
 	// Merkleize*() pops. The slice only grows; layerCount tracks the
 	// current top (-1 = empty).
@@ -111,11 +120,29 @@ type Hasher struct {
 	jobRingBuf [asyncRingInline]asyncJob // inline backing to avoid heap allocation
 }
 
+// defaultHash is the built-in sha256 compression, used where no backend was
+// installed. The factory builds a pool of hash instances behind a closure, so
+// one is built for the process: a fresh one per acquisition pools nothing,
+// since no instance outlives the hasher that drew it.
+var defaultHash = NativeHashWrapperFactory(sha256.New)
+
+// defaultHashFn hands out that compression. It draws per-call instances from a
+// pool, so a hasher using it may be gated into async hashing.
+func defaultHashFn() HashFn {
+	return defaultHash
+}
+
 // NewHasher creates a new Hasher with the default sha256 hash function. The
 // hash function draws per-call instances from a pool, so the hasher may be
 // gated into async hashing.
+//
+// It takes the built-in compression whatever FastHasherPool holds, so a
+// caller who installed a backend there names it here too, with
+// NewHasherWithHashFn, or draws the hasher from the pool with Get. A tree
+// built by treeproof.NewWrapper reads the pool instead, so the two answer
+// differently for the same value while only one of them is told.
 func NewHasher() *Hasher {
-	return NewHasherWithHashFn(NativeHashWrapperFactory(sha256.New))
+	return NewHasherWithHashFn(defaultHashFn())
 }
 
 // NewHasherWithHash creates a new Hasher with a custom hash.Hash function.
@@ -142,8 +169,9 @@ func NewHasherWithHashFn(hh HashFn) *Hasher {
 // SetAsyncHashing gates this hasher into (or out of) background subtree
 // reduction. It only takes effect while async hashing is enabled process-wide
 // via EnableAsyncHashing. The hash function must be safe for concurrent use —
-// background goroutines call it alongside the walker; hashers wrapping a
-// stateful hash.Hash (NewHasher, NewHasherWithHash) must stay gated out.
+// background goroutines call it alongside the walker. NewHasher and the
+// pooled hashers qualify; a hasher wrapping a single stateful hash.Hash
+// (NewHasherWithHash) must stay gated out.
 // Reset clears the gate, so pool users re-apply it per acquisition.
 func (h *Hasher) SetAsyncHashing(enabled bool) {
 	h.async = enabled
@@ -156,28 +184,51 @@ func (h *Hasher) WithTemp(fn func(tmp []byte) []byte) {
 	h.tmp = fn(h.tmp)
 }
 
-// Reset clears the buffer, layer stack and async gate for reuse. Outstanding
-// background reductions are awaited and their results discarded.
+// setHashErr records the first failure of the walk. Later errors are dropped:
+// the first one is the failure the caller has to act on, and the reductions
+// after it ran over bytes it never properly produced.
+func (h *Hasher) setHashErr(err error) {
+	if err != nil && h.hashErr == nil {
+		h.hashErr = err
+	}
+}
+
+// Reset clears the buffer, layer stack, hash error and async gate for reuse.
+// Outstanding background reductions are awaited and their results discarded.
 func (h *Hasher) Reset() {
 	h.buf = h.buf[:0]
+	h.hashErr = nil
 	h.discardJobs()
 	h.layerCount = -1
 	h.async = false
 }
 
-// AppendBytes32 appends b to the buffer, right-padding with zeros until the
-// whole buffer is aligned to 32 bytes. Padding by buffer alignment (rather
-// than len(b)%32) keeps the result identical to treeproof.Wrapper even when
-// the buffer was not chunk-aligned before the call; for the chunk-aligned
-// call sequences the hashing engines emit, the two are equivalent.
+// AppendBytes32 appends b to the buffer, right-padding with zeros so the value
+// occupies a whole number of chunks counted from where it begins. Chunks are
+// always counted from the start of what is being built -- the value here, the
+// region in fillRegionUpTo32 -- which is how the SSZ spec defines them and
+// what keeps every region a whole number of chunks.
 func (h *Hasher) AppendBytes32(b []byte) {
 	h.buf = append(h.buf, b...)
-	h.FillUpTo32()
+	if rest := len(b) % 32; rest != 0 {
+		h.buf = append(h.buf, zeroBytes[:32-rest]...)
+	}
 }
 
-// FillUpTo32 pads the buffer with zero bytes to align to a 32-byte boundary.
+// FillUpTo32 pads the buffer with zero bytes to the next chunk boundary of the
+// buffer. Callers use it after a value that has to occupy whole chunks; a
+// reduction pads its own region through fillRegionUpTo32 and needs no call.
 func (h *Hasher) FillUpTo32() {
 	if rest := len(h.buf) % 32; rest != 0 {
+		h.buf = append(h.buf, zeroBytes[:32-rest]...)
+	}
+}
+
+// fillRegionUpTo32 pads the buffer so the region that began at indx holds a
+// whole number of chunks. A reduction counts chunks from the region's own
+// start, so that is the boundary its trailing bytes are padded to.
+func (h *Hasher) fillRegionUpTo32(indx int) {
+	if rest := (len(h.buf) - indx) % 32; rest != 0 {
 		h.buf = append(h.buf, zeroBytes[:32-rest]...)
 	}
 }
@@ -216,8 +267,13 @@ func (h *Hasher) AppendUint64(i uint64) {
 	h.buf = sszutils.MarshalUint64(h.buf, i)
 }
 
-// PutBool appends a boolean as a 32-byte zero-padded chunk.
+// PutBool appends a boolean as a 32-byte zero-padded chunk, or as one packed
+// byte inside a packed scope.
 func (h *Hasher) PutBool(b bool) {
+	if h.inPackedScope() {
+		h.AppendBool(b)
+		return
+	}
 	n := len(h.buf)
 	h.buf = append(h.buf, zeroBytes[:32]...)
 	if b {
@@ -225,40 +281,60 @@ func (h *Hasher) PutBool(b bool) {
 	}
 }
 
-// PutUint64 appends a little-endian uint64 as a 32-byte zero-padded chunk.
+// PutUint64 appends a little-endian uint64 as a 32-byte zero-padded chunk, or
+// as its 8 packed bytes inside a packed scope.
 func (h *Hasher) PutUint64(i uint64) {
+	if h.inPackedScope() {
+		h.AppendUint64(i)
+		return
+	}
 	n := len(h.buf)
 	h.buf = append(h.buf, zeroBytes[:32]...)
 	binary.LittleEndian.PutUint64(h.buf[n:], i)
 }
 
-// PutUint32 appends a little-endian uint32 as a 32-byte zero-padded chunk.
+// PutUint32 appends a little-endian uint32 as a 32-byte zero-padded chunk, or
+// as its 4 packed bytes inside a packed scope.
 func (h *Hasher) PutUint32(i uint32) {
+	if h.inPackedScope() {
+		h.AppendUint32(i)
+		return
+	}
 	n := len(h.buf)
 	h.buf = append(h.buf, zeroBytes[:32]...)
 	binary.LittleEndian.PutUint32(h.buf[n:], i)
 }
 
-// PutUint16 appends a little-endian uint16 as a 32-byte zero-padded chunk.
+// PutUint16 appends a little-endian uint16 as a 32-byte zero-padded chunk, or
+// as its 2 packed bytes inside a packed scope.
 func (h *Hasher) PutUint16(i uint16) {
+	if h.inPackedScope() {
+		h.AppendUint16(i)
+		return
+	}
 	n := len(h.buf)
 	h.buf = append(h.buf, zeroBytes[:32]...)
 	binary.LittleEndian.PutUint16(h.buf[n:], i)
 }
 
-// PutUint8 appends a uint8 as a 32-byte zero-padded chunk.
+// PutUint8 appends a uint8 as a 32-byte zero-padded chunk, or as one packed
+// byte inside a packed scope.
 func (h *Hasher) PutUint8(i uint8) {
+	if h.inPackedScope() {
+		h.AppendUint8(i)
+		return
+	}
 	n := len(h.buf)
 	h.buf = append(h.buf, zeroBytes[:32]...)
 	h.buf[n] = i
 }
 
-// PutBytes appends b as a 32-byte chunk. If b exceeds 32 bytes, the content
-// is merkleized in-place to a single root without interacting with the layer
-// stack.
+// PutBytes appends b as a 32-byte chunk, or as its raw bytes inside a packed
+// scope. If b exceeds 32 bytes, the content is merkleized in-place to a single
+// root without interacting with the layer stack.
 func (h *Hasher) PutBytes(b []byte) {
 	if blen := len(b); blen <= 32 {
-		if blen == 32 {
+		if blen == 32 || h.inPackedScope() {
 			// Fast path: exactly 32 bytes, no padding needed
 			h.buf = append(h.buf, b...)
 			return
@@ -274,7 +350,7 @@ func (h *Hasher) PutBytes(b []byte) {
 	// a single hash, skipping merkleizeImpl's general depth loop. These dominate
 	// validator hashing, so the per-call saving adds up over large lists.
 	if len(b) <= 64 {
-		_ = h.hash(h.buf[indx:indx+32], h.buf[indx:indx+64])
+		h.setHashErr(h.hash(h.buf[indx:indx+32], h.buf[indx:indx+64]))
 		h.buf = h.buf[:indx+32]
 		return
 	}
@@ -290,6 +366,7 @@ func (h *Hasher) PutBytes(b []byte) {
 // internalMerkleize is like Merkleize but does NOT interact with the layer
 // stack. Used by Put* methods which are internal operations, not SSZ scopes.
 func (h *Hasher) internalMerkleize(indx int) {
+	h.fillRegionUpTo32(indx)
 	if len(h.buf) == cap(h.buf) {
 		h.buf = append(h.buf, zeroBytes[:32]...)
 		h.buf = h.buf[:len(h.buf)-32]
@@ -302,7 +379,7 @@ func (h *Hasher) internalMerkleize(indx int) {
 // internalMerkleizeWithMixin is like MerkleizeWithMixin but does NOT interact
 // with the layer stack.
 func (h *Hasher) internalMerkleizeWithMixin(indx int, num, limit uint64) {
-	h.FillUpTo32()
+	h.fillRegionUpTo32(indx)
 	input := h.buf[indx:]
 	input = h.merkleizeImpl(input[:0], input, limit)
 
@@ -310,7 +387,7 @@ func (h *Hasher) internalMerkleizeWithMixin(indx int, num, limit uint64) {
 	input = append(input, zeroBytes[:32]...)
 	binary.LittleEndian.PutUint64(input[n:], num)
 
-	_ = h.hash(input, input)
+	h.setHashErr(h.hash(input, input))
 	h.buf = append(h.buf[:indx], input[:32]...)
 }
 
@@ -344,8 +421,6 @@ func (h *Hasher) PutRootVector(b [][]byte, maxCapacity ...uint64) error {
 func (h *Hasher) PutUint64Array(b []uint64, maxCapacity ...uint64) {
 	indx := len(h.buf)
 	sszutils.HashUint64Slice(h, b)
-
-	h.FillUpTo32()
 
 	if len(maxCapacity) == 0 {
 		h.internalMerkleize(indx)
@@ -382,14 +457,14 @@ func (h *Hasher) PutProgressiveBitlist(bb []byte) {
 	// merkleize the content with mix in length using progressive algorithm
 	indx := len(h.buf)
 	h.AppendBytes32(bitlist)
-	h.FillUpTo32()
+	h.fillRegionUpTo32(indx)
 	input := h.buf[indx:]
 	input = h.merkleizeProgressiveImpl(input[:0], input, 0)
 
 	n := len(input)
 	input = append(input, zeroBytes[:32]...)
 	binary.LittleEndian.PutUint64(input[n:], size)
-	_ = h.hash(input, input)
+	h.setHashErr(h.hash(input, input))
 	h.buf = append(h.buf[:indx], input[:32]...)
 }
 
@@ -404,6 +479,7 @@ func (h *Hasher) pushLayer() *treeLayer {
 	layer := &h.layers[h.layerCount]
 	layer.collapsed = false
 	layer.progressive = false
+	layer.packed = false
 	// Reset the deferred-batching state. In the normal flow this is already 0
 	// (every incremental layer is flushed before it is popped), but clearing it
 	// here keeps a reused slot clean even if a prior hash was abandoned mid-way
@@ -472,7 +548,7 @@ func (h *Hasher) flushPending(layer *treeLayer, allowAsync bool) {
 	width := count * elem
 	for width > count {
 		half := (width / 2) * 32
-		_ = h.hash(h.buf[start:start+half], h.buf[start:start+width*32])
+		h.setHashErr(h.hash(h.buf[start:start+half], h.buf[start:start+width*32]))
 		width /= 2
 	}
 	// Move anything that was appended after the pending run down so the buffer
@@ -491,6 +567,9 @@ func (h *Hasher) flushPending(layer *treeLayer, allowAsync bool) {
 // TreeTypeBinary/Progressive: pushes an incremental layer (supports Collapse).
 // TreeTypeNone: pushes a non-incremental layer (Collapse is a no-op on this scope).
 func (h *Hasher) StartTree(treeType sszutils.TreeType) int {
+	packed := treeType&sszutils.TreeTypePacked != 0
+	treeType &^= sszutils.TreeTypePacked
+
 	// An incremental child is merkleized immediately (it never defers into this
 	// parent), so it would append a root after any deferred siblings and break
 	// the "pending chunks are a contiguous tail run" invariant. Flush first.
@@ -506,22 +585,30 @@ func (h *Hasher) StartTree(treeType sszutils.TreeType) int {
 	layer := h.pushLayer()
 	layer.bufIdx = idx
 	layer.incremental = treeType != sszutils.TreeTypeNone
+	layer.legacy = false
 	layer.progressive = treeType == sszutils.TreeTypeProgressive
+	layer.packed = packed
 	return idx
 }
 
-// Index returns the current buffer position and pushes a binary incremental
-// layer. This is how legacy/external code (fastssz-generated methods) opens
-// scopes: such callers never send Collapse hints, so the deferral path in
-// Merkleize batches their uniform children and flushes the pending run
-// itself once it reaches the job cap. Unlike StartTree, no pending flush is
-// forced on the enclosing scope — a scope opened via Index may itself end
-// up deferred into its parent.
+// inPackedScope reports whether the innermost open scope packs basic values,
+// in which case a Put* call appends the packed bytes instead of a chunk.
+func (h *Hasher) inPackedScope() bool {
+	return h.layerCount >= 0 && h.layers[h.layerCount].packed
+}
+
+// Index returns the current buffer position and pushes a non-incremental
+// layer that is reduced in place when it closes and never deferred into the
+// enclosing scope. This is how legacy/external code (fastssz-generated
+// methods) opens scopes: after Merkleize the region holds the scope's root,
+// so a caller may mix further chunks into it and reduce it again. Unlike
+// StartTree, no pending flush is forced on the enclosing scope.
 func (h *Hasher) Index() int {
 	idx := len(h.buf)
 	layer := h.pushLayer()
 	layer.bufIdx = idx
-	layer.incremental = true
+	layer.incremental = false
+	layer.legacy = true
 	return idx
 }
 
@@ -533,6 +620,12 @@ func (h *Hasher) CurrentIndex() int {
 // Collapse hints the hasher to collapse accumulated chunks in the current
 // layer if the batch threshold is reached. This is a no-op for
 // non-incremental layers or when no layer is active.
+//
+// The hint is optional and never changes a root, whatever the scope holds:
+// a scope over its limit reduces at the depth its chunks need either way. The
+// one shape it could move -- a scope opened progressive and reduced as binary,
+// where the hint decides whether progressive groups or raw chunks are reduced
+// -- is refused instead, through ErrScopeShapeMismatch.
 func (h *Hasher) Collapse() {
 	if h.layerCount < 0 {
 		return
@@ -650,7 +743,7 @@ func (h *Hasher) maybeCollapseBinary(layer *treeLayer) {
 		}
 
 		// Hash leftmost batchCount entries in-place
-		_ = h.hash(h.buf[dStart:dStart+batchBytes/2], h.buf[dStart:dStart+batchBytes])
+		h.setHashErr(h.hash(h.buf[dStart:dStart+batchBytes/2], h.buf[dStart:dStart+batchBytes]))
 
 		// Shift tail (remainder of depth-d + all lower depths) left
 		afterBatch := dStart + batchBytes
@@ -824,7 +917,7 @@ func (h *Hasher) maybeCollapseProgressive(layer *treeLayer) {
 		odd := n % 2
 
 		if pairs > 0 {
-			_ = h.hash(h.buf[writePos:writePos+pairs*32], h.buf[readPos:readPos+pairs*2*32])
+			h.setHashErr(h.hash(h.buf[writePos:writePos+pairs*32], h.buf[readPos:readPos+pairs*2*32]))
 			writePos += pairs * 32
 			readPos += pairs * 2 * 32
 			newCounts[d+1] += uint32(pairs)
@@ -916,6 +1009,21 @@ func (h *Hasher) collapseAllDepths(layer *treeLayer, indx, bufEnd int, limit uin
 
 	h.syncCollapseStateWithEnd(layer, bufEnd)
 
+	// A limit below the chunks the scope holds is what merkleizeImpl reports
+	// for a scope that was never collapsed. A node tracked at depth d stands
+	// for 1<<d of those chunks, so the figure is the same one either path
+	// reduces, and a hint that collapses a scope cannot change whether the
+	// walk is refused.
+	if limit > 0 {
+		var chunks uint64
+		for d := 0; d <= layer.maxDepth; d++ {
+			chunks += uint64(layer.counts[d]) << uint(d)
+		}
+		if chunks > limit {
+			h.setHashErr(sszutils.ErrChunkLimitFn(chunks, limit))
+		}
+	}
+
 	for {
 		lowestDepth := -1
 		for d := 0; d <= layer.maxDepth; d++ {
@@ -953,7 +1061,7 @@ func (h *Hasher) collapseAllDepths(layer *treeLayer, indx, bufEnd int, limit uin
 
 		chunkBytes := count * 32
 		batchStart := bufEnd - chunkBytes
-		_ = h.hash(h.buf[batchStart:batchStart+chunkBytes/2], h.buf[batchStart:batchStart+chunkBytes])
+		h.setHashErr(h.hash(h.buf[batchStart:batchStart+chunkBytes/2], h.buf[batchStart:batchStart+chunkBytes]))
 		bufEnd = batchStart + chunkBytes/2
 
 		layer.counts[lowestDepth] = 0
@@ -977,7 +1085,7 @@ func (h *Hasher) collapseAllDepths(layer *treeLayer, indx, bufEnd int, limit uin
 		pos := bufEnd - 32
 		for currentDepth < targetDepth {
 			copy(h.buf[pos+32:pos+64], zeroHashes[currentDepth][:])
-			_ = h.hash(h.buf[pos:pos+32], h.buf[pos:pos+64])
+			h.setHashErr(h.hash(h.buf[pos:pos+32], h.buf[pos:pos+64]))
 			currentDepth++
 		}
 		bufEnd = pos + 32
@@ -1039,7 +1147,7 @@ func (h *Hasher) collapseProgressiveLayer(layer *treeLayer, indx int) {
 	for i := nRoots - 1; i >= 0; i-- {
 		rootPos := indx + i*32
 		copy(h.tmp[:32], h.buf[rootPos:rootPos+32])
-		_ = h.hash(h.tmp[:32], h.tmp[:64])
+		h.setHashErr(h.hash(h.tmp[:32], h.tmp[:64]))
 		copy(h.tmp[32:64], h.tmp[:32])
 	}
 
@@ -1047,9 +1155,6 @@ func (h *Hasher) collapseProgressiveLayer(layer *treeLayer, indx int) {
 	h.buf = append(h.buf, h.tmp[:32]...)
 }
 
-// Merkleize computes the binary merkle root of the buffer from indx onwards
-// and replaces that region with the 32-byte root. Pops the matching layer
-// if one exists.
 // clampMerkleizeIndex bounds a caller-supplied scope index to the current
 // buffer so an out-of-range value cannot trigger a slice-bounds panic.
 func (h *Hasher) clampMerkleizeIndex(indx int) int {
@@ -1062,19 +1167,30 @@ func (h *Hasher) clampMerkleizeIndex(indx int) int {
 	return indx
 }
 
+// Merkleize computes the binary merkle root of the buffer from indx onwards
+// and replaces that region with the 32-byte root. Pops the matching layer
+// if one exists.
 func (h *Hasher) Merkleize(indx int) {
 	indx = h.clampMerkleizeIndex(indx)
+	// The scope is reduced as whole chunks, and a scope of packed values ends
+	// on a partial one; padding it first keeps the scope eligible for the
+	// batched reduction below, which counts whole chunks.
+	h.fillRegionUpTo32(indx)
 	layer := h.getMatchingLayer(indx)
 
 	if layer != nil {
+		if layer.progressive {
+			h.setHashErr(sszutils.ErrScopeShapeMismatch)
+		}
 		// Defer a container scope into its incremental parent so it batches with
 		// its siblings (single getMatchingLayer keeps the hot path cheap for the
 		// many small containers in a block). A scope holds plain chunks — and is
 		// therefore deferrable — when it is non-incremental, or incremental but
-		// still untouched by any collapse or deferral of its own; the latter is
-		// how legacy Index-driven scopes (fastssz-generated code) batch.
-		deferrable := !layer.incremental ||
-			(!layer.progressive && !layer.collapsed && layer.pendCount == 0)
+		// still untouched by any collapse or deferral of its own. A scope opened
+		// through Index is reduced in place instead: its caller may read or
+		// reduce the region again.
+		deferrable := !layer.legacy && (!layer.incremental ||
+			(!layer.progressive && !layer.collapsed && layer.pendCount == 0))
 		if deferrable && h.layerCount >= 1 {
 			parent := &h.layers[h.layerCount-1]
 			if parent.incremental {
@@ -1121,6 +1237,10 @@ func (h *Hasher) Merkleize(indx int) {
 		h.drainJobsFor(indx)
 
 		if layer.collapsed {
+			// The collapse counts whole chunks; a partial chunk of packed
+			// values at the end of the scope is padded first so it is reduced
+			// like the non-collapsed path and the mixin variants do.
+			h.fillRegionUpTo32(indx)
 			h.collapseAllDepths(layer, indx, len(h.buf), 0)
 			h.buf = h.buf[:indx+32]
 			h.popTopLayer()
@@ -1134,7 +1254,7 @@ func (h *Hasher) Merkleize(indx int) {
 	// is returned via input[:32]), so the region must be zero-padded to a chunk
 	// boundary first — otherwise a sub-32-byte region reads into the buffer's
 	// uninitialized spare capacity.
-	h.FillUpTo32()
+	h.fillRegionUpTo32(indx)
 
 	input := h.buf[indx:]
 
@@ -1152,15 +1272,23 @@ func (h *Hasher) Merkleize(indx int) {
 
 // MerkleizeWithMixin computes the binary merkle root from indx with the given
 // limit, then mixes in num as the list length. Pops the matching layer if one
-// exists.
+// exists. A scope holding more chunks than the limit allows is reduced at the
+// depth its chunks need, so every chunk reaches the root: both engines reject
+// an over-capacity value before this point, so the surplus can only come from
+// a hash method leaving more than one leaf per value.
 func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 	indx = h.clampMerkleizeIndex(indx)
-	h.FillUpTo32()
+	h.fillRegionUpTo32(indx)
 
 	layer := h.getMatchingLayer(indx)
 
-	if layer != nil && layer.pendCount > 0 {
-		h.flushPending(layer, false)
+	if layer != nil {
+		if layer.progressive {
+			h.setHashErr(sszutils.ErrScopeShapeMismatch)
+		}
+		if layer.pendCount > 0 {
+			h.flushPending(layer, false)
+		}
 	}
 	h.drainJobsFor(indx)
 
@@ -1188,7 +1316,7 @@ func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 		logfn("merkleize-mixin: %x (%d, %d) ", input, num, limit)
 	}
 
-	_ = h.hash(input, input)
+	h.setHashErr(h.hash(input, input))
 	h.buf = append(h.buf[:indx], input[:32]...)
 
 	if debug {
@@ -1204,8 +1332,13 @@ func (h *Hasher) MerkleizeProgressive(indx int) {
 	indx = h.clampMerkleizeIndex(indx)
 	layer := h.getMatchingLayer(indx)
 
-	if layer != nil && layer.pendCount > 0 {
-		h.flushPending(layer, false)
+	if layer != nil {
+		if !layer.progressive && layer.incremental {
+			h.setHashErr(sszutils.ErrScopeShapeMismatch)
+		}
+		if layer.pendCount > 0 {
+			h.flushPending(layer, false)
+		}
 	}
 	h.drainJobsFor(indx)
 
@@ -1213,7 +1346,7 @@ func (h *Hasher) MerkleizeProgressive(indx int) {
 		// Pad an unaligned partial chunk before collapsing, like the mixin
 		// variants do; the collapse floor-counts complete chunks and would
 		// silently drop the tail otherwise.
-		h.FillUpTo32()
+		h.fillRegionUpTo32(indx)
 		h.collapseProgressiveLayer(layer, indx)
 		h.popTopLayer()
 		return
@@ -1223,7 +1356,7 @@ func (h *Hasher) MerkleizeProgressive(indx int) {
 	}
 
 	// Standard path (no incremental progressive data)
-	h.FillUpTo32()
+	h.fillRegionUpTo32(indx)
 	h.buf = append(h.buf, zeroBytes...)
 	h.buf = h.buf[:len(h.buf)-len(zeroBytes)]
 	input := h.buf[indx:]
@@ -1246,20 +1379,25 @@ func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 	indx = h.clampMerkleizeIndex(indx)
 	layer := h.getMatchingLayer(indx)
 
-	if layer != nil && layer.pendCount > 0 {
-		h.flushPending(layer, false)
+	if layer != nil {
+		if !layer.progressive && layer.incremental {
+			h.setHashErr(sszutils.ErrScopeShapeMismatch)
+		}
+		if layer.pendCount > 0 {
+			h.flushPending(layer, false)
+		}
 	}
 	h.drainJobsFor(indx)
 
 	if layer != nil && layer.progressive && layer.progressiveCount > 0 {
-		h.FillUpTo32()
+		h.fillRegionUpTo32(indx)
 		h.collapseProgressiveLayer(layer, indx)
 		h.popTopLayer()
 	} else {
 		if layer != nil {
 			h.popTopLayer()
 		}
-		h.FillUpTo32()
+		h.fillRegionUpTo32(indx)
 		input := h.buf[indx:]
 		input = h.merkleizeProgressiveImpl(input[:0], input, 0)
 		h.buf = append(h.buf[:indx], input...)
@@ -1279,7 +1417,7 @@ func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 	}
 
 	// input is of the form [<progressive_root><size>] of 64 bytes
-	_ = h.hash(input, input)
+	h.setHashErr(h.hash(input, input))
 	h.buf = append(h.buf[:indx], input[:32]...)
 
 	if debug {
@@ -1293,20 +1431,25 @@ func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []b
 	indx = h.clampMerkleizeIndex(indx)
 	layer := h.getMatchingLayer(indx)
 
-	if layer != nil && layer.pendCount > 0 {
-		h.flushPending(layer, false)
+	if layer != nil {
+		if !layer.progressive && layer.incremental {
+			h.setHashErr(sszutils.ErrScopeShapeMismatch)
+		}
+		if layer.pendCount > 0 {
+			h.flushPending(layer, false)
+		}
 	}
 	h.drainJobsFor(indx)
 
 	if layer != nil && layer.progressive && layer.progressiveCount > 0 {
-		h.FillUpTo32()
+		h.fillRegionUpTo32(indx)
 		h.collapseProgressiveLayer(layer, indx)
 		h.popTopLayer()
 	} else {
 		if layer != nil {
 			h.popTopLayer()
 		}
-		h.FillUpTo32()
+		h.fillRegionUpTo32(indx)
 		input := h.buf[indx:]
 		if debug {
 			logfn("merkleize-progressive-active-fields: %x ", input)
@@ -1348,7 +1491,7 @@ func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []b
 	}
 
 	// input is of the form [<progressive_root><active_fields_root>] of 64 bytes
-	_ = h.hash(input, input)
+	h.setHashErr(h.hash(input, input))
 	h.buf = append(h.buf[:indx], input[:32]...)
 
 	if debug {
@@ -1385,14 +1528,18 @@ func (h *Hasher) merkleizeImpl(dst, input []byte, limit uint64) []byte {
 	}
 
 	// A limit below the chunk count describes a value that overflows its own
-	// type, so no depth can hold it and there is no correct root. Rather than
-	// grow the tree to fit -- which invents a root the type cannot have -- the
-	// tree keeps the depth the limit asks for and the surplus chunks fall
-	// outside it, leaving the root of the first 2^depth chunks. That is what
-	// fastssz produces, and this hasher is handed such input only through the
-	// HashTreeRootWith compat surface, where matching it keeps a foreign type's
-	// root independent of which hasher drives it. Both engines reject an
-	// over-capacity list before they reach this point.
+	// type, so no depth holds it and no root is the right one. The tree then
+	// takes the depth the chunks need: every chunk reaches the root, so two
+	// values that differ cannot share one, where dropping the surplus would
+	// give them the same root. It is also what the collapsed reduction does
+	// with the same input, so a Collapse hint cannot move the result. Both
+	// engines reject an over-capacity list before reaching this point, so the
+	// surplus comes from a hash method leaving more than one leaf per value;
+	// that is the method's contract to keep, not checked here.
+	if count > limit {
+		h.setHashErr(sszutils.ErrChunkLimitFn(count, limit))
+		limit = count
+	}
 
 	if limit == 0 {
 		return append(dst, zeroBytes[:32]...)
@@ -1421,7 +1568,7 @@ func (h *Hasher) merkleizeImpl(dst, input []byte, limit uint64) []byte {
 
 		outputLen := (layerLen / 2) * 32
 
-		_ = h.hash(input, input)
+		h.setHashErr(h.hash(input, input))
 		input = input[:outputLen]
 	}
 
@@ -1500,7 +1647,7 @@ func (h *Hasher) merkleizeProgressiveImpl(dst, chunks []byte, depth uint8) []byt
 	// PairNode(left, right) - hash(left, right)
 	copy(h.tmp[:32], leftRoot)
 	copy(h.tmp[32:], rightRoot)
-	_ = h.hash(h.tmp[:32], h.tmp[0:64])
+	h.setHashErr(h.hash(h.tmp[:32], h.tmp[0:64]))
 
 	return append(dst, h.tmp[:32]...)
 }
@@ -1510,6 +1657,10 @@ func (h *Hasher) merkleizeProgressiveImpl(dst, chunks []byte, depth uint8) []byt
 // background reductions are awaited only when their hole can overlap the
 // tail; holes below it are left to fill in the background. The returned
 // slice is only valid until the next hasher operation.
+//
+// The flush performs the scope's reduction, so the backend can refuse it here
+// and at no earlier call: the tail is a root only while HashErr, read after
+// Hash, is nil.
 func (h *Hasher) Hash() []byte {
 	if h.layerCount >= 0 {
 		layer := &h.layers[h.layerCount]
@@ -1526,13 +1677,18 @@ func (h *Hasher) Hash() []byte {
 	return h.buf[start:]
 }
 
-// HashRoot returns the final 32-byte hash root, or an error if scopes are
-// still open or the buffer is not exactly 32 bytes. Outstanding background
-// reductions are drained first so no unfilled hole can be exposed — with
-// async hashing, a buffer of the right length is not otherwise evidence of
-// a finished computation.
+// HashRoot returns the final 32-byte hash root, or an error if a hash
+// function failed, scopes are still open, or the buffer is not exactly 32
+// bytes. Outstanding background reductions are drained first so no unfilled
+// hole can be exposed and a failure inside one is seen here — with async
+// hashing, a buffer of the right length is not otherwise evidence of a
+// finished computation.
 func (h *Hasher) HashRoot() (res [32]byte, err error) {
 	h.drainJobs()
+	if h.hashErr != nil {
+		err = h.hashErr
+		return
+	}
 	if h.layerCount >= 0 {
 		err = fmt.Errorf("unfinished hashing scopes")
 		return
@@ -1543,4 +1699,13 @@ func (h *Hasher) HashRoot() (res [32]byte, err error) {
 	}
 	copy(res[:], h.buf)
 	return
+}
+
+// HashErr reports the first error a hash function returned for this hasher, or
+// nil. A failed hash leaves the bytes it would have written untouched, so a
+// caller reading the buffer -- through Hash, or by caching a scope root -- takes
+// a value that was never produced. HashRoot reports the same error, but a walk
+// that ends without asking for the root has nothing else to consult.
+func (h *Hasher) HashErr() error {
+	return h.hashErr
 }

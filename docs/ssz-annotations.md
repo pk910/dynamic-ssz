@@ -15,6 +15,17 @@ Dynamic SSZ uses struct tags to control SSZ encoding behavior. This guide covers
 | `dynssz-max` | Dynamic maximum with expressions | `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"` |
 | `dynssz-bitsize` | Dynamic bit size for bitvectors | `dynssz-bitsize:"COMMITTEE_SIZE"` |
 
+### Size Limit
+
+SSZ offsets are 32-bit, so every size the library describes is bounded to
+2^32-1 bytes (or the host's `int` where that is narrower): a declared or
+spec-resolved size, a vector's length and byte size, a container's fixed
+section and a delegated sizer's result past the limit are refused at type
+analysis and at spec resolution, in both engines. A vector of variable-size
+elements leads with one 4-byte offset per element inside its fixed section, so
+its length is bounded to a quarter of the limit. Sizes derived from data are
+bounded by the memory that holds the value.
+
 ## Static and Dynamic Tags
 
 ### How They Work Together
@@ -81,12 +92,12 @@ The tag string uses the same `key:"value"` syntax as Go struct field tags. All S
 **How it works:**
 - `Annotate[T]()` registers the tag string in a global registry at package init time
 - Both the code generator and the runtime reflection path read from this registry
-- The code generator discovers `Annotate` calls by scanning the source AST
+- The code generator discovers `Annotate` calls by scanning the source of every package it loads, the generated package and its whole import graph plus separately loaded view packages, and merges them in initialization order, as the runtime registry does
 
 **Important:**
 - Call `Annotate[T]()` at package level (in a `var` block or `init()` function) so the annotation is registered before any SSZ operation
 - The tag string must use the exact struct tag format with quoted values: `ssz-max:"4096"`, not `ssz-max:4096`
-- When a struct field uses an annotated type but also has its own field tags, the field tags take precedence
+- When a struct field uses an annotated type but also has its own field tags, the field tags take precedence key by key, and the field is then processed inline rather than through the type's own SSZ methods. A field tag that repeats the annotation's values changes nothing, and neither does an `ssz-type` that names, in every dimension, the SSZ type the Go type and its element types resolve to on their own (a well-known mapping, such as `uint256` for `uint256.Int`, or the Go kind): the type's declaration and methods stay in charge
 
 ## Size Annotations
 
@@ -131,6 +142,21 @@ Bad2 [][]uint64 `ssz-max:"16,8" dynssz-max:"?,ROW_LIMIT"`
 
 // Correct: the placeholders line up, so dimension 0 is unbounded either way.
 Good2 [][]uint64 `ssz-max:"?,8" dynssz-max:"?,ROW_LIMIT"`
+```
+
+**A number in the dynamic tag repeats the static value.** The dynamic tags name
+spec values; a number in one only fills a dimension the static tag already
+sizes, as the `2` in `Good` above does. A number that differs from the static
+tag is rejected: the static value is what a fastssz-style method baked in, and
+a dimension the tag pair disagrees on would be served with either value
+depending on the path taken.
+
+```go
+// Rejected: the literal contradicts the static limit.
+Bad3 []uint64 `ssz-max:"4" dynssz-max:"2"`
+
+// Rejected: the placeholder promises a spec value, and a number is not one.
+Bad4 []uint64 `ssz-max:"0" dynssz-max:"2"`
 ```
 
 **A dimension that is `?` to both families is an unbounded list.** `ssz-size:"?"`
@@ -181,6 +207,18 @@ A value *longer* than the declared length is rejected rather than truncated,
 since encoding it would drop data. Decoding always yields the full length, so a
 short slice does not come back unchanged — what is encoded is the vector, not
 the slice handed to it.
+
+On a Go *array* the declared length wins, and it may be shorter than the array.
+This is what lets one Go type serve several presets: an array sized for the
+largest one carries a shorter vector where the spec resolves smaller. Only the
+declared elements are encoded, and decoding fills only those, so anything the
+caller left in the tail stays as it was and a Go value does not survive a round
+trip through a vector shorter than its array. A declared length *longer* than
+the array is rejected, since the array cannot hold it.
+
+```go
+Roots [8192][32]byte `ssz-size:"64,32" dynssz-size:"SLOTS_PER_HISTORICAL_ROOT,32"` // 64 of 8192 encoded
+```
 
 A dimension is either fixed or variable, so `ssz-size` and `ssz-max` cannot
 disagree about the same one — a fixed length has no capacity left to bound, and
@@ -236,6 +274,10 @@ type DynamicAttestation struct {
     SyncBits      []byte `ssz-type:"bitvector" ssz-bitsize:"512" dynssz-bitsize:"SYNC_COMMITTEE_SIZE"`
 }
 ```
+
+A dimension has one unit. Pair `ssz-bitsize` with `dynssz-bitsize` and `ssz-size` with `dynssz-size`; mixing the two families on the same dimension (for example `ssz-bitsize:"12" dynssz-size:"X"`) is rejected by both the reflection engine and the code generator.
+
+The static tag is the fallback when the spec value is not defined. Without one, a Go array falls back to its own length in bits; a slice has no length to fall back to, so the reflection engine rejects the type.
 
 ## Maximum Size Annotations
 
@@ -294,15 +336,18 @@ type Advanced struct {
 ```
 
 Like the size tags, `ssz-type` names one dimension per level of nesting, and a
-type with no element is where they run out. Naming more than the type has is
-rejected rather than ignored — a trailing dimension would otherwise read as if
-it did something:
+type with no element is where they run out. Naming fewer dimensions than the
+type has is fine; naming more is accepted and the surplus is ignored, as is a
+limit that reaches a type with no capacity (a container or a basic type):
 
 ```go
-Grid [][]uint64 `ssz-type:"list,list,uint64" ssz-max:"8,8"`  // three levels, three names
-Some [][]uint64 `ssz-type:"list" ssz-max:"8,8"`              // naming fewer is fine
-Bad  []uint64   `ssz-type:"list,uint64,uint32" ssz-max:"8"`  // rejected: uint64 has no element
+Grid  [][]uint64 `ssz-type:"list,list,uint64" ssz-max:"8,8"`  // three levels, three names
+Some  [][]uint64 `ssz-type:"list" ssz-max:"8,8"`              // naming fewer is fine
+Extra []uint64   `ssz-type:"list,uint64,uint32" ssz-max:"8"`  // the trailing uint32 is ignored
 ```
+
+A limit on a fixed-length dimension is still rejected: a vector has no
+capacity to bound.
 
 #### Excluding a field
 
@@ -311,7 +356,9 @@ encoded, decoded, sized or hashed, and its Go type does not need to be
 SSZ-compatible. This is useful for caches, computed values, or metadata kept
 alongside the SSZ data. On decode the field is left **unchanged** — it is
 skipped, not reset, so when decoding into a reused object it keeps its previous
-value. Clear or reinitialize such fields yourself if you need them zeroed.
+value as long as the object itself is reused (see the decoding notes in the API
+reference for the list elements that are allocated fresh). Clear or
+reinitialize such fields yourself if you need them zeroed.
 
 ```go
 type Block struct {
@@ -323,9 +370,12 @@ type Block struct {
 ```
 
 The struct above encodes identically to one containing only `Slot` and `Body`.
-Both the reflection and code-generation engines honor the exclusion. (This is
-the dynamic-ssz spelling of fastssz's `ssz:"-"`; dynamic-ssz does not read the
-plain `ssz` struct tag.)
+Both the reflection and code-generation engines honor the exclusion.
+
+The plain fastssz `ssz` tag is read as well, by both engines, wherever no
+`ssz-type` is given: `ssz:"-"` excludes a field and `ssz:"bitlist"` (or any
+other type name) acts as `ssz-type`. Setting both `ssz` and `ssz-type` on one
+field is rejected.
 
 ### ssz-index
 
@@ -349,6 +399,14 @@ Dynamic annotations (`dynssz-size`, `dynssz-max`, `dynssz-bitsize`) support expr
 3. Addition/Subtraction: `+`, `-`
 
 **Features**: Integer arithmetic only. Spec value substitution. Automatic rounding up for partial bytes.
+
+**Fallback**: an identifier or parenthesized group followed by `:N` resolves
+on its own, the way a size tag resolves against its static fallback: it takes
+its value rounded up to a whole unit, or `N` when the spec does not define it
+or resolves it to zero (with `:0` it is then simply zero). It binds tighter than the arithmetic around it, so
+`(A/8):4*8+B:2` reads `((A/8):4)*8+(B:2)`. This is how a generated type
+declares its minimum size (`dynssz-minsize`) from several independently
+resolved parts.
 
 ```go
 // Simple reference
@@ -472,7 +530,9 @@ The `dynssz-*` expression references a spec value that was not provided. If a po
 fallback exists, it is used. If not, the type named a length or a limit that nothing supplies
 and analysis fails with `is not defined and has no positive static fallback` — the tag decides
 whether a dimension is a vector or a list, so a missing value is a missing number rather than a
-different SSZ type.
+different SSZ type. A custom type with a spec-aware sizer is the one exception: an expression-only
+width nobody supplied falls back to the width its `SizeSSZDyn` reports, which is also what generated
+code frames it with, whether the annotation is a field tag or an `Annotate[T]` registration.
 
 ```go
 // Ensure all referenced values are provided

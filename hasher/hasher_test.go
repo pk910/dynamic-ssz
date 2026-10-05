@@ -50,6 +50,12 @@ func TestGetZeroHash(t *testing.T) {
 		t.Error("GetZeroHash(0) should return zero bytes")
 	}
 
+	// The caller owns the returned slice; the shared table stays intact.
+	hash0[0] = 1
+	if !bytes.Equal(GetZeroHash(0), make([]byte, 32)) {
+		t.Error("editing a returned zero hash changed the shared table")
+	}
+
 	// Test that each level is hash of previous level
 	for i := 1; i < 5; i++ {
 		prevHash := GetZeroHash(i - 1)
@@ -334,18 +340,19 @@ func TestHasherAppendBytes32(t *testing.T) {
 		t.Error("padding should be zeros")
 	}
 
-	// A buffer that is not chunk-aligned before the call is padded to whole-
-	// buffer alignment, not by len(b)%32.
+	// The value is padded to a whole number of chunks counted from where it
+	// begins, so a buffer that was not chunk-aligned before the call stays
+	// that way and the value still occupies one chunk of its own.
 	h.Reset()
 	h.Append([]byte{1, 2, 3})
 	h.AppendBytes32([]byte{4, 5})
-	if len(h.buf) != 32 {
-		t.Errorf("buffer should be aligned to 32 bytes, got %d", len(h.buf))
+	if len(h.buf) != 35 {
+		t.Errorf("buffer length = %d, want the three pending bytes plus one chunk", len(h.buf))
 	}
 	if !bytes.Equal(h.buf[:5], []byte{1, 2, 3, 4, 5}) {
 		t.Error("data should be at the beginning of buffer")
 	}
-	if !bytes.Equal(h.buf[5:], make([]byte, 27)) {
+	if !bytes.Equal(h.buf[5:], make([]byte, 30)) {
 		t.Error("padding should be zeros")
 	}
 }
@@ -696,6 +703,8 @@ func TestHasherPutBytes(t *testing.T) {
 	}
 }
 
+// A scope opens on a chunk boundary: pending bytes are padded first, so the
+// checkpoint separates them from the scope, as treeproof.Wrapper does.
 func TestHasherIndex(t *testing.T) {
 	h := NewHasher()
 
@@ -705,8 +714,10 @@ func TestHasherIndex(t *testing.T) {
 
 	h.buf = append(h.buf, []byte{1, 2, 3}...)
 
-	if h.Index() != 3 {
-		t.Error("Index should be 3 after adding 3 bytes")
+	// A scope opens where the buffer stands; its own chunks are counted from
+	// there, so nothing is padded here.
+	if idx := h.Index(); idx != 3 {
+		t.Errorf("Index = %d after three pending bytes, want the current position", idx)
 	}
 }
 
@@ -1867,7 +1878,9 @@ func TestGetDepthOverflow(t *testing.T) {
 
 // Void merkleization entry points have no error channel, so a too-small limit
 // must clamp instead of panicking with an internal assertion.
-func TestMerkleizeWithMixinClampsLowLimit(t *testing.T) {
+// A limit below the chunk count is out of contract, and the reduction answers
+// with the tree the chunks need rather than failing.
+func TestMerkleizeWithMixinLimitBelowChunkCount(t *testing.T) {
 	checks := []struct {
 		name string
 		fn   func(h *Hasher)
@@ -1888,7 +1901,7 @@ func TestMerkleizeWithMixinClampsLowLimit(t *testing.T) {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					t.Errorf("%s panicked on undersized limit: %v", c.name, r)
+					t.Errorf("%s panicked on a limit below the chunk count: %v", c.name, r)
 				}
 			}()
 			h := DefaultHasherPool.Get()
@@ -2170,5 +2183,323 @@ func TestZeroHashAccessorsSelfInitialize(t *testing.T) {
 	}
 	if lvl, ok := GetZeroHashLevel(string(hashes[2][:])); !ok || lvl != 2 {
 		t.Fatalf("GetZeroHashLevel = (%d, %v); want (2, true)", lvl, ok)
+	}
+}
+
+// A packed run whose length is not a multiple of a chunk is padded before the
+// collapsed scope is reduced: collapsing during the appends must not change
+// the root of a vector of packed values.
+func TestMerkleizeCollapsedPadsPartialChunk(t *testing.T) {
+	cases := []struct {
+		name  string
+		count int
+		width int
+	}{
+		{"uint64 x1025", 1025, 8},
+		{"uint32 x2049", 2049, 4},
+		{"uint16 x4097", 4097, 2},
+		{"uint8 x8193", 8193, 1},
+		{"uint64 x1027", 1027, 8},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := func(collapse bool) [32]byte {
+				h := NewHasher()
+				indx := h.StartTree(sszutils.TreeTypeBinary)
+				for i := range tc.count {
+					switch tc.width {
+					case 8:
+						h.AppendUint64(uint64(i + 1))
+					case 4:
+						h.AppendUint32(uint32(i + 1))
+					case 2:
+						h.AppendUint16(uint16(i + 1))
+					default:
+						h.AppendUint8(uint8(i + 1))
+					}
+					if collapse && (i+1)%256 == 0 {
+						h.Collapse()
+					}
+				}
+				h.Merkleize(indx)
+				res, err := h.HashRoot()
+				if err != nil {
+					t.Fatalf("HashRoot: %v", err)
+				}
+				return res
+			}
+			if got, want := root(true), root(false); got != want {
+				t.Fatalf("collapsed root %x != plain root %x", got, want)
+			}
+		})
+	}
+}
+
+// Inside a packed scope the Put* forms append the packed bytes of their value;
+// outside one they stay whole chunks, and a scope opened inside a packed one
+// is a normal scope again.
+func TestPackedScopePut(t *testing.T) {
+	packed := NewHasher()
+	defer packed.Reset()
+	idx := packed.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+	packed.PutUint64(1)
+	packed.PutUint32(2)
+	packed.PutUint16(3)
+	packed.PutUint8(4)
+	packed.PutBool(true)
+	packed.PutBytes([]byte{5, 6})
+	if got := packed.CurrentIndex() - idx; got != 8+4+2+1+1+2 {
+		t.Fatalf("packed scope holds %d bytes, want 18", got)
+	}
+	packed.FillUpTo32()
+	packed.Merkleize(idx)
+	packedRoot := packed.Hash()
+
+	appended := NewHasher()
+	defer appended.Reset()
+	idx = appended.StartTree(sszutils.TreeTypeBinary)
+	appended.AppendUint64(1)
+	appended.AppendUint32(2)
+	appended.AppendUint16(3)
+	appended.AppendUint8(4)
+	appended.AppendBool(true)
+	appended.Append([]byte{5, 6})
+	appended.FillUpTo32()
+	appended.Merkleize(idx)
+	if !bytes.Equal(packedRoot, appended.Hash()) {
+		t.Fatalf("packed puts %x != appends %x", packedRoot, appended.Hash())
+	}
+
+	chunks := NewHasher()
+	defer chunks.Reset()
+	idx = chunks.StartTree(sszutils.TreeTypeBinary)
+	chunks.PutUint64(1)
+	chunks.PutUint64(2)
+	if got := chunks.CurrentIndex() - idx; got != 64 {
+		t.Fatalf("plain scope holds %d bytes, want 64", got)
+	}
+
+	nested := NewHasher()
+	defer nested.Reset()
+	outer := nested.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+	inner := nested.StartTree(sszutils.TreeTypeNone)
+	nested.PutUint64(1)
+	if got := nested.CurrentIndex() - inner; got != 32 {
+		t.Fatalf("scope inside a packed scope holds %d bytes, want 32", got)
+	}
+	nested.Merkleize(inner)
+	nested.PutUint64(2)
+	if got := nested.CurrentIndex() - outer; got != 40 {
+		t.Fatalf("packed scope after a nested scope holds %d bytes, want 40", got)
+	}
+}
+
+// A collapse hint asks for part of a scope to be reduced early. It is a hint:
+// for a value that fits its type's capacity the root is the same with and
+// without it, across the batch threshold that makes the hint fire.
+func TestHasherCollapseDoesNotMoveRoot(t *testing.T) {
+	root := func(collapse bool, chunks int, limit uint64) [32]byte {
+		t.Helper()
+		h := NewHasher()
+		idx := h.StartTree(sszutils.TreeTypeBinary)
+		for i := 0; i < chunks; i++ {
+			h.PutUint64(uint64(i + 1))
+			if collapse {
+				h.Collapse()
+			}
+		}
+		h.MerkleizeWithMixin(idx, uint64(chunks), limit)
+		res, err := h.HashRoot()
+		if err != nil {
+			t.Fatalf("chunks=%d collapse=%v: %v", chunks, collapse, err)
+		}
+		return res
+	}
+	for _, chunks := range []int{1, 255, 256, 257, 600, 1025} {
+		limit := uint64(2048)
+		if plain, collapsed := root(false, chunks, limit), root(true, chunks, limit); plain != collapsed {
+			t.Errorf("chunks=%d: plain %x, collapsed %x", chunks, plain, collapsed)
+		}
+	}
+}
+
+// A hash function that fails leaves the buffer holding bytes it never
+// produced, so HashRoot reports the failure instead of a root built from
+// them. The first failure is the one reported.
+func TestHashRootReportsHashFnError(t *testing.T) {
+	first := errors.New("hash backend unavailable")
+	later := errors.New("hash backend still unavailable")
+
+	var calls int
+	hh := NewHasherWithHashFn(func(dst, src []byte) error {
+		calls++
+		if calls == 1 {
+			return first
+		}
+		return later
+	})
+
+	idx := hh.Index()
+	for i := 0; i < 32; i++ {
+		hh.PutUint64(uint64(i))
+	}
+	hh.Merkleize(idx)
+
+	root, err := hh.HashRoot()
+	if !errors.Is(err, first) {
+		t.Fatalf("HashRoot err = %v, want %v", err, first)
+	}
+	if root != ([32]byte{}) {
+		t.Errorf("HashRoot returned %x alongside the error", root)
+	}
+	if calls < 2 {
+		t.Fatalf("hash function called %d times; the test needs a failure after the first", calls)
+	}
+}
+
+// Hash performs the pending reduction, so HashErr is nil before it and reports
+// a refusal after, and the bytes it returned are then not the root.
+func TestHashReportsARefusalNoEarlierCallCould(t *testing.T) {
+	refused := errors.New("hash backend unavailable")
+	good := NativeHashWrapperFactory(sha256.New)
+	var refuse bool
+	hh := NewHasherWithHashFn(func(dst, src []byte) error {
+		if refuse {
+			return refused
+		}
+		return good(dst, src)
+	})
+
+	// A scope nested in an open incremental one leaves its reduction pending
+	// for Hash.
+	fill := func() {
+		outer := hh.StartTree(sszutils.TreeTypeBinary)
+		inner := hh.StartTree(sszutils.TreeTypeNone)
+		hh.PutUint64(1)
+		hh.FillUpTo32()
+		hh.PutUint64(2)
+		hh.FillUpTo32()
+		hh.Merkleize(inner)
+		_ = outer
+	}
+
+	fill()
+	want := bytes.Clone(hh.Hash())
+
+	hh.Reset()
+	refuse = true
+	fill()
+	if err := hh.HashErr(); err != nil {
+		t.Fatalf("HashErr before Hash = %v, want nil", err)
+	}
+	got := bytes.Clone(hh.Hash())
+	if err := hh.HashErr(); !errors.Is(err, refused) {
+		t.Errorf("HashErr after Hash = %v, want the refusal", err)
+	}
+	if bytes.Equal(got, want) {
+		t.Errorf("Hash returned the root %x under a refusing backend", got)
+	}
+}
+
+// Reset clears the hash error, so a pooled hasher never reports the failure
+// its predecessor hit.
+func TestResetClearsHashFnError(t *testing.T) {
+	good := NativeHashWrapperFactory(sha256.New)
+	failing := true
+	hh := NewHasherWithHashFn(func(dst, src []byte) error {
+		if failing {
+			return errors.New("hash backend unavailable")
+		}
+		return good(dst, src)
+	})
+
+	idx := hh.Index()
+	for i := 0; i < 32; i++ {
+		hh.PutUint64(uint64(i))
+	}
+	hh.Merkleize(idx)
+	if _, err := hh.HashRoot(); err == nil {
+		t.Fatal("HashRoot returned no error while the hash function was failing")
+	}
+
+	failing = false
+	hh.Reset()
+
+	idx = hh.Index()
+	for i := 0; i < 32; i++ {
+		hh.PutUint64(uint64(i))
+	}
+	hh.Merkleize(idx)
+	got, err := hh.HashRoot()
+	if err != nil {
+		t.Fatalf("HashRoot after Reset: %v", err)
+	}
+
+	want := NewHasher()
+	idx = want.Index()
+	for i := 0; i < 32; i++ {
+		want.PutUint64(uint64(i))
+	}
+	want.Merkleize(idx)
+	wantRoot, err := want.HashRoot()
+	if err != nil {
+		t.Fatalf("reference HashRoot: %v", err)
+	}
+	if got != wantRoot {
+		t.Errorf("root after Reset %x, want %x", got, wantRoot)
+	}
+}
+
+// A deferred run holds uniform, contiguous subtrees: a child of another
+// chunk count, or one that follows raw chunks appended after the run, flushes
+// the run first and still lands at the position its parent expects, so the
+// root equals that of the same scopes reduced in place.
+func TestDeferredRunFlushedOnShapeChange(t *testing.T) {
+	child := func(hh *Hasher, open func() int, chunks int, seed uint64) {
+		idx := open()
+		for c := 0; c < chunks; c++ {
+			hh.PutUint64(seed + uint64(c))
+		}
+		hh.Merkleize(idx)
+	}
+	for _, tc := range []struct {
+		name string
+		walk func(hh *Hasher, open func() int)
+	}{
+		{"child of another chunk count", func(hh *Hasher, open func() int) {
+			child(hh, open, 2, 1)
+			child(hh, open, 2, 3)
+			child(hh, open, 4, 5)
+			child(hh, open, 4, 9)
+		}},
+		{"raw chunk after the run", func(hh *Hasher, open func() int) {
+			child(hh, open, 2, 1)
+			child(hh, open, 2, 3)
+			hh.PutUint64(7)
+			child(hh, open, 2, 8)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deferred := NewHasher()
+			outer := deferred.StartTree(sszutils.TreeTypeBinary)
+			tc.walk(deferred, func() int { return deferred.StartTree(sszutils.TreeTypeNone) })
+			deferred.MerkleizeWithMixin(outer, 4, 16)
+			got, err := deferred.HashRoot()
+			if err != nil {
+				t.Fatalf("deferred HashRoot: %v", err)
+			}
+
+			inPlace := NewHasher()
+			outer = inPlace.StartTree(sszutils.TreeTypeBinary)
+			tc.walk(inPlace, inPlace.Index)
+			inPlace.MerkleizeWithMixin(outer, 4, 16)
+			want, err := inPlace.HashRoot()
+			if err != nil {
+				t.Fatalf("in-place HashRoot: %v", err)
+			}
+			if got != want {
+				t.Fatalf("deferred root %x != in-place root %x", got[:8], want[:8])
+			}
+		})
 	}
 }

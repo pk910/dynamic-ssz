@@ -5,6 +5,7 @@
 package ssztypes
 
 import (
+	"math/big"
 	"reflect"
 	"runtime"
 	"strings"
@@ -12,8 +13,16 @@ import (
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
-var byteType = reflect.TypeOf(byte(0))
-var sszMarshalerType = reflect.TypeOf((*sszutils.FastsszMarshaler)(nil)).Elem()
+var (
+	byteType   = reflect.TypeOf(byte(0))
+	bigIntType = reflect.TypeOf(big.Int{})
+)
+
+// Each delegate method is probed through its own interface, so a type is
+// delegated to for the operations it can serve rather than for a whole family.
+var sszValueMarshalerType = reflect.TypeOf((*sszutils.FastsszValueMarshaler)(nil)).Elem()
+var sszBufferMarshalerType = reflect.TypeOf((*sszutils.FastsszBufferMarshaler)(nil)).Elem()
+var sszSizerType = reflect.TypeOf((*sszutils.FastsszSizer)(nil)).Elem()
 var sszUnmarshalerType = reflect.TypeOf((*sszutils.FastsszUnmarshaler)(nil)).Elem()
 var sszHashRootType = reflect.TypeOf((*sszutils.FastsszHashRoot)(nil)).Elem()
 var hashWalkerType = reflect.TypeOf((*sszutils.HashWalker)(nil)).Elem()
@@ -32,23 +41,15 @@ var dynamicViewDecoderType = reflect.TypeOf((*sszutils.DynamicViewDecoder)(nil))
 var dynamicViewSizerType = reflect.TypeOf((*sszutils.DynamicViewSizer)(nil)).Elem()
 var dynamicViewHashRootType = reflect.TypeOf((*sszutils.DynamicViewHashRoot)(nil)).Elem()
 
-// delegationInterfaces lists the SSZ delegation interfaces whose presence makes
-// dynssz serialize a type through its own methods instead of walking it. Used
-// as a cheap structural pre-check in PromotedDelegationMethods.
-var delegationInterfaces = []reflect.Type{
-	dynamicMarshalerType, dynamicUnmarshalerType,
-	dynamicEncoderType, dynamicDecoderType,
-	dynamicSizerType, dynamicHashRootType,
-	sszMarshalerType, sszUnmarshalerType, sszHashRootType,
-}
-
-// delegationMethodNames are the methods behind delegationInterfaces. A promoted
-// one drops the outer struct's sibling fields, so its presence forces a
-// container walk.
+// delegationMethodNames are the methods dynssz delegates to instead of walking
+// a type. A promoted one drops the outer struct's sibling fields, so its
+// presence forces a container walk.
 var delegationMethodNames = []string{
 	"MarshalSSZDyn", "UnmarshalSSZDyn", "SizeSSZDyn", "HashTreeRootWithDyn",
 	"MarshalSSZEncoder", "UnmarshalSSZDecoder",
-	"MarshalSSZTo", "UnmarshalSSZ", "SizeSSZ", "HashTreeRoot", "HashTreeRootWith",
+	"MarshalSSZDynView", "UnmarshalSSZDynView", "SizeSSZDynView", "HashTreeRootWithDynView",
+	"MarshalSSZEncoderView", "UnmarshalSSZDecoderView",
+	"MarshalSSZ", "MarshalSSZTo", "UnmarshalSSZ", "SizeSSZ", "HashTreeRoot", "HashTreeRootWith",
 }
 
 // PromotedDelegationMethods returns the SSZ delegation methods a struct type
@@ -88,52 +89,41 @@ func structPromotedDelegationMethods(targetType reflect.Type) map[string]bool {
 		return nil
 	}
 
-	// Promotion is only possible when an embedded field provides a delegation
-	// interface; skip the per-method wrapper inspection otherwise.
-	if !structHasDelegatingEmbeddedField(targetType) {
+	// Only an embedded field promotes methods; skip the per-method inspection
+	// otherwise.
+	if !structHasEmbeddedField(targetType) {
 		return nil
 	}
 
 	var promoted map[string]bool
 	ptrType := reflect.PointerTo(targetType)
 	for _, name := range delegationMethodNames {
-		if method, ok := ptrType.MethodByName(name); ok && methodIsPromotedWrapper(&method) {
-			if promoted == nil {
-				promoted = make(map[string]bool, len(delegationMethodNames))
-			}
-			promoted[name] = true
+		ptrMethod, ok := ptrType.MethodByName(name)
+		if !ok || !methodIsPromotedWrapper(&ptrMethod) {
+			continue
 		}
+		// A method declared on the type with a value receiver is a real
+		// declaration in the value method set, while the pointer method set
+		// holds a compiler adapter for it; a promoted method is a wrapper in
+		// both method sets, or absent from the value one when the embedded
+		// field's method has a pointer receiver.
+		if valueMethod, ok := targetType.MethodByName(name); ok && !methodIsPromotedWrapper(&valueMethod) {
+			continue
+		}
+		if promoted == nil {
+			promoted = make(map[string]bool, len(delegationMethodNames))
+		}
+		promoted[name] = true
 	}
 	return promoted
 }
 
-// structHasDelegatingEmbeddedField reports whether any embedded (anonymous)
-// field of the struct provides an SSZ delegation interface, i.e. whether a
-// delegation method could be promoted to the struct.
-func structHasDelegatingEmbeddedField(targetType reflect.Type) bool {
+// structHasEmbeddedField reports whether the struct has an embedded
+// (anonymous) field, the only way a method can be promoted to it.
+func structHasEmbeddedField(targetType reflect.Type) bool {
 	for i := 0; i < targetType.NumField(); i++ {
-		field := targetType.Field(i)
-		if !field.Anonymous {
-			continue
-		}
-		// An embedded interface promotes its methods directly; its pointer
-		// type has an empty method set, so it is tested as-is.
-		if field.Type.Kind() == reflect.Interface {
-			for _, iface := range delegationInterfaces {
-				if field.Type.Implements(iface) {
-					return true
-				}
-			}
-			continue
-		}
-		embeddedPtr := field.Type
-		if embeddedPtr.Kind() != reflect.Pointer {
-			embeddedPtr = reflect.PointerTo(embeddedPtr)
-		}
-		for _, iface := range delegationInterfaces {
-			if embeddedPtr.Implements(iface) {
-				return true
-			}
+		if targetType.Field(i).Anonymous {
+			return true
 		}
 	}
 	return false
@@ -159,11 +149,26 @@ func methodIsPromotedWrapper(method *reflect.Method) bool {
 //   or referenced types, is evaluated to ensure it aligns with fastssz's requirements for static encoding and decoding.
 //
 // Returns:
-// - A boolean indicating whether the type is compatible with fastssz's static encoding and decoding.
+// - The flag set naming each fastssz-style method the type provides.
 
-func getFastsszConvertCompatibility(targetType reflect.Type) bool {
+func getFastsszCompatFlags(targetType reflect.Type) SszCompatFlag {
 	targetPtrType := reflect.New(targetType).Type()
-	return targetPtrType.Implements(sszMarshalerType) && targetPtrType.Implements(sszUnmarshalerType)
+
+	var flags SszCompatFlag
+	if targetPtrType.Implements(sszValueMarshalerType) {
+		flags |= SszCompatFlagFastsszValueMarshaler
+	}
+	if targetPtrType.Implements(sszBufferMarshalerType) {
+		flags |= SszCompatFlagFastsszBufferMarshaler
+	}
+	if targetPtrType.Implements(sszSizerType) {
+		flags |= SszCompatFlagFastsszSizer
+	}
+	if targetPtrType.Implements(sszUnmarshalerType) {
+		flags |= SszCompatFlagFastsszUnmarshaler
+	}
+
+	return flags
 }
 
 // getFastsszHashCompatibility evaluates the compatibility of a given type with fastssz's HashRoot interface, determining whether

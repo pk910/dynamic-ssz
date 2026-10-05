@@ -59,6 +59,18 @@ func MarshalUint64Slice[T ~uint64](dst []byte, s []T) []byte {
 	return append(dst, unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(s))), len(s)*8)...)
 }
 
+// ByteSlice returns s viewed as a []byte without copying: T has the memory
+// layout of byte, so both slices share the backing array.
+func ByteSlice[T ~uint8](s []T) []byte {
+	return unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(s))), len(s))
+}
+
+// BytesAs returns b viewed as a []T without copying: T has the memory layout
+// of byte, so both slices share the backing array.
+func BytesAs[T ~uint8](b []byte) []T {
+	return unsafe.Slice((*T)(unsafe.Pointer(unsafe.SliceData(b))), len(b))
+}
+
 // MarshalFixedBytesSlice appends the raw contents of a slice whose elements are
 // fixed-size byte arrays (e.g. []Root where Root is [32]byte) to dst in a single
 // copy. Such elements are laid out contiguously without padding, so this avoids

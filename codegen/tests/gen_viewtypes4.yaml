@@ -26,7 +26,42 @@ types:
       - ViewMixChildC_View
     skip-encoder: true
     skip-decoder: true
+  - name: ViewMixChildD
+    output: gen_viewtypes4.go
+    views:
+      - ViewMixChildD_View
+    skip-encoder: true
+    skip-decoder: true
   - name: ViewMixHolder
     output: gen_viewtypes4.go
     views:
       - ViewMixHolder_View
+  - name: ViewList_Base
+    output: gen_viewtypes4.go
+    views:
+      - ViewList_View
+  - name: SpecSizedList
+    output: gen_viewtypes4.go
+  - name: SpecPairList
+    output: gen_viewtypes4.go
+  - name: SpecPairVec
+    output: gen_viewtypes4.go
+  - name: SpecOnlyList
+    output: gen_viewtypes4.go
+  - name: SpecViewIsolation_Base
+    output: gen_viewtypes4.go
+    views:
+      - SpecViewIsolation_ViewA
+      - SpecViewIsolation_ViewB
+  - name: SpecViewShared_ChildGen
+    output: gen_viewtypes4.go
+    views:
+      - SpecViewShared_ChildView
+  - name: SpecViewShared_T1
+    output: gen_viewtypes4.go
+    views:
+      - SpecViewShared_View
+  - name: SpecViewShared_T2
+    output: gen_viewtypes4.go
+    views:
+      - SpecViewShared_View

@@ -2,20 +2,29 @@ package tests
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"math"
+	"math/big"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"runtime/debug"
 	"strings"
+	"sync"
 	"testing"
+	"testing/iotest"
 
 	dynssz "github.com/pk910/dynamic-ssz"
 	"github.com/pk910/dynamic-ssz/codegen"
 	"github.com/pk910/dynamic-ssz/codegen/tests/views"
+	"github.com/pk910/dynamic-ssz/hasher"
+	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
 
 	"golang.org/x/tools/go/packages"
@@ -177,14 +186,27 @@ var testMatrix = []TestPayload{
 		Name:    "ViewMixHolder",
 		Payload: ViewMixHolder_Payload,
 		Specs:   map[string]any{},
-		Hash:    "853c0bb51de56d2bd79fefe13caabbc18965129ca87438d4187fbcc48c557c82",
+		Hash:    "456ee5221d38378f438da8642b94f564ed87bb8c617ee14fbc5541253719d8f1",
 	},
 	{
 		Name:    "ViewMixHolder_View",
 		Payload: ViewMixHolder_Payload,
 		View:    (*ViewMixHolder_View)(nil),
 		Specs:   map[string]any{},
-		Hash:    "853c0bb51de56d2bd79fefe13caabbc18965129ca87438d4187fbcc48c557c82",
+		Hash:    "456ee5221d38378f438da8642b94f564ed87bb8c617ee14fbc5541253719d8f1",
+	},
+	{
+		Name:    "ViewMixHolder_Specs",
+		Payload: ViewMixHolder_SpecsPayload,
+		Specs:   ViewMixHolder_Specs,
+		Hash:    "df2cea5403681de5ab70770d29523dfc8b3bee55ee5d19aa42e7770530daa6af",
+	},
+	{
+		Name:    "ViewMixHolder_View_Specs",
+		Payload: ViewMixHolder_SpecsPayload,
+		View:    (*ViewMixHolder_View)(nil),
+		Specs:   ViewMixHolder_Specs,
+		Hash:    "df2cea5403681de5ab70770d29523dfc8b3bee55ee5d19aa42e7770530daa6af",
 	},
 	{
 		Name:    "AnnotatedContainer",
@@ -411,6 +433,82 @@ func TestCodegenCoverageTypes2(t *testing.T) {
 	}
 }
 
+// TestCodegenReadOnlyMethodsKeepNilPointers checks that the generated marshal,
+// encoder and hash methods leave a nil pointer field nil: they are read-only
+// entry points and are called concurrently on shared values.
+func TestCodegenReadOnlyMethodsKeepNilPointers(t *testing.T) {
+	type marshalToer interface {
+		MarshalSSZTo(dst []byte) ([]byte, error)
+	}
+	type hashTreeRootWither interface {
+		HashTreeRootWith(hh sszutils.HashWalker) error
+	}
+	type hashTreeRooter interface {
+		HashTreeRoot() ([32]byte, error)
+	}
+	if _, generated := any(&CoverageTypes2{}).(hashTreeRootWither); !generated {
+		t.Skip("no generated code present")
+	}
+
+	nilFields := func(t *testing.T, v *CoverageTypes2, op string) {
+		t.Helper()
+		if v.I8p != nil || v.I16p != nil || v.I32p != nil || v.I64p != nil ||
+			v.F32p != nil || v.F64p != nil || v.Bigp != nil {
+			t.Errorf("%s allocated a nil pointer field: %+v", op, v)
+		}
+	}
+
+	v := CoverageTypes2_Payload2
+	marshaler, ok := any(&v).(marshalToer)
+	if !ok {
+		t.Fatal("generated MarshalSSZTo missing")
+	}
+	if _, err := marshaler.MarshalSSZTo(nil); err != nil {
+		t.Fatalf("MarshalSSZTo: %v", err)
+	}
+	nilFields(t, &v, "MarshalSSZTo")
+
+	v = CoverageTypes2_Payload2
+	encoder, ok := any(&v).(sszutils.DynamicEncoder)
+	if !ok {
+		t.Fatal("generated MarshalSSZEncoder missing")
+	}
+	enc := sszutils.NewBufferEncoder(make([]byte, 0, 128))
+	if err := encoder.MarshalSSZEncoder(dynssz.NewDynSsz(nil), enc); err != nil {
+		t.Fatalf("MarshalSSZEncoder: %v", err)
+	}
+	nilFields(t, &v, "MarshalSSZEncoder")
+
+	v = CoverageTypes2_Payload2
+	hasherWith, ok := any(&v).(hashTreeRootWither)
+	if !ok {
+		t.Fatal("generated HashTreeRootWith missing")
+	}
+	if err := hasherWith.HashTreeRootWith(hasher.NewHasher()); err != nil {
+		t.Fatalf("HashTreeRootWith: %v", err)
+	}
+	nilFields(t, &v, "HashTreeRootWith")
+
+	// Concurrent hashing of one shared value must be race-free.
+	shared := CoverageTypes2_Payload2
+	hashRoot, ok := any(&shared).(hashTreeRooter)
+	if !ok {
+		t.Fatal("generated HashTreeRoot missing")
+	}
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := hashRoot.HashTreeRoot(); err != nil {
+				t.Errorf("HashTreeRoot: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	nilFields(t, &shared, "concurrent HashTreeRoot")
+}
+
 func TestCodegenCoverageTypes3(t *testing.T) {
 	testCodegenPayloadByReflection(t, CoverageTypes3_Payload, CoverageTypes3_Specs, dynssz.WithExtendedTypes())
 }
@@ -433,6 +531,26 @@ func TestCodegenCoverageTypes7(t *testing.T) {
 
 func TestCodegenNoDynExprTypes(t *testing.T) {
 	testCodegenPayloadByReflection(t, NoDynExprTypes_Payload, nil)
+	testCodegenPayloadByReflection(t, NoDynStreamCustomHolder_Payload, nil)
+
+	// The static batch round-trips the dual-surface custom type on the stream
+	// paths. Which method set the generated code reaches it through is the
+	// generator's own invariant, checked where the generator is.
+	if _, generated := any(&NoDynStreamCustomHolder_Payload).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	var w bytes.Buffer
+	if err := ds.MarshalSSZWriter(&NoDynStreamCustomHolder_Payload, &w); err != nil {
+		t.Fatalf("writer: %v", err)
+	}
+	var back NoDynStreamCustomHolder
+	if err := ds.UnmarshalSSZReader(&back, bytes.NewReader(w.Bytes()), w.Len()); err != nil {
+		t.Fatalf("reader: %v", err)
+	}
+	if back != NoDynStreamCustomHolder_Payload {
+		t.Fatalf("stream round trip = %+v, want %+v", back, NoDynStreamCustomHolder_Payload)
+	}
 }
 
 // TestCodegenNoDynNest enforces the without-dynamic-expressions invariant on a
@@ -441,22 +559,6 @@ func TestCodegenNoDynExprTypes(t *testing.T) {
 // generated file (compiled as part of this package) must contain no *Dyn buffer
 // function and must round-trip against reflection for every parent shape.
 func TestCodegenNoDynNest(t *testing.T) {
-	code, err := os.ReadFile("gen_nodynnest.go")
-	if os.IsNotExist(err) {
-		// The gen_*.go files are gitignored; without go generate this job
-		// exercises only the reflection engine and there is no generated file
-		// to enforce the no-*Dyn invariant against.
-		t.Skip("no generated code present")
-	}
-	if err != nil {
-		t.Fatalf("read generated file: %v", err)
-	}
-	for _, tok := range []string{"MarshalSSZDyn", "UnmarshalSSZDyn", "SizeSSZDyn", "HashTreeRootWithDyn"} {
-		if strings.Contains(string(code), tok) {
-			t.Errorf("generated file references forbidden %s under without-dynamic-expressions", tok)
-		}
-	}
-
 	testCodegenPayloadByReflection(t, NoDynRecursiveHolder_Payload, nil)
 	testCodegenPayloadByReflection(t, NoDynNestProg_Payload, nil)
 	testCodegenPayloadByReflection(t, NoDynNestList_Payload, nil)
@@ -475,22 +577,6 @@ func TestCodegenNoDynNest(t *testing.T) {
 // and the inlined delegated region must equal what the delegated Dynamic* method
 // produces.
 func TestCodegenAtkNest(t *testing.T) {
-	code, err := os.ReadFile("gen_atknest.go")
-	if os.IsNotExist(err) {
-		// The gen_*.go files are gitignored; the "without generated code" CI job
-		// runs before go generate, so there is no generated file to enforce the
-		// no-*Dyn invariant against here.
-		t.Skip("no generated code present")
-	}
-	if err != nil {
-		t.Fatalf("read generated file: %v", err)
-	}
-	for _, tok := range []string{"MarshalSSZDyn", "UnmarshalSSZDyn", "SizeSSZDyn", "HashTreeRootWithDyn"} {
-		if strings.Contains(string(code), tok) {
-			t.Errorf("generated file references forbidden %s under without-dynamic-expressions", tok)
-		}
-	}
-
 	ext := dynssz.WithExtendedTypes()
 	testCodegenPayloadByReflection(t, AtkNestD1_Payload, nil, ext)
 	testCodegenPayloadByReflection(t, AtkNestUnion_Payload, nil, ext)
@@ -522,6 +608,130 @@ func TestCodegenAtkNest(t *testing.T) {
 		region := got[8+i*8 : 8+i*8+8]
 		if !bytes.Equal(region, want) {
 			t.Errorf("inlined child region %d = %x, delegated method = %x", i, region, want)
+		}
+	}
+}
+
+// A batch that mixes generation modes per type (gen_mixed.yaml) analyzes each
+// type in its own mode: the static type is inlined, the default-mode type
+// delegates to its opaque child instead of traversing it, and the extended
+// type does not widen its neighbours.
+func TestCodegenMixedModes(t *testing.T) {
+	if _, generated := any(&MixedOpaqueHolder_Payload).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	genDs := dynssz.NewDynSsz(nil)
+	got, err := genDs.MarshalSSZ(&MixedOpaqueHolder_Payload)
+	if err != nil {
+		t.Fatalf("marshal MixedOpaqueHolder: %v", err)
+	}
+	// The expected bytes are built from a local copy: the s390x assembler
+	// rejects a byte-reversing load addressed straight at a package-level
+	// variable's field.
+	opaque := MixedOpaqueHolder_Payload
+	want, err := opaque.N.MarshalSSZDyn(nil, nil)
+	if err != nil {
+		t.Fatalf("child MarshalSSZDyn: %v", err)
+	}
+	want = binary.LittleEndian.AppendUint64(want, opaque.A)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("MixedOpaqueHolder = %x, want %x", got, want)
+	}
+	var back MixedOpaqueHolder
+	if err = genDs.UnmarshalSSZ(&back, got); err != nil {
+		t.Fatalf("unmarshal MixedOpaqueHolder: %v", err)
+	}
+	if back.N.V != opaque.N.V || back.A != opaque.A {
+		t.Fatalf("round trip = %+v", back)
+	}
+	// Two leaves: the delegated child's root and the uint64 chunk.
+	var chunks [64]byte
+	binary.LittleEndian.PutUint64(chunks[0:], opaque.N.V)
+	binary.LittleEndian.PutUint64(chunks[32:], opaque.A)
+	wantRoot := sha256.Sum256(chunks[:])
+	root, err := genDs.HashTreeRoot(&MixedOpaqueHolder_Payload)
+	if err != nil {
+		t.Fatalf("hash MixedOpaqueHolder: %v", err)
+	}
+	if root != wantRoot {
+		t.Fatalf("MixedOpaqueHolder root = %x, want %x", root, wantRoot)
+	}
+
+	testCodegenPayloadByReflection(t, MixedStatic_Payload, nil)
+	testCodegenPayloadByReflection(t, MixedExt_Payload, nil, dynssz.WithExtendedTypes())
+	testCodegenPayloadByReflection(t, MixedDynCustomHolder_Payload, nil)
+
+	// A negative delegated size is a refusal, not a size. Both engines report
+	// it wherever a size is taken, and the generated sizer passes it on
+	// instead of summing it into a plausible total. The generated buffer
+	// marshal derives its offsets from the bytes written, so it never asks.
+	neg := &MixedNegSizeHolder{A: 1, L: make([]mixedNegSizeCustom, 2)}
+	genDs = dynssz.NewDynSsz(nil)
+	refDs := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+	for name, ds := range map[string]*dynssz.DynSsz{"generated": genDs, "reflection": refDs} {
+		var w bytes.Buffer
+		if err := ds.MarshalSSZWriter(neg, &w); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+			t.Errorf("%s writer: err = %v, want the SSZ size limit reported", name, err)
+		}
+	}
+	if _, err := refDs.MarshalSSZ(neg); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+		t.Errorf("reflection marshal: err = %v, want the SSZ size limit reported", err)
+	}
+	if _, err := refDs.SizeSSZ(neg); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+		t.Errorf("reflection size: err = %v, want the SSZ size limit reported", err)
+	}
+	if _, err := genDs.SizeSSZ(neg); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+		t.Errorf("generated size: err = %v, want the SSZ size limit reported", err)
+	}
+	if sizer, ok := any(neg).(interface {
+		SizeSSZDyn(sszutils.DynamicSpecs) int
+	}); ok {
+		if got := sizer.SizeSSZDyn(genDs); got != -1 {
+			t.Errorf("generated SizeSSZDyn = %d, want -1 for a delegate that refuses", got)
+		}
+	}
+}
+
+// A declared length is a claim about the input: an 8-byte input against a
+// 65536-element vector of variable-size elements, a 3-billion-byte vector
+// and a 4 GiB bigint limit is refused on every decode path of both engines
+// without allocating for the declaration, on 64-bit and 32-bit targets alike.
+func TestCodegenDeclaredSizeBounded(t *testing.T) {
+	in := []byte{4, 0, 0, 0, 0, 0, 0, 0}
+	engines := map[string]*dynssz.DynSsz{
+		"generated":  dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes()),
+		"reflection": dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes(), dynssz.WithNoDelegation(), dynssz.WithNoFastSsz()),
+	}
+	for name, ds := range engines {
+		for _, shape := range []struct {
+			name string
+			mk   func() any
+		}{
+			{"DynVecDeclared", func() any { return new(DynVecDeclared) }},
+			{"BigVecFixed", func() any { return new(BigVecFixed) }},
+			{"BigIntLimit", func() any { return new(BigIntLimit) }},
+		} {
+			for _, path := range []struct {
+				name string
+				run  func(any) error
+			}{
+				{"buffer", func(v any) error { return ds.UnmarshalSSZ(v, in) }},
+				{"reader", func(v any) error { return ds.UnmarshalSSZReader(v, bytes.NewReader(in), len(in)) }},
+				{"reader-unknown", func(v any) error { return ds.UnmarshalSSZReader(v, bytes.NewReader(in), -1) }},
+			} {
+				var before, after runtime.MemStats
+				runtime.GC()
+				runtime.ReadMemStats(&before)
+				err := path.run(shape.mk())
+				runtime.ReadMemStats(&after)
+				if err == nil {
+					t.Errorf("%s %s %s: an 8-byte input was accepted", name, shape.name, path.name)
+				}
+				if grew := after.TotalAlloc - before.TotalAlloc; grew > 1<<20 {
+					t.Errorf("%s %s %s: allocated %d bytes for an 8-byte input", name, shape.name, path.name, grew)
+				}
+			}
 		}
 	}
 }
@@ -1003,6 +1213,295 @@ func TestCodegenViewTypes4(t *testing.T) {
 	testCodegenPayloadWithView(t, ViewTypes4_Payload, (*ViewTypes4_View1)(nil))
 }
 
+// TestCodegenViewList covers a list of elements generated in an earlier batch,
+// through the data type and through a view: the elements are delegated
+// without their subtree, and the offset table is bounded by the fixed section
+// their structure guarantees before it sizes an allocation.
+func TestCodegenViewList(t *testing.T) {
+	testCodegenPayloadWithView(t, ViewList_Payload, (*ViewList_View)(nil))
+
+	gen := dynssz.NewDynSsz(nil)
+	reflection := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+	genBytes, err := gen.MarshalSSZ(&ViewList_Payload)
+	if err != nil {
+		t.Fatalf("MarshalSSZ failed: %v", err)
+	}
+	reflectionBytes, err := reflection.MarshalSSZ(&ViewList_Payload)
+	if err != nil {
+		t.Fatalf("reflection MarshalSSZ failed: %v", err)
+	}
+	if !bytes.Equal(genBytes, reflectionBytes) {
+		t.Fatalf("generated code and reflection disagree:\n  gen=%x\n  refl=%x", genBytes, reflectionBytes)
+	}
+	var decoded ViewList_Base
+	if err := gen.UnmarshalSSZ(&decoded, genBytes); err != nil {
+		t.Fatalf("UnmarshalSSZ failed: %v", err)
+	}
+	if roundtrip, _ := gen.MarshalSSZ(&decoded); !bytes.Equal(roundtrip, genBytes) {
+		t.Fatalf("roundtrip mismatch:\n  gen=%x\n  roundtrip=%x", genBytes, roundtrip)
+	}
+
+	// A container of one offset and Tail, then an offset table declaring three
+	// elements in a 12-byte region: no element body fits. The floor is 20
+	// bytes for the data type and 16 for the view, so the count is refused
+	// before it sizes an allocation.
+	buf := []byte{5, 0, 0, 0, 11, 12, 0, 0, 0, 16, 0, 0, 0, 20, 0, 0, 0}
+	for _, tt := range []struct {
+		name string
+		opts []dynssz.CallOption
+	}{
+		{"data", nil},
+		{"view", []dynssz.CallOption{dynssz.WithViewDescriptor((*ViewList_View)(nil))}},
+	} {
+		err := gen.UnmarshalSSZ(&ViewList_Base{}, buf, tt.opts...)
+		if !errors.Is(err, sszutils.ErrOffset) || !strings.Contains(err.Error(), "elements of at least") {
+			t.Fatalf("%s: err = %v, want the region refused", tt.name, err)
+		}
+	}
+}
+
+// TestCodegenSpecSizedList covers a list of elements generated in an earlier
+// batch whose fixed section a spec value decides: the list is bounded by what
+// every preset guarantees, so a preset that shrinks the element below its
+// static fallback still decodes.
+func TestCodegenSpecSizedList(t *testing.T) {
+	for _, size := range []uint64{8, 4, 2} {
+		t.Run(fmt.Sprintf("VECSPEC_LEN=%d", size), func(t *testing.T) {
+			specs := map[string]any{"VECSPEC_LEN": size}
+			testCodegenPayloadByReflection(t, SpecSizedList_Payload, specs)
+
+			ds := dynssz.NewDynSsz(specs)
+			encoded, err := ds.MarshalSSZ(&SpecSizedList_Payload)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var decoded SpecSizedList
+			if err := ds.UnmarshalSSZ(&decoded, encoded); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if roundtrip, _ := ds.MarshalSSZ(&decoded); !bytes.Equal(roundtrip, encoded) {
+				t.Fatalf("roundtrip mismatch:\n  encoded=%x\n  roundtrip=%x", encoded, roundtrip)
+			}
+		})
+	}
+
+	// Two elements of 20 bytes each, the fixed section under VECSPEC_LEN=2:
+	// the container's offset, the list's two-entry table, then each element's
+	// two-word vector and its empty list's offset. Under VECSPEC_LEN=8 the
+	// declared floor resolves to 68 bytes and the table is refused before any
+	// element decodes.
+	elem := append(make([]byte, 16), 20, 0, 0, 0)
+	buf := append([]byte{4, 0, 0, 0, 8, 0, 0, 0, 28, 0, 0, 0}, append(elem, elem...)...)
+	var decoded SpecSizedList
+	if err := dynssz.NewDynSsz(map[string]any{"VECSPEC_LEN": 2}).UnmarshalSSZ(&decoded, buf); err != nil || len(decoded.Items) != 2 {
+		t.Fatalf("VECSPEC_LEN=2: err = %v, items = %d, want the two elements decoded", err, len(decoded.Items))
+	}
+	err := dynssz.NewDynSsz(map[string]any{"VECSPEC_LEN": 8}).UnmarshalSSZ(&SpecSizedList{}, buf)
+	if !errors.Is(err, sszutils.ErrOffset) || !strings.Contains(err.Error(), "elements of at least 68 bytes") {
+		t.Fatalf("VECSPEC_LEN=8: err = %v, want the region refused by the declared floor", err)
+	}
+}
+
+// TestCodegenSpecPairList covers a list of elements with three spec-decided
+// widths generated in an earlier batch: the list resolves each on its own
+// with its own fallback, as the element's code does, so a spec that defines
+// only some of them, or a bit count the byte count rounds up, decodes the
+// element's own bytes.
+func TestCodegenSpecPairList(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		specs map[string]any
+	}{
+		{"defaults", nil},
+		{"only A", map[string]any{"SPEC_A": uint64(8)}},
+		{"only B", map[string]any{"SPEC_B": uint64(2)}},
+		{"A and B", map[string]any{"SPEC_A": uint64(8), "SPEC_B": uint64(2)}},
+		{"bits 4", map[string]any{"SPEC_BITS": uint64(4)}},
+		{"bits 12", map[string]any{"SPEC_BITS": uint64(12)}},
+		{"bits 16", map[string]any{"SPEC_BITS": uint64(16)}},
+		{"bits 17", map[string]any{"SPEC_BITS": uint64(17)}},
+		{"bits 64", map[string]any{"SPEC_BITS": uint64(64)}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sizeA, sizeBits := 32, 20
+			if v, ok := tt.specs["SPEC_A"].(uint64); ok {
+				sizeA = int(v)
+			}
+			if v, ok := tt.specs["SPEC_BITS"].(uint64); ok {
+				sizeBits = int(v)
+			}
+			elem := func(fill byte, list ...uint64) *SpecPairElem {
+				e := &SpecPairElem{A: make([]byte, sizeA), Bits: make([]byte, (sizeBits+7)/8), L: list}
+				for i := range e.A {
+					e.A[i] = fill
+				}
+				return e
+			}
+			payload := SpecPairList{Items: []*SpecPairElem{elem(1, 2, 3), elem(4), {A: make([]byte, sizeA), Bits: make([]byte, (sizeBits+7)/8)}}}
+			testCodegenPayloadByReflection(t, payload, tt.specs)
+
+			ds := dynssz.NewDynSsz(tt.specs)
+			encoded, err := ds.MarshalSSZ(&payload)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var decoded SpecPairList
+			if err := ds.UnmarshalSSZ(&decoded, encoded); err != nil {
+				t.Fatalf("unmarshal of the element's own bytes: %v", err)
+			}
+			if roundtrip, _ := ds.MarshalSSZ(&decoded); !bytes.Equal(roundtrip, encoded) {
+				t.Fatalf("roundtrip mismatch:\n  encoded=%x\n  roundtrip=%x", encoded, roundtrip)
+			}
+		})
+	}
+}
+
+// reflectionSpecPairList has no generated code, so the reflection engine
+// decodes it and describes its elements, generated in the main batch, without
+// their subtree.
+type reflectionSpecPairList struct {
+	Items []*SpecPairElem `ssz-max:"4"`
+}
+
+// TestSpecPairListEngineFloors: both engines bound a list of delegated
+// elements by the same declared floor, resolved against the same specs, and
+// refuse the same offset table with the same error.
+func TestSpecPairListEngineFloors(t *testing.T) {
+	if _, generated := any(&SpecPairList{}).(sszutils.DynamicSizer); !generated {
+		t.Skip("no generated code present")
+	}
+	specs := map[string]any{"SPEC_A": uint64(8), "SPEC_B": uint64(2)}
+	// Two elements declared in a 40-byte region; each holds at least
+	// 8 + 16 + 3 + 4 = 31 bytes under these specs.
+	buf := append([]byte{4, 0, 0, 0, 8, 0, 0, 0, 28, 0, 0, 0}, make([]byte, 40)...)
+	ds := dynssz.NewDynSsz(specs)
+	generatedErr := ds.UnmarshalSSZ(&SpecPairList{}, buf)
+	reflectionErr := ds.UnmarshalSSZ(&reflectionSpecPairList{}, buf)
+	for name, err := range map[string]error{"generated": generatedErr, "reflection": reflectionErr} {
+		if !errors.Is(err, sszutils.ErrOffset) || !strings.Contains(err.Error(), "elements of at least 31 bytes") {
+			t.Errorf("%s: err = %v, want the region refused by the 31-byte floor", name, err)
+		}
+	}
+	payload := reflectionSpecPairList{Items: []*SpecPairElem{{A: make([]byte, 8), Bits: make([]byte, 3)}, {A: make([]byte, 8), Bits: make([]byte, 3), L: []uint64{1}}}}
+	encoded, err := ds.MarshalSSZ(&payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded reflectionSpecPairList
+	if err := ds.UnmarshalSSZ(&decoded, encoded); err != nil || len(decoded.Items) != 2 {
+		t.Fatalf("reflection decode of the elements' own bytes: err = %v, items = %d", err, len(decoded.Items))
+	}
+}
+
+// TestSpecPairVecReflectionFloor: a reflection-decoded list of SpecPairVec is
+// bounded by its declaration, 44 bytes under the default specs and 20 under
+// VECSPEC_LEN=2, and decodes the elements' own bytes.
+func TestSpecPairVecReflectionFloor(t *testing.T) {
+	if _, generated := any(&SpecPairVec{}).(sszutils.DynamicSizer); !generated {
+		t.Skip("no generated code present")
+	}
+	type list struct {
+		Items []*SpecPairVec `ssz-max:"4"`
+	}
+	ds := dynssz.NewDynSsz(nil)
+	// One element declared in a 40-byte region.
+	buf := append([]byte{4, 0, 0, 0, 4, 0, 0, 0}, make([]byte, 36)...)
+	if err := ds.UnmarshalSSZ(&list{}, buf); !errors.Is(err, sszutils.ErrOffset) || !strings.Contains(err.Error(), "elements of at least 44 bytes") {
+		t.Fatalf("err = %v, want the region refused by the 44-byte floor", err)
+	}
+	if err := dynssz.NewDynSsz(map[string]any{"VECSPEC_LEN": uint64(2)}).UnmarshalSSZ(&list{}, buf); err == nil || strings.Contains(err.Error(), "elements of at least") {
+		t.Fatalf("VECSPEC_LEN=2: err = %v, want the 20-byte floor to admit the table", err)
+	}
+	elem := func() *SpecPairElem { return &SpecPairElem{A: make([]byte, 32), Bits: make([]byte, 3)} }
+	payload := list{Items: []*SpecPairVec{{Pair: [2]*SpecPairElem{elem(), elem()}, L: []uint64{1}}}}
+	encoded, err := ds.MarshalSSZ(&payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded list
+	if err := ds.UnmarshalSSZ(&decoded, encoded); err != nil || len(decoded.Items) != 1 {
+		t.Fatalf("decode of the elements' own bytes: err = %v, items = %d", err, len(decoded.Items))
+	}
+}
+
+// TestSpecOnlyListFloors: a list of children whose vector has no static
+// fallback encodes and decodes empty without the spec value, through
+// generated code and through a reflection-decoded container, since an
+// unresolvable floor is no floor; with VLEN defined both engines refuse the
+// same table by the resolved 20-byte floor and decode the children's own
+// bytes.
+func TestSpecOnlyListFloors(t *testing.T) {
+	if _, generated := any(&SpecOnlyList{}).(sszutils.DynamicSizer); !generated {
+		t.Skip("no generated code present")
+	}
+	type reflectionList struct {
+		Items []*SpecOnlyElem `ssz-max:"4"`
+	}
+	empty := []byte{4, 0, 0, 0}
+	for name, target := range map[string]any{"generated": &SpecOnlyList{}, "reflection": &reflectionList{}} {
+		ds := dynssz.NewDynSsz(nil)
+		encoded, err := ds.MarshalSSZ(target)
+		if err != nil || !bytes.Equal(encoded, empty) {
+			t.Fatalf("%s: empty list without VLEN: %x, err = %v", name, encoded, err)
+		}
+		if err := ds.UnmarshalSSZ(target, empty); err != nil {
+			t.Fatalf("%s: decode of the empty list without VLEN: %v", name, err)
+		}
+	}
+
+	specs := map[string]any{"VLEN": uint64(16)}
+	ds := dynssz.NewDynSsz(specs)
+	// Two elements declared in a 24-byte region; each holds at least 20.
+	buf := append([]byte{4, 0, 0, 0, 8, 0, 0, 0, 20, 0, 0, 0}, make([]byte, 24)...)
+	for name, target := range map[string]any{"generated": &SpecOnlyList{}, "reflection": &reflectionList{}} {
+		err := ds.UnmarshalSSZ(target, buf)
+		if !errors.Is(err, sszutils.ErrOffset) || !strings.Contains(err.Error(), "elements of at least 20 bytes") {
+			t.Fatalf("%s: err = %v, want the region refused by the 20-byte floor", name, err)
+		}
+	}
+	payload := SpecOnlyList{Items: []*SpecOnlyElem{{V: make([]byte, 16), L: []uint64{1}}, {V: make([]byte, 16)}}}
+	testCodegenPayloadByReflection(t, payload, specs)
+	encoded, err := ds.MarshalSSZ(&payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded reflectionList
+	if err := ds.UnmarshalSSZ(&decoded, encoded); err != nil || len(decoded.Items) != 2 {
+		t.Fatalf("reflection decode of the elements' own bytes: err = %v, items = %d", err, len(decoded.Items))
+	}
+}
+
+// TestOneByteListFloors: a list of bit lists or of unions is bounded by one
+// byte per element on both engines, and both refuse the same offset table.
+func TestOneByteListFloors(t *testing.T) {
+	if _, generated := any(&OneByteLists{}).(sszutils.DynamicSizer); !generated {
+		t.Skip("no generated code present")
+	}
+	type reflectionLists struct {
+		Bits   [][]byte `ssz-type:"list,bitlist" ssz-max:"4,64"`
+		Unions []dynssz.CompatibleUnion[struct {
+			A uint32
+			B uint64
+		}] `ssz-max:"4"`
+	}
+	ds := dynssz.NewDynSsz(nil)
+	// Bits: three elements declared in a 14-byte region, two bytes past the
+	// table. Unions: an empty list.
+	buf := append([]byte{8, 0, 0, 0, 22, 0, 0, 0, 12, 0, 0, 0, 13, 0, 0, 0, 14, 0, 0, 0}, 1, 1)
+	for name, target := range map[string]any{"generated": &OneByteLists{}, "reflection": &reflectionLists{}} {
+		err := ds.UnmarshalSSZ(target, buf)
+		if !errors.Is(err, sszutils.ErrOffset) || !strings.Contains(err.Error(), "elements of at least 1 bytes") {
+			t.Fatalf("%s: err = %v, want the region refused by the one-byte floor", name, err)
+		}
+	}
+	payload := OneByteLists{Bits: [][]byte{{1}, {0x0f, 1}}}
+	payload.Unions = append(payload.Unions, dynssz.CompatibleUnion[struct {
+		A uint32
+		B uint64
+	}]{Variant: 1, Data: uint32(7)})
+	testCodegenPayloadByReflection(t, payload, nil)
+}
+
 // testCodegenPayloadWithView tests a payload serialized through a view.
 // It marshals via the view, unmarshals, and verifies roundtrip hash consistency.
 func testCodegenPayloadWithView(t *testing.T, payload, view any) {
@@ -1020,6 +1519,15 @@ func testCodegenPayloadWithView(t *testing.T, payload, view any) {
 	sszBytes, err := ds.MarshalSSZ(payload, opts...)
 	if err != nil {
 		t.Fatalf("MarshalSSZ failed: %v", err)
+	}
+	// The reflection engine, delegating to no generated code, frames the
+	// value the same way: both engines agree on the wire for every view.
+	reflectionBytes, err := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz()).MarshalSSZ(payload, opts...)
+	if err != nil {
+		t.Fatalf("reflection MarshalSSZ failed: %v", err)
+	}
+	if !bytes.Equal(reflectionBytes, sszBytes) {
+		t.Fatalf("generated code and reflection disagree:\n  gen=%x\n  refl=%x", sszBytes, reflectionBytes)
 	}
 
 	// Unmarshal roundtrip
@@ -1268,6 +1776,503 @@ func TestCodegenMultiDimSpecVec(t *testing.T) {
 // check compares a uint32 offset against limit*4, where limit is int(expr)).
 // The package building at all is the compile regression guard; the differential
 // confirms the value round-trips identically in both engines.
+// A Go array longer than its declared vector length, with variable-size
+// elements, serializes only the declared length in both engines.
+func TestCodegenOversizedArrayDynVec(t *testing.T) {
+	testCodegenPayloadByReflection(t, OversizedArrayDynVec_Payload, nil)
+}
+
+// A child with a sizer but no marshaler or encoder is inlined for marshaling,
+// but its sizer is consulted for sizing, and the size equals the encoding.
+func TestCodegenSizerOnlyChild(t *testing.T) {
+	testCodegenPayloadByReflection(t, SizerOnlyHolder_Payload, nil)
+
+	type sizer interface {
+		SizeSSZ() int
+	}
+	v := SizerOnlyHolder_Payload
+	sized, generated := any(&v).(sizer)
+	if !generated {
+		t.Skip("no generated code present")
+	}
+	data, err := dynssz.NewDynSsz(nil).MarshalSSZ(&v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if size := sized.SizeSSZ(); size != len(data) {
+		t.Fatalf("generated SizeSSZ = %d, encoding is %d bytes", size, len(data))
+	}
+	if v.S.Calls == 0 {
+		t.Error("generated sizer did not consult the child's SizeSSZDyn")
+	}
+}
+
+// A list or vector of a named basic type with its own SSZ methods must encode,
+// decode and hash like its plain twin.
+func TestCodegenPackedBasicElementsHashLikePlain(t *testing.T) {
+	testCodegenPayloadByReflection(t, BasicMethodsHolder_Payload, nil)
+
+	ds := dynssz.NewDynSsz(nil)
+	holder := BasicMethodsHolder_Payload
+	plain := BasicMethodsPlain_Payload
+
+	holderBytes, err := ds.MarshalSSZ(&holder)
+	if err != nil {
+		t.Fatalf("marshal holder: %v", err)
+	}
+	plainBytes, err := ds.MarshalSSZ(&plain)
+	if err != nil {
+		t.Fatalf("marshal plain twin: %v", err)
+	}
+	if !bytes.Equal(holderBytes, plainBytes) {
+		t.Fatalf("holder bytes %x != plain twin bytes %x", holderBytes, plainBytes)
+	}
+
+	holderRoot, err := ds.HashTreeRoot(&holder)
+	if err != nil {
+		t.Fatalf("hash holder: %v", err)
+	}
+	plainRoot, err := ds.HashTreeRoot(&plain)
+	if err != nil {
+		t.Fatalf("hash plain twin: %v", err)
+	}
+	if holderRoot != plainRoot {
+		t.Fatalf("holder root %x != plain twin root %x", holderRoot, plainRoot)
+	}
+
+	tree, err := ds.GetTree(&holder)
+	if err != nil {
+		t.Fatalf("tree holder: %v", err)
+	}
+	if treeRoot := tree.Hash(); !bytes.Equal(treeRoot, holderRoot[:]) {
+		t.Fatalf("tree root %x != root %x", treeRoot, holderRoot)
+	}
+
+	var decoded BasicMethodsHolder
+	if err = ds.UnmarshalSSZ(&decoded, holderBytes); err != nil {
+		t.Fatalf("unmarshal holder: %v", err)
+	}
+	if !reflect.DeepEqual(decoded, holder) {
+		t.Fatalf("decoded %+v != payload %+v", decoded, holder)
+	}
+}
+
+// An optional-list of a zero-size element could never decode presence: the
+// generated decoders refuse it at run time, where the element's sizer is
+// first known, and reflection refuses the type.
+func TestCodegenZeroSizeOptionalListElementRejected(t *testing.T) {
+	unmarshaler, ok := any(&ZeroSizeShellOptional{}).(sszutils.DynamicUnmarshaler)
+	if !ok {
+		t.Skip("no generated code present")
+	}
+	decoder, ok := any(&ZeroSizeShellOptional{}).(sszutils.DynamicDecoder)
+	if !ok {
+		t.Fatal("holder has no generated decoder")
+	}
+
+	ds := dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes())
+	for _, data := range [][]byte{{4, 0, 0, 0}, {4, 0, 0, 0, 0, 0}} {
+		if err := unmarshaler.UnmarshalSSZDyn(ds, data); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+			t.Errorf("buffer decode of %x: err = %v, want ErrInvalidConstraint", data, err)
+		}
+		if err := decoder.UnmarshalSSZDecoder(ds, sszutils.NewBufferDecoder(data)); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+			t.Errorf("stream decode of %x: err = %v, want ErrInvalidConstraint", data, err)
+		}
+		if err := ds.UnmarshalSSZReader(&ZeroSizeShellOptional{}, bytes.NewReader(data), -1); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+			t.Errorf("open-region decode of %x: err = %v, want ErrInvalidConstraint", data, err)
+		}
+	}
+
+	refl := dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes(), dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+	if err := refl.UnmarshalSSZ(&ZeroSizeShellOptional{}, []byte{4, 0, 0, 0}); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Errorf("reflection err = %v, want ErrInvalidConstraint", err)
+	}
+}
+
+// A custom type whose hash method appends only its packed bytes is padded to
+// a leaf as a field and packed inside lists and vectors, so the holder hashes
+// like its uint16 twin in both engines; a root-level value is padded too.
+func TestCodegenPackedCustomElements(t *testing.T) {
+	testCodegenPayloadByReflection(t, PackedCustomHolder_Payload, nil)
+
+	ds := dynssz.NewDynSsz(nil)
+	holder := PackedCustomHolder_Payload
+	plain := PackedCustomPlain_Payload
+
+	holderBytes, err := ds.MarshalSSZ(&holder)
+	if err != nil {
+		t.Fatalf("marshal holder: %v", err)
+	}
+	plainBytes, err := ds.MarshalSSZ(&plain)
+	if err != nil {
+		t.Fatalf("marshal plain twin: %v", err)
+	}
+	if !bytes.Equal(holderBytes, plainBytes) {
+		t.Fatalf("holder bytes %x != plain twin bytes %x", holderBytes, plainBytes)
+	}
+
+	holderRoot, err := ds.HashTreeRoot(&holder)
+	if err != nil {
+		t.Fatalf("hash holder: %v", err)
+	}
+	plainRoot, err := ds.HashTreeRoot(&plain)
+	if err != nil {
+		t.Fatalf("hash plain twin: %v", err)
+	}
+	if holderRoot != plainRoot {
+		t.Fatalf("holder root %x != plain twin root %x", holderRoot, plainRoot)
+	}
+
+	tree, err := ds.GetTree(&holder)
+	if err != nil {
+		t.Fatalf("tree holder: %v", err)
+	}
+	if treeRoot := tree.Hash(); !bytes.Equal(treeRoot, holderRoot[:]) {
+		t.Fatalf("tree root %x != root %x", treeRoot, holderRoot)
+	}
+
+	var decoded PackedCustomHolder
+	if err = ds.UnmarshalSSZ(&decoded, holderBytes); err != nil {
+		t.Fatalf("unmarshal holder: %v", err)
+	}
+	if !reflect.DeepEqual(decoded, holder) {
+		t.Fatalf("decoded %+v != payload %+v", decoded, holder)
+	}
+
+	single := PackedCustom{V: 0x1234}
+	singleRoot, err := ds.HashTreeRoot(&single)
+	if err != nil {
+		t.Fatalf("hash root-level custom: %v", err)
+	}
+	var want [32]byte
+	binary.LittleEndian.PutUint16(want[:], single.V)
+	if singleRoot != want {
+		t.Fatalf("root-level custom root %x != leaf %x", singleRoot, want)
+	}
+}
+
+// A child that only implements the streaming decoder is bridged through a
+// buffer decoder inside generated buffer code; the bridge must reject bytes the
+// child left unread in its region, as the streaming generated code and the
+// reflection engine do.
+func TestCodegenDecoderBridgeRejectsTrailingBytes(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+	payload := GenCovCustomHolder2{C: streamOnlyCustom{A: 0x11111111}, CB: bufOnlyCustom{A: 0x22222222}, D: []byte{0xdd}}
+	enc, err := ds.MarshalSSZ(&payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Layout: offsets of C, CB and D at 0, 4 and 16, CS at 8..16, then C (4
+	// bytes), CB (4 bytes), D (1 byte).
+	if len(enc) != 29 || binary.LittleEndian.Uint32(enc[0:]) != 20 || binary.LittleEndian.Uint32(enc[4:]) != 24 || binary.LittleEndian.Uint32(enc[16:]) != 28 {
+		t.Fatalf("unexpected layout: %x", enc)
+	}
+	// One garbage byte after C, and the following offsets moved past it.
+	mutated := append(append(append([]byte{}, enc[:24]...), 0xaa), enc[24:]...)
+	binary.LittleEndian.PutUint32(mutated[4:], 25)
+	binary.LittleEndian.PutUint32(mutated[16:], 29)
+
+	var viaReflection GenCovCustomHolder2
+	if err := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz()).UnmarshalSSZ(&viaReflection, mutated); !errors.Is(err, sszutils.ErrOffset) {
+		t.Fatalf("reflection: err = %v, want ErrOffset", err)
+	}
+
+	type bufferUnmarshaler interface {
+		UnmarshalSSZDyn(sszutils.DynamicSpecs, []byte) error
+	}
+	var generated GenCovCustomHolder2
+	unmarshaler, ok := any(&generated).(bufferUnmarshaler)
+	if !ok {
+		t.Skip("no generated code present")
+	}
+	if err := unmarshaler.UnmarshalSSZDyn(ds, mutated); !errors.Is(err, sszutils.ErrOffset) {
+		t.Fatalf("generated UnmarshalSSZDyn: err = %v, want ErrOffset", err)
+	}
+	if err := unmarshaler.UnmarshalSSZDyn(ds, enc); err != nil {
+		t.Fatalf("generated UnmarshalSSZDyn on the clean encoding: %v", err)
+	}
+}
+
+// Byte-array elements are copied in bulk only when the Go array is laid out
+// exactly as encoded; an oversized or spec-sized backing array and a bitvector
+// element go through the per-element path, so the encoding, the size and the
+// padding-bit check agree with reflection.
+// A field type whose HashTreeRootWith takes a concrete foreign hasher is hashed
+// through HashTreeRoot() by both engines; the generated code compiles and the
+// roots agree.
+func TestCodegenForeignHashTreeRootWith(t *testing.T) {
+	testCodegenPayloadByReflection(t, ForeignHashWithHolder_Payload, nil)
+
+	holder := ForeignHashWithHolder_Payload
+	root, err := dynssz.NewDynSsz(nil).HashTreeRoot(&holder)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	var leafF, leafY [32]byte
+	binary.LittleEndian.PutUint64(leafF[:], holder.F.A)
+	leafY[0] = holder.Y
+	want := sha256.Sum256(append(leafF[:], leafY[:]...))
+	if root != want {
+		t.Fatalf("root %x != %x", root, want)
+	}
+}
+
+// The plain fastssz `ssz` tag is read as ssz-type by both engines: the tagged
+// type encodes and hashes like its ssz-type twin, and a bitlist without its
+// termination bit is rejected by generated code as well.
+func TestCodegenFastsszTag(t *testing.T) {
+	testCodegenPayloadByReflection(t, FastsszTagged_Payload, nil)
+
+	ds := dynssz.NewDynSsz(nil)
+	tagged := FastsszTagged_Payload
+	plain := FastsszTaggedPlain_Payload
+	taggedBytes, err := ds.MarshalSSZ(&tagged)
+	if err != nil {
+		t.Fatalf("marshal tagged: %v", err)
+	}
+	plainBytes, err := ds.MarshalSSZ(&plain)
+	if err != nil {
+		t.Fatalf("marshal plain: %v", err)
+	}
+	if !bytes.Equal(taggedBytes, plainBytes) {
+		t.Fatalf("tagged bytes %x != plain bytes %x", taggedBytes, plainBytes)
+	}
+	taggedRoot, err := ds.HashTreeRoot(&tagged)
+	if err != nil {
+		t.Fatalf("hash tagged: %v", err)
+	}
+	plainRoot, err := ds.HashTreeRoot(&plain)
+	if err != nil {
+		t.Fatalf("hash plain: %v", err)
+	}
+	if taggedRoot != plainRoot {
+		t.Fatalf("tagged root %x != plain root %x", taggedRoot, plainRoot)
+	}
+
+	// Bits without a termination bit: offset (4) + Filler (1) + two zero bytes.
+	unterminated := append(append([]byte{5, 0, 0, 0}, 7), 0xa5, 0x00)
+	var decoded FastsszTagged
+	if err := ds.UnmarshalSSZ(&decoded, unterminated); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("unterminated bitlist: err = %v, want ErrInvalidValueRange", err)
+	}
+}
+
+// An annotation written against an alias belongs to the aliased type in both
+// engines: the holder hashes like its tagged twin and both fields enforce the
+// annotated limit.
+func TestCodegenAliasAnnotation(t *testing.T) {
+	testCodegenPayloadByReflection(t, AliasAnnotatedHolder_Payload, nil)
+
+	type twin struct {
+		B []uint64 `ssz-max:"6"`
+		C []uint64 `ssz-max:"6"`
+	}
+	ds := dynssz.NewDynSsz(nil)
+	holder := AliasAnnotatedHolder_Payload
+	holderRoot, err := ds.HashTreeRoot(&holder)
+	if err != nil {
+		t.Fatalf("hash holder: %v", err)
+	}
+	twinRoot, err := ds.HashTreeRoot(&twin{B: []uint64{1, 2, 3}, C: []uint64{4, 5}})
+	if err != nil {
+		t.Fatalf("hash twin: %v", err)
+	}
+	if holderRoot != twinRoot {
+		t.Fatalf("holder root %x != twin root %x", holderRoot, twinRoot)
+	}
+
+	seven := AliasAnnotated{1, 2, 3, 4, 5, 6, 7}
+	for name, v := range map[string]*AliasAnnotatedHolder{
+		"B over limit": {B: seven},
+		"C over limit": {C: seven},
+	} {
+		if _, err := ds.MarshalSSZ(v); !errors.Is(err, sszutils.ErrListTooBig) {
+			t.Errorf("%s: err = %v, want ErrListTooBig", name, err)
+		}
+	}
+}
+
+// Surplus tag dimensions are dropped by both engines; the limits that remain
+// are enforced.
+func TestCodegenSurplusTagDimensions(t *testing.T) {
+	testCodegenPayloadByReflection(t, SurplusTags_Payload, nil)
+
+	ds := dynssz.NewDynSsz(nil)
+	nine := make([]uint64, 9)
+	if _, err := ds.MarshalSSZ(&SurplusTags{G: nine}); !errors.Is(err, sszutils.ErrListTooBig) {
+		t.Errorf("G with 9 elements: err = %v, want ErrListTooBig", err)
+	}
+	if _, err := ds.MarshalSSZ(&SurplusTags{H: make([]uint64, 65)}); !errors.Is(err, sszutils.ErrListTooBig) {
+		t.Errorf("H with 65 elements: err = %v, want ErrListTooBig", err)
+	}
+}
+
+// A bit-sized bitvector stored element-wise has its padding bits checked like
+// the byte-backed form, in both engines and on every path: a value with bits
+// above the bit size is refused on marshal, hash and decode.
+func TestCodegenElemBitvectorPadding(t *testing.T) {
+	testCodegenPayloadByReflection(t, ElemBitvectors_Payload, ElemBitvectors_Specs)
+
+	for name, ds := range map[string]*dynssz.DynSsz{
+		"default":    dynssz.NewDynSsz(ElemBitvectors_Specs),
+		"reflection": dynssz.NewDynSsz(ElemBitvectors_Specs, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz()),
+	} {
+		clean := ElemBitvectors_Payload
+		data, err := ds.MarshalSSZ(&clean)
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", name, err)
+		}
+		// Layout: P (2) N (2) Q (2) S (2) B (2) Z (1); the second byte of
+		// each bitvector carries the four padding bits.
+		if len(data) != 11 {
+			t.Fatalf("%s: encoding is %d bytes, want 11", name, len(data))
+		}
+		for field, last := range map[string]int{"P": 1, "N": 3, "Q": 5, "S": 7, "B": 9} {
+			dirty := append([]byte{}, data...)
+			dirty[last] |= 0xf0
+			var decoded ElemBitvectors
+			if err := ds.UnmarshalSSZ(&decoded, dirty); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+				t.Errorf("%s: %s with padding bits set decodes: err = %v", name, field, err)
+			}
+			var streamed ElemBitvectors
+			if err := ds.UnmarshalSSZReader(&streamed, bytes.NewReader(dirty), len(dirty)); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+				t.Errorf("%s: %s with padding bits set streams: err = %v", name, field, err)
+			}
+		}
+
+		hi := byte(0xff)
+		dirtyValues := map[string]ElemBitvectors{
+			"P": {P: [2]*byte{&hi, &hi}},
+			"N": {N: []NamedBit{0xff, 0xff}},
+			"Q": {Q: []*byte{&hi, &hi}},
+			"S": {S: []*byte{&hi, &hi}},
+			"B": {B: [2]byte{0xff, 0xff}},
+		}
+		for field, value := range dirtyValues {
+			if _, err := ds.MarshalSSZ(&value); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+				t.Errorf("%s: marshal %s with padding bits set: err = %v", name, field, err)
+			}
+			var streamed bytes.Buffer
+			if err := ds.MarshalSSZWriter(&value, &streamed); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+				t.Errorf("%s: stream marshal %s with padding bits set: err = %v", name, field, err)
+			}
+			if _, err := ds.HashTreeRoot(&value); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+				t.Errorf("%s: hash %s with padding bits set: err = %v", name, field, err)
+			}
+		}
+	}
+}
+
+func TestCodegenBulkByteElemsUseDeclaredWidth(t *testing.T) {
+	for _, specs := range []map[string]any{nil, BulkElems_Specs} {
+		testCodegenPayloadByReflection(t, BulkElems_Payload, specs)
+	}
+
+	ds := dynssz.NewDynSsz(BulkElems_Specs)
+	payload := BulkElems_Payload
+	data, err := ds.MarshalSSZ(&payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	size, err := ds.SizeSSZ(&payload)
+	if err != nil {
+		t.Fatalf("size: %v", err)
+	}
+	// 4 offsets, then 3 x 32 + 3 x 32 + 3 x 2 + 3 x 32 element bytes.
+	if want := 16 + 3*32 + 3*32 + 3*2 + 3*32; len(data) != want || size != want {
+		t.Fatalf("encoding is %d bytes, SizeSSZ %d, want %d", len(data), size, want)
+	}
+
+	var decoded BulkElems
+	if err = ds.UnmarshalSSZ(&decoded, data); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for i := range payload.A {
+		if !bytes.Equal(decoded.A[i][:32], payload.A[i][:32]) || [16]byte(decoded.A[i][32:]) != [16]byte{} {
+			t.Fatalf("A[%d] decoded as %x", i, decoded.A[i])
+		}
+		if !bytes.Equal(decoded.B[i][:32], payload.B[i][:32]) || [16]byte(decoded.B[i][32:]) != [16]byte{} {
+			t.Fatalf("B[%d] decoded as %x", i, decoded.B[i])
+		}
+	}
+
+	dirty := BulkElems{C: [][2]byte{{0xff, 0xff}}}
+	if _, err = ds.MarshalSSZ(&dirty); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("marshal with padding bits set: err = %v, want ErrInvalidValueRange (padding bits)", err)
+	}
+	dirtyData := append([]byte{}, data...)
+	// C's region starts after the 16 offset bytes and the 3 x 32 bytes of A
+	// and B; set the padding bits of its first element.
+	dirtyData[16+3*32+3*32+1] = 0xff
+	if err = ds.UnmarshalSSZ(&decoded, dirtyData); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("unmarshal with padding bits set: err = %v, want ErrInvalidValueRange (padding bits)", err)
+	}
+}
+
+// A bitlist backed by a slice of a named uint8 type is viewed as bytes in
+// both engines: it encodes, sizes, decodes and hashes like its []byte twin,
+// including the lone termination byte of an empty value.
+func TestCodegenNamedBitlistElements(t *testing.T) {
+	testCodegenPayloadByReflection(t, NamedBitlists_Payload, nil)
+
+	ds := dynssz.NewDynSsz(nil)
+	holder := NamedBitlists_Payload
+	plain := NamedBitlistsPlain_Payload
+
+	holderBytes, err := ds.MarshalSSZ(&holder)
+	if err != nil {
+		t.Fatalf("marshal holder: %v", err)
+	}
+	plainBytes, err := ds.MarshalSSZ(&plain)
+	if err != nil {
+		t.Fatalf("marshal plain twin: %v", err)
+	}
+	if !bytes.Equal(holderBytes, plainBytes) {
+		t.Fatalf("holder bytes %x != plain twin bytes %x", holderBytes, plainBytes)
+	}
+	size, err := ds.SizeSSZ(&holder)
+	if err != nil {
+		t.Fatalf("size holder: %v", err)
+	}
+	if size != len(holderBytes) {
+		t.Fatalf("SizeSSZ %d, encoding is %d bytes", size, len(holderBytes))
+	}
+
+	holderRoot, err := ds.HashTreeRoot(&holder)
+	if err != nil {
+		t.Fatalf("hash holder: %v", err)
+	}
+	plainRoot, err := ds.HashTreeRoot(&plain)
+	if err != nil {
+		t.Fatalf("hash plain twin: %v", err)
+	}
+	if holderRoot != plainRoot {
+		t.Fatalf("holder root %x != plain twin root %x", holderRoot, plainRoot)
+	}
+
+	var decoded NamedBitlists
+	if err = ds.UnmarshalSSZ(&decoded, holderBytes); err != nil {
+		t.Fatalf("unmarshal holder: %v", err)
+	}
+	if !bytes.Equal(sszutils.ByteSlice(decoded.B), sszutils.ByteSlice(holder.B)) ||
+		!bytes.Equal(sszutils.ByteSlice(decoded.P), sszutils.ByteSlice(holder.P)) ||
+		!bytes.Equal(sszutils.ByteSlice(decoded.E), []byte{0x01}) {
+		t.Fatalf("decoded %+v != payload %+v", decoded, holder)
+	}
+	var streamed NamedBitlists
+	if err = ds.UnmarshalSSZReader(&streamed, bytes.NewReader(holderBytes), len(holderBytes)); err != nil {
+		t.Fatalf("stream unmarshal holder: %v", err)
+	}
+	if !bytes.Equal(sszutils.ByteSlice(streamed.B), sszutils.ByteSlice(holder.B)) {
+		t.Fatalf("stream decoded %+v != payload %+v", streamed, holder)
+	}
+
+	unterminated := NamedBitlists{B: []NamedBit{0xa5, 0x00}}
+	if _, err = ds.MarshalSSZ(&unterminated); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("marshal without termination bit: err = %v, want ErrInvalidValueRange", err)
+	}
+}
+
 func TestCodegenStreamVecDynSize(t *testing.T) {
 	for _, specs := range []map[string]any{nil, StreamVecDynSize_Specs} {
 		testCodegenPayloadByReflection(t, StreamVecDynSize_Payload, specs)
@@ -2478,6 +3483,26 @@ func TestCodegenRecursionDepthBound(t *testing.T) {
 			}
 		})
 
+		t.Run("overlapping_cycles", func(t *testing.T) {
+			// Every member of two cycles that share a type charges a level in
+			// both engines, so a trip A -> C -> B -> A costs three.
+			deepVal := func(n int) *RecursiveOverlapA {
+				cur := &RecursiveOverlapA{}
+				for range n {
+					cur = &RecursiveOverlapA{C: []RecursiveOverlapC{{B: []RecursiveOverlapB{{A: []RecursiveOverlapA{*cur}}}}}}
+				}
+				return cur
+			}
+			r := firstFail(func(n int) bool { _, err := refl.MarshalSSZ(deepVal(n)); return depthErr(err) })
+			c := firstFail(func(n int) bool { _, err := ds.MarshalSSZ(deepVal(n)); return depthErr(err) })
+			if r != c {
+				t.Fatalf("first rejected chain: reflection %d, codegen %d", r, c)
+			}
+			if r == 0 || r > 4096/3+1 {
+				t.Fatalf("first rejected chain %d does not charge every member", r)
+			}
+		})
+
 		t.Run("value_root_walk", func(t *testing.T) {
 			// The same value walked from a value root instead of a pointer root
 			// is charged identically: the outermost value costs nothing in
@@ -2577,46 +3602,6 @@ func TestCodegenRecursionDepthBound(t *testing.T) {
 			t.Fatalf("root mismatch: generated %x, reflection %x", cgRoot, reflRoot)
 		}
 	})
-
-	t.Run("only_cyclic_types_carry_a_depth", func(t *testing.T) {
-		// A type that is not on a cycle keeps its plain method set, so ordinary
-		// schemas pay nothing for the bound.
-		source, err := os.ReadFile("gen_recursive.go")
-		if err != nil {
-			t.Fatalf("read generated recursive file: %v", err)
-		}
-		if !strings.Contains(string(source), "unmarshalSSZAtDepth") {
-			t.Error("a cyclic type must carry depth-bearing methods")
-		}
-
-		// Every other generated file holds types that are not on a cycle, so
-		// none of them may carry the bound. Checked by scanning rather than by
-		// naming one, since which file a type lands in is only a grouping.
-		others, err := filepath.Glob("gen_*.go")
-		if err != nil {
-			t.Fatalf("list generated files: %v", err)
-		}
-		checked := 0
-		for _, name := range others {
-			// gen_nodynnest.go and gen_extended.go carry recursive types on
-			// purpose: they pin the static-only build and the optional edge
-			// against cycles.
-			if name == "gen_recursive.go" || name == "gen_nodynnest.go" || name == "gen_extended.go" {
-				continue
-			}
-			plain, err := os.ReadFile(name)
-			if err != nil {
-				t.Fatalf("read %s: %v", name, err)
-			}
-			checked++
-			if strings.Contains(string(plain), "AtDepth") {
-				t.Errorf("%s holds no cyclic type but carries depth-bearing methods", name)
-			}
-		}
-		if checked == 0 {
-			t.Fatal("no other generated files were found to check")
-		}
-	})
 }
 
 // A recursive type generated with a view analyzes and carries the depth bound
@@ -2629,25 +3614,6 @@ func TestCodegenRecursionDepthBound(t *testing.T) {
 func TestCodegenRecursiveViewDepthBound(t *testing.T) {
 	if _, generated := any(&RecursiveViewNode{}).(sszutils.DynamicUnmarshaler); !generated {
 		t.Skip("no generated code present")
-	}
-
-	source, err := os.ReadFile("gen_recursive.go")
-	if err != nil {
-		t.Fatalf("read generated file: %v", err)
-	}
-	code := string(source)
-
-	// The view method set has to carry the depth too; a view method entering at
-	// zero would restart the count halfway round the cycle.
-	for _, fn := range []string{
-		"marshalSSZView_RecursiveViewNode_View1AtDepth",
-		"unmarshalSSZView_RecursiveViewNode_View1AtDepth",
-		"sizeSSZView_RecursiveViewNode_View1AtDepth",
-		"hashTreeRootView_RecursiveViewNode_View1AtDepth",
-	} {
-		if !strings.Contains(code, fn) {
-			t.Errorf("view method %s does not carry a nesting depth", fn)
-		}
 	}
 
 	ds := dynssz.NewDynSsz(nil)
@@ -2923,6 +3889,71 @@ func TestCodegenWithoutDynamicExpressionsRouting(t *testing.T) {
 	if len(encoded) != want {
 		t.Errorf("entrypoint encoded %d bytes, want %d", len(encoded), want)
 	}
+}
+
+// Static generation over packed wrapper elements: the generated wrapper is
+// reached through its static hash method and the dynamic-only wrapper is
+// inlined, and the root equals the plain twin's.
+func TestCodegenWithoutDynamicExpressionsPackedWrappers(t *testing.T) {
+	generated, ok := any(&NoDynWrappedHolder_Payload).(interface{ HashTreeRoot() ([32]byte, error) })
+	if !ok {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+
+	plainRoot, err := ds.HashTreeRoot(&NoDynWrappedPlain_Payload)
+	if err != nil {
+		t.Fatalf("hash plain twin: %v", err)
+	}
+	genRoot, err := generated.HashTreeRoot()
+	if err != nil {
+		t.Fatalf("generated hash: %v", err)
+	}
+	if genRoot != plainRoot {
+		t.Fatalf("generated root %x != plain twin root %x", genRoot, plainRoot)
+	}
+	tree, err := ds.GetTree(&NoDynWrappedHolder_Payload)
+	if err != nil {
+		t.Fatalf("tree holder: %v", err)
+	}
+	if treeRoot := tree.Hash(); !bytes.Equal(treeRoot, plainRoot[:]) {
+		t.Fatalf("tree root %x != root %x", treeRoot, plainRoot)
+	}
+
+	for i := range 11 {
+		mutated := NoDynWrappedHolder_Payload
+		mutated.L = append([]NoDynWrapped(nil), mutated.L...)
+		mutated.DL = append([]NoDynWrappedDyn(nil), mutated.DL...)
+		switch {
+		case i < 3:
+			mutated.L[i].Data = 0xff
+		case i < 7:
+			mutated.V[i-3].Data = 0xff
+		case i == 7:
+			mutated.F.Data = 0xff
+		case i < 10:
+			mutated.DL[i-8].Data = 0xff
+		default:
+			mutated.DF.Data = 0xff
+		}
+		mutatedRoot, mutateErr := ds.HashTreeRoot(&mutated)
+		if mutateErr != nil {
+			t.Fatalf("hash mutated value %d: %v", i, mutateErr)
+		}
+		if mutatedRoot == plainRoot {
+			t.Errorf("value %d does not reach the root", i)
+		}
+	}
+}
+
+// Static generation reaches a custom type through its static methods whether
+// or not it also carries the spec-aware ones, on the buffer and the stream
+// paths, and the result matches reflection.
+func TestCodegenWithoutDynamicExpressionsCustomTypes(t *testing.T) {
+	if _, generated := any(&NoDynCustomHolder_Payload).(interface{ SizeSSZ() int }); !generated {
+		t.Skip("no generated code present")
+	}
+	testCodegenPayloadByReflection(t, NoDynCustomHolder_Payload, nil)
 }
 
 // Decoding reuses what the target already holds: a slice that fits keeps its
@@ -3310,6 +4341,30 @@ func TestVectorSliceShorterThanItsLength(t *testing.T) {
 	}
 }
 
+// The reflect front end describes a fully delegated variable-size element
+// without its fields, so a list of it has no element minimum to bound the
+// region by: generation proceeds in every mode, as the go/types front end
+// does for the same shape.
+func TestReflectFrontendDelegatedDynamicListElement(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts []codegen.CodeGeneratorOption
+	}{
+		{"default", nil},
+		{"streaming", []codegen.CodeGeneratorOption{codegen.WithCreateEncoderFn(), codegen.WithCreateDecoderFn()}},
+	} {
+		cg := codegen.NewCodeGenerator(nil)
+		cg.BuildFile("gen_zz_reflectdyn.go", append(tc.opts, codegen.WithReflectType(reflect.TypeFor[ReflectDelegatedDynList]()))...)
+		files, err := cg.GenerateToMap()
+		if err != nil {
+			t.Fatalf("%s: generate: %v", tc.name, err)
+		}
+		if files["gen_zz_reflectdyn.go"] == "" {
+			t.Fatalf("%s: no output", tc.name)
+		}
+	}
+}
+
 // The reflect front-end must emit the same compiling code for optional fields
 // the go/types front-end emits: an optional's variable is the pointer, its
 // element handling dereferences exactly once. The generated output is
@@ -3410,5 +4465,2558 @@ func TestCodegenDynSizeVectorNoStatic(t *testing.T) {
 				t.Fatalf("root changed: got %s want %s", got, tc.root)
 			}
 		})
+	}
+}
+
+// A list or vector of wrappers around a basic value, with hand-written or
+// generated hash methods, must encode, decode and hash like its plain twin
+// under every option set, and every element must reach the root.
+func TestCodegenWrappedElementsWithMethodsPack(t *testing.T) {
+	if _, generated := any(&WrappedGenerated{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+
+	testCodegenPayloadByReflection(t, WrappedMethodsHolder_Payload, nil)
+
+	mutate := func(holder *WrappedMethodsHolder, plain *WrappedMethodsPlain, i int, v uint64) {
+		switch {
+		case i < len(holder.L):
+			holder.L[i].Data, plain.L[i] = v, v
+		case i < len(holder.L)+len(holder.V):
+			holder.V[i-len(holder.L)].Data, plain.V[i-len(holder.L)] = v, v
+		case i < len(holder.L)+len(holder.V)+len(holder.GL):
+			holder.GL[i-len(holder.L)-len(holder.V)].Data, plain.GL[i-len(holder.L)-len(holder.V)] = v, v
+		default:
+			j := i - len(holder.L) - len(holder.V) - len(holder.GL)
+			holder.GV[j].Data, plain.GV[j] = v, v
+		}
+	}
+	elements := len(WrappedMethodsHolder_Payload.L) + len(WrappedMethodsHolder_Payload.V) +
+		len(WrappedMethodsHolder_Payload.GL) + len(WrappedMethodsHolder_Payload.GV)
+
+	for _, tc := range []struct {
+		name string
+		opts []dynssz.DynSszOption
+	}{
+		{"default", nil},
+		{"nofastssz", []dynssz.DynSszOption{dynssz.WithNoFastSsz()}},
+		{"reflection", []dynssz.DynSszOption{dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := dynssz.NewDynSsz(nil, tc.opts...)
+			holder := WrappedMethodsHolder_Payload
+			plain := WrappedMethodsPlain_Payload
+
+			holderBytes, err := ds.MarshalSSZ(&holder)
+			if err != nil {
+				t.Fatalf("marshal holder: %v", err)
+			}
+			plainBytes, err := ds.MarshalSSZ(&plain)
+			if err != nil {
+				t.Fatalf("marshal plain twin: %v", err)
+			}
+			if !bytes.Equal(holderBytes, plainBytes) {
+				t.Fatalf("holder bytes %x != plain twin bytes %x", holderBytes, plainBytes)
+			}
+
+			holderRoot, err := ds.HashTreeRoot(&holder)
+			if err != nil {
+				t.Fatalf("hash holder: %v", err)
+			}
+			plainRoot, err := ds.HashTreeRoot(&plain)
+			if err != nil {
+				t.Fatalf("hash plain twin: %v", err)
+			}
+			if holderRoot != plainRoot {
+				t.Fatalf("holder root %x != plain twin root %x", holderRoot, plainRoot)
+			}
+
+			tree, err := ds.GetTree(&holder)
+			if err != nil {
+				t.Fatalf("tree holder: %v", err)
+			}
+			if treeRoot := tree.Hash(); !bytes.Equal(treeRoot, holderRoot[:]) {
+				t.Fatalf("tree root %x != root %x", treeRoot, holderRoot)
+			}
+
+			var decoded WrappedMethodsHolder
+			if err = ds.UnmarshalSSZ(&decoded, holderBytes); err != nil {
+				t.Fatalf("unmarshal holder: %v", err)
+			}
+			if !reflect.DeepEqual(decoded, holder) {
+				t.Fatalf("decoded %+v != payload %+v", decoded, holder)
+			}
+
+			// Every element has to reach the root.
+			for i := range elements {
+				mutated, mutatedPlain := WrappedMethodsHolder_Payload, WrappedMethodsPlain_Payload
+				mutated.L = append([]WrappedWithMethods(nil), mutated.L...)
+				mutated.GL = append([]WrappedGenerated(nil), mutated.GL...)
+				mutatedPlain.L = append([]uint64(nil), mutatedPlain.L...)
+				mutatedPlain.GL = append([]uint64(nil), mutatedPlain.GL...)
+				mutate(&mutated, &mutatedPlain, i, 0xff)
+
+				mutatedRoot, mutateErr := ds.HashTreeRoot(&mutated)
+				if mutateErr != nil {
+					t.Fatalf("hash mutated element %d: %v", i, mutateErr)
+				}
+				mutatedPlainRoot, mutateErr := ds.HashTreeRoot(&mutatedPlain)
+				if mutateErr != nil {
+					t.Fatalf("hash mutated plain element %d: %v", i, mutateErr)
+				}
+				if mutatedRoot == holderRoot {
+					t.Errorf("element %d does not reach the root", i)
+				}
+				if mutatedRoot != mutatedPlainRoot {
+					t.Errorf("mutated element %d: holder root %x != plain twin root %x", i, mutatedRoot, mutatedPlainRoot)
+				}
+			}
+		})
+	}
+
+	// The generated method of the holder must agree as well.
+	hh := hasher.NewHasher()
+	defer hh.Reset()
+	holder := WrappedMethodsHolder_Payload
+	generated, ok := any(&holder).(sszutils.DynamicHashRoot)
+	if !ok {
+		t.Fatal("holder has no generated hash method")
+	}
+	if err := generated.HashTreeRootWithDyn(dynssz.NewDynSsz(nil), hh); err != nil {
+		t.Fatalf("generated hash: %v", err)
+	}
+	plainRoot, err := dynssz.NewDynSsz(nil).HashTreeRoot(&WrappedMethodsPlain_Payload)
+	if err != nil {
+		t.Fatalf("hash plain twin: %v", err)
+	}
+	if root := hh.Hash(); !bytes.Equal(root, plainRoot[:]) {
+		t.Fatalf("generated root %x != plain twin root %x", root, plainRoot)
+	}
+}
+
+// A custom element of a basic size packs like that basic type, through its
+// walker method or the prefix of its root: the holder must encode, decode and
+// hash like its plain twin, and every element must reach the root.
+func TestCodegenBasicSizedCustomElements(t *testing.T) {
+	if _, generated := any(&BasicSizedCustomHolder{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+
+	testCodegenPayloadByReflection(t, BasicSizedCustomHolder_Payload, nil)
+
+	elements := len(BasicSizedCustomHolder_Payload.L) + len(BasicSizedCustomHolder_Payload.V) +
+		len(BasicSizedCustomHolder_Payload.R) + len(BasicSizedCustomHolder_Payload.RV)
+	mutate := func(holder *BasicSizedCustomHolder, plain *BasicSizedCustomPlain, i int) {
+		switch {
+		case i < len(holder.L):
+			holder.L[i], plain.L[i] = 0xff, 0xff
+		case i < len(holder.L)+len(holder.V):
+			j := i - len(holder.L)
+			holder.V[j], plain.V[j] = 0xff, 0xff
+		case i < len(holder.L)+len(holder.V)+len(holder.R):
+			j := i - len(holder.L) - len(holder.V)
+			holder.R[j].V, plain.R[j] = 0xff, 0xff
+		default:
+			j := i - len(holder.L) - len(holder.V) - len(holder.R)
+			holder.RV[j].V, plain.RV[j] = 0xff, 0xff
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		opts []dynssz.DynSszOption
+	}{
+		{"default", nil},
+		{"nofastssz", []dynssz.DynSszOption{dynssz.WithNoFastSsz()}},
+		{"nodelegation", []dynssz.DynSszOption{dynssz.WithNoDelegation()}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := dynssz.NewDynSsz(nil, tc.opts...)
+			holder := BasicSizedCustomHolder_Payload
+			plain := BasicSizedCustomPlain_Payload
+
+			holderBytes, err := ds.MarshalSSZ(&holder)
+			if err != nil {
+				t.Fatalf("marshal holder: %v", err)
+			}
+			plainBytes, err := ds.MarshalSSZ(&plain)
+			if err != nil {
+				t.Fatalf("marshal plain twin: %v", err)
+			}
+			if !bytes.Equal(holderBytes, plainBytes) {
+				t.Fatalf("holder bytes %x != plain twin bytes %x", holderBytes, plainBytes)
+			}
+
+			holderRoot, err := ds.HashTreeRoot(&holder)
+			if err != nil {
+				t.Fatalf("hash holder: %v", err)
+			}
+			plainRoot, err := ds.HashTreeRoot(&plain)
+			if err != nil {
+				t.Fatalf("hash plain twin: %v", err)
+			}
+			if holderRoot != plainRoot {
+				t.Fatalf("holder root %x != plain twin root %x", holderRoot, plainRoot)
+			}
+
+			tree, err := ds.GetTree(&holder)
+			if err != nil {
+				t.Fatalf("tree holder: %v", err)
+			}
+			if treeRoot := tree.Hash(); !bytes.Equal(treeRoot, holderRoot[:]) {
+				t.Fatalf("tree root %x != root %x", treeRoot, holderRoot)
+			}
+
+			var decoded BasicSizedCustomHolder
+			if err = ds.UnmarshalSSZ(&decoded, holderBytes); err != nil {
+				t.Fatalf("unmarshal holder: %v", err)
+			}
+			if !reflect.DeepEqual(decoded, holder) {
+				t.Fatalf("decoded %+v != payload %+v", decoded, holder)
+			}
+
+			for i := range elements {
+				mutated, mutatedPlain := BasicSizedCustomHolder_Payload, BasicSizedCustomPlain_Payload
+				mutated.L = append([]BasicSizedCustom(nil), mutated.L...)
+				mutated.R = append([]RootOnlyCustom(nil), mutated.R...)
+				mutatedPlain.L = append([]uint64(nil), mutatedPlain.L...)
+				mutatedPlain.R = append([]uint16(nil), mutatedPlain.R...)
+				mutate(&mutated, &mutatedPlain, i)
+
+				mutatedRoot, mutateErr := ds.HashTreeRoot(&mutated)
+				if mutateErr != nil {
+					t.Fatalf("hash mutated element %d: %v", i, mutateErr)
+				}
+				mutatedPlainRoot, mutateErr := ds.HashTreeRoot(&mutatedPlain)
+				if mutateErr != nil {
+					t.Fatalf("hash mutated plain element %d: %v", i, mutateErr)
+				}
+				if mutatedRoot == holderRoot {
+					t.Errorf("element %d does not reach the root", i)
+				}
+				if mutatedRoot != mutatedPlainRoot {
+					t.Errorf("mutated element %d: holder root %x != plain twin root %x", i, mutatedRoot, mutatedPlainRoot)
+				}
+			}
+		})
+	}
+}
+
+// A custom element of a basic size whose walker method merkleizes a leaf of
+// its own breaks the packed contract: the scope holds packed bytes and the
+// leaf is a whole chunk, so the reduction is handed more chunks than the limit
+// holds. The generated code, the reflection walk and the tree walker all
+// report it.
+func TestCodegenPackedLeafDelegateConsistent(t *testing.T) {
+	if _, ok := any(&LeafCustomHolder_Payload).(sszutils.DynamicHashRoot); !ok {
+		t.Skip("no generated code present")
+	}
+
+	ds := dynssz.NewDynSsz(nil)
+	refl := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+	for name, engine := range map[string]*dynssz.DynSsz{"generated": ds, "reflection": refl} {
+		if _, err := engine.HashTreeRoot(&LeafCustomHolder_Payload); !errors.Is(err, sszutils.ErrChunkLimitExceeded) {
+			t.Errorf("%s hash: err = %v, want the chunk limit reported", name, err)
+		}
+	}
+	if _, err := ds.GetTree(&LeafCustomHolder_Payload); !errors.Is(err, sszutils.ErrChunkLimitExceeded) {
+		t.Errorf("tree: err = %v, want the chunk limit reported", err)
+	}
+}
+
+// A basic-typed view element hashes through its view method like the plain
+// twin, generated and structurally; a view method that merkleizes a leaf of
+// its own is rejected.
+func TestCodegenPackedBasicViewElements(t *testing.T) {
+	if _, generated := any(&ViewNumTypes_Base{}).(sszutils.DynamicViewHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+	view := dynssz.WithViewDescriptor((*ViewNumTypes_View1)(nil))
+
+	for _, tc := range []struct {
+		name string
+		opts []dynssz.DynSszOption
+	}{
+		{"generated", nil},
+		{"structural", []dynssz.DynSszOption{dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := dynssz.NewDynSsz(nil, tc.opts...)
+			holderRoot, err := ds.HashTreeRoot(&ViewNumTypes_Payload, view)
+			if err != nil {
+				t.Fatalf("hash holder: %v", err)
+			}
+			plainRoot, err := ds.HashTreeRoot(&ViewNumTypes_Plain_Payload)
+			if err != nil {
+				t.Fatalf("hash plain twin: %v", err)
+			}
+			if holderRoot != plainRoot {
+				t.Fatalf("holder root %x != plain twin root %x", holderRoot, plainRoot)
+			}
+			tree, err := ds.GetTree(&ViewNumTypes_Payload, view)
+			if err != nil {
+				t.Fatalf("tree holder: %v", err)
+			}
+			if treeRoot := tree.Hash(); !bytes.Equal(treeRoot, holderRoot[:]) {
+				t.Fatalf("tree root %x != root %x", treeRoot, holderRoot)
+			}
+			for i := range 4 {
+				mutated := ViewNumTypes_Payload
+				mutated.V = append([]ViewNum(nil), mutated.V...)
+				if i < 3 {
+					mutated.V[i] = 0xff
+				} else {
+					mutated.F = 0xff
+				}
+				mutatedRoot, mutateErr := ds.HashTreeRoot(&mutated, view)
+				if mutateErr != nil {
+					t.Fatalf("hash mutated element %d: %v", i, mutateErr)
+				}
+				if mutatedRoot == holderRoot {
+					t.Errorf("element %d does not reach the root", i)
+				}
+			}
+		})
+	}
+
+	// A view method that merkleizes a leaf of its own inside a packed scope
+	// breaks the contract: it contributes a whole chunk where the scope holds
+	// packed bytes, so the reduction is handed more chunks than the limit
+	// holds. Both walkers report it.
+	leafView := dynssz.WithViewDescriptor((*ViewLeafTypes_View1)(nil))
+	ds := dynssz.NewDynSsz(nil)
+	if _, err := ds.HashTreeRoot(&ViewLeafTypes_Payload, leafView); !errors.Is(err, sszutils.ErrChunkLimitExceeded) {
+		t.Errorf("generated leaf view: err = %v, want the chunk limit reported", err)
+	}
+	if _, err := ds.GetTree(&ViewLeafTypes_Payload, leafView); !errors.Is(err, sszutils.ErrChunkLimitExceeded) {
+		t.Errorf("generated leaf view tree: err = %v, want the chunk limit reported", err)
+	}
+}
+
+// A generated parent reaches a hand-written recursive child of the same
+// package through the child's public methods, and the result matches
+// reflection.
+func TestCodegenHandWrittenRecursiveChild(t *testing.T) {
+	if _, generated := any(&HandRecursiveHolder_Payload).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	testCodegenPayloadByReflection(t, HandRecursiveHolder_Payload, nil)
+}
+
+// A cycle generated in two batches keeps its depth bound: the second batch
+// reaches the first through the depth twin the earlier run emitted, so the
+// generated engine refuses exactly where reflection does.
+func TestCodegenCycleAcrossBatches(t *testing.T) {
+	if _, generated := any(&CycleBatchB{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	gen := dynssz.NewDynSsz(nil)
+	refl := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+	// Chains rooted at either half of the cycle: the one rooted at the second
+	// batch's type enters the first batch's code through the twin it found in
+	// the package.
+	roots := map[string]func(int) any{
+		"A": func(hops int) any { v := CycleBatchChain(hops); return &v },
+		"B": func(hops int) any { v := CycleBatchChainB(hops); return &v },
+	}
+	for rootName, chain := range roots {
+		accepts := func(ds *dynssz.DynSsz, hops int) bool {
+			_, err := ds.MarshalSSZ(chain(hops))
+			return err == nil
+		}
+		// The deepest chain reflection accepts.
+		lo, hi := 1, 3000
+		for lo < hi {
+			mid := (lo + hi + 1) / 2
+			if accepts(refl, mid) {
+				lo = mid
+			} else {
+				hi = mid - 1
+			}
+		}
+		bound := lo
+		if bound < 100 || bound >= 3000 {
+			t.Fatalf("root %s: reflection bound at %d hops is not a usable probe", rootName, bound)
+		}
+		for _, tc := range []struct {
+			hops int
+			ok   bool
+		}{{10, true}, {bound, true}, {bound + 1, false}, {3000, false}} {
+			v := chain(tc.hops)
+			genBytes, genErr := gen.MarshalSSZ(v)
+			if (genErr == nil) != tc.ok {
+				t.Fatalf("root %s hops=%d: generated err=%v, want accepted=%v", rootName, tc.hops, genErr, tc.ok)
+			}
+			if _, err := gen.HashTreeRoot(v); (err == nil) != tc.ok {
+				t.Fatalf("root %s hops=%d: generated root err=%v, want accepted=%v", rootName, tc.hops, err, tc.ok)
+			}
+			if !tc.ok {
+				continue
+			}
+			reflBytes, err := refl.MarshalSSZ(v)
+			if err != nil || !bytes.Equal(genBytes, reflBytes) {
+				t.Fatalf("root %s hops=%d: generated and reflection bytes differ (%v)", rootName, tc.hops, err)
+			}
+			if err := gen.UnmarshalSSZ(chain(0), genBytes); err != nil {
+				t.Fatalf("root %s hops=%d: unmarshal: %v", rootName, tc.hops, err)
+			}
+		}
+		unbounded := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz(), dynssz.WithMaxNestingDepth(8*(bound+1)))
+		data, err := unbounded.MarshalSSZ(chain(bound + 1))
+		if err != nil {
+			t.Fatalf("root %s: encode the chain past the bound: %v", rootName, err)
+		}
+		if err = gen.UnmarshalSSZ(chain(0), data); err == nil {
+			t.Fatalf("root %s: generated unmarshal accepted a chain past the bound", rootName)
+		}
+	}
+}
+
+// Both members of a generated cycle carry depth twins, and the type cache
+// takes a member that delegates as the shallow descriptor its methods stand
+// for: its cycle partner is generated too, so nothing is left uncounted. That
+// the count holds from either member is measured by the depth-bound test.
+func TestCodegenCycleMemberIsShallow(t *testing.T) {
+	if _, generated := any(&CycleBatchB{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	descB, err := ssztypes.NewTypeCache(nil).GetTypeDescriptor(reflect.TypeOf(CycleBatchB{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("build CycleBatchB: %v", err)
+	}
+	if descB.ContainerDesc != nil || descB.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler == 0 {
+		t.Fatalf("traversed=%v delegated=%v, want a shallow delegated descriptor", descB.ContainerDesc != nil, descB.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0)
+	}
+}
+
+// A type without methods on a cycle with a delegated type is refused by the
+// type cache; the parser refuses the same pair (see the generator's parser
+// tests).
+func TestTypeCacheRefusesHalfDelegatedCycle(t *testing.T) {
+	_, err := dynssz.NewDynSsz(nil).MarshalSSZ(&EdgeCycleParent{})
+	if err == nil || !strings.Contains(err.Error(), "edgeOpaque") || !strings.Contains(err.Error(), "edgeCycleA") {
+		t.Fatalf("err = %v, want the cycle between edgeOpaque and edgeCycleA refused", err)
+	}
+}
+
+// A recursive data type with a non-recursive view compiles and serves the
+// view through plain methods.
+func TestCodegenRecursiveDataLeafView(t *testing.T) {
+	if _, generated := any(&RecursiveLeafNode{}).(sszutils.DynamicViewMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	view := dynssz.WithViewDescriptor((*RecursiveLeafNode_View1)(nil))
+	enc, err := ds.MarshalSSZ(&RecursiveLeafNode_Payload, view)
+	if err != nil {
+		t.Fatalf("marshal view: %v", err)
+	}
+	if want := []byte{7, 0, 0, 0, 0, 0, 0, 0}; !bytes.Equal(enc, want) {
+		t.Fatalf("view bytes %x, want %x", enc, want)
+	}
+	root, err := ds.HashTreeRoot(&RecursiveLeafNode_Payload, view)
+	if err != nil {
+		t.Fatalf("hash view: %v", err)
+	}
+	plainRoot, err := ds.HashTreeRoot(&struct{ Value uint64 }{7})
+	if err != nil || root != plainRoot {
+		t.Fatalf("view root %x, %v; want %x", root, err, plainRoot)
+	}
+	var back RecursiveLeafNode
+	if err = ds.UnmarshalSSZ(&back, enc, view); err != nil || back.Value != 7 {
+		t.Fatalf("unmarshal view: %+v, %v", back, err)
+	}
+	full, err := ds.MarshalSSZ(&RecursiveLeafNode_Payload)
+	if err != nil {
+		t.Fatalf("marshal data: %v", err)
+	}
+	var backFull RecursiveLeafNode
+	if err = ds.UnmarshalSSZ(&backFull, full); err != nil || len(backFull.Children) != 1 || backFull.Children[0].Value != 8 {
+		t.Fatalf("unmarshal data: %+v, %v", backFull, err)
+	}
+}
+
+// Reader segmentation through generated decoders: whichever way a reader
+// splits its bytes around EOF, a truncated message is rejected by the
+// generated stream decoder exactly when the generated buffer decoder rejects
+// it, and both agree with reflection.
+func TestCodegenReaderSegmentationMatchesBuffer(t *testing.T) {
+	if _, generated := any(&EOFMatrix{}).(sszutils.DynamicDecoder); !generated {
+		t.Skip("no generated code present")
+	}
+	refl := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation())
+	full, err := refl.MarshalSSZ(&EOFMatrix_Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readers := func(data []byte) map[string]io.Reader {
+		return map[string]io.Reader{
+			"bytes":       bytes.NewReader(data),
+			"data+EOF":    iotest.DataErrReader(bytes.NewReader(data)),
+			"onebyte+EOF": iotest.DataErrReader(iotest.OneByteReader(bytes.NewReader(data))),
+		}
+	}
+	for _, bufSize := range []int{1, 8, 0} {
+		gen := dynssz.NewDynSsz(nil, dynssz.WithStreamReaderBufferSize(bufSize))
+		for cut := 0; cut < len(full); cut++ {
+			data := full[:len(full)-cut]
+			bufferOK := gen.UnmarshalSSZ(&EOFMatrix{}, data) == nil
+			if reflOK := refl.UnmarshalSSZ(&EOFMatrix{}, data) == nil; reflOK != bufferOK {
+				t.Errorf("cut=%d: generated buffer accepts=%v, reflection accepts=%v", cut, bufferOK, reflOK)
+			}
+			for _, size := range []int{-1, len(data), len(full)} {
+				for name, r := range readers(data) {
+					err := gen.UnmarshalSSZReader(&EOFMatrix{}, r, size)
+					wantOK := bufferOK && size != len(full) || cut == 0
+					if (err == nil) != wantOK {
+						t.Errorf("buf=%d cut=%d size=%d reader=%s: err=%v, buffer accepts=%v", bufSize, cut, size, name, err, bufferOK)
+					}
+				}
+			}
+		}
+	}
+}
+
+// A declared size is trusted, so the generated known-size stream decoder sizes
+// its lists from the declaration like the generated buffer decoder does: the
+// only allocations it adds are the decoder and its read buffer, never a growth
+// series.
+func TestCodegenKnownSizeReaderAllocatesLikeBuffer(t *testing.T) {
+	if _, generated := any(&KnownSizeLists{}).(sszutils.DynamicDecoder); !generated {
+		t.Skip("no generated code present")
+	}
+	value := KnownSizeLists{L: make([]uint32, 100000), LL: make([][]uint16, 8000)}
+	for i := range value.LL {
+		value.LL[i] = []uint16{uint16(i)}
+	}
+	// Without the static surface the reader path takes the generated
+	// streaming decoder instead of bridging the whole payload into a buffer.
+	ds := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz())
+	full, err := ds.MarshalSSZ(&value)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	buffer := testing.AllocsPerRun(5, func() {
+		if err := ds.UnmarshalSSZ(&KnownSizeLists{}, full); err != nil {
+			t.Fatal(err)
+		}
+	})
+	reader := testing.AllocsPerRun(5, func() {
+		if err := ds.UnmarshalSSZReader(&KnownSizeLists{}, bytes.NewReader(full), len(full)); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if reader > buffer+8 {
+		t.Fatalf("known-size reader decode: %v allocs, buffer decode: %v", reader, buffer)
+	}
+}
+
+// Two spec-resolved dimensions whose byte product passes 2^64 are refused by
+// every generated writer instead of wrapping to an empty encoding. The size
+// method has no error channel, so it refuses with -1, which its caller reports
+// as an error. Reflection refuses the schema at analysis. The bound passed is
+// the SSZ size limit, not the platform's integer range.
+func TestCodegenRuntimeSizeProductOverflow(t *testing.T) {
+	if _, generated := any(&RuntimeProduct{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	specs := map[string]any{"OUTER": uint64(1) << 32, "INNER": uint64(1) << 32}
+	gen := dynssz.NewDynSsz(specs)
+	if _, err := gen.MarshalSSZ(&RuntimeProduct{}); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+		t.Fatalf("generated MarshalSSZ err = %v, want the SSZ size limit reported", err)
+	}
+	if err := gen.MarshalSSZWriter(&RuntimeProduct{}, io.Discard); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+		t.Fatalf("generated MarshalSSZWriter err = %v, want the SSZ size limit reported", err)
+	}
+	if _, err := gen.SizeSSZ(&RuntimeProduct{}); err == nil {
+		t.Fatal("generated SizeSSZ accepted an overflowing product as a size")
+	}
+	refl := dynssz.NewDynSsz(specs, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation())
+	if _, err := refl.MarshalSSZ(&RuntimeProduct{}); err == nil {
+		t.Fatal("reflection accepted a schema whose byte size passes the platform range")
+	}
+}
+
+// Two spec-resolved dimensions whose byte product passes the SSZ size limit
+// without passing 2^64 are refused by every generated path, as reflection
+// refuses the schema: the product is what overflows, and neither factor alone
+// says so.
+func TestCodegenRuntimeSizeProductOverLimit(t *testing.T) {
+	if _, generated := any(&RuntimeProduct{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	// 65536 elements of 65536 bytes is 2^32 bytes: one past the limit, and far
+	// inside the range the product is formed in.
+	specs := map[string]any{"OUTER": uint64(65536), "INNER": uint64(65536)}
+	gen := dynssz.NewDynSsz(specs)
+
+	for _, tc := range []struct {
+		name string
+		call func() error
+	}{
+		{"MarshalSSZ", func() error { _, err := gen.MarshalSSZ(&RuntimeProduct{}); return err }},
+		{"MarshalSSZWriter", func() error { return gen.MarshalSSZWriter(&RuntimeProduct{}, io.Discard) }},
+		{"UnmarshalSSZ", func() error { return gen.UnmarshalSSZ(&RuntimeProduct{}, nil) }},
+		{"HashTreeRoot", func() error { _, err := gen.HashTreeRoot(&RuntimeProduct{}); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("panicked instead of refusing the product: %v", r)
+				}
+			}()
+
+			err := tc.call()
+			if !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+				t.Errorf("err = %v, want the product refused as a size past the SSZ limit", err)
+			}
+			if errors.Is(err, sszutils.ErrPlatformOverflow) {
+				t.Errorf("err = %v, but the bound passed is the SSZ size limit, not the platform's integer range", err)
+			}
+		})
+	}
+
+	refl := dynssz.NewDynSsz(specs, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation())
+	if _, err := refl.HashTreeRoot(&RuntimeProduct{}); err == nil {
+		t.Error("reflection returned a root for a value whose bytes cannot exist")
+	}
+}
+
+// A delegated static child whose sizer reports a negative size is refused by
+// the generated decoders, which frame the child by that size, instead of
+// being framed at zero bytes.
+func TestCodegenNegativeDelegatedSize(t *testing.T) {
+	if _, generated := any(&NegShellHolder{}).(sszutils.DynamicUnmarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	gen := dynssz.NewDynSsz(nil)
+	data := make([]byte, 8)
+	if err := gen.UnmarshalSSZ(&NegShellHolder{}, data); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+		t.Fatalf("generated UnmarshalSSZ err = %v, want the SSZ size limit reported", err)
+	}
+	if err := gen.UnmarshalSSZReader(&NegShellHolder{}, bytes.NewReader(data), len(data)); !errors.Is(err, sszutils.ErrSszSizeExceeded) {
+		t.Fatalf("generated UnmarshalSSZReader err = %v, want the SSZ size limit reported", err)
+	}
+}
+
+// merkleRoot reduces leaves (padded to a power of two with zero leaves) to
+// one root with sha256, as the SSZ spec defines merkleization.
+func merkleRoot(leaves [][32]byte, limit int) [32]byte {
+	for len(leaves) < limit {
+		leaves = append(leaves, [32]byte{})
+	}
+	for len(leaves) > 1 {
+		next := make([][32]byte, 0, len(leaves)/2)
+		for i := 0; i < len(leaves); i += 2 {
+			next = append(next, sha256.Sum256(append(leaves[i][:], leaves[i+1][:]...)))
+		}
+		leaves = next
+	}
+	return leaves[0]
+}
+
+// A basic type that delegates through its own methods keeps its SSZ shape
+// in both front ends: as a field it is padded to a leaf after its packed
+// bytes, and a list of it packs into chunks of its width. Both engines, the
+// proof tree and an independent sha256 oracle agree.
+func TestCodegenShallowBasicDelegateShape(t *testing.T) {
+	if _, generated := any(&ShallowBasicHolder{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+
+	var pair [64]byte
+	binary.LittleEndian.PutUint16(pair[:2], 0x1234)
+	binary.LittleEndian.PutUint64(pair[32:40], 0x1122334455667788)
+	wantHolder := sha256.Sum256(pair[:])
+	for _, v := range []any{&ShallowBasicHolder{A: 0x1234, B: 0x1122334455667788}, &ShallowBasicHolderRefl{A: 0x1234, B: 0x1122334455667788}} {
+		root, err := ds.HashTreeRoot(v)
+		if err != nil || root != wantHolder {
+			t.Fatalf("%T root = %x, %v, want %x", v, root, err, wantHolder)
+		}
+		tree, err := ds.GetTree(v)
+		if err != nil || !bytes.Equal(tree.Hash(), wantHolder[:]) {
+			t.Fatalf("%T tree root = %x, %v, want %x", v, tree.Hash(), err, wantHolder)
+		}
+	}
+
+	// Two uint16 values pack into one chunk of a five-chunk list (65*2/32
+	// rounded up), mixed with the length.
+	var packed [32]byte
+	binary.LittleEndian.PutUint16(packed[:2], 0x1234)
+	binary.LittleEndian.PutUint16(packed[2:4], 0x5678)
+	var length [32]byte
+	length[0] = 2
+	listRoot := merkleRoot([][32]byte{packed}, 8)
+	wantList := sha256.Sum256(append(listRoot[:], length[:]...))
+	for _, v := range []any{&ShallowBasicList{L: []shallowBasic{0x1234, 0x5678}}, &ShallowBasicListRefl{L: []shallowBasic{0x1234, 0x5678}}} {
+		root, err := ds.HashTreeRoot(v)
+		if err != nil || root != wantList {
+			t.Fatalf("%T list root = %x, %v, want %x", v, root, err, wantList)
+		}
+	}
+}
+
+// A declared size the target platform cannot hold compiles there and reports
+// zero rather than a wrapped count; on a host that holds it, the size is the
+// sum itself. The shapes also cover the element bounds and the first offset,
+// which carried the same literal.
+func TestCodegenPlatformSizedDeclarations(t *testing.T) {
+	if _, generated := any(&WideAggregate{}).(sszutils.DynamicSizer); !generated {
+		t.Skip("no generated code present")
+	}
+	if _, listed := any(&WideListHolder{}).(sszutils.DynamicSizer); !listed {
+		t.Fatal("the list holder was not generated")
+	}
+	sizer, ok := any(&WideAggregate{}).(sszutils.DynamicSizer)
+	if !ok {
+		t.Fatal("the generated sizer is missing")
+	}
+	size := sizer.SizeSSZDyn(dynssz.NewDynSsz(nil))
+	if math.MaxInt == math.MaxInt32 {
+		if size != -1 {
+			t.Fatalf("32-bit size = %d, want -1", size)
+		}
+		return
+	}
+	if int64(size) != 3*1073741824 {
+		t.Fatalf("size = %d, want %d", size, int64(3*1073741824))
+	}
+}
+
+// A wrapper whose value sits past the byte-wide index range is addressed by
+// both engines, which encode and hash the same bytes.
+func TestCodegenWideWrapperIndex(t *testing.T) {
+	if _, generated := any(&WideWrapperHolder{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	want := []byte{1, 2, 3, 4}
+	gen := &WideWrapperHolder{}
+	gen.W.Data = want
+	refl := &WideWrapperHolderRefl{}
+	refl.W.Data = want
+	for _, v := range []any{gen, refl} {
+		enc, err := ds.MarshalSSZ(v)
+		if err != nil || !bytes.Equal(enc, want) {
+			t.Fatalf("%T marshal = %x, %v, want %x", v, enc, err, want)
+		}
+	}
+	genRoot, err := ds.HashTreeRoot(gen)
+	if err != nil {
+		t.Fatalf("generated hash: %v", err)
+	}
+	reflRoot, err := ds.HashTreeRoot(refl)
+	if err != nil {
+		t.Fatalf("reflection hash: %v", err)
+	}
+	if genRoot != reflRoot {
+		t.Fatalf("generated %x, reflection %x", genRoot, reflRoot)
+	}
+	back := &WideWrapperHolderRefl{}
+	if err := ds.UnmarshalSSZ(back, want); err != nil || !bytes.Equal(back.W.Data, want) {
+		t.Fatalf("unmarshal = %x, %v, want %x", back.W.Data, err, want)
+	}
+}
+
+// A delegated type's shape is kept by both front ends: a width declared by
+// annotation that its Go kind does not state, and a signed basic in a batch
+// generated without extended types. The emitters pick their element paths by
+// the Go kind, so the generated file compiles either way.
+func TestCodegenDelegatedShapeParity(t *testing.T) {
+	if _, generated := any(&DeclaredU64Holder{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	for _, pair := range []struct{ gen, refl any }{
+		{&DeclaredU64Holder{L: []declaredU64{{1}, {2}, {3}}}, &DeclaredU64HolderRefl{L: []declaredU64{{1}, {2}, {3}}}},
+		{&PlainExtHolder{L: []plainExtScalar{-1, 2, 3}}, &PlainExtHolderRefl{L: []plainExtScalar{-1, 2, 3}}},
+	} {
+		genRoot, err := ds.HashTreeRoot(pair.gen)
+		if err != nil {
+			t.Fatalf("%T: %v", pair.gen, err)
+		}
+		reflRoot, err := ds.HashTreeRoot(pair.refl)
+		if err != nil {
+			t.Fatalf("%T: %v", pair.refl, err)
+		}
+		if genRoot != reflRoot {
+			t.Fatalf("%T: generated %x, reflection %x", pair.gen, genRoot, reflRoot)
+		}
+		genBytes, err := ds.MarshalSSZ(pair.gen)
+		if err != nil {
+			t.Fatalf("%T marshal: %v", pair.gen, err)
+		}
+		reflBytes, err := ds.MarshalSSZ(pair.refl)
+		if err != nil || !bytes.Equal(genBytes, reflBytes) {
+			t.Fatalf("%T: generated %x, reflection %x, %v", pair.gen, genBytes, reflBytes, err)
+		}
+	}
+}
+
+// A custom delegate of a basic width packs with its neighbours in both
+// engines, and the tree walker agrees with the hasher.
+// A delegated type used as a plain struct field keeps the framing its own
+// annotation declares: both fields sit inline in the fixed section, and both
+// engines agree on the bytes.
+func TestCodegenDelegateFieldKeepsDeclaredFraming(t *testing.T) {
+	if _, generated := any(&CustomPairField{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	for _, tc := range []struct {
+		gen  any
+		refl any
+		want string
+	}{
+		{gen: &CustomPairField{A: 1, C: customPair{2, 3}}, refl: &CustomPairFieldRefl{A: 1, C: customPair{2, 3}}, want: "01000000000000000203"},
+		{gen: &DeclaredU64Field{A: 1, C: declaredU64{4}}, refl: &DeclaredU64FieldRefl{A: 1, C: declaredU64{4}}, want: "01000000000000000400000000000000"},
+	} {
+		for _, v := range []any{tc.gen, tc.refl} {
+			encoded, err := ds.MarshalSSZ(v)
+			if err != nil || hex.EncodeToString(encoded) != tc.want {
+				t.Fatalf("%T encoded = %x, %v, want %s", v, encoded, err, tc.want)
+			}
+		}
+		genRoot, err := ds.HashTreeRoot(tc.gen)
+		if err != nil {
+			t.Fatalf("%T root: %v", tc.gen, err)
+		}
+		reflRoot, err := ds.HashTreeRoot(tc.refl)
+		if err != nil || reflRoot != genRoot {
+			t.Fatalf("%T root = %x, %v, want %x", tc.refl, reflRoot, err, genRoot)
+		}
+	}
+}
+
+// A delegated custom type that declares a fixed framing without a width is
+// framed inline by the reflection engine, which reads the width from the
+// type's own sizer.
+func TestReflectionSizerCustomFieldIsInline(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+	v := &SizerCustomField{A: 1, C: sizerCustom{X: 7}}
+	encoded, err := ds.MarshalSSZ(v)
+	if err != nil || hex.EncodeToString(encoded) != "0100000000000000070000" {
+		t.Fatalf("encoded = %x, %v, want 0100000000000000070000", encoded, err)
+	}
+	var back SizerCustomField
+	if err := ds.UnmarshalSSZ(&back, encoded); err != nil || back != *v {
+		t.Fatalf("round trip = %+v, %v, want %+v", back, err, *v)
+	}
+}
+
+// A custom element whose width a spec value supplies takes a leaf of its own
+// rather than packing with its neighbours, and its width is read from its own
+// sizer. Both engines agree on the root, the bytes and the size, at the
+// fallback width and at a spec width that differs from it.
+func TestCodegenSpecWidthCustomElement(t *testing.T) {
+	if _, generated := any(&DynWidthList{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	items := []dynWidthCustom{{1, 2, 3, 4}, {5, 6, 7, 8}}
+	for _, specs := range []map[string]any{nil, {"WIDTH": uint64(4)}} {
+		ds := dynssz.NewDynSsz(specs)
+		gen := &DynWidthList{L: items}
+		refl := &DynWidthListRefl{L: items}
+
+		genBytes, err := ds.MarshalSSZ(gen)
+		if err != nil {
+			t.Fatalf("specs %v: generated marshal: %v", specs, err)
+		}
+		reflBytes, err := ds.MarshalSSZ(refl)
+		if err != nil {
+			t.Fatalf("specs %v: reflection marshal: %v", specs, err)
+		}
+		if !bytes.Equal(genBytes, reflBytes) {
+			t.Fatalf("specs %v: generated %x, reflection %x", specs, genBytes, reflBytes)
+		}
+
+		size, err := ds.SizeSSZ(gen)
+		if err != nil || size != len(genBytes) {
+			t.Fatalf("specs %v: size = %d, %v, want %d", specs, size, err, len(genBytes))
+		}
+
+		var back DynWidthList
+		if err = ds.UnmarshalSSZ(&back, genBytes); err != nil {
+			t.Fatalf("specs %v: generated unmarshal: %v", specs, err)
+		}
+		if len(back.L) != len(items) {
+			t.Fatalf("specs %v: round trip gave %d elements, want %d", specs, len(back.L), len(items))
+		}
+
+		genRoot, err := ds.HashTreeRoot(gen)
+		if err != nil {
+			t.Fatalf("specs %v: generated root: %v", specs, err)
+		}
+		reflRoot, err := ds.HashTreeRoot(refl)
+		if err != nil || reflRoot != genRoot {
+			t.Fatalf("specs %v: reflection root = %x, %v, want %x", specs, reflRoot, err, genRoot)
+		}
+		tree, err := ds.GetTree(gen)
+		if err != nil || !bytes.Equal(tree.Hash(), genRoot[:]) {
+			t.Fatalf("specs %v: tree = %x, %v, want %x", specs, tree.Hash(), err, genRoot)
+		}
+	}
+}
+
+func TestCodegenCustomDelegatePacks(t *testing.T) {
+	if _, generated := any(&CustomPairList{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	values := []customPair{{1, 2}, {3, 4}, {5, 6}}
+	// Three two-byte elements pack into one chunk of a one-chunk list
+	// (8*2/32 rounded up), mixed with the length.
+	var packed [32]byte
+	for i, v := range values {
+		copy(packed[i*2:], v[:])
+	}
+	var length [32]byte
+	length[0] = 3
+	listRoot := merkleRoot([][32]byte{packed}, 1)
+	want := sha256.Sum256(append(listRoot[:], length[:]...))
+	for _, v := range []any{&CustomPairList{L: values}, &CustomPairListRefl{L: values}} {
+		root, err := ds.HashTreeRoot(v)
+		if err != nil || root != want {
+			t.Fatalf("%T root = %x, %v, want %x", v, root, err, want)
+		}
+		tree, err := ds.GetTree(v)
+		if err != nil || !bytes.Equal(tree.Hash(), want[:]) {
+			t.Fatalf("%T tree = %x, %v, want %x", v, tree.Hash(), err, want)
+		}
+	}
+}
+
+// A delegate whose basic shape is declared by annotation rather than by its
+// Go kind keeps that shape in both engines: a list of it packs by the declared
+// width and both engines match an independently computed root.
+func TestCodegenDeclaredBasicShape(t *testing.T) {
+	if _, generated := any(&AmountList{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+
+	// Three 16-byte elements fill one and a half chunks of a four-chunk list
+	// (8*16/32), mixed with the length.
+	values := []amount{{2}, {3}, {4}}
+	var packed [2][32]byte
+	copy(packed[0][:16], values[0][:])
+	copy(packed[0][16:], values[1][:])
+	copy(packed[1][:16], values[2][:])
+	var length [32]byte
+	length[0] = 3
+	listRoot := merkleRoot(packed[:], 4)
+	want := sha256.Sum256(append(listRoot[:], length[:]...))
+	for _, v := range []any{&AmountList{L: values}, &AmountListRefl{L: values}} {
+		root, err := ds.HashTreeRoot(v)
+		if err != nil || root != want {
+			t.Fatalf("%T root = %x, %v, want %x", v, root, err, want)
+		}
+	}
+}
+
+// A custom width named only by a spec expression frames the value by that
+// value in both engines when it is defined, and by the type's sizer in both
+// when it is not: the sizer is what generated code asks, and reflection asks
+// it too rather than framing the value with offsets.
+func TestCodegenExprOnlyCustomWidth(t *testing.T) {
+	if _, generated := any(&ExprWidthHolder{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	gen := &ExprWidthHolder{E: exprWidthCustom{1, 2, 3, 4}, L: []exprWidthCustom{{5, 6, 7, 8}, {9, 10, 11, 12}}}
+	refl := &ExprWidthHolderRefl{E: exprWidthCustom{1, 2, 3, 4}, L: []exprWidthCustom{{5, 6, 7, 8}, {9, 10, 11, 12}}}
+
+	// WIDTH = 3: three bytes of E, the offset of L, then two three-byte elements.
+	defined := dynssz.NewDynSsz(map[string]any{"WIDTH": uint64(3)})
+	want := []byte{1, 2, 3, 7, 0, 0, 0, 5, 6, 7, 9, 10, 11}
+	var roots [2][32]byte
+	for i, v := range []any{gen, refl} {
+		data, err := defined.MarshalSSZ(v)
+		if err != nil || !bytes.Equal(data, want) {
+			t.Fatalf("%T bytes = %x, %v, want %x", v, data, err, want)
+		}
+		root, err := defined.HashTreeRoot(v)
+		if err != nil {
+			t.Fatalf("%T root: %v", v, err)
+		}
+		roots[i] = root
+	}
+	if roots[0] != roots[1] {
+		t.Fatalf("roots differ: generated %x, reflection %x", roots[0], roots[1])
+	}
+	// The wire holds three bytes per value, so the fourth comes back zero.
+	wantBack := &ExprWidthHolder{E: exprWidthCustom{1, 2, 3}, L: []exprWidthCustom{{5, 6, 7}, {9, 10, 11}}}
+	back := &ExprWidthHolder{}
+	if err := defined.UnmarshalSSZ(back, want); err != nil || !reflect.DeepEqual(back, wantBack) {
+		t.Fatalf("generated decode = %+v, %v, want %+v", back, err, wantBack)
+	}
+
+	// WIDTH undefined: the sizer's default of two bytes, on both engines.
+	undefined := dynssz.NewDynSsz(nil)
+	wantDefault := []byte{1, 2, 6, 0, 0, 0, 5, 6, 9, 10}
+	for i, v := range []any{gen, refl} {
+		data, err := undefined.MarshalSSZ(v)
+		if err != nil || !bytes.Equal(data, wantDefault) {
+			t.Fatalf("%T bytes with WIDTH undefined = %x, %v, want %x", v, data, err, wantDefault)
+		}
+		root, err := undefined.HashTreeRoot(v)
+		if err != nil {
+			t.Fatalf("%T root with WIDTH undefined: %v", v, err)
+		}
+		roots[i] = root
+	}
+	if roots[0] != roots[1] {
+		t.Fatalf("roots with WIDTH undefined differ: generated %x, reflection %x", roots[0], roots[1])
+	}
+}
+
+// The same rule holds when the expression is on the type's own annotation
+// rather than on the reference.
+func TestCodegenExprOnlyCustomWidthByAnnotation(t *testing.T) {
+	if _, generated := any(&AnnExprWidthHolder{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	gen := &AnnExprWidthHolder{E: annExprWidthCustom{1, 2, 3, 4}, L: []annExprWidthCustom{{5, 6, 7, 8}, {9, 10, 11, 12}}}
+	refl := &AnnExprWidthHolderRefl{E: annExprWidthCustom{1, 2, 3, 4}, L: []annExprWidthCustom{{5, 6, 7, 8}, {9, 10, 11, 12}}}
+
+	for _, tt := range []struct {
+		name  string
+		specs map[string]any
+		want  []byte
+	}{
+		{"WIDTH defined", map[string]any{"WIDTH": uint64(3)}, []byte{1, 2, 3, 7, 0, 0, 0, 5, 6, 7, 9, 10, 11}},
+		{"WIDTH undefined", nil, []byte{1, 2, 6, 0, 0, 0, 5, 6, 9, 10}},
+	} {
+		ds := dynssz.NewDynSsz(tt.specs)
+		var roots [2][32]byte
+		for i, v := range []any{gen, refl} {
+			data, err := ds.MarshalSSZ(v)
+			if err != nil || !bytes.Equal(data, tt.want) {
+				t.Fatalf("%s: %T bytes = %x, %v, want %x", tt.name, v, data, err, tt.want)
+			}
+			root, err := ds.HashTreeRoot(v)
+			if err != nil {
+				t.Fatalf("%s: %T root: %v", tt.name, v, err)
+			}
+			roots[i] = root
+		}
+		if roots[0] != roots[1] {
+			t.Fatalf("%s: roots differ: generated %x, reflection %x", tt.name, roots[0], roots[1])
+		}
+	}
+
+	// Decoding at three bytes per value leaves the fourth zero.
+	wantBack := &AnnExprWidthHolder{E: annExprWidthCustom{1, 2, 3}, L: []annExprWidthCustom{{5, 6, 7}, {9, 10, 11}}}
+	back := &AnnExprWidthHolder{}
+	if err := dynssz.NewDynSsz(map[string]any{"WIDTH": uint64(3)}).UnmarshalSSZ(back, []byte{1, 2, 3, 7, 0, 0, 0, 5, 6, 7, 9, 10, 11}); err != nil || !reflect.DeepEqual(back, wantBack) {
+		t.Fatalf("generated decode = %+v, %v, want %+v", back, err, wantBack)
+	}
+}
+
+// A delegated signed basic keeps its shape where extended types are enabled,
+// so both engines pack its list by the declared width and agree on the root.
+func TestCodegenExtendedBasicDelegateShape(t *testing.T) {
+	if _, generated := any(&ExtScalarHolder{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes())
+	values := []extScalar{-1, 2}
+	var packed [32]byte
+	binary.LittleEndian.PutUint32(packed[:4], uint32(values[0]))
+	binary.LittleEndian.PutUint32(packed[4:8], uint32(values[1]))
+	var length [32]byte
+	length[0] = 2
+	listRoot := merkleRoot([][32]byte{packed}, 1)
+	var scalar [32]byte
+	binary.LittleEndian.PutUint32(scalar[:4], 7)
+	var pair [64]byte
+	copy(pair[:32], scalar[:])
+	listMixed := sha256.Sum256(append(listRoot[:], length[:]...))
+	copy(pair[32:], listMixed[:])
+	wantHolder := sha256.Sum256(pair[:])
+	for _, v := range []any{&ExtScalarHolder{A: 7, L: values}, &ExtScalarHolderRefl{A: 7, L: values}} {
+		root, err := ds.HashTreeRoot(v)
+		if err != nil || root != wantHolder {
+			t.Fatalf("%T root = %x, %v, want %x", v, root, err, wantHolder)
+		}
+	}
+}
+
+// A delegate carrying no annotation is not built shallow, here or in the
+// generator, so the cycle it closes is an ordinary recursive cycle that both
+// front ends describe. The generator's side is covered by its parser tests.
+func TestTypeCacheDescribesUnannotatedDelegateCycle(t *testing.T) {
+	if _, err := ssztypes.NewTypeCache(nil).GetTypeDescriptor(reflect.TypeOf(NoAnnParent{}), nil, nil, nil); err != nil {
+		t.Fatalf("build NoAnnParent: %v", err)
+	}
+	// Without delegation the parent is walked, so the cycle is described
+	// rather than handed to the parent's own methods.
+	walked := ssztypes.NewTypeCache(nil)
+	walked.NoDelegation = true
+	if _, err := walked.GetTypeDescriptor(reflect.TypeOf(NoAnnParent{}), nil, nil, nil); err != nil {
+		t.Fatalf("build NoAnnParent without delegation: %v", err)
+	}
+	if _, err := dynssz.NewDynSsz(nil).HashTreeRoot(&NoAnnParent{A: noAnnDelegate{V: 7}}); err != nil {
+		t.Fatalf("hash NoAnnParent: %v", err)
+	}
+}
+
+// A named slice with its own fixed codec lies on no cycle and keeps its
+// shallow static descriptor in both engines: nothing adds an offset in front
+// of its eight bytes.
+func TestCodegenDelegatedShallowFraming(t *testing.T) {
+	if _, generated := any(&OctetParent{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	nine := []byte{9, 0, 0, 0, 0, 0, 0, 0}
+	for _, v := range []any{&OctetParent{Data: fixedOctets{9}}, &OctetParentRefl{Data: fixedOctets{9}}} {
+		if got, err := ds.MarshalSSZ(v); err != nil || !bytes.Equal(got, nine) {
+			t.Fatalf("%T = %x, %v, want %x", v, got, err, nine)
+		}
+	}
+}
+
+// A delegate owns what it leaves on the walker. One that breaks the contract
+// is not refused; both walkers lay its bytes out the same way, so the wrong
+// root it produces is the same through HashTreeRoot and through GetTree, in
+// both engines. One that honours the contract hashes the same everywhere.
+// A delegate that leaves a partial chunk is followed by each shape that opens
+// a region on it. Neither walker is asked to make sense of what the delegate
+// left; they are asked to lay it out the same way, so HashTreeRoot and GetTree
+// agree in both engines.
+func TestPartialChunkDelegateFraming(t *testing.T) {
+	if _, generated := any(&PartialVecHolder{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	for _, pair := range [][2]any{
+		{&PartialVecHolder{V: [48]byte{1, 2, 3}}, &PartialVecHolderRefl{V: [48]byte{1, 2, 3}}},
+		{&PartialBitlistHolder{B: []byte{0x0f}}, &PartialBitlistHolderRefl{B: []byte{0x0f}}},
+		{&PartialScopeHolder{C: plainPair{A: 1, B: 2}}, &PartialScopeHolderRefl{C: plainPair{A: 1, B: 2}}},
+	} {
+		var roots [2][32]byte
+		for i, v := range pair {
+			root, err := ds.HashTreeRoot(v)
+			if err != nil {
+				t.Fatalf("%T HashTreeRoot: %v", v, err)
+			}
+			tree, err := ds.GetTree(v)
+			if err != nil {
+				t.Fatalf("%T GetTree: %v", v, err)
+			}
+			if !bytes.Equal(tree.Hash(), root[:]) {
+				t.Fatalf("%T: tree %x, hasher %x", v, tree.Hash(), root)
+			}
+			roots[i] = root
+		}
+		if roots[0] != roots[1] {
+			t.Fatalf("%T: generated %x, reflection %x", pair[0], roots[0], roots[1])
+		}
+	}
+}
+
+func TestCompositeDelegateContract(t *testing.T) {
+	if _, generated := any(&PartialHolder{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	// A delegate that leaves a partial chunk, and one that leaves a partial
+	// chunk and then writes a field, which flushes it.
+	for _, v := range []any{&PartialHolder{N: 1, M: 2}, &PartialHolderRefl{N: 1, M: 2}, &FlushedHolder{N: 1, M: 2}, &FlushedHolderRefl{N: 1, M: 2}} {
+		root, err := ds.HashTreeRoot(v)
+		if err != nil {
+			t.Fatalf("%T HashTreeRoot: %v", v, err)
+		}
+		tree, err := ds.GetTree(v)
+		if err != nil {
+			t.Fatalf("%T GetTree: %v", v, err)
+		}
+		if !bytes.Equal(tree.Hash(), root[:]) {
+			t.Fatalf("%T: tree %x, hasher %x", v, tree.Hash(), root)
+		}
+	}
+
+	roots := make([][32]byte, 0, 2)
+	for _, v := range []any{&GoodHolder{N: 1, G: goodComposite{A: 3, B: 4}, M: 2}, &GoodHolderRefl{N: 1, G: goodComposite{A: 3, B: 4}, M: 2}} {
+		root, err := ds.HashTreeRoot(v)
+		if err != nil {
+			t.Fatalf("%T HashTreeRoot: %v", v, err)
+		}
+		tree, err := ds.GetTree(v)
+		if err != nil {
+			t.Fatalf("%T GetTree: %v", v, err)
+		}
+		if !bytes.Equal(tree.Hash(), root[:]) {
+			t.Fatalf("%T: tree %x, hasher %x", v, tree.Hash(), root)
+		}
+		roots = append(roots, root)
+	}
+	if roots[0] != roots[1] {
+		t.Fatalf("generated %x, reflection %x", roots[0], roots[1])
+	}
+}
+
+// Every size formed at run time is bounded where it enters: a vector of
+// variable-size elements to a quarter of the size limit, a container's summed
+// fields and a delegated sizer's result to the limit itself. Both engines
+// refuse the value, and agree on one that fits.
+func TestCodegenSizeInputsBounded(t *testing.T) {
+	if _, generated := any(&SpecSumDelegated{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	huge := map[string]any{"COUNT": uint64(1)<<31 + 1, "SIZE_A": uint64(sszutils.MaxSszSize), "SIZE_B": uint64(sszutils.MaxSszSize)}
+	sane := map[string]any{"COUNT": uint64(3), "SIZE_A": uint64(2), "SIZE_B": uint64(5)}
+	for _, v := range []any{&OffsetTableSpec{}, &SpecSumInline{}, &SpecSumDelegated{}} {
+		gen := dynssz.NewDynSsz(huge)
+		if _, err := gen.MarshalSSZ(v); err == nil {
+			t.Fatalf("%T: generated MarshalSSZ accepted a size past the limit", v)
+		}
+		if _, err := gen.SizeSSZ(v); err == nil {
+			t.Fatalf("%T: generated SizeSSZ accepted a size past the limit", v)
+		}
+		refl := dynssz.NewDynSsz(huge, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+		if _, err := refl.MarshalSSZ(v); err == nil {
+			t.Fatalf("%T: reflection accepted a size past the limit", v)
+		}
+		genBytes, err := dynssz.NewDynSsz(sane).MarshalSSZ(v)
+		if err != nil {
+			t.Fatalf("%T: generated MarshalSSZ: %v", v, err)
+		}
+		reflBytes, err := dynssz.NewDynSsz(sane, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz()).MarshalSSZ(v)
+		if err != nil || !bytes.Equal(genBytes, reflBytes) {
+			t.Fatalf("%T: reflection %x, %v, generated %x", v, reflBytes, err, genBytes)
+		}
+	}
+}
+
+// Shapes the type cache refuses; the parser refuses them too (see the
+// generator's parser tests).
+func TestTypeCacheRefusesDivergentShapes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		v    any
+		want string
+	}{
+		{"literal bit size zero on an array", BadBitsZero{}, "zero length"},
+		{"None in a compatible union", BadCompatNone{}, "dynssz.None is not a valid compatible union variant"},
+		{"empty compatible union", EmptyCompat{}, "no fields"},
+		{"vector byte size past the SSZ size limit", BadHugeVector{}, "SSZ size limit"},
+		{"fixed section past the SSZ size limit", BadHugeContainer{}, "SSZ size limit"},
+		{"literal length past the SSZ size limit", BadHugeDynVector{}, "SSZ size limit"},
+		{"offset table past the fixed section", BadOffsetTable{}, "offset table limit"},
+	} {
+		_, err := ssztypes.NewTypeCache(nil).GetTypeDescriptor(reflect.TypeOf(tc.v), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: err = %v, want %q", tc.name, err, tc.want)
+		}
+	}
+}
+
+// A bit-sized vector whose bit count is a spec value with no static bit size
+// falls back to the array's own length in bits, on every path of both engines.
+func TestCodegenBitsizeExpressionWithoutStaticFallback(t *testing.T) {
+	if _, generated := any(&BitCfg_Payload).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	for _, tc := range []struct {
+		name  string
+		specs map[string]any
+		width int // bytes of Flags on the wire
+	}{
+		{"undefined", nil, 4},
+		{"8 bits", map[string]any{"FLAG_BITS": uint64(8)}, 1},
+		{"16 bits", map[string]any{"FLAG_BITS": uint64(16)}, 2},
+		{"32 bits", map[string]any{"FLAG_BITS": uint64(32)}, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testCodegenPayloadByReflection(t, BitCfg_Payload, tc.specs)
+			testCodegenPayloadByReflection(t, BitCfgDyn_Payload, tc.specs)
+
+			ds := dynssz.NewDynSsz(tc.specs)
+			data, err := ds.MarshalSSZ(&BitCfg_Payload)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if len(data) != tc.width+8 {
+				t.Fatalf("encoded %d bytes, want %d", len(data), tc.width+8)
+			}
+			size, err := ds.SizeSSZ(&BitCfg_Payload)
+			if err != nil {
+				t.Fatalf("size: %v", err)
+			}
+			if size != len(data) {
+				t.Fatalf("SizeSSZ = %d, encoding is %d bytes", size, len(data))
+			}
+		})
+	}
+
+	// A width that is not byte aligned makes the padding bits visible: a set
+	// padding bit is rejected by both engines.
+	specs := map[string]any{"FLAG_BITS": uint64(12)}
+	padded := BitCfg{Flags: [4]byte{0xff, 0x1f}, Num: 7}
+	for _, ds := range []*dynssz.DynSsz{
+		dynssz.NewDynSsz(specs),
+		dynssz.NewDynSsz(specs, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()),
+	} {
+		if _, err := ds.MarshalSSZ(&padded); err == nil {
+			t.Fatalf("marshal accepted set padding bits at 12 bits")
+		}
+		clean := BitCfg{Flags: [4]byte{0xff, 0x0f}, Num: 7}
+		data, err := ds.MarshalSSZ(&clean)
+		if err != nil {
+			t.Fatalf("marshal 12-bit value: %v", err)
+		}
+		if len(data) != 2+8 {
+			t.Fatalf("encoded %d bytes at 12 bits, want %d", len(data), 2+8)
+		}
+		var decoded BitCfg
+		if err := ds.UnmarshalSSZ(&decoded, data); err != nil {
+			t.Fatalf("unmarshal 12-bit value: %v", err)
+		}
+		if decoded != clean {
+			t.Fatalf("decoded %+v != %+v", decoded, clean)
+		}
+		data[1] |= 0x10
+		if err := ds.UnmarshalSSZ(&decoded, data); err == nil {
+			t.Fatalf("unmarshal accepted set padding bits at 12 bits")
+		}
+	}
+}
+
+// A type whose only hash method is HashTreeRootWith is delegated to by both
+// engines wherever it sits. Under NoFastSsz reflection hashes it
+// structurally; NoDelegation keeps the generated holder out of that walk.
+func TestCodegenHashTreeRootWithOnlyDelegated(t *testing.T) {
+	if _, generated := any(&OnlyWithHolder_Payload).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+	for _, tc := range []struct {
+		name string
+		mask uint64
+		opts []dynssz.DynSszOption
+	}{
+		{"delegated", 0xffff, nil},
+		{"structural", 0, []dynssz.DynSszOption{dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := dynssz.NewDynSsz(nil, tc.opts...)
+			plain := OnlyWithPlainPayload(tc.mask)
+			plainRoot, err := ds.HashTreeRoot(&plain)
+			if err != nil {
+				t.Fatalf("hash plain twin: %v", err)
+			}
+			genRoot, err := ds.HashTreeRoot(&OnlyWithHolder_Payload)
+			if err != nil {
+				t.Fatalf("hash holder: %v", err)
+			}
+			if genRoot != plainRoot {
+				t.Fatalf("generated root %x != plain twin root %x", genRoot, plainRoot)
+			}
+			reflRoot, err := ds.HashTreeRoot(&OnlyWithReflection_Payload)
+			if err != nil {
+				t.Fatalf("hash reflection twin: %v", err)
+			}
+			if reflRoot != plainRoot {
+				t.Fatalf("reflection root %x != plain twin root %x", reflRoot, plainRoot)
+			}
+			for _, v := range []any{&OnlyWithHolder_Payload, &OnlyWithReflection_Payload} {
+				tree, treeErr := ds.GetTree(v)
+				if treeErr != nil {
+					t.Fatalf("tree %T: %v", v, treeErr)
+				}
+				if treeRoot := tree.Hash(); !bytes.Equal(treeRoot, plainRoot[:]) {
+					t.Fatalf("tree root %x != root %x for %T", treeRoot, plainRoot, v)
+				}
+			}
+		})
+	}
+}
+
+// A bitlist of exactly 2^31 bits is within its limit on every platform: the
+// generated buffer and stream paths accept it and agree with reflection.
+// raceDetectorEnabled reports whether this binary was built with the race
+// detector. A test that walks hundreds of megabytes through a single
+// goroutine costs it minutes and gives it nothing to find.
+func raceDetectorEnabled() bool {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return false
+	}
+	for _, setting := range info.Settings {
+		if setting.Key == "-race" {
+			return setting.Value == "true"
+		}
+	}
+	return false
+}
+
+func TestCodegenBitlistBitCountBeyondInt32(t *testing.T) {
+	if raceDetectorEnabled() {
+		// A quarter-gigabyte bitlist through one goroutine: the race detector
+		// multiplies the cost by sixty and has no concurrency to inspect. The
+		// builds without it run this in full.
+		t.Skip("skipped under the race detector")
+	}
+	if _, generated := any(&HugeBitlistHolder{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	data := make([]byte, (1<<28)+1)
+	data[len(data)-1] = 1
+	holder := &HugeBitlistHolder{B: data}
+	marshaler, _ := any(holder).(sszutils.DynamicMarshaler)
+	encoder, _ := any(holder).(sszutils.DynamicEncoder)
+	hashRoot, _ := any(holder).(sszutils.DynamicHashRoot)
+	ds := dynssz.NewDynSsz(nil)
+
+	encoded, err := marshaler.MarshalSSZDyn(ds, nil)
+	if err != nil || len(encoded) != 4+len(data) {
+		t.Fatalf("MarshalSSZDyn = %d bytes, %v; want %d", len(encoded), err, 4+len(data))
+	}
+	if err = encoder.MarshalSSZEncoder(ds, sszutils.NewStreamEncoder(io.Discard, 4096)); err != nil {
+		t.Fatalf("MarshalSSZEncoder: %v", err)
+	}
+
+	refl := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+	want, err := refl.HashTreeRoot(holder)
+	if err != nil {
+		t.Fatalf("reflection HashTreeRoot: %v", err)
+	}
+	hh := hasher.NewHasher()
+	if err = hashRoot.HashTreeRootWithDyn(ds, hh); err != nil {
+		t.Fatalf("HashTreeRootWithDyn: %v", err)
+	}
+	root, err := hh.HashRoot()
+	if err != nil || root != want {
+		t.Fatalf("generated root = %x, %v; want %x", root, err, want)
+	}
+
+	var decoded HugeBitlistHolder
+	unmarshaler, _ := any(&decoded).(sszutils.DynamicUnmarshaler)
+	if err = unmarshaler.UnmarshalSSZDyn(ds, encoded); err != nil || len(decoded.B) != len(data) {
+		t.Fatalf("UnmarshalSSZDyn = %d bytes, %v; want %d", len(decoded.B), err, len(data))
+	}
+	decoded = HugeBitlistHolder{}
+	decoder, _ := any(&decoded).(sszutils.DynamicDecoder)
+	if err = decoder.UnmarshalSSZDecoder(ds, sszutils.NewBufferDecoder(encoded)); err != nil || len(decoded.B) != len(data) {
+		t.Fatalf("UnmarshalSSZDecoder = %d bytes, %v; want %d", len(decoded.B), err, len(data))
+	}
+}
+
+// A struct inheriting an embedded field's HashTreeRootWith is walked as a
+// container by both engines, so the sibling field reaches the root.
+func TestCodegenPromotedWalkerMethodKeepsSiblings(t *testing.T) {
+	if _, generated := any(&WalkerOnlyOuter_Payload).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	genRoot, err := ds.HashTreeRoot(&WalkerOnlyOuter_Payload)
+	if err != nil {
+		t.Fatalf("generated root: %v", err)
+	}
+	reflRoot, err := ds.HashTreeRoot(&WalkerOnlyReflection_Payload)
+	if err != nil {
+		t.Fatalf("reflection root: %v", err)
+	}
+	if genRoot != reflRoot {
+		t.Fatalf("generated root %x != reflection root %x", genRoot, reflRoot)
+	}
+	other := WalkerOnlyReflection{WalkerOnlyInner: WalkerOnlyInner{A: 1}, B: 99}
+	otherRoot, err := ds.HashTreeRoot(&other)
+	if err != nil || otherRoot == reflRoot {
+		t.Fatalf("changing the sibling did not change the root (%x, %v)", otherRoot, err)
+	}
+	for _, v := range []any{&WalkerOnlyOuter_Payload, &WalkerOnlyReflection_Payload} {
+		tree, treeErr := ds.GetTree(v)
+		if treeErr != nil {
+			t.Fatalf("tree %T: %v", v, treeErr)
+		}
+		if !bytes.Equal(tree.Hash(), genRoot[:]) {
+			t.Fatalf("%T tree root %x != root %x", v, tree.Hash(), genRoot)
+		}
+	}
+}
+
+// A wrapper around a uint256 packs like the uint256 itself in both engines:
+// a hash method that puts the 32 bytes hashes like the plain twin, one that
+// puts less is refused as a packed delegate.
+func TestCodegenWrappedUint256ElementsPack(t *testing.T) {
+	if _, generated := any(&WrappedU256Holder_Payload).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	plainRoot, err := ds.HashTreeRoot(&WrappedU256Plain_Payload)
+	if err != nil {
+		t.Fatalf("hash plain twin: %v", err)
+	}
+	for _, v := range []any{&WrappedU256Holder_Payload, &WrappedU256Reflection_Payload} {
+		root, err := ds.HashTreeRoot(v)
+		if err != nil {
+			t.Fatalf("hash %T: %v", v, err)
+		}
+		if root != plainRoot {
+			t.Fatalf("%T root %x != plain twin root %x", v, root, plainRoot)
+		}
+		tree, err := ds.GetTree(v)
+		if err != nil {
+			t.Fatalf("tree %T: %v", v, err)
+		}
+		if treeRoot := tree.Hash(); !bytes.Equal(treeRoot, plainRoot[:]) {
+			t.Fatalf("%T tree root %x != root %x", v, treeRoot, plainRoot)
+		}
+	}
+	// A wrapper narrower than the element it stands in for breaks the packed
+	// contract; it is not refused, and both walkers agree on its root.
+	for _, v := range []any{&NarrowWrappedU256Holder_Payload, &NarrowWrappedU256Reflection_Payload} {
+		root, err := ds.HashTreeRoot(v)
+		if err != nil {
+			t.Fatalf("hash %T: %v", v, err)
+		}
+		tree, err := ds.GetTree(v)
+		if err != nil {
+			t.Fatalf("tree %T: %v", v, err)
+		}
+		if !bytes.Equal(tree.Hash(), root[:]) {
+			t.Fatalf("%T tree %x != hasher %x", v, tree.Hash(), root)
+		}
+	}
+}
+
+// A uint64 element with a hash method of its own is hashed through that
+// method in both engines, so the method runs once per element and its error
+// reaches the caller; the roots equal the plain twin's.
+func TestCodegenUint64ElementsWithMethodsAreDelegated(t *testing.T) {
+	generated, ok := any(&CountedNumHolder_Payload).(sszutils.DynamicHashRoot)
+	if !ok {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	elems := len(CountedNumHolder_Payload.L) + len(CountedNumHolder_Payload.P)
+
+	plainRoot, err := ds.HashTreeRoot(&CountedNumPlain_Payload)
+	if err != nil {
+		t.Fatalf("hash plain twin: %v", err)
+	}
+
+	CountedNumCalls = 0
+	hh := hasher.NewHasher()
+	if err = generated.HashTreeRootWithDyn(ds, hh); err != nil {
+		t.Fatalf("generated hash: %v", err)
+	}
+	genRoot, err := hh.HashRoot()
+	if err != nil {
+		t.Fatalf("generated root: %v", err)
+	}
+	if CountedNumCalls != elems {
+		t.Fatalf("generated hash called the element method %d times, want %d", CountedNumCalls, elems)
+	}
+	if genRoot != plainRoot {
+		t.Fatalf("generated root %x != plain twin root %x", genRoot, plainRoot)
+	}
+
+	CountedNumCalls = 0
+	reflRoot, err := ds.HashTreeRoot(&CountedNumReflection_Payload)
+	if err != nil {
+		t.Fatalf("reflection hash: %v", err)
+	}
+	if CountedNumCalls != elems {
+		t.Fatalf("reflection hash called the element method %d times, want %d", CountedNumCalls, elems)
+	}
+	if reflRoot != plainRoot {
+		t.Fatalf("reflection root %x != plain twin root %x", reflRoot, plainRoot)
+	}
+
+	tree, err := ds.GetTree(&CountedNumHolder_Payload)
+	if err != nil {
+		t.Fatalf("tree holder: %v", err)
+	}
+	if treeRoot := tree.Hash(); !bytes.Equal(treeRoot, plainRoot[:]) {
+		t.Fatalf("tree root %x != root %x", treeRoot, plainRoot)
+	}
+
+	CountedNumErr = errors.New("element refused")
+	defer func() { CountedNumErr = nil }()
+	_, err = ds.HashTreeRoot(&CountedNumHolder_Payload)
+	if !errors.Is(err, CountedNumErr) {
+		t.Fatalf("generated hash err = %v, want the element's error", err)
+	}
+	if !strings.Contains(err.Error(), "L[0]") {
+		t.Fatalf("generated hash err = %v, want the element path", err)
+	}
+	_, err = ds.HashTreeRoot(&CountedNumReflection_Payload)
+	if !errors.Is(err, CountedNumErr) {
+		t.Fatalf("reflection hash err = %v, want the element's error", err)
+	}
+}
+
+// A uint64 view element is hashed through its view method in both engines,
+// so the root commits to the values the method puts.
+func TestCodegenUint64ViewElementsAreDelegated(t *testing.T) {
+	if _, generated := any(&ViewNum64Types_Base{}).(sszutils.DynamicViewHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+	view := dynssz.WithViewDescriptor((*ViewNum64Types_View1)(nil))
+	ds := dynssz.NewDynSsz(nil)
+
+	plainRoot, err := ds.HashTreeRoot(&ViewNum64Types_Plain_Payload)
+	if err != nil {
+		t.Fatalf("hash plain twin: %v", err)
+	}
+	genRoot, err := ds.HashTreeRoot(&ViewNum64Types_Payload, view)
+	if err != nil {
+		t.Fatalf("hash holder: %v", err)
+	}
+	if genRoot != plainRoot {
+		t.Fatalf("generated view root %x != plain twin root %x", genRoot, plainRoot)
+	}
+	reflRoot, err := ds.HashTreeRoot(&ViewNum64Types_Reflection_Payload, view)
+	if err != nil {
+		t.Fatalf("hash reflection twin: %v", err)
+	}
+	if reflRoot != plainRoot {
+		t.Fatalf("reflection view root %x != plain twin root %x", reflRoot, plainRoot)
+	}
+	tree, err := ds.GetTree(&ViewNum64Types_Payload, view)
+	if err != nil {
+		t.Fatalf("tree holder: %v", err)
+	}
+	if treeRoot := tree.Hash(); !bytes.Equal(treeRoot, plainRoot[:]) {
+		t.Fatalf("tree root %x != root %x", treeRoot, plainRoot)
+	}
+}
+
+// A generated view method promoted from an embedded field is never delegated
+// to: the embedding struct is walked against the view schema, so its own
+// shadowing field is what gets serialized.
+func TestCodegenPromotedViewMethodsNotDelegated(t *testing.T) {
+	if _, generated := any(&PromotedViewInner{}).(sszutils.DynamicViewMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	view := dynssz.WithViewDescriptor((*PromotedViewSchema)(nil))
+	v := &PromotedViewOuter{PromotedViewInner: PromotedViewInner{B: 1}, B: 2}
+	want := []byte{2, 0, 0, 0, 0, 0, 0, 0}
+
+	enc, err := ds.MarshalSSZ(v, view)
+	if err != nil || !bytes.Equal(enc, want) {
+		t.Fatalf("MarshalSSZ = %x, %v; want %x", enc, err, want)
+	}
+	var stream bytes.Buffer
+	if err = ds.MarshalSSZWriter(v, &stream, view); err != nil || !bytes.Equal(stream.Bytes(), want) {
+		t.Fatalf("MarshalSSZWriter = %x, %v; want %x", stream.Bytes(), err, want)
+	}
+	size, err := ds.SizeSSZ(v, view)
+	if err != nil || size != 8 {
+		t.Fatalf("SizeSSZ = %d, %v; want 8", size, err)
+	}
+	root, err := ds.HashTreeRoot(v, view)
+	if err != nil {
+		t.Fatalf("HashTreeRoot: %v", err)
+	}
+	plainRoot, err := ds.HashTreeRoot(&PromotedViewSchema{B: 2})
+	if err != nil || root != plainRoot {
+		t.Fatalf("HashTreeRoot = %x, %v; want the plain root %x", root, err, plainRoot)
+	}
+	var back PromotedViewOuter
+	if err = ds.UnmarshalSSZ(&back, want, view); err != nil || back.B != 2 || back.PromotedViewInner.B != 0 {
+		t.Fatalf("UnmarshalSSZ decoded %+v, %v; want B=2 on the outer field only", back, err)
+	}
+	var streamed PromotedViewOuter
+	if err = ds.UnmarshalSSZReader(&streamed, bytes.NewReader(want), len(want), view); err != nil || streamed.B != 2 || streamed.PromotedViewInner.B != 0 {
+		t.Fatalf("UnmarshalSSZReader decoded %+v, %v; want B=2 on the outer field only", streamed, err)
+	}
+}
+
+// A union carries the spec-dependence flags of its variants, so a generated
+// parent reaches a child holding one through the spec-aware methods and the
+// variant width follows the instance's specs, not the global ones.
+func TestCodegenUnionVariantSpecFlags(t *testing.T) {
+	if _, generated := any(&UnionSpecParent{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	testCodegenPayloadByReflection(t, UnionSpecParent_Payload, UnionSpec_Specs)
+	testCodegenPayloadByReflection(t, CompatUnionSpecParent_Payload, UnionSpec_Specs)
+	testCodegenPayloadByReflection(t, UnionSpecParent_Payload, nil)
+	testCodegenPayloadByReflection(t, CompatUnionSpecParent_Payload, nil)
+
+	dynssz.SetGlobalSpecs(map[string]any{"UNION_WIDTH": uint64(4)})
+	defer dynssz.SetGlobalSpecs(nil)
+	ds := dynssz.NewDynSsz(UnionSpec_Specs)
+	structural := dynssz.NewDynSsz(UnionSpec_Specs, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+
+	for _, tc := range []struct {
+		name    string
+		payload any
+	}{
+		{"union", &UnionSpecParent_Payload},
+		{"compatible-union", &CompatUnionSpecParent_Payload},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want, err := structural.MarshalSSZ(tc.payload)
+			if err != nil {
+				t.Fatalf("structural marshal: %v", err)
+			}
+			if len(want) != 4+1+4+1+8 {
+				t.Fatalf("structural encoding is %d bytes, want 18", len(want))
+			}
+			marshaler, ok := tc.payload.(sszutils.DynamicMarshaler)
+			if !ok {
+				t.Fatal("payload has no generated marshaler")
+			}
+			got, err := marshaler.MarshalSSZDyn(ds, nil)
+			if err != nil {
+				t.Fatalf("generated marshal: %v", err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatalf("generated %x != structural %x", got, want)
+			}
+			decoded := reflect.New(reflect.TypeOf(tc.payload).Elem()).Interface()
+			unmarshaler, ok := decoded.(sszutils.DynamicUnmarshaler)
+			if !ok {
+				t.Fatal("payload has no generated unmarshaler")
+			}
+			if err := unmarshaler.UnmarshalSSZDyn(ds, got); err != nil {
+				t.Fatalf("generated unmarshal: %v", err)
+			}
+			if !reflect.DeepEqual(decoded, tc.payload) {
+				t.Fatalf("decoded %+v != %+v", decoded, tc.payload)
+			}
+		})
+	}
+}
+
+// A present optional value of a fixed-size type occupies the presence byte
+// plus the width the instance's specs resolve: valid encodings at every width
+// round-trip through the generated buffer decoder, and a region of another
+// width is rejected by both engines.
+func TestCodegenOptionalSpecSizedValue(t *testing.T) {
+	if _, generated := any(&OptSpecHolder{}).(sszutils.DynamicUnmarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	for _, width := range []int{6, 2, 4} {
+		specs := map[string]any{"OPT_INNER_LEN": uint64(width)}
+		payload := optSpecHolderPayload(width)
+		testCodegenPayloadByReflection(t, payload, specs, dynssz.WithExtendedTypes())
+	}
+
+	encoded := map[int][]byte{}
+	for _, width := range []int{4, 6} {
+		ds := dynssz.NewDynSsz(map[string]any{"OPT_INNER_LEN": uint64(width)}, dynssz.WithExtendedTypes())
+		payload := optSpecHolderPayload(width)
+		buf, err := ds.MarshalSSZ(&payload)
+		if err != nil {
+			t.Fatalf("marshal width %d: %v", width, err)
+		}
+		encoded[width] = buf
+	}
+	for _, tc := range []struct{ encodedWidth, decodeWidth int }{{4, 6}, {6, 4}} {
+		ds := dynssz.NewDynSsz(map[string]any{"OPT_INNER_LEN": uint64(tc.decodeWidth)}, dynssz.WithExtendedTypes())
+		refl := dynssz.NewDynSsz(map[string]any{"OPT_INNER_LEN": uint64(tc.decodeWidth)}, dynssz.WithExtendedTypes(), dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+		buf := encoded[tc.encodedWidth]
+		generated, ok := any(&OptSpecHolder{}).(sszutils.DynamicUnmarshaler)
+		if !ok {
+			t.Fatal("holder has no generated unmarshaler")
+		}
+		if err := generated.UnmarshalSSZDyn(ds, buf); err == nil {
+			t.Errorf("generated decoder at width %d accepted an encoding of width %d", tc.decodeWidth, tc.encodedWidth)
+		}
+		var reflected OptSpecHolder
+		if err := refl.UnmarshalSSZ(&reflected, buf); err == nil {
+			t.Errorf("reflection at width %d accepted an encoding of width %d", tc.decodeWidth, tc.encodedWidth)
+		}
+	}
+}
+
+// A custom type with spec-aware buffer methods is reached through them by the
+// generated streaming decoder as well, so a value written at a width the
+// instance's specs resolve is read back at that width on every path.
+func TestCodegenCustomStreamDecoderPrefersDynamicMethods(t *testing.T) {
+	if _, generated := any(&WidthCustomHolder{}).(sszutils.DynamicDecoder); !generated {
+		t.Skip("no generated code present")
+	}
+
+	for _, width := range []int{3, 1, 2} {
+		specs := map[string]any{"CUSTOM_WIDTH": uint64(width)}
+		payload := widthCustomHolderPayload(width)
+		testCodegenPayloadByReflection(t, payload, specs)
+
+		ds := dynssz.NewDynSsz(specs)
+		var stream bytes.Buffer
+		if err := ds.MarshalSSZWriter(&payload, &stream); err != nil {
+			t.Fatalf("width %d: stream encode: %v", width, err)
+		}
+		var decoded WidthCustomHolder
+		if err := ds.UnmarshalSSZReader(&decoded, bytes.NewReader(stream.Bytes()), stream.Len()); err != nil {
+			t.Fatalf("width %d: stream decode: %v", width, err)
+		}
+		if !reflect.DeepEqual(decoded, payload) {
+			t.Fatalf("width %d: decoded %+v != %+v", width, decoded, payload)
+		}
+	}
+}
+
+// A list element whose size resolves to zero at run time cannot be counted
+// from its region: the generated decoders report it, and the reflection type
+// cache refuses the type.
+func TestCodegenZeroSizeListElementRejected(t *testing.T) {
+	unmarshaler, ok := any(&ZeroSizeShellList{}).(sszutils.DynamicUnmarshaler)
+	if !ok {
+		t.Skip("no generated code present")
+	}
+	decoder, ok := any(&ZeroSizeShellList{}).(sszutils.DynamicDecoder)
+	if !ok {
+		t.Fatal("holder has no generated decoder")
+	}
+
+	ds := dynssz.NewDynSsz(nil)
+	for _, data := range [][]byte{{4, 0, 0, 0}, {4, 0, 0, 0, 0, 0}} {
+		if err := unmarshaler.UnmarshalSSZDyn(ds, data); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+			t.Errorf("buffer decode of %x: err = %v, want ErrInvalidConstraint", data, err)
+		}
+		if err := decoder.UnmarshalSSZDecoder(ds, sszutils.NewBufferDecoder(data)); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+			t.Errorf("stream decode of %x: err = %v, want ErrInvalidConstraint", data, err)
+		}
+		if err := ds.UnmarshalSSZReader(&ZeroSizeShellList{}, bytes.NewReader(data), -1); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+			t.Errorf("open-region decode of %x: err = %v, want ErrInvalidConstraint", data, err)
+		}
+	}
+
+	refl := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+	if err := refl.UnmarshalSSZ(&ZeroSizeShellList{}, []byte{4, 0, 0, 0}); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Errorf("reflection err = %v, want ErrInvalidConstraint", err)
+	}
+}
+
+// A custom element stored in a uint8 takes its declared width in every size
+// and encoding path of both engines.
+func TestCodegenWideByteCustomElements(t *testing.T) {
+	if _, generated := any(&WideByteCustomHolder{}).(sszutils.DynamicSizer); !generated {
+		t.Skip("no generated code present")
+	}
+
+	testCodegenPayloadByReflection(t, WideByteCustomHolder_Payload, nil)
+
+	refl := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+	holder := WideByteCustomHolder_Payload
+	encoded, err := refl.MarshalSSZ(&holder)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if want := 4 + 3*4 + 1 + 2*4; len(encoded) != want {
+		t.Fatalf("encoding is %d bytes, want %d", len(encoded), want)
+	}
+	if size, err := refl.SizeSSZ(&holder); err != nil || size != len(encoded) {
+		t.Fatalf("size %d err %v, want %d", size, err, len(encoded))
+	}
+}
+
+// A big.Int limit stated through the spec bounds the value in generated code as
+// a static one does, and the resolved value is the one that counts.
+func TestCodegenBigIntLimitFromSpec(t *testing.T) {
+	if _, generated := any(&BigIntSpecLimit{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	// A 21-byte magnitude, so the payload is 22 bytes with its sign byte.
+	huge := new(big.Int).Lsh(big.NewInt(1), 160)
+
+	for _, tc := range []struct {
+		name     string
+		limit    uint64
+		accepted bool
+	}{
+		{"below the payload", 5, false},
+		{"above the payload", 64, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := dynssz.NewDynSsz(map[string]any{"BIGINT_SPEC_MAX": tc.limit}, dynssz.WithExtendedTypes())
+
+			data, err := ds.MarshalSSZ(&BigIntSpecLimit{B: huge})
+			if accepted := err == nil; accepted != tc.accepted {
+				t.Fatalf("marshal err = %v, accepted = %v, want accepted = %v", err, accepted, tc.accepted)
+			}
+
+			// The streaming encoder is generated separately from the buffer
+			// marshaller and has to reach the same verdict: writing a value the
+			// buffer path refuses puts SSZ on the wire that nothing can decode,
+			// and the writer reports no error of its own.
+			var stream bytes.Buffer
+			streamErr := ds.MarshalSSZWriter(&BigIntSpecLimit{B: huge}, &stream)
+			if accepted := streamErr == nil; accepted != tc.accepted {
+				t.Fatalf("MarshalSSZWriter err = %v, accepted = %v, want accepted = %v", streamErr, accepted, tc.accepted)
+			}
+
+			if !tc.accepted {
+				return
+			}
+			if !bytes.Equal(stream.Bytes(), data) {
+				t.Errorf("streamed %x, buffered %x", stream.Bytes(), data)
+			}
+			if err := ds.UnmarshalSSZ(&BigIntSpecLimit{}, data); err != nil {
+				t.Errorf("round trip: %v", err)
+			}
+			if err := ds.UnmarshalSSZ(&BigIntSpecLimit{}, stream.Bytes()); err != nil {
+				t.Errorf("round trip of the streamed bytes: %v", err)
+			}
+		})
+	}
+}
+
+// A size expression resolving past the SSZ size limit is refused by both
+// engines. Where the platform's int is the wider bound they name the same
+// condition; where it is the narrower one the generated engine takes the size
+// through a sizer, whose int return holds no room for which condition it
+// refused on, so it reports the size limit while reflection still separates
+// the two.
+func TestSizeExpressionPastTheLimitRefusedAlikeByBothEngines(t *testing.T) {
+	if _, generated := any(&SimpleTypesWithSpecs{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	// Four-byte elements, so a count above a quarter of the limit states a
+	// vector larger than any SSZ value.
+	specs := map[string]any{"VEC32_SIZE": uint64(sszutils.MaxSszSize/4) + 1}
+	value := &SimpleTypesWithSpecs{}
+
+	generated := dynssz.NewDynSsz(specs)
+	reflection := dynssz.NewDynSsz(specs, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation())
+
+	_, genErr := generated.SizeSSZ(value)
+	_, reflErr := reflection.SizeSSZ(value)
+
+	if genErr == nil || reflErr == nil {
+		t.Fatalf("a size past the limit was accepted: generated=%v reflection=%v", genErr, reflErr)
+	}
+	if !errors.Is(genErr, sszutils.ErrSszSizeExceeded) {
+		t.Errorf("generated: err = %v, want the size refused", genErr)
+	}
+	if sszutils.MaxSszSize == math.MaxInt {
+		if !errors.Is(reflErr, sszutils.ErrPlatformOverflow) {
+			t.Errorf("reflection: err = %v, want a size only a wider int would hold", reflErr)
+		}
+		return
+	}
+	if !errors.Is(reflErr, sszutils.ErrSszSizeExceeded) {
+		t.Errorf("reflection: err = %v, want the size refused", reflErr)
+	}
+	if errors.Is(genErr, sszutils.ErrPlatformOverflow) || errors.Is(reflErr, sszutils.ErrPlatformOverflow) {
+		t.Errorf("the size limit was reported as a platform overflow:\n  generated  %v\n  reflection %v", genErr, reflErr)
+	}
+}
+
+// TestCodegenSpecLimit checks that a generated parent enforces a nested child's
+// spec-resolved limit with the caller's specs on every path: a limit resolving
+// below the static tag refuses what the static tag allows, one resolving above
+// it accepts what the static tag refuses, and both engines agree.
+func TestCodegenSpecLimit(t *testing.T) {
+	if _, generated := any(&SpecLimitParent{}).(sszutils.DynamicUnmarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	three := SpecLimitParent{X: 1, C: SpecLimitChild{Items: []uint64{1, 2, 3}}, L: []SpecLimitChild{{Items: []uint64{4, 5, 6}}}}
+	five := SpecLimitParent{X: 1, C: SpecLimitChild{Items: []uint64{1, 2, 3, 4, 5}}, L: []SpecLimitChild{{Items: []uint64{6, 7, 8, 9, 10}}}}
+	wideSpecs := map[string]any{"SPEC_LIMIT_MAX": uint64(8)}
+
+	testCodegenPayloadByReflection(t, three, nil)
+	testCodegenPayloadByReflection(t, five, wideSpecs)
+
+	wide := dynssz.NewDynSsz(wideSpecs)
+	rawThree, err := wide.MarshalSSZ(&three)
+	if err != nil {
+		t.Fatalf("marshal three: %v", err)
+	}
+	rawFive, err := wide.MarshalSSZ(&five)
+	if err != nil {
+		t.Fatalf("marshal five: %v", err)
+	}
+
+	refuse := func(t *testing.T, ds *dynssz.DynSsz, value *SpecLimitParent, raw []byte) {
+		t.Helper()
+		if _, err := ds.MarshalSSZ(value); err == nil {
+			t.Error("MarshalSSZ accepted a value over the resolved limit")
+		}
+		if err := ds.MarshalSSZWriter(value, &bytes.Buffer{}); err == nil {
+			t.Error("MarshalSSZWriter accepted a value over the resolved limit")
+		}
+		if _, err := ds.HashTreeRoot(value); err == nil {
+			t.Error("HashTreeRoot accepted a value over the resolved limit")
+		}
+		if err := ds.UnmarshalSSZ(&SpecLimitParent{}, raw); err == nil {
+			t.Error("UnmarshalSSZ accepted input over the resolved limit")
+		}
+		if err := ds.UnmarshalSSZReader(&SpecLimitParent{}, bytes.NewReader(raw), len(raw)); err == nil {
+			t.Error("UnmarshalSSZReader accepted input over the resolved limit")
+		}
+	}
+
+	accept := func(t *testing.T, ds *dynssz.DynSsz, value *SpecLimitParent, raw []byte) {
+		t.Helper()
+		if out, err := ds.MarshalSSZ(value); err != nil || !bytes.Equal(out, raw) {
+			t.Errorf("MarshalSSZ = %x (%v), want %x", out, err, raw)
+		}
+		var w bytes.Buffer
+		if err := ds.MarshalSSZWriter(value, &w); err != nil || !bytes.Equal(w.Bytes(), raw) {
+			t.Errorf("MarshalSSZWriter = %x (%v), want %x", w.Bytes(), err, raw)
+		}
+		if _, err := ds.HashTreeRoot(value); err != nil {
+			t.Errorf("HashTreeRoot: %v", err)
+		}
+		var back SpecLimitParent
+		if err := ds.UnmarshalSSZ(&back, raw); err != nil {
+			t.Errorf("UnmarshalSSZ: %v", err)
+		}
+		var backReader SpecLimitParent
+		if err := ds.UnmarshalSSZReader(&backReader, bytes.NewReader(raw), len(raw)); err != nil {
+			t.Errorf("UnmarshalSSZReader: %v", err)
+		}
+	}
+
+	narrow := dynssz.NewDynSsz(map[string]any{"SPEC_LIMIT_MAX": uint64(2)})
+	refuse(t, narrow, &three, rawThree)
+
+	static := dynssz.NewDynSsz(nil)
+	accept(t, static, &three, rawThree)
+	refuse(t, static, &five, rawFive)
+
+	accept(t, wide, &five, rawFive)
+}
+
+// TestCodegenLegacyNoDelegationSpecs checks that WithNoDelegation doesn't call
+// SpecLimitChild's -legacy static methods, which use the global specs. Results
+// must match pure reflection whatever the global specs are.
+func TestCodegenLegacyNoDelegationSpecs(t *testing.T) {
+	if _, generated := any(&SpecLimitChild{}).(sszutils.FastsszBufferMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	t.Cleanup(func() { dynssz.SetGlobalSpecs(nil) })
+
+	value := &SpecLimitParent{X: 1, C: SpecLimitChild{Items: []uint64{1, 2, 3}}, L: []SpecLimitChild{{Items: []uint64{4, 5, 6}}}}
+	for _, globalMax := range []uint64{2, 64} {
+		for _, local := range []map[string]any{nil, {"SPEC_LIMIT_MAX": uint64(4)}} {
+			t.Run(fmt.Sprintf("global=%d/local=%v", globalMax, local), func(t *testing.T) {
+				dynssz.SetGlobalSpecs(map[string]any{"SPEC_LIMIT_MAX": globalMax})
+
+				ref := dynssz.NewDynSsz(local, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+				wantBytes, err := ref.MarshalSSZ(value)
+				if err != nil {
+					t.Fatalf("reference marshal: %v", err)
+				}
+				wantRoot, err := ref.HashTreeRoot(value)
+				if err != nil {
+					t.Fatalf("reference root: %v", err)
+				}
+
+				for name, ds := range map[string]*dynssz.DynSsz{
+					"no-delegation": dynssz.NewDynSsz(local, dynssz.WithNoDelegation()),
+					"default":       dynssz.NewDynSsz(local),
+				} {
+					if got, err := ds.MarshalSSZ(value); err != nil || !bytes.Equal(got, wantBytes) {
+						t.Errorf("%s: MarshalSSZ = %x, %v; want %x", name, got, err, wantBytes)
+					}
+					var buf bytes.Buffer
+					if err := ds.MarshalSSZWriter(value, &buf); err != nil || !bytes.Equal(buf.Bytes(), wantBytes) {
+						t.Errorf("%s: MarshalSSZWriter = %x, %v; want %x", name, buf.Bytes(), err, wantBytes)
+					}
+					if got, err := ds.SizeSSZ(value); err != nil || got != len(wantBytes) {
+						t.Errorf("%s: SizeSSZ = %d, %v; want %d", name, got, err, len(wantBytes))
+					}
+					if got, err := ds.HashTreeRoot(value); err != nil || got != wantRoot {
+						t.Errorf("%s: HashTreeRoot = %x, %v; want %x", name, got, err, wantRoot)
+					}
+					decoded := &SpecLimitParent{}
+					if err := ds.UnmarshalSSZ(decoded, wantBytes); err != nil || !reflect.DeepEqual(decoded, value) {
+						t.Errorf("%s: UnmarshalSSZ = %+v, %v; want %+v", name, decoded, err, value)
+					}
+					decoded = &SpecLimitParent{}
+					if err := ds.UnmarshalSSZReader(decoded, bytes.NewReader(wantBytes), len(wantBytes)); err != nil || !reflect.DeepEqual(decoded, value) {
+						t.Errorf("%s: UnmarshalSSZReader = %+v, %v; want %+v", name, decoded, err, value)
+					}
+				}
+			})
+		}
+	}
+	// Results don't change while the global specs are swapped.
+	t.Run("concurrent global swaps", func(t *testing.T) {
+		dynssz.SetGlobalSpecs(nil)
+		ref := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+		wantBytes, err := ref.MarshalSSZ(value)
+		if err != nil {
+			t.Fatalf("reference marshal: %v", err)
+		}
+		wantRoot, err := ref.HashTreeRoot(value)
+		if err != nil {
+			t.Fatalf("reference root: %v", err)
+		}
+
+		stop := make(chan struct{})
+		swapped := make(chan struct{})
+		go func() {
+			defer close(swapped)
+			for i := 0; ; i++ {
+				select {
+				case <-stop:
+					return
+				default:
+					dynssz.SetGlobalSpecs(map[string]any{"SPEC_LIMIT_MAX": []uint64{2, 64}[i%2]})
+				}
+			}
+		}()
+
+		var wg sync.WaitGroup
+		for w := 0; w < 8; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				ds := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation())
+				for i := 0; i < 200; i++ {
+					if got, err := ds.MarshalSSZ(value); err != nil || !bytes.Equal(got, wantBytes) {
+						t.Errorf("MarshalSSZ = %x, %v; want %x", got, err, wantBytes)
+						return
+					}
+					if got, err := ds.HashTreeRoot(value); err != nil || got != wantRoot {
+						t.Errorf("HashTreeRoot = %x, %v; want %x", got, err, wantRoot)
+						return
+					}
+					decoded := &SpecLimitParent{}
+					if err := ds.UnmarshalSSZ(decoded, wantBytes); err != nil || !reflect.DeepEqual(decoded, value) {
+						t.Errorf("UnmarshalSSZ = %+v, %v; want %+v", decoded, err, value)
+						return
+					}
+				}
+			}()
+		}
+		wg.Wait()
+		close(stop)
+		<-swapped
+	})
+}
+
+// TestCodegenTypeHintOverride checks that a field declaring an SSZ type for a
+// generated type is described inline by the generator as it is by the
+// reflection engine, instead of being delegated to the type's own methods,
+// which hash its declared shape.
+func TestCodegenTypeHintOverride(t *testing.T) {
+	testCodegenPayloadByReflection(t, TypeHintOverride_Payload, nil)
+}
+
+// TestCodegenSameRunCustomWidth checks a same-run type with a spec-driven width,
+// declared custom by its holder's fields with and without a declared width,
+// against the reflection engine at the static width and at a narrower one.
+func TestCodegenSameRunCustomWidth(t *testing.T) {
+	if _, generated := any(&SpecWidthHolder{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	testCodegenPayloadByReflection(t, specWidthHolderPayload(8), nil)
+	testCodegenPayloadByReflection(t, specWidthHolderPayload(4), map[string]any{"SPEC_WIDTH": uint64(4)})
+}
+
+// TestCodegenFastsszWidthCustom checks a static custom type with the fastssz
+// surface only and no declared width: both engines read its width from
+// SizeSSZ on a zero value and agree on bytes, size and root.
+func TestCodegenFastsszWidthCustom(t *testing.T) {
+	if _, generated := any(&FsWidthHolder{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	testCodegenPayloadByReflection(t, FsWidthHolder_Payload, nil)
+}
+
+// TestCodegenZeroWidthListElement checks that a list of custom elements whose
+// run-time width is zero is refused on every generated path, as the reflection
+// engine refuses the type: two lengths would otherwise share one encoding.
+func TestCodegenZeroWidthListElement(t *testing.T) {
+	if _, generated := any(&ZeroWidthList{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	value := &ZeroWidthList{L: []zeroWidthCustom{{}, {}}}
+
+	if _, err := ds.MarshalSSZ(value); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Errorf("MarshalSSZ err = %v, want the zero-width refusal", err)
+	}
+	if err := ds.MarshalSSZWriter(value, &bytes.Buffer{}); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Errorf("MarshalSSZWriter err = %v, want the zero-width refusal", err)
+	}
+	if _, err := ds.HashTreeRoot(value); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Errorf("HashTreeRoot err = %v, want the zero-width refusal", err)
+	}
+	if err := ds.UnmarshalSSZ(&ZeroWidthList{}, []byte{4, 0, 0, 0}); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Errorf("UnmarshalSSZ err = %v, want the zero-width refusal", err)
+	}
+	if err := ds.UnmarshalSSZReader(&ZeroWidthList{}, bytes.NewReader([]byte{4, 0, 0, 0}), 4); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Errorf("UnmarshalSSZReader err = %v, want the zero-width refusal", err)
+	}
+	if _, err := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz()).MarshalSSZ(value); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Errorf("reflection err = %v, want the zero-width refusal", err)
+	}
+}
+
+// TestCodegenZeroWidthShapes checks that a zero-width custom type reached
+// through a wrapper element, a container element or an optional-list is
+// refused on every generated path and by the reflection engine, one holder
+// per shape so that each guard is the one that answers.
+func TestCodegenZeroWidthShapes(t *testing.T) {
+	if _, generated := any(&ZeroWidthWrapperList{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	shapes := map[string]struct {
+		value any
+		fresh func() any
+	}{
+		"wrapper element": {
+			&ZeroWidthWrapperList{W: []dynssz.TypeWrapper[struct{ Data zeroWidthCustom }, zeroWidthCustom]{{}, {}}},
+			func() any { return &ZeroWidthWrapperList{} },
+		},
+		"container element": {&ZeroWidthShellList{S: []ZeroWidthShell{{}, {}}}, func() any { return &ZeroWidthShellList{} }},
+		"optional-list":     {&ZeroWidthOptionalList{O: &zeroWidthCustom{}}, func() any { return &ZeroWidthOptionalList{} }},
+	}
+	ds := dynssz.NewDynSsz(nil)
+	refl := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+	raw := []byte{4, 0, 0, 0}
+	for name, shape := range shapes {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ds.MarshalSSZ(shape.value); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+				t.Errorf("MarshalSSZ err = %v, want the zero-width refusal", err)
+			}
+			if err := ds.MarshalSSZWriter(shape.value, &bytes.Buffer{}); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+				t.Errorf("MarshalSSZWriter err = %v, want the zero-width refusal", err)
+			}
+			if _, err := ds.HashTreeRoot(shape.value); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+				t.Errorf("HashTreeRoot err = %v, want the zero-width refusal", err)
+			}
+			if err := ds.UnmarshalSSZ(shape.fresh(), raw); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+				t.Errorf("UnmarshalSSZ err = %v, want the zero-width refusal", err)
+			}
+			if err := ds.UnmarshalSSZReader(shape.fresh(), bytes.NewReader(raw), len(raw)); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+				t.Errorf("UnmarshalSSZReader err = %v, want the zero-width refusal", err)
+			}
+			if _, err := refl.MarshalSSZ(shape.value); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+				t.Errorf("reflection err = %v, want the zero-width refusal", err)
+			}
+		})
+	}
+}
+
+// TestCodegenZeroWidthOptional checks that a zero-width custom type in a
+// regular optional, whose presence byte keeps the encoding unambiguous,
+// marshals, hashes and round-trips like the reflection engine.
+func TestCodegenZeroWidthOptional(t *testing.T) {
+	if _, generated := any(&ZeroWidthOptional{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	testCodegenPayloadByReflection(t, ZeroWidthOptional_Payload, nil, dynssz.WithExtendedTypes())
+}
+
+// plainSpecs resolves like the wrapped instance but caches no spec set, so
+// generated code resolves the set on every call through it.
+type plainSpecs struct {
+	inner sszutils.DynamicSpecs
+}
+
+func (p plainSpecs) ResolveSpecValue(name string) (bool, uint64, error) {
+	return p.inner.ResolveSpecValue(name)
+}
+
+// A generated type serializes the same bytes through the caching DynSsz and
+// through a DynamicSpecs without a cache, on the first call and on repeats,
+// and an instance with other spec values resolves its own set.
+func TestCodegenSpecSetCache(t *testing.T) {
+	marshaler, generated := any(&SimpleTypesWithSpecs_Payload).(interface {
+		MarshalSSZDyn(sszutils.DynamicSpecs, []byte) ([]byte, error)
+	})
+	if !generated {
+		t.Skip("no generated code present")
+	}
+
+	ds := dynssz.NewDynSsz(SimpleTypesWithSpecs_Specs)
+	want, err := ds.MarshalSSZ(&SimpleTypesWithSpecs_Payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	again, err := ds.MarshalSSZ(&SimpleTypesWithSpecs_Payload)
+	if err != nil {
+		t.Fatalf("second marshal: %v", err)
+	}
+	if !bytes.Equal(again, want) {
+		t.Fatalf("second marshal encoded %x, want %x", again, want)
+	}
+
+	got, err := marshaler.MarshalSSZDyn(plainSpecs{inner: ds}, nil)
+	if err != nil {
+		t.Fatalf("marshal through plain specs: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("plain specs encoded %x, want %x", got, want)
+	}
+
+	// Another instance with other spec values resolves its own set: the
+	// static sizes differ from the specs above, so the encoding differs.
+	other, err := dynssz.NewDynSsz(nil).MarshalSSZ(&SimpleTypesWithSpecs_Payload)
+	if err == nil && bytes.Equal(other, want) {
+		t.Fatal("instances share a spec set")
+	}
+}
+
+// A view resolves only its own expressions: with ONLY_B undefined and no
+// static fallback for it, view B is refused while view A, which never
+// declared ONLY_B, serializes; each view keeps a spec set of its own.
+func TestCodegenSpecSetPerView(t *testing.T) {
+	if _, generated := any(&SpecViewIsolation_Base{}).(sszutils.DynamicViewMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	ds := dynssz.NewDynSsz(map[string]any{"ONLY_A": uint64(6)})
+	value := &SpecViewIsolation_Base{V: []uint16{1, 2, 3, 4, 5, 6}}
+
+	got, err := ds.MarshalSSZ(value, dynssz.WithViewDescriptor((*SpecViewIsolation_ViewA)(nil)))
+	if err != nil {
+		t.Fatalf("view A: %v", err)
+	}
+	if len(got) != 12 {
+		t.Fatalf("view A encoded %d bytes, want 12 (ONLY_A=6 elements of 2 bytes)", len(got))
+	}
+
+	// The size path has no error channel: it refuses with -1, which is
+	// reported as a size the type cannot represent.
+	if _, err = ds.MarshalSSZ(value, dynssz.WithViewDescriptor((*SpecViewIsolation_ViewB)(nil))); err == nil {
+		t.Fatal("view B serialized without ONLY_B defined")
+	}
+}
+
+// A view served by two data types keeps a spec set per type: T1 inlines the
+// child, so its set numbers the child's width before the view's own length,
+// while T2 delegates the child and reaches its width after the length. One
+// shared set would hand each the other's values. Whichever type serializes
+// first, both encode as reflection does.
+func TestCodegenSpecSetSharedView(t *testing.T) {
+	if _, generated := any(&SpecViewShared_T1{}).(sszutils.DynamicViewMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	specs := map[string]any{"SHARED_W": uint64(3), "SHARED_V": uint64(5)}
+	t1 := &SpecViewShared_T1{Child: &SpecViewShared_ChildPlain{W: []uint16{1, 2, 3}}, V: []uint16{4, 5, 6, 7, 8}}
+	t2 := &SpecViewShared_T2{Child: &SpecViewShared_ChildGen{W: []uint16{1, 2, 3}}, V: []uint16{4, 5, 6, 7, 8}}
+	view := dynssz.WithViewDescriptor((*SpecViewShared_View)(nil))
+
+	refl := dynssz.NewDynSsz(specs, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation())
+	want1, err := refl.MarshalSSZ(t1, view)
+	if err != nil {
+		t.Fatalf("reflection T1: %v", err)
+	}
+	want2, err := refl.MarshalSSZ(t2, view)
+	if err != nil {
+		t.Fatalf("reflection T2: %v", err)
+	}
+	if !bytes.Equal(want1, want2) || len(want1) != 16 {
+		t.Fatalf("reflection encodings differ or are not 16 bytes: %x, %x", want1, want2)
+	}
+
+	for _, order := range []string{"T1 first", "T2 first"} {
+		t.Run(order, func(t *testing.T) {
+			ds := dynssz.NewDynSsz(specs)
+			marshal := func() {
+				got1, err := ds.MarshalSSZ(t1, view)
+				if err != nil {
+					t.Fatalf("T1: %v", err)
+				}
+				got2, err := ds.MarshalSSZ(t2, view)
+				if err != nil {
+					t.Fatalf("T2: %v", err)
+				}
+				if !bytes.Equal(got1, want1) || !bytes.Equal(got2, want2) {
+					t.Fatalf("T1 %x, T2 %x, want %x", got1, got2, want1)
+				}
+			}
+			if order == "T2 first" {
+				if _, err := ds.MarshalSSZ(t2, view); err != nil {
+					t.Fatalf("T2: %v", err)
+				}
+			}
+			marshal()
+			marshal()
+		})
+	}
+}
+
+// TestCodegenAnnotationJoin checks that the TypeWrapper and union fields of
+// AnnotatedRootsHolder keep the annotation's root size under their own limit,
+// in generated code and reflection. Expected bytes and root are built by hand.
+func TestCodegenAnnotationJoin(t *testing.T) {
+	if _, generated := any(&AnnotatedRootsHolder{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	roots := AnnotatedRoots{bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte{2}, 32)}
+	value := &AnnotatedRootsHolder{
+		C:  AnnotatedRootsField{Data: roots},
+		W:  dynssz.TypeWrapper[AnnotatedRootsField, AnnotatedRoots]{Data: roots},
+		U:  dynssz.Union[AnnotatedRootsField]{Variant: 0, Data: roots},
+		CU: dynssz.CompatibleUnion[AnnotatedRootsField]{Variant: 1, Data: roots},
+	}
+
+	// List[Vector[byte,32],4]: the two roots back to back, no inner offsets.
+	list := append(bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte{2}, 32)...)
+	hash := func(a, b []byte) []byte {
+		sum := sha256.Sum256(append(append([]byte{}, a...), b...))
+		return sum[:]
+	}
+	word := func(v byte) []byte { w := make([]byte, 32); w[0] = v; return w }
+	listRoot := hash(hash(hash(list[:32], list[32:]), hash(word(0), word(0))), word(2))
+
+	u32 := func(v uint32) []byte { return binary.LittleEndian.AppendUint32(nil, v) }
+	wantBytes := bytes.Join([][]byte{
+		u32(16), u32(84), u32(148), u32(213),
+		u32(4), list, // C
+		list,                       // W
+		append([]byte{0}, list...), // U
+		append([]byte{1}, list...), // CU
+	}, nil)
+	var wantRoot [32]byte
+	copy(wantRoot[:], hash(hash(listRoot, listRoot), hash(hash(listRoot, word(0)), hash(listRoot, word(1)))))
+
+	for name, ds := range map[string]*dynssz.DynSsz{
+		"generated":  dynssz.NewDynSsz(nil),
+		"reflection": dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz()),
+	} {
+		if got, err := ds.MarshalSSZ(value); err != nil || !bytes.Equal(got, wantBytes) {
+			t.Errorf("%s: MarshalSSZ = %x, %v; want %x", name, got, err, wantBytes)
+		}
+		var buf bytes.Buffer
+		if err := ds.MarshalSSZWriter(value, &buf); err != nil || !bytes.Equal(buf.Bytes(), wantBytes) {
+			t.Errorf("%s: MarshalSSZWriter = %x, %v; want %x", name, buf.Bytes(), err, wantBytes)
+		}
+		if size, err := ds.SizeSSZ(value); err != nil || size != len(wantBytes) {
+			t.Errorf("%s: SizeSSZ = %d, %v; want %d", name, size, err, len(wantBytes))
+		}
+		if got, err := ds.HashTreeRoot(value); err != nil || got != wantRoot {
+			t.Errorf("%s: HashTreeRoot = %x, %v; want %x", name, got, err, wantRoot)
+		}
+		decoded := &AnnotatedRootsHolder{}
+		if err := ds.UnmarshalSSZ(decoded, wantBytes); err != nil || !reflect.DeepEqual(decoded, value) {
+			t.Errorf("%s: UnmarshalSSZ = %+v, %v; want %+v", name, decoded, err, value)
+		}
+		decoded = &AnnotatedRootsHolder{}
+		if err := ds.UnmarshalSSZReader(decoded, bytes.NewReader(wantBytes), len(wantBytes)); err != nil || !reflect.DeepEqual(decoded, value) {
+			t.Errorf("%s: UnmarshalSSZReader = %+v, %v; want %+v", name, decoded, err, value)
+		}
+	}
+}
+
+// A union variant sized purely by a spec expression occupies exactly its
+// resolved width in the union region: the generated decoders must reject a
+// short region and a region with trailing bytes as the reflection engine does,
+// on every variant kind and both union flavours.
+func TestCodegenUnionSpecOnlyVariants(t *testing.T) {
+	refDs := dynssz.NewDynSsz(UnionSpecOnly_Specs, dynssz.WithNoFastSsz(), dynssz.WithNoFastHash(), dynssz.WithNoDelegation())
+	genDs := dynssz.NewDynSsz(UnionSpecOnly_Specs)
+
+	for i, value := range UnionSpecOnly_Values {
+		compat := UnionSpecOnlyCompat{U: dynssz.CompatibleUnion[UnionSpecOnlyVariants]{Variant: uint8(i + 1), Data: value.Data}}
+		classic := UnionSpecOnlyClassic{U: dynssz.Union[UnionSpecOnlyVariants]{Variant: uint8(i), Data: value.Data}}
+		testCodegenPayloadByReflection(t, compat, UnionSpecOnly_Specs)
+		testCodegenPayloadByReflection(t, classic, UnionSpecOnly_Specs)
+
+		for _, tc := range []struct {
+			name    string
+			target  func() any
+			encoded []byte
+		}{
+			{"compat", func() any { return &UnionSpecOnlyCompat{} }, mustMarshal(t, genDs, compat)},
+			{"classic", func() any { return &UnionSpecOnlyClassic{} }, mustMarshal(t, genDs, classic)},
+		} {
+			exact := tc.encoded
+			if len(exact) != 4+1+value.Size {
+				t.Fatalf("variant %d %s: encoded to %d bytes, want %d", i, tc.name, len(exact), 4+1+value.Size)
+			}
+			for _, in := range []struct {
+				name string
+				buf  []byte
+				want error
+			}{
+				{"selector only", exact[:5], sszutils.ErrUnexpectedEOF},
+				{"short", exact[:len(exact)-1], sszutils.ErrUnexpectedEOF},
+				{"trailing", append(append([]byte{}, exact...), 0, 0, 0, 0, 0), sszutils.ErrOffset},
+			} {
+				for _, engine := range []struct {
+					name string
+					ds   *dynssz.DynSsz
+				}{{"reflection", refDs}, {"generated", genDs}} {
+					for _, path := range []struct {
+						name   string
+						decode func(any, []byte) error
+					}{
+						{"buffer", func(v any, b []byte) error { return engine.ds.UnmarshalSSZ(v, b) }},
+						{"reader", func(v any, b []byte) error { return engine.ds.UnmarshalSSZReader(v, bytes.NewReader(b), len(b)) }},
+					} {
+						err := path.decode(tc.target(), in.buf)
+						if err == nil {
+							t.Errorf("variant %d %s %s %s %s: accepted %x", i, tc.name, in.name, engine.name, path.name, in.buf)
+						} else if engine.name == "generated" && path.name == "buffer" && !errors.Is(err, in.want) {
+							t.Errorf("variant %d %s %s %s %s: got %v, want %v", i, tc.name, in.name, engine.name, path.name, err, in.want)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func mustMarshal(t *testing.T, ds *dynssz.DynSsz, v any) []byte {
+	t.Helper()
+	out, err := ds.MarshalSSZ(v)
+	if err != nil {
+		t.Fatalf("MarshalSSZ: %v", err)
+	}
+	return out
+}
+
+// A named uint128 held as words with generated methods must hash like its
+// inline twin wherever it sits: packed as a list or vector element, as a
+// whole chunk as a field, and as a standalone root.
+func TestCodegenWordUint128Element(t *testing.T) {
+	if _, generated := any(&GenU128{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+
+	testCodegenPayloadByReflection(t, GenU128Holder_Payload, nil)
+
+	ds := dynssz.NewDynSsz(nil)
+	got, err := ds.HashTreeRoot(&GenU128Holder_Payload)
+	if err != nil {
+		t.Fatalf("HashTreeRoot: %v", err)
+	}
+	want, err := ds.HashTreeRoot(&GenU128HolderRef_Payload)
+	if err != nil {
+		t.Fatalf("reference HashTreeRoot: %v", err)
+	}
+	if got != want {
+		t.Fatalf("holder root %x != inline reference %x", got[:8], want[:8])
+	}
+	tree, err := ds.GetTree(&GenU128Holder_Payload)
+	if err != nil {
+		t.Fatalf("GetTree: %v", err)
+	}
+	if !bytes.Equal(tree.Hash(), want[:]) {
+		t.Fatalf("tree root %x != inline reference %x", tree.Hash()[:8], want[:8])
+	}
+
+	for _, elem := range []any{&GenU128{11, 12}, &GenU128Wrap{Data: [2]uint64{11, 12}}} {
+		hasher, ok := elem.(sszutils.FastsszHashRoot)
+		if !ok {
+			t.Fatalf("%T has no generated HashTreeRoot", elem)
+		}
+		standalone, err := hasher.HashTreeRoot()
+		if err != nil {
+			t.Fatalf("%T standalone HashTreeRoot: %v", elem, err)
+		}
+		engine, err := ds.HashTreeRoot(elem)
+		if err != nil {
+			t.Fatalf("%T engine HashTreeRoot: %v", elem, err)
+		}
+		if standalone != engine {
+			t.Fatalf("%T standalone root %x != engine root %x", elem, standalone[:8], engine[:8])
+		}
 	}
 }

@@ -105,9 +105,9 @@ data, _ := ds.MarshalSSZ(Measurement{
 
 | Go Type    | SSZ Type | Size | Encoding |
 |------------|----------|------|----------|
-| `big.Int`  | `bigint` | Variable | Big-endian byte representation |
+| `big.Int`  | `bigint` | Variable | Sign byte followed by the big-endian magnitude |
 
-`big.Int` values are treated as **dynamic-size** types. They are serialized as variable-length byte arrays using `big.Int.Bytes()` (big-endian). The hash tree root uses `PutBytes` for proper merkleization.
+`big.Int` values are treated as **dynamic-size** types. They are serialized as a sign byte (0 for non-negative, 1 for negative) followed by the minimal big-endian magnitude (`big.Int.Bytes()`); decoding rejects a missing or invalid sign byte, a magnitude with a leading zero byte and a negative zero. A static `ssz-max` bounds the sign byte plus the magnitude. The hash tree root is `PutBytes` over the length, the sign byte and the magnitude.
 
 ```go
 import "math/big"
@@ -272,7 +272,7 @@ type DataSet struct {
 Extended types are fully supported in hash tree root computation:
 
 - **Fixed-size types** (`int8`-`int64`, `float32`, `float64`): Hashed as their serialized byte representation, same as standard unsigned integers.
-- **`big.Int`**: Hashed using `PutBytes` for proper merkleization of variable-length data.
+- **`big.Int`**: Hashed with `PutBytes` over the length, the sign byte and the magnitude of the value.
 - **Optional types**: The value's root with its presence mixed in as a length (1 present, 0 absent), so an absent value and a present zero value do not collide. Identical to `optional-list`.
 - **Unbounded lists and bitlists**: Merkleized to the chunks the value occupies, with the length mixed in.
 

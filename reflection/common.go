@@ -13,6 +13,8 @@
 package reflection
 
 import (
+	"fmt"
+	"log/slog"
 	"math"
 	"reflect"
 
@@ -75,11 +77,17 @@ type reflectionDepth struct {
 // stay under 20) while costing well under a megabyte of stack.
 const defaultMaxNestingDepth = 1024
 
+// defaultLogCb is where verbose logging goes when a caller names no sink.
+func defaultLogCb(format string, args ...any) {
+	slog.Debug(fmt.Sprintf(format, args...))
+}
+
 // NewReflectionCtx creates a new ReflectionCtx with the given configuration.
 //
 // Parameters:
 //   - ds: provides dynamic specification values for resolving field sizes
-//   - logCb: callback for debug logging (may be nil)
+//   - logCb: callback for debug logging; nil names no sink, and the default
+//     one answers for it
 //   - verbose: enables verbose logging output
 //   - noFastSsz: when true, disables fastssz fallback for types that implement
 //     fastssz interfaces, forcing all operations through reflection
@@ -93,6 +101,9 @@ const defaultMaxNestingDepth = 1024
 func NewReflectionCtx(ds sszutils.DynamicSpecs, logCb func(format string, args ...any), verbose, noFastSsz, noDelegation bool, maxDepth int) *ReflectionCtx {
 	if maxDepth <= 0 {
 		maxDepth = defaultMaxNestingDepth
+	}
+	if logCb == nil {
+		logCb = defaultLogCb
 	}
 
 	return &ReflectionCtx{
@@ -177,4 +188,19 @@ func (ctx *ReflectionCtx) HashTreeRoot(targetType *ssztypes.TypeDescriptor, targ
 		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "hash walker must not be nil")
 	}
 	return ctx.buildRootFromType(targetType, targetValue, hh, false, reflectionDepth{})
+}
+
+// bitvectorPaddingBits returns the bits above the bit size in the last element
+// of a bit-sized bitvector stored element-wise (a named uint8 or a pointer to a
+// byte element). A nil element holds no bits.
+func bitvectorPaddingBits(desc *ssztypes.TypeDescriptor, vec reflect.Value, n int) uint8 {
+	last := vec.Index(n - 1)
+	if last.Kind() == reflect.Pointer {
+		if last.IsNil() {
+			return 0
+		}
+		last = last.Elem()
+	}
+	paddingMask := uint8((uint16(0xff) << (desc.BitSize % 8)) & 0xff)
+	return uint8(last.Uint()) & paddingMask
 }

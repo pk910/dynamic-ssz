@@ -2,6 +2,14 @@
 
 All notable changes to the `dynamic-ssz` library are documented here.
 
+## [v1.3.3] 2026-08-26
+
+### Fixed
+- Fix `treeproof.Wrapper` building a non-canonical Merkle tree for containers that interleave buffered `Append*` fields with directly added `Put*`/`AddNode` fields - pending bytes are now flushed to leaf nodes before a node is added or a scope checkpoint is captured, so the leaf order matches `hasher.Hasher`
+- Fix `GetTree(x).Hash()` diverging from `HashTreeRoot(x)`, and proofs derived from the tree failing to verify, for Deneb and later `BeaconState`, `BeaconBlock`, `SignedBeaconBlock`, `ExecutionPayload` and `ExecutionPayloadHeader`; this affects every release since `GetTree` was introduced in v1.1.1, while `HashTreeRoot`, `MarshalSSZ` and `UnmarshalSSZ` are unaffected
+
+---
+
 ## [v1.3.2] 2026-06-21
 
 ### Added

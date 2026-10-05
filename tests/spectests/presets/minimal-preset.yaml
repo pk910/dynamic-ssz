@@ -28,28 +28,28 @@ EFFECTIVE_BALANCE_INCREMENT: 1000000000
 
 # Time parameters
 # ---------------------------------------------------------------
-# 2**0 (= 1) slots, 6 seconds
+# 2**0 (= 1) slots
 MIN_ATTESTATION_INCLUSION_DELAY: 1
-# 2**5 (= 32) slots, 48 seconds
+# [customized] 2**3 (= 8) slots
 SLOTS_PER_EPOCH: 8
-# 2**0 (= 1) epochs, 48 seconds
+# 2**0 (= 1) epochs
 MIN_SEED_LOOKAHEAD: 1
-# 2**2 (= 4) epochs, 3.2 minutes
+# 2**2 (= 4) epochs
 MAX_SEED_LOOKAHEAD: 4
-# [customized] 2**2 (= 4) epochs, 3.2 minutes
+# [customized] 2**2 (= 4) epochs
 EPOCHS_PER_ETH1_VOTING_PERIOD: 4
-# [customized] 2**6 (= 64) slots, 51.2 minutes
+# [customized] 2**6 (= 64) slots
 SLOTS_PER_HISTORICAL_ROOT: 64
-# 2**2 (= 4) epochs, 3.2 minutes
+# 2**2 (= 4) epochs
 MIN_EPOCHS_TO_INACTIVITY_PENALTY: 4
 
 # State list lengths
 # ---------------------------------------------------------------
-# [customized] 2**6 (= 64) epochs, 51.2 minutes
+# [customized] 2**6 (= 64) epochs
 EPOCHS_PER_HISTORICAL_VECTOR: 64
-# [customized] 2**6 (= 64) epochs, 51.2 minutes
+# [customized] 2**6 (= 64) epochs
 EPOCHS_PER_SLASHINGS_VECTOR: 64
-# 2**24 (= 16,777,216) historical roots, ~204 years
+# 2**24 (= 16,777,216) historical roots
 HISTORICAL_ROOTS_LIMIT: 16777216
 # 2**40 (= 1,099,511,627,776) validator spots
 VALIDATOR_REGISTRY_LIMIT: 1099511627776
@@ -150,13 +150,13 @@ MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP: 16
 
 # Execution
 # ---------------------------------------------------------------
-# [customized] 2**5 (= 32) blob commitments
-MAX_BLOB_COMMITMENTS_PER_BLOCK: 32
+# 2**12 (= 4,096) commitments
+MAX_BLOB_COMMITMENTS_PER_BLOCK: 4096
 
 # Networking
 # ---------------------------------------------------------------
-# [customized] floorlog2(get_generalized_index(BeaconBlockBody, 'blob_kzg_commitments')) + 1 + ceillog2(MAX_BLOB_COMMITMENTS_PER_BLOCK) (= 4 + 1 + 5 = 10)
-KZG_COMMITMENT_INCLUSION_PROOF_DEPTH: 10
+# floorlog2(get_generalized_index(BeaconBlockBody, 'blob_kzg_commitments')) + 1 + ceillog2(MAX_BLOB_COMMITMENTS_PER_BLOCK) (= 4 + 1 + 12 = 17)
+KZG_COMMITMENT_INCLUSION_PROOF_DEPTH: 17
 
 # Blob
 # ---------------------------------------------------------------
@@ -206,7 +206,7 @@ MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD: 2
 
 # Withdrawals processing
 # ---------------------------------------------------------------
-# 2**1 (= 2) pending withdrawals
+# [customized] 2**1 (= 2) pending withdrawals
 MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP: 2
 
 # Pending deposits processing
@@ -231,3 +231,40 @@ FIELD_ELEMENTS_PER_EXT_BLOB: 8192
 CELLS_PER_EXT_BLOB: 128
 # CELLS_PER_EXT_BLOB (= 128) columns
 NUMBER_OF_COLUMNS: 128
+
+# Minimal preset - Gloas
+
+# Misc
+# ---------------------------------------------------------------
+# [customized] 2**4 (= 16) validators
+PTC_SIZE: 16
+
+# Max operations per block
+# ---------------------------------------------------------------
+# 2**2 (= 4) attestations
+MAX_PAYLOAD_ATTESTATIONS: 4
+
+# Execution
+# ---------------------------------------------------------------
+# 2**6 (= 64) builder deposit requests
+MAX_BUILDER_DEPOSIT_REQUESTS_PER_PAYLOAD: 64
+# 2**4 (= 16) builder exit requests
+MAX_BUILDER_EXIT_REQUESTS_PER_PAYLOAD: 16
+
+# Withdrawals processing
+# ---------------------------------------------------------------
+# [customized] 2**4 (= 16) builders
+MAX_BUILDERS_PER_WITHDRAWALS_SWEEP: 16
+
+# Type-specific SSZ bounds
+# ---------------------------------------------------------------
+# [customized] 1,462 bytes, ~1 KiB
+MAX_SIGNED_AGGREGATE_AND_PROOF_SIZE: 1462
+# [customized] 131,536 bytes, ~128 KiB
+MAX_ATTESTER_SLASHING_SIZE: 131536
+# 8,585,272 bytes, ~8 MiB
+MAX_DATA_COLUMN_SIDECAR_SIZE: 8585272
+# 8,585,741 bytes, ~8 MiB
+MAX_PARTIAL_DATA_COLUMN_SIDECAR_SIZE: 8585741
+# 196,932 bytes, ~192 KiB
+MAX_SIGNED_EXECUTION_PAYLOAD_BID_SIZE: 196932

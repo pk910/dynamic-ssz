@@ -78,9 +78,12 @@ specs := map[string]any{
 ds := dynssz.NewDynSsz(specs)
 
 // Check what specifications your types need
-cache := ds.GetTypeCache()
-json, err := cache.DumpTypeDescriptor(reflect.TypeOf(myStruct))
-fmt.Println(json) // Review size hints
+desc, err := ds.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(myStruct), nil, nil, nil)
+if err != nil {
+    log.Fatal(err)
+}
+out, _ := json.MarshalIndent(desc, "", "  ")
+fmt.Println(string(out)) // Review size hints and expressions
 ```
 
 ### 4. Performance Issues
@@ -172,7 +175,7 @@ constraints.
 
 ### 6. Type Compatibility Issues
 
-#### "unhandled reflection kind"
+#### "unsupported type kind"
 
 **Problem**: Trying to encode a type that's not supported by SSZ.
 
@@ -215,19 +218,18 @@ data, err := ds.MarshalSSZ(myStruct)
 ```go
 cache := ds.GetTypeCache()
 
-// Dump specific type descriptor
-json, err := cache.DumpTypeDescriptor(reflect.TypeOf(myStruct))
+// Inspect one type descriptor (descriptors serialize to JSON)
+desc, err := cache.GetTypeDescriptor(reflect.TypeOf(myStruct), nil, nil, nil)
 if err != nil {
     log.Fatal(err)
 }
-fmt.Println("Type descriptor:", json)
+out, _ := json.MarshalIndent(desc, "", "  ")
+fmt.Println("Type descriptor:", string(out))
 
-// Dump all cached types
-allTypes, err := cache.DumpAllCachedTypes()
-if err != nil {
-    log.Fatal(err)
+// List all cached types (runtime type and schema type per entry)
+for _, pair := range cache.GetAllTypes() {
+    fmt.Println("cached:", pair[0], "schema:", pair[1])
 }
-fmt.Println("All cached types:", allTypes)
 ```
 
 ### 3. Size Calculation Testing

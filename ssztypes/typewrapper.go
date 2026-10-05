@@ -44,6 +44,8 @@ func extractWrapperDescriptorInfo(descriptorType reflect.Type, ds sszutils.Dynam
 
 	field := descriptorType.Field(fieldIndex)
 
+	joinFieldAnnotation(&field)
+
 	// Extract SSZ annotations using existing DynSsz methods
 	sizeHints, err := getSszSizeTag(ds, &field)
 	if err != nil {

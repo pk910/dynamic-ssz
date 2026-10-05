@@ -11,3 +11,6 @@ coverage-*
 dynssz-gen-*
 bin/
 fuzz-reports/
+
+# compiled test binaries
+*.test

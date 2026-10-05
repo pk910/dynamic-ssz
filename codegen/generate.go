@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"go/build"
 	"go/types"
+	"math/bits"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
@@ -23,7 +25,7 @@ import (
 // twice, whether the duplicate is in one file or spread across two files of
 // the package), and a legacy fastssz surface with pieces switched off (the
 // interface is all-or-nothing; a partial set misleads interface checks).
-func validateTypeEntry(seenTypes map[string]string, typePkgPath, typeName, fileName string, opts *CodeGeneratorOptions) error {
+func validateTypeEntry(seenTypes map[string]string, typePkgPath, typeName, fileName string, viewOnly bool, opts *CodeGeneratorOptions) error {
 	seenKey := typePkgPath + "." + typeName
 	if firstFile, seen := seenTypes[seenKey]; seen {
 		if firstFile == fileName {
@@ -35,6 +37,13 @@ func validateTypeEntry(seenTypes map[string]string, typePkgPath, typeName, fileN
 
 	if opts.CreateLegacyFn && (opts.NoMarshalSSZ || opts.NoUnmarshalSSZ || opts.NoSizeSSZ || opts.NoHashTreeRoot) {
 		return fmt.Errorf("type %s combines WithCreateLegacyFn with a WithNo* option: the legacy fastssz interface needs the full method set", typeName)
+	}
+
+	// View methods resolve spec expressions at runtime, so they are never
+	// emitted without dynamic expressions; a view-only type would then emit
+	// nothing at all.
+	if viewOnly && opts.WithoutDynamicExpressions {
+		return fmt.Errorf("type %s is view-only and cannot be generated without dynamic expressions: view methods resolve spec expressions at runtime", typeName)
 	}
 
 	return nil
@@ -70,15 +79,6 @@ func validateTypeEntry(seenTypes map[string]string, typePkgPath, typeName, fileN
 // This method must be called before any code generation attempts, as it populates
 // the essential type metadata that drives the entire generation process.
 func (cg *CodeGenerator) analyzeTypes() error {
-	var parser *Parser
-
-	// Descriptors built here describe code, not this process: a spec expression
-	// is emitted for the generated code to resolve against whatever specs it
-	// runs under. Resolving it now would bake the generator's own values in as
-	// the compile-time fallback, and would decide list-versus-vector by which
-	// values a generating machine happened to have loaded.
-	cg.typeCache.DisableSpecResolution()
-
 	getTypeName := func(t *CodeGeneratorTypeOptions) (string, string, string) {
 		var typeName, typePkgPath, typePkgName string
 		if t.ReflectType != nil {
@@ -171,8 +171,6 @@ func (cg *CodeGenerator) analyzeTypes() error {
 		}
 	}
 
-	cg.typeCache.CompatFlags = cg.compatFlags
-
 	// analyze all types to build complete dependency graph
 	seenTypes := map[string]string{}
 	for _, file := range cg.files {
@@ -186,7 +184,7 @@ func (cg *CodeGenerator) analyzeTypes() error {
 				return fmt.Errorf("type %s has no package path", typeName)
 			}
 
-			if err := validateTypeEntry(seenTypes, typePkgPath, typeName, file.FileName, &t.Options); err != nil {
+			if err := validateTypeEntry(seenTypes, typePkgPath, typeName, file.FileName, t.IsViewOnly, &t.Options); err != nil {
 				return err
 			}
 			if pkgPath == "" {
@@ -203,50 +201,18 @@ func (cg *CodeGenerator) analyzeTypes() error {
 			var desc *ssztypes.TypeDescriptor
 			var err error
 
-			// Without dynamic expressions the generated code must never call a
-			// delegated *Dyn method, so a fully-delegated ssz-static type cannot be
-			// reached through its dynamic methods and must instead be inlined from
-			// its traversed structure. Disable the shallow-build shortcut so the
-			// subtree is available. The flag is never lowered (mirroring
-			// ExtendedTypes): a shared cache/parser stays in the stricter mode.
-			if t.Options.WithoutDynamicExpressions {
-				cg.typeCache.NoDelegation = true
-			}
-
 			if t.ReflectType != nil {
 				// Always wrap in pointer so generated methods use pointer receivers
 				// (needed for unmarshal to write back modified values).
 				if t.ReflectType.Kind() != reflect.Pointer {
 					t.ReflectType = reflect.PointerTo(t.ReflectType)
 				}
-				// The reflect path builds descriptors through the shared TypeCache,
-				// which carries its own extended-types switch; propagate the option
-				// so it is honored on this path like it is on the go/types path.
-				// The cache flag is never lowered: it may have been enabled by the
-				// DynSsz instance the cache was taken from.
-				if t.Options.ExtendedTypes {
-					cg.typeCache.ExtendedTypes = true
-				}
-				desc, err = cg.typeCache.GetTypeDescriptor(t.ReflectType, t.Options.SizeHints, t.Options.MaxSizeHints, t.Options.TypeHints)
+				desc, err = cg.typeCacheFor(&t.Options).GetTypeDescriptor(t.ReflectType, t.Options.SizeHints, t.Options.MaxSizeHints, t.Options.TypeHints)
 			} else {
-				if parser == nil {
-					parser = NewParser()
-					parser.CompatFlags = cg.compatFlags
-					parser.AnnotationResolver = cg.annotationResolver
-				}
-				// The extended-types switch is never lowered (mirroring the
-				// type cache): a shared parser stays in the wider mode once
-				// any type in the run enables it.
-				if t.Options.ExtendedTypes {
-					parser.ExtendedTypes = true
-				}
-				if t.Options.WithoutDynamicExpressions {
-					parser.NoDelegation = true
-				}
 				if _, ok := t.GoTypesType.(*types.Pointer); !ok {
 					t.GoTypesType = types.NewPointer(t.GoTypesType)
 				}
-				desc, err = parser.GetTypeDescriptor(t.GoTypesType, t.Options.TypeHints, t.Options.SizeHints, t.Options.MaxSizeHints)
+				desc, err = cg.parserFor(&t.Options).GetTypeDescriptor(t.GoTypesType, t.Options.TypeHints, t.Options.SizeHints, t.Options.MaxSizeHints)
 			}
 
 			if err != nil {
@@ -315,7 +281,7 @@ func (cg *CodeGenerator) analyzeTypes() error {
 						return fmt.Errorf("view type %s is listed more than once for %s; remove the duplicate entry", viewType.String(), typeName)
 					}
 					seenViews[viewType.String()] = true
-					viewDesc, err := cg.typeCache.GetTypeDescriptorWithSchema(t.ReflectType, viewType, t.Options.SizeHints, t.Options.MaxSizeHints, t.Options.TypeHints)
+					viewDesc, err := cg.typeCacheFor(&t.Options).GetTypeDescriptorWithSchema(t.ReflectType, viewType, t.Options.SizeHints, t.Options.MaxSizeHints, t.Options.TypeHints)
 					if err != nil {
 						return fmt.Errorf("failed to analyze view type %s: %w", viewType.String(), err)
 					}
@@ -323,11 +289,6 @@ func (cg *CodeGenerator) analyzeTypes() error {
 					cg.collectWarnings(typeName+" view "+getReflectTypeName(viewType), viewDesc)
 				}
 				for _, viewType := range t.ViewGoTypesTypes {
-					if parser == nil {
-						parser = NewParser()
-						parser.CompatFlags = cg.compatFlags
-						parser.AnnotationResolver = cg.annotationResolver
-					}
 					if _, ok := viewType.(*types.Pointer); !ok {
 						viewType = types.NewPointer(viewType)
 					}
@@ -338,7 +299,7 @@ func (cg *CodeGenerator) analyzeTypes() error {
 						return fmt.Errorf("view type %s is listed more than once for %s; remove the duplicate entry", viewType.String(), typeName)
 					}
 					seenViews[viewType.String()] = true
-					viewDesc, err := parser.GetTypeDescriptorWithSchema(t.GoTypesType, viewType, t.Options.TypeHints, t.Options.SizeHints, t.Options.MaxSizeHints)
+					viewDesc, err := cg.parserFor(&t.Options).GetTypeDescriptorWithSchema(t.GoTypesType, viewType, t.Options.TypeHints, t.Options.SizeHints, t.Options.MaxSizeHints)
 					if err != nil {
 						return fmt.Errorf("failed to analyze view type %s: %w", viewType.String(), err)
 					}
@@ -379,6 +340,12 @@ func (cg *CodeGenerator) analyzeTypes() error {
 // and can receive methods, so it is only the generic instantiation that has to
 // be rejected here, not the SSZ type it maps to.
 func validateTopLevelType(t *CodeGeneratorTypeOptions, desc *ssztypes.TypeDescriptor, typeName string) error {
+	// A custom type supplies every SSZ method itself; generated ones would
+	// redeclare them and hash through the type's own root.
+	if desc.SszType == ssztypes.SszCustomType {
+		return fmt.Errorf("cannot generate SSZ methods for custom type %s: it provides its own SSZ methods; use it as a field instead", typeName)
+	}
+
 	isAliasOnlyShape := desc.SszType == ssztypes.SszUnionType ||
 		desc.SszType == ssztypes.SszCompatibleUnionType ||
 		desc.SszType == ssztypes.SszTypeWrapperType
@@ -411,6 +378,11 @@ func validateTopLevelType(t *CodeGeneratorTypeOptions, desc *ssztypes.TypeDescri
 	base := t.GoTypesType
 	if ptr, ok := base.(*types.Pointer); ok {
 		base = ptr.Elem()
+	}
+	// An alias names another type; a receiver written for it would declare
+	// methods on that other type, or not compile at all.
+	if _, isAlias := base.(*types.Alias); isAlias {
+		return fmt.Errorf("cannot generate SSZ methods for type alias %s: methods cannot be declared on an alias; generate the aliased type or declare a named type", typeName)
 	}
 	if named, ok := base.(*types.Named); ok {
 		if named.TypeArgs().Len() > 0 {
@@ -541,16 +513,309 @@ func dataCompatFlags(opts *CodeGeneratorOptions) ssztypes.SszCompatFlag {
 		flags |= ssztypes.SszCompatFlagDynamicDecoder
 	}
 
-	if !opts.NoMarshalSSZ && !opts.NoUnmarshalSSZ && !opts.NoSizeSSZ && (opts.CreateLegacyFn || opts.WithoutDynamicExpressions) {
-		flags |= ssztypes.SszCompatFlagFastSSZMarshaler
+	// The static methods share one emission condition, so each flag follows it
+	// together with the switch that suppresses its own method.
+	if opts.CreateLegacyFn || opts.WithoutDynamicExpressions {
+		if !opts.NoMarshalSSZ {
+			flags |= ssztypes.SszCompatFlagFastsszBufferMarshaler
+			if opts.CreateLegacyFn {
+				flags |= ssztypes.SszCompatFlagFastsszValueMarshaler
+			}
+		}
+		if !opts.NoUnmarshalSSZ {
+			flags |= ssztypes.SszCompatFlagFastsszUnmarshaler
+		}
+		if !opts.NoSizeSSZ {
+			flags |= ssztypes.SszCompatFlagFastsszSizer
+		}
 	}
 	if !opts.NoHashTreeRoot && (opts.CreateLegacyFn || opts.WithoutDynamicExpressions) {
 		if opts.CreateLegacyFn {
-			flags |= ssztypes.SszCompatFlagFastSSZHasher
+			flags |= ssztypes.SszCompatFlagFastsszHashRoot
 		}
-		flags |= ssztypes.SszCompatFlagHashTreeRootWith
+		flags |= ssztypes.SszCompatFlagFastsszHashRootWith
 	}
 	return flags
+}
+
+// staticTrueDeclaration is what a fixed-size generated type registers.
+const staticTrueDeclaration = `ssz-static:"true"`
+
+// delegateAnnotationFor returns the declaration a generated type registers for
+// the runs that reach it fully delegated: whether it is fixed-size (ssz-static),
+// which lets both engines describe it without descending into its subtree,
+// and, for a variable-size type, the bytes every value holds in its fixed
+// section as the emitted code frames it. ssz-minsize holds the floor when no
+// spec value is defined; dynssz-minsize holds the expression the spec resolves
+// to it, in which every spec-decided part carries the :fallback the type's
+// own code resolves it with, so the parts resolve on their own. A static
+// type declares its size the same way, for the floors of the types that hold
+// it; its own decoding reads the size from its sizer.
+func delegateAnnotationFor(desc *ssztypes.TypeDescriptor, options *CodeGeneratorOptions) string {
+	annotation := `ssz-static:"false"`
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
+		annotation = staticTrueDeclaration
+	}
+	f, ok := floorDeclaration(desc, options)
+	if !ok {
+		return annotation
+	}
+	if f.lit > 0 {
+		annotation += fmt.Sprintf(` ssz-minsize:"%d"`, f.lit)
+	}
+	if expr := f.expression(); expr != "" {
+		annotation += fmt.Sprintf(" dynssz-minsize:%q", expr)
+	}
+	return annotation
+}
+
+// declFloor is the floor a type declares: the bytes when no spec value is
+// defined, and, when one takes part, the spec-decided parts and the bytes no
+// spec value decides, which the expression states as one constant.
+type declFloor struct {
+	lit      uint64
+	parts    []string
+	constant uint64
+}
+
+// expression returns the spec expression resolving the floor, or "" when no
+// spec value takes part.
+func (f declFloor) expression() string {
+	if len(f.parts) == 0 {
+		return ""
+	}
+	expr := strings.Join(f.parts, "+")
+	if f.constant > 0 {
+		expr += fmt.Sprintf("+%d", f.constant)
+	}
+	return expr
+}
+
+// floorDeclaration returns the bytes every value of desc holds, as minSizeExpr
+// computes them for a traversed type: a static type holds exactly its size, a
+// container's fixed section holds every static field and four offset bytes per
+// dynamic field, a vector of dynamic elements holds one offset and one
+// element floor per element, a bit list, a union, an optional or a big.Int
+// holds one byte, and everything else can serialize to nothing. A static build declares no
+// expression: its sizes are baked. A child described
+// without its subtree contributes the floor its own generation declared. The
+// result is false when the floor overflows.
+func floorDeclaration(desc *ssztypes.TypeDescriptor, options *CodeGeneratorOptions) (declFloor, bool) {
+	if desc == nil {
+		return declFloor{}, true
+	}
+	if isShallowDelegatedDescriptor(desc) {
+		return declaredFloor(desc, options)
+	}
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
+		return staticFloorDeclaration(desc, options)
+	}
+	switch desc.SszType {
+	case ssztypes.SszTypeWrapperType:
+		return floorDeclaration(desc.ElemDesc, options)
+	case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
+		if desc.ContainerDesc == nil {
+			return declFloor{}, true
+		}
+		return sumFloorDeclarations(desc.ContainerDesc.Fields, options)
+	case ssztypes.SszVectorType:
+		if desc.ElemDesc == nil {
+			return declFloor{}, true
+		}
+		perElem, ok := floorDeclaration(desc.ElemDesc, options)
+		if !ok {
+			return declFloor{}, false
+		}
+		perElem.lit += 4
+		perElem.constant += 4
+		return scaleFloorDeclaration(desc, options, perElem)
+	case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType, ssztypes.SszUnionType, ssztypes.SszCompatibleUnionType,
+		ssztypes.SszOptionalType, ssztypes.SszBigIntType:
+		// The termination bit's byte, the selector byte, the presence byte or
+		// the sign byte.
+		return declFloor{lit: 1, constant: 1}, true
+	default:
+		return declFloor{}, true
+	}
+}
+
+// declaredFloor is the floor a child described without its subtree declared
+// (see delegateFloor), as a part of the floor of the type holding it. The
+// constant its expression ends with folds into the holder's; a static build
+// keeps the literal only.
+func declaredFloor(desc *ssztypes.TypeDescriptor, options *CodeGeneratorOptions) (declFloor, bool) {
+	lit, expr, ok := delegateFloor(desc, options)
+	if !ok {
+		return declFloor{}, true
+	}
+	if expr == "" || options.WithoutDynamicExpressions {
+		return declFloor{lit: lit, constant: lit}, true
+	}
+	f := declFloor{lit: lit}
+	if tail := trailingConstant(expr); tail != "" {
+		constant, err := strconv.ParseUint(tail, 10, 64)
+		if err != nil {
+			return declFloor{}, true
+		}
+		f.constant = constant
+		expr = strings.TrimSuffix(strings.TrimSuffix(expr, tail), "+")
+	}
+	if expr != "" {
+		f.parts = []string{expr}
+	}
+	return f, true
+}
+
+// trailingConstant returns the integer a floor expression ends with as a
+// top-level "+N" term, or "".
+func trailingConstant(expr string) string {
+	i := strings.LastIndex(expr, "+")
+	if i < 0 || i == len(expr)-1 {
+		return ""
+	}
+	for _, c := range expr[i+1:] {
+		if c < '0' || c > '9' {
+			return ""
+		}
+	}
+	return expr[i+1:]
+}
+
+// staticFloorDeclaration is floorDeclaration for a static type: its size,
+// which a spec value may feed through a vector length or a spec-sized field.
+// A width read from a sizer at run time is not expressed.
+func staticFloorDeclaration(desc *ssztypes.TypeDescriptor, options *CodeGeneratorOptions) (declFloor, bool) {
+	if isShallowDelegatedDescriptor(desc) {
+		return declaredFloor(desc, options)
+	}
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr == 0 || options.WithoutDynamicExpressions {
+		return declFloor{lit: uint64(desc.Size), constant: uint64(desc.Size)}, true
+	}
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagSizerWidth != 0 {
+		return declFloor{}, true
+	}
+	switch desc.SszType {
+	case ssztypes.SszTypeWrapperType:
+		return staticFloorDeclaration(desc.ElemDesc, options)
+	case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
+		if desc.ContainerDesc == nil {
+			return declFloor{}, true
+		}
+		return sumFloorDeclarations(desc.ContainerDesc.Fields, options)
+	case ssztypes.SszVectorType, ssztypes.SszBitvectorType:
+		if desc.ElemDesc == nil {
+			return declFloor{}, true
+		}
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 && desc.SizeExpression != nil {
+			// A bit count occupies the bytes that hold it: the quotient,
+			// rounded up as the fallback operator rounds its operand.
+			return declFloor{lit: uint64(desc.Size), parts: []string{fmt.Sprintf("(%s/8):%d", *desc.SizeExpression, desc.Size)}}, true
+		}
+		perElem, ok := staticFloorDeclaration(desc.ElemDesc, options)
+		if !ok {
+			return declFloor{}, false
+		}
+		return scaleFloorDeclaration(desc, options, perElem)
+	default:
+		return declFloor{lit: uint64(desc.Size), constant: uint64(desc.Size)}, true
+	}
+}
+
+// sumFloorDeclarations sums a container's fixed section: every static field's
+// floor and four offset bytes per dynamic field.
+func sumFloorDeclarations(fields []ssztypes.FieldDescriptor, options *CodeGeneratorOptions) (declFloor, bool) {
+	var f declFloor
+	for _, field := range fields {
+		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+			f.lit += 4
+			f.constant += 4
+			continue
+		}
+		fieldFloor, ok := floorDeclaration(field.Type, options)
+		if !ok {
+			return declFloor{}, false
+		}
+		sum, carry := bits.Add64(f.lit, fieldFloor.lit, 0)
+		if carry != 0 {
+			return declFloor{}, false
+		}
+		f.lit = sum
+		f.parts = append(f.parts, fieldFloor.parts...)
+		f.constant += fieldFloor.constant
+	}
+	return f, true
+}
+
+// groupSum parenthesizes a part that is a top-level sum, so it multiplies as
+// a whole.
+func groupSum(part string) string {
+	depth := 0
+	for _, c := range part {
+		switch c {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case '+', '-':
+			if depth == 0 {
+				return "(" + part + ")"
+			}
+		}
+	}
+	return part
+}
+
+// scaleFloorDeclaration multiplies a per-element floor by a vector's element
+// count. A literal count distributes over the parts and the constant; a count
+// a spec value decides, with the literal as its fallback, multiplies the
+// element's whole expression.
+func scaleFloorDeclaration(desc *ssztypes.TypeDescriptor, options *CodeGeneratorOptions, perElem declFloor) (declFloor, bool) {
+	count := uint64(desc.Len)
+	hi, lo := bits.Mul64(count, perElem.lit)
+	if hi != 0 {
+		return declFloor{}, false
+	}
+	f := declFloor{lit: lo}
+	if desc.SizeExpression == nil || options.WithoutDynamicExpressions {
+		if len(perElem.parts) == 0 {
+			f.constant = lo
+			return f, true
+		}
+		for _, part := range perElem.parts {
+			f.parts = append(f.parts, fmt.Sprintf("%d*%s", count, groupSum(part)))
+		}
+		f.constant = count * perElem.constant
+		return f, true
+	}
+	countExpr := fmt.Sprintf("(%s):%d", *desc.SizeExpression, count)
+	switch {
+	case len(perElem.parts) > 0:
+		f.parts = []string{fmt.Sprintf("%s*(%s)", countExpr, perElem.expression())}
+	case perElem.constant == 1:
+		f.parts = []string{countExpr}
+	case perElem.constant > 0:
+		f.parts = []string{fmt.Sprintf("%s*%d", countExpr, perElem.constant)}
+	}
+	return f, true
+}
+
+// packageScopeNames returns the top-level identifier names declared in the
+// package that owns t (pointers and aliases unwrapped). Returns nil when the
+// package cannot be determined (e.g. reflection-driven types with no go/types
+// information), in which case no names are reserved.
+func packageScopeNames(t types.Type) []string {
+	if t == nil {
+		return nil
+	}
+	t = types.Unalias(t)
+	if ptr, ok := t.(*types.Pointer); ok {
+		t = types.Unalias(ptr.Elem())
+	}
+	named, ok := t.(*types.Named)
+	if !ok || named.Obj() == nil || named.Obj().Pkg() == nil {
+		return nil
+	}
+	return named.Obj().Pkg().Scope().Names()
 }
 
 // generateFile creates the complete Go source code for a single file.
@@ -575,38 +840,6 @@ func dataCompatFlags(opts *CodeGeneratorOptions) ssztypes.SszCompatFlag {
 //   - Organized import statements
 //   - Variable declarations for error handling
 //   - Generated SSZ methods for all specified types
-//
-// staticAnnotationFor returns the ssz-static annotation declaring whether a
-// generated type is fixed-size (static) or variable-size (dynamic). The
-// reflection typecache uses it to shallow-build the fully-delegated type without
-// descending into its subtree; for static types it reads the fixed size from the
-// type's own sizer.
-func staticAnnotationFor(desc *ssztypes.TypeDescriptor) string {
-	if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
-		return `ssz-static:"false"`
-	}
-	return `ssz-static:"true"`
-}
-
-// packageScopeNames returns the top-level identifier names declared in the
-// package that owns t (pointers and aliases unwrapped). Returns nil when the
-// package cannot be determined (e.g. reflection-driven types with no go/types
-// information), in which case no names are reserved.
-func packageScopeNames(t types.Type) []string {
-	if t == nil {
-		return nil
-	}
-	t = types.Unalias(t)
-	if ptr, ok := t.(*types.Pointer); ok {
-		t = types.Unalias(ptr.Elem())
-	}
-	named, ok := t.(*types.Named)
-	if !ok || named.Obj() == nil || named.Obj().Pkg() == nil {
-		return nil
-	}
-	return named.Obj().Pkg().Scope().Names()
-}
-
 func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFileOptions) (string, error) {
 	if len(opts.Types) == 0 {
 		return "", fmt.Errorf("no types requested for generation")
@@ -664,18 +897,30 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 			}
 		}
 
+		t.Options.generated = cg.compatFlags
+		t.Options.annotationResolver = cg.annotationResolver
+
+		// The spec expressions of the type's methods are resolved together,
+		// by one method the DynSsz instance caches the result of, and each
+		// view's by a method of its own. They lead the type's methods, and
+		// are known once those are generated, so the methods are collected
+		// apart and appended after them.
+		set := newSpecSetGenerator(typePrinter.TypeString(t.Descriptor), typePrinter.InnerTypeString(t.Descriptor), typePrinter.InnerTypeString(t.Descriptor), "buildDynSSZSpecSet")
+		var viewSets []*specSetGenerator
+		methodsBuilder := strings.Builder{}
+
 		if !t.IsViewOnly {
 			hash := t.Descriptor.GetTypeHash()
 			hashParts = append(hashParts, hash[:])
 
-			err := cg.generateSSZMethods(t.Descriptor, typePrinter, &codeBuilder, "", &t.Options)
+			err := cg.generateSSZMethods(t.Descriptor, typePrinter, &methodsBuilder, "", &t.Options, set)
 			if err != nil {
 				return "", fmt.Errorf("failed to generate code for %s: %w", t.TypeName, err)
 			}
 
 			// Declare static/dynamic so the reflection typecache can shallow-build
 			// this fully-delegated type without descending into its subtree.
-			fmt.Fprintf(&annotationsBuilder, "var _ = sszutils.Annotate[%s](`%s`)\n", typePrinter.InnerTypeString(t.Descriptor), staticAnnotationFor(t.Descriptor))
+			fmt.Fprintf(&annotationsBuilder, "var _ = sszutils.Annotate[%s](`%s`)\n", typePrinter.InnerTypeString(t.Descriptor), delegateAnnotationFor(t.Descriptor, &t.Options))
 		}
 
 		// View methods bake spec expressions into their bodies; without dynamic
@@ -688,7 +933,8 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 				hashParts = append(hashParts, hash[:])
 			}
 
-			err := cg.generateSSZViewMethods(t.Descriptor, t.ViewDescriptors, typePrinter, &codeBuilder, &t.Options)
+			var err error
+			viewSets, err = cg.generateSSZViewMethods(t.Descriptor, t.ViewDescriptors, typePrinter, &methodsBuilder, &t.Options)
 			if err != nil {
 				return "", fmt.Errorf("failed to generate code for view types of %s: %w", t.TypeName, err)
 			}
@@ -696,9 +942,15 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 			// Each view schema type may have its own static/dynamic shape, so the
 			// annotation is emitted per view schema type (not the base type).
 			for _, viewDesc := range t.ViewDescriptors {
-				fmt.Fprintf(&annotationsBuilder, "var _ = sszutils.Annotate[%s](`%s`)\n", typePrinter.ViewTypeString(viewDesc, false), staticAnnotationFor(viewDesc))
+				fmt.Fprintf(&annotationsBuilder, "var _ = sszutils.Annotate[%s](`%s`)\n", typePrinter.ViewTypeString(viewDesc, false), delegateAnnotationFor(viewDesc, &t.Options))
 			}
 		}
+
+		set.emit(&codeBuilder)
+		for _, viewSet := range viewSets {
+			viewSet.emit(&codeBuilder)
+		}
+		codeBuilder.WriteString(methodsBuilder.String())
 	}
 
 	typesHash := sha256.Sum256(bytes.Join(hashParts, []byte{}))
@@ -753,6 +1005,11 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 	if !strings.HasSuffix(header, "\n") {
 		mainCodeBuilder.WriteString("\n")
 	}
+	// A blank line keeps the header from becoming the package's doc comment;
+	// a template that already ends in one is left as it is.
+	if !strings.HasSuffix(mainCodeBuilder.String(), "\n\n") {
+		mainCodeBuilder.WriteString("\n")
+	}
 	fmt.Fprintf(&mainCodeBuilder, "package %s\n\n", opts.PackageName)
 
 	// Imports
@@ -779,9 +1036,6 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 		}
 		mainCodeBuilder.WriteString(")\n\n")
 	}
-
-	// Variable declarations
-	mainCodeBuilder.WriteString("var _ = sszutils.ErrListTooBig\n\n")
 
 	// Type annotations (ssz-static declarations) up front so the reflection
 	// typecache can shallow-build these fully-delegated types.
@@ -829,48 +1083,48 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 // Returns:
 //   - bool: True if any generated code uses dynamic SSZ functionality
 //   - error: An error if any method generation fails
-func (cg *CodeGenerator) generateSSZMethods(desc *ssztypes.TypeDescriptor, typePrinter *TypePrinter, codeBuilder *strings.Builder, viewName string, options *CodeGeneratorOptions) error {
+func (cg *CodeGenerator) generateSSZMethods(desc *ssztypes.TypeDescriptor, typePrinter *TypePrinter, codeBuilder *strings.Builder, viewName string, options *CodeGeneratorOptions, set *specSetGenerator) error {
 	// Generate the actual methods using flattened generators
 	var err error
 	typeName := typePrinter.TypeStringWithoutTracking(desc, viewName != "")
 
 	if !options.NoMarshalSSZ {
-		err = generateMarshal(desc, codeBuilder, typePrinter, viewName, options)
+		err = generateMarshal(desc, codeBuilder, typePrinter, viewName, options, set)
 		if err != nil {
 			return fmt.Errorf("failed to generate marshal for %s: %w", typeName, err)
 		}
 	}
 
 	if options.CreateEncoderFn {
-		err = generateEncoder(desc, codeBuilder, typePrinter, viewName, options)
+		err = generateEncoder(desc, codeBuilder, typePrinter, viewName, options, set)
 		if err != nil {
 			return fmt.Errorf("failed to generate encoder for %s: %w", typeName, err)
 		}
 	}
 
 	if !options.NoUnmarshalSSZ {
-		err = generateUnmarshal(desc, codeBuilder, typePrinter, viewName, options)
+		err = generateUnmarshal(desc, codeBuilder, typePrinter, viewName, options, set)
 		if err != nil {
 			return fmt.Errorf("failed to generate unmarshal for %s: %w", typeName, err)
 		}
 	}
 
 	if options.CreateDecoderFn {
-		err = generateDecoder(desc, codeBuilder, typePrinter, viewName, options)
+		err = generateDecoder(desc, codeBuilder, typePrinter, viewName, options, set)
 		if err != nil {
 			return fmt.Errorf("failed to generate decoder for %s: %w", typeName, err)
 		}
 	}
 
 	if !options.NoSizeSSZ {
-		err = generateSize(desc, codeBuilder, typePrinter, viewName, options)
+		err = generateSize(desc, codeBuilder, typePrinter, viewName, options, set)
 		if err != nil {
 			return fmt.Errorf("failed to generate size for %s: %w", typeName, err)
 		}
 	}
 
 	if !options.NoHashTreeRoot {
-		err = generateHashTreeRoot(desc, codeBuilder, typePrinter, viewName, options)
+		err = generateHashTreeRoot(desc, codeBuilder, typePrinter, viewName, options, set)
 		if err != nil {
 			return fmt.Errorf("failed to generate hash tree root for %s: %w", typeName, err)
 		}
@@ -879,7 +1133,9 @@ func (cg *CodeGenerator) generateSSZMethods(desc *ssztypes.TypeDescriptor, typeP
 	return nil
 }
 
-func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescriptor, views []*ssztypes.TypeDescriptor, typePrinter *TypePrinter, codeBuilder *strings.Builder, options *CodeGeneratorOptions) error {
+// generateSSZViewMethods generates the view dispatchers and the methods of
+// every view, and returns the spec set of each view in the views' order.
+func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescriptor, views []*ssztypes.TypeDescriptor, typePrinter *TypePrinter, codeBuilder *strings.Builder, options *CodeGeneratorOptions) ([]*specSetGenerator, error) {
 	recursion := newRecursionBound(dataType, options)
 	// Generate the actual methods using flattened generators
 	var err error
@@ -919,6 +1175,17 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 		return fnName
 	}
 
+	// A view's expressions are its own, keyed by the data type and the view.
+	viewSets := make(map[*ssztypes.TypeDescriptor]*specSetGenerator, len(views))
+	getViewSet := func(desc *ssztypes.TypeDescriptor) *specSetGenerator {
+		if set, ok := viewSets[desc]; ok {
+			return set
+		}
+		set := newSpecSetGenerator(typePrinter.TypeString(dataType), typePrinter.InnerTypeString(dataType), typePrinter.InnerViewTypeString(desc), "buildDynSSZSpecSet_"+getViewFnName(desc))
+		viewSets[desc] = set
+		return set
+	}
+
 	// A view dispatcher hands back a closure, which has nowhere to take a
 	// nesting depth. For a type on a recursive cycle the closure instead calls
 	// the depth-carrying method and supplies the depth itself: zero from the
@@ -926,11 +1193,12 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 	// mirrors how the non-view methods are paired, and keeps the exported view
 	// interfaces unchanged.
 	buildViewDispatcher := func(fnPrefix string, mainFn func() string, sig viewFnSignature, depthExpr string) {
-		wrap := func(target string) string {
-			// Only a plain method reference can be redirected to a twin; the
-			// fastssz fallback is emitted as a literal closure and has no twin
-			// to name.
-			if depthExpr == "" || strings.ContainsAny(target, "(") {
+		// A target is redirected to its twin only when its own methods carry
+		// a depth: a view that leaves the recursive field out has plain
+		// methods even when the data type is on a cycle. The fastssz fallback
+		// is emitted as a literal closure and has no twin to name.
+		wrap := func(target string, targetDesc *ssztypes.TypeDescriptor) string {
+			if depthExpr == "" || !recursion.threads(targetDesc) || strings.ContainsAny(target, "(") {
 				return target
 			}
 			return fmt.Sprintf("func(%s) %s {\n\t\treturn %s(%s, %s)\n\t}", sig.params, sig.results, depthMethodName(target), sig.args, depthExpr)
@@ -942,7 +1210,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			mainFnName := mainFn()
 			if mainFnName != "" {
 				appendCode(codeBuilder, 1, "case nil, %s:\n", typePrinter.TypeString(dataType))
-				appendCode(codeBuilder, 2, "return %s\n", wrap(mainFnName))
+				appendCode(codeBuilder, 2, "return %s\n", wrap(mainFnName, dataType))
 			}
 		}
 
@@ -950,26 +1218,32 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			typeName := typePrinter.ViewTypeString(view, true)
 			viewFnName := getViewFnName(view)
 			appendCode(codeBuilder, 1, "case %s:\n", typeName)
-			appendCode(codeBuilder, 2, "return %s\n", wrap(fmt.Sprintf("t.%s_%s", fnPrefix, viewFnName)))
+			appendCode(codeBuilder, 2, "return %s\n", wrap(fmt.Sprintf("t.%s_%s", fnPrefix, viewFnName), view))
 		}
 		appendCode(codeBuilder, 1, "}\n")
 	}
 
-	// emitViewDispatcher writes the public dispatcher and, for a type on a
-	// recursive cycle, the unexported twin a cyclic parent calls to keep the
-	// depth advancing across the view boundary.
-	emitViewDispatcher := func(publicName, fnPrefix string, sig viewFnSignature, mainFn func() string) {
+	// emitViewDispatcher writes the public dispatcher and, when any target's
+	// methods carry a depth, the unexported twin a cyclic parent calls to keep
+	// the depth advancing across the view boundary.
+	// action states, for the dispatcher's doc comment, what the returned
+	// function does with the type as the given view.
+	emitViewDispatcher := func(publicName, fnPrefix, action string, sig viewFnSignature, mainFn func() string) {
 		typeName := typePrinter.TypeString(dataType)
 		cyclic := recursion.threads(dataType)
+		for _, view := range views {
+			cyclic = cyclic || recursion.threads(view)
+		}
 
 		depthExpr := ""
 		if cyclic {
 			depthExpr = "0"
 		}
+		appendCode(codeBuilder, 0, "// %s returns the function that %s the %s as the given view, or nil for a view it does not serve.\n", publicName, action, typeName)
 		appendCode(codeBuilder, 0, "func (t %s) %s(view any) func(%s) %s {\n", typeName, publicName, sig.params, sig.results)
 		buildViewDispatcher(fnPrefix, mainFn, sig, depthExpr)
 		appendCode(codeBuilder, 1, "return nil\n")
-		appendCode(codeBuilder, 0, "}\n")
+		appendCode(codeBuilder, 0, "}\n\n")
 
 		if !cyclic {
 			return
@@ -980,15 +1254,15 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 		appendCode(codeBuilder, 0, "func (t %s) %s(view any, depth int) func(%s) %s {\n", typeName, depthMethodName(publicName), sig.params, sig.results)
 		buildViewDispatcher(fnPrefix, mainFn, sig, depthParam)
 		appendCode(codeBuilder, 1, "return nil\n")
-		appendCode(codeBuilder, 0, "}\n")
+		appendCode(codeBuilder, 0, "}\n\n")
 	}
 
 	if !options.NoMarshalSSZ {
-		emitViewDispatcher("MarshalSSZDynView", "marshalSSZView", viewFnSignature{params: "ds sszutils.DynamicSpecs, buf []byte", results: "([]byte, error)", args: "ds, buf"}, func() string {
+		emitViewDispatcher("MarshalSSZDynView", "marshalSSZView", "marshals", viewFnSignature{params: "ds sszutils.DynamicSpecs, buf []byte", results: "([]byte, error)", args: "ds, buf"}, func() string {
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 {
 				return "t.MarshalSSZDyn"
 			}
-			if dataType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0 {
+			if dataType.SszCompatFlags&ssztypes.SszCompatFlagFastsszBufferMarshaler != 0 {
 				return "func(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {\n\treturn t.MarshalSSZTo(buf)\n\t}"
 			}
 			return ""
@@ -996,15 +1270,15 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 
 		for _, desc := range views {
 			viewName := getViewFnName(desc)
-			err = generateMarshal(desc, codeBuilder, typePrinter, viewName, options)
+			err = generateMarshal(desc, codeBuilder, typePrinter, viewName, options, getViewSet(desc))
 			if err != nil {
-				return fmt.Errorf("failed to generate marshal for %s: %w", viewName, err)
+				return nil, fmt.Errorf("failed to generate marshal for %s: %w", viewName, err)
 			}
 		}
 	}
 
 	if options.CreateEncoderFn {
-		emitViewDispatcher("MarshalSSZEncoderView", "marshalSSZEncoderView", viewFnSignature{params: "ds sszutils.DynamicSpecs, enc sszutils.Encoder", results: typeNameError, args: "ds, enc"}, func() string {
+		emitViewDispatcher("MarshalSSZEncoderView", "marshalSSZEncoderView", "encodes", viewFnSignature{params: "ds sszutils.DynamicSpecs, enc sszutils.Encoder", results: typeNameError, args: "ds, enc"}, func() string {
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicEncoder != 0 {
 				return "t.MarshalSSZEncoder"
 			}
@@ -1013,19 +1287,19 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 
 		for _, desc := range views {
 			viewName := getViewFnName(desc)
-			err = generateEncoder(desc, codeBuilder, typePrinter, viewName, options)
+			err = generateEncoder(desc, codeBuilder, typePrinter, viewName, options, getViewSet(desc))
 			if err != nil {
-				return fmt.Errorf("failed to generate encoder for %s: %w", viewName, err)
+				return nil, fmt.Errorf("failed to generate encoder for %s: %w", viewName, err)
 			}
 		}
 	}
 
 	if !options.NoUnmarshalSSZ {
-		emitViewDispatcher("UnmarshalSSZDynView", "unmarshalSSZView", viewFnSignature{params: "ds sszutils.DynamicSpecs, buf []byte", results: typeNameError, args: "ds, buf"}, func() string {
+		emitViewDispatcher("UnmarshalSSZDynView", "unmarshalSSZView", "unmarshals", viewFnSignature{params: "ds sszutils.DynamicSpecs, buf []byte", results: typeNameError, args: "ds, buf"}, func() string {
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
 				return "t.UnmarshalSSZDyn"
 			}
-			if dataType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0 {
+			if dataType.SszCompatFlags&ssztypes.SszCompatFlagFastsszUnmarshaler != 0 {
 				return "func(_ sszutils.DynamicSpecs, buf []byte) error {\n\treturn t.UnmarshalSSZ(buf)\n\t}"
 			}
 			return ""
@@ -1033,15 +1307,15 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 
 		for _, desc := range views {
 			viewName := getViewFnName(desc)
-			err = generateUnmarshal(desc, codeBuilder, typePrinter, viewName, options)
+			err = generateUnmarshal(desc, codeBuilder, typePrinter, viewName, options, getViewSet(desc))
 			if err != nil {
-				return fmt.Errorf("failed to generate unmarshal for %s: %w", viewName, err)
+				return nil, fmt.Errorf("failed to generate unmarshal for %s: %w", viewName, err)
 			}
 		}
 	}
 
 	if options.CreateDecoderFn {
-		emitViewDispatcher("UnmarshalSSZDecoderView", "unmarshalSSZDecoderView", viewFnSignature{params: "ds sszutils.DynamicSpecs, dec sszutils.Decoder", results: typeNameError, args: "ds, dec"}, func() string {
+		emitViewDispatcher("UnmarshalSSZDecoderView", "unmarshalSSZDecoderView", "decodes", viewFnSignature{params: "ds sszutils.DynamicSpecs, dec sszutils.Decoder", results: typeNameError, args: "ds, dec"}, func() string {
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 {
 				return "t.UnmarshalSSZDecoder"
 			}
@@ -1050,19 +1324,19 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 
 		for _, desc := range views {
 			viewName := getViewFnName(desc)
-			err = generateDecoder(desc, codeBuilder, typePrinter, viewName, options)
+			err = generateDecoder(desc, codeBuilder, typePrinter, viewName, options, getViewSet(desc))
 			if err != nil {
-				return fmt.Errorf("failed to generate decoder for %s: %w", viewName, err)
+				return nil, fmt.Errorf("failed to generate decoder for %s: %w", viewName, err)
 			}
 		}
 	}
 
 	if !options.NoSizeSSZ {
-		emitViewDispatcher("SizeSSZDynView", "sizeSSZView", viewFnSignature{params: "ds sszutils.DynamicSpecs", results: typeNameInt, args: "ds"}, func() string {
+		emitViewDispatcher("SizeSSZDynView", "sizeSSZView", "sizes", viewFnSignature{params: "ds sszutils.DynamicSpecs", results: typeNameInt, args: "ds"}, func() string {
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 {
 				return "t.SizeSSZDyn"
 			}
-			if dataType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0 {
+			if dataType.SszCompatFlags&ssztypes.SszCompatFlagFastsszSizer != 0 {
 				return "func(_ sszutils.DynamicSpecs) int {\n\treturn t.SizeSSZ()\n\t}"
 			}
 			return ""
@@ -1070,20 +1344,20 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 
 		for _, desc := range views {
 			viewName := getViewFnName(desc)
-			err = generateSize(desc, codeBuilder, typePrinter, viewName, options)
+			err = generateSize(desc, codeBuilder, typePrinter, viewName, options, getViewSet(desc))
 			if err != nil {
-				return fmt.Errorf("failed to generate size for %s: %w", viewName, err)
+				return nil, fmt.Errorf("failed to generate size for %s: %w", viewName, err)
 			}
 		}
 	}
 
 	if !options.NoHashTreeRoot {
-		emitViewDispatcher("HashTreeRootWithDynView", "hashTreeRootView", viewFnSignature{params: "ds sszutils.DynamicSpecs, hh sszutils.HashWalker", results: typeNameError, args: "ds, hh"}, func() string {
+		emitViewDispatcher("HashTreeRootWithDynView", "hashTreeRootView", "hashes", viewFnSignature{params: "ds sszutils.DynamicSpecs, hh sszutils.HashWalker", results: typeNameError, args: "ds, hh"}, func() string {
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 {
 				return "t.HashTreeRootWithDyn"
 			}
-			if dataType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0 {
-				if dataType.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0 {
+			if dataType.SszCompatFlags&ssztypes.SszCompatFlagFastsszHashRoot != 0 {
+				if dataType.SszCompatFlags&ssztypes.SszCompatFlagFastsszHashRootWith != 0 {
 					return "func(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n\treturn t.HashTreeRootWith(hh)\n\t}"
 				}
 				return "func(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n\tif root, err := t.HashTreeRoot(); err != nil {\n\t\treturn err\n\t} else {\n\t\thh.AppendBytes32(root[:])\n\t}\n\treturn nil\n\t}"
@@ -1093,14 +1367,18 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 
 		for _, desc := range views {
 			viewName := getViewFnName(desc)
-			err = generateHashTreeRoot(desc, codeBuilder, typePrinter, viewName, options)
+			err = generateHashTreeRoot(desc, codeBuilder, typePrinter, viewName, options, getViewSet(desc))
 			if err != nil {
-				return fmt.Errorf("failed to generate hash tree root for %s: %w", viewName, err)
+				return nil, fmt.Errorf("failed to generate hash tree root for %s: %w", viewName, err)
 			}
 		}
 	}
 
-	return nil
+	sets := make([]*specSetGenerator, 0, len(views))
+	for _, desc := range views {
+		sets = append(sets, getViewSet(desc))
+	}
+	return sets, nil
 }
 
 func isThirdPartyImport(path string) bool {

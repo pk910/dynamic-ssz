@@ -6,6 +6,7 @@ package sszutils
 
 import (
 	"encoding/binary"
+	"fmt"
 	"slices"
 )
 
@@ -124,10 +125,12 @@ func (e *BufferEncoder) EncodeOffset(v uint32) {
 
 // EncodeOffsetAt writes a 4-byte little-endian SSZ offset at the given absolute
 // position without advancing the current write position. This is used for
-// back-patching offsets after dynamic-length fields have been written.
+// back-patching offsets after dynamic-length fields have been written. The
+// position comes from the caller's own GetPosition, so one outside the written
+// buffer is an invariant violation and panics rather than dropping the write.
 func (e *BufferEncoder) EncodeOffsetAt(pos int, v uint32) {
-	if pos < 0 || pos+4 > len(e.buffer) {
-		return
+	if pos < 0 || e.pos < 4 || pos > e.pos-4 {
+		panic(fmt.Sprintf("sszutils: offset write at %d outside the %d bytes written", pos, e.pos))
 	}
 	binary.LittleEndian.PutUint32(e.buffer[pos:pos+4], v)
 }

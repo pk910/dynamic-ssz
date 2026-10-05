@@ -7,6 +7,7 @@ package sszutils
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -60,6 +61,17 @@ var (
 	// the platform's integer range (>31-bit sizes on 32-bit platforms).
 	ErrPlatformOverflow = fmt.Errorf("value exceeds platform integer range")
 
+	// ErrSszSizeExceeded is returned when a size passes the largest size the
+	// 4-byte SSZ offset can express, which no target encodes. A size only this
+	// target cannot hold is ErrPlatformOverflow instead.
+	ErrSszSizeExceeded = fmt.Errorf("ssz size exceeds the maximum encodable size")
+
+	// ErrChunkLimitExceeded is returned when a walk merkleizes more chunks
+	// than the limit it was given holds. Both engines refuse an over-capacity
+	// value before it reaches a walker, so the surplus comes from a hash
+	// method that left more than one leaf per value.
+	ErrChunkLimitExceeded = fmt.Errorf("merkleized more chunks than the limit holds")
+
 	// ErrMaxDepthExceeded is returned when a value nests deeper than the
 	// configured maximum. Only recursive types can reach an input-controlled
 	// depth; the bound turns what would be an unrecoverable stack overflow into
@@ -104,6 +116,17 @@ var (
 	// ExtendedTypes flag on the TypeCache.
 	ErrExtendedTypeDisabled = fmt.Errorf("extended type not enabled")
 
+	// ErrScopeShapeMismatch is returned when a hashing scope is reduced in a
+	// different tree shape than it was opened for: opened for the progressive
+	// shape and reduced as a binary tree, or the reverse. The two shapes
+	// disagree about what the accumulated chunks mean, so the reduction has no
+	// defined answer -- for a progressive scope reduced as binary it even
+	// depends on the collapse hints received, which are optional by contract.
+	// A scope that declares no shape, opened with Index or with
+	// TreeTypeNone, may be reduced either way: that is how generated code
+	// before StartTree spells a progressive container.
+	ErrScopeShapeMismatch = fmt.Errorf("scope reduced in a shape it was not opened for")
+
 	// ErrMissingInterface is returned when a required method or interface
 	// is not found on a type (e.g. missing GetDescriptorType method,
 	// custom type without fastssz marshaler/hasher).
@@ -115,8 +138,8 @@ var (
 // field path that is built up as the error bubbles through the call stack.
 //
 // Downstream consumers can use errors.Is(err, sszutils.ErrUnexpectedEOF) to
-// check the error category, and the exported helper functions ErrorPath,
-// ErrorMessage, and ErrorSentinel to inspect details.
+// check the error category; the Path and Message methods, reached through
+// errors.As, expose the details.
 type sszError struct {
 	// err is the underlying sentinel error (e.g. ErrUnexpectedEOF, ErrOffset).
 	err error
@@ -124,21 +147,24 @@ type sszError struct {
 	// message provides additional context about the error.
 	message string
 
-	// path holds field segments collected while the error bubbles up.
-	// Segments are appended at each level (innermost first), then reversed
-	// in Error() to produce a jq-style path like "Block.Body.Attestations[3]".
-	path []string
+	// segment is the field segment this level adds and inner the error it
+	// wraps, so an error bubbling through n levels costs n small values
+	// rather than n copies of a growing path. depth counts the segments;
+	// the outermost level holds the root field, giving Error() its jq-style
+	// path like "Block.Body.Attestations[3]" by walking inward.
+	segment string
+	inner   *sszError
+	depth   int
 }
 
 // Error builds a human-readable error string with the full field path.
 func (e *sszError) Error() string {
 	var b strings.Builder
 
-	if len(e.path) > 0 {
-		// path is stored innermost-first, so iterate in reverse for jq-style output.
-		for i := len(e.path) - 1; i >= 0; i-- {
-			seg := e.path[i]
-			if i == len(e.path)-1 || (seg != "" && seg[0] == '[') {
+	if e.depth > 0 {
+		for level := e; level != nil && level.depth > 0; level = level.inner {
+			seg := level.segment
+			if level == e || (seg != "" && seg[0] == '[') {
 				b.WriteString(seg)
 			} else {
 				b.WriteByte('.')
@@ -168,9 +194,18 @@ func (e *sszError) Unwrap() error {
 	return e.err
 }
 
-// Path returns the field path of the sszError.
+// Path returns the field path of the sszError, innermost segment first.
 func (e *sszError) Path() []string {
-	return e.path
+	if e.depth == 0 {
+		return nil
+	}
+	path := make([]string, e.depth)
+	i := e.depth - 1
+	for level := e; level != nil && level.depth > 0; level = level.inner {
+		path[i] = level.segment
+		i--
+	}
+	return path
 }
 
 // Message returns the detail message of the sszError.
@@ -189,20 +224,15 @@ func NewSszErrorf(base error, format string, args ...any) error {
 }
 
 // ErrorWithPath appends a path segment to an sszError as it bubbles up.
-// If err is not already an sszError, it is wrapped in one.
-// Segments are collected innermost-first and reversed when formatting.
+// If err is not already an sszError, it is wrapped in one. The input error
+// is never mutated: the new level points at it.
 func ErrorWithPath(err error, segment string) error {
 	var se *sszError
 	if errors.As(err, &se) {
-		// Build a fresh error with a copied path so wrapping never mutates the
-		// input error (which may be shared or wrapped concurrently).
-		newPath := make([]string, len(se.path)+1)
-		copy(newPath, se.path)
-		newPath[len(se.path)] = segment
-		return &sszError{err: se.err, message: se.message, path: newPath}
+		return &sszError{err: se.err, message: se.message, segment: segment, inner: se, depth: se.depth + 1}
 	}
 
-	return &sszError{err: err, path: []string{segment}}
+	return &sszError{err: err, segment: segment, depth: 1}
 }
 
 // ErrorWithPathf appends a formatted path segment to an sszError as it bubbles up.
@@ -441,6 +471,17 @@ func ErrOffsetOverflowFn(offset any) error {
 	}
 }
 
+// SizeLimitSentinel is the condition a size this target cannot use belongs to.
+// A size past the 4-byte SSZ offset is ErrSszSizeExceeded: no target encodes
+// it. A narrower one has only run out of int, which a target with a wider one
+// would not have, so it is ErrPlatformOverflow.
+func SizeLimitSentinel(size uint64) error {
+	if size > math.MaxUint32 {
+		return ErrSszSizeExceeded
+	}
+	return ErrPlatformOverflow
+}
+
 // --- ErrInvalidValueRange constructors ---
 
 // ErrBitvectorPaddingFn is returned when a bitvector's padding bits
@@ -514,6 +555,34 @@ func ErrLargeUintLengthFn(got, expected any) error {
 	}
 }
 
+// ErrSszSizeLimitFn is returned when a declared count of elemWidth-byte units
+// states a size past the SSZ size limit. The size is value*elemWidth, weighed
+// by dividing the limit instead of forming it, so a product wide enough to
+// pass the limit cannot wrap before it names the condition it belongs to.
+func ErrSszSizeLimitFn(description string, value, elemWidth uint64) error {
+	if elemWidth == 0 {
+		// A value with no width states itself.
+		elemWidth = 1
+	}
+	err := ErrPlatformOverflow
+	if value > math.MaxUint32/elemWidth {
+		err = ErrSszSizeExceeded
+	}
+	return &sszError{
+		err:     err,
+		message: fmt.Sprintf("%s %d exceeds the SSZ size limit of %d", description, value, uint64(MaxSszSize)/elemWidth),
+	}
+}
+
+// ErrChunkLimitFn names the chunk count a walk reduced and the limit it was
+// given for it.
+func ErrChunkLimitFn(count, limit any) error {
+	return &sszError{
+		err:     ErrChunkLimitExceeded,
+		message: fmt.Sprintf("%v chunks merkleized against a limit of %v", count, limit),
+	}
+}
+
 // --- ErrListTooBig constructors ---
 
 // ErrListLengthFn is returned when a list's element count exceeds the
@@ -584,11 +653,65 @@ func ErrMaxDepthExceededFn(maxDepth any) error {
 
 // --- ErrPlatformOverflow constructors ---
 
-// ErrPlatformOverflowFn is returned when a SSZ size or count exceeds
-// the platform's integer range (e.g. >31 bits on 32-bit systems).
+// ErrPlatformOverflowFn is returned when a SSZ size or count exceeds the
+// platform's integer range (e.g. >31 bits on 32-bit systems). A value past the
+// SSZ size limit is past every target's reach, not only this one's, so it is
+// reported as the size limit instead. A value of no integer type states no
+// width to weigh, so it is reported against the platform's range.
 func ErrPlatformOverflowFn(description string, value any) error {
+	if width, ok := unsignedWidth(value); ok {
+		return ErrPlatformOverflowWidthFn(description, width)
+	}
+
 	return &sszError{
 		err:     ErrPlatformOverflow,
 		message: fmt.Sprintf("%s %v exceeds platform int max", description, value),
 	}
+}
+
+// ErrPlatformOverflowWidthFn is ErrPlatformOverflowFn for a width already held
+// as a number. Handing one to an any parameter puts it on the heap, and the
+// sites that report this are reached from the walks, so they state the width
+// as a width.
+func ErrPlatformOverflowWidthFn(description string, width uint64) error {
+	if width > math.MaxUint32 {
+		return &sszError{
+			err:     ErrSszSizeExceeded,
+			message: fmt.Sprintf("%s %d exceeds the SSZ size limit", description, width),
+		}
+	}
+
+	return &sszError{
+		err:     ErrPlatformOverflow,
+		message: fmt.Sprintf("%s %d exceeds platform int max", description, width),
+	}
+}
+
+// unsignedWidth reads the width a value states, for the integer types a size or
+// a count is carried in. A negative one states no width past any limit.
+func unsignedWidth(value any) (uint64, bool) {
+	switch n := value.(type) {
+	case uint:
+		return uint64(n), true
+	case uint8:
+		return uint64(n), true
+	case uint16:
+		return uint64(n), true
+	case uint32:
+		return uint64(n), true
+	case uint64:
+		return n, true
+	case int:
+		return uint64(max(n, 0)), true
+	case int8:
+		return uint64(max(n, 0)), true
+	case int16:
+		return uint64(max(n, 0)), true
+	case int32:
+		return uint64(max(n, 0)), true
+	case int64:
+		return uint64(max(n, 0)), true
+	}
+
+	return 0, false
 }

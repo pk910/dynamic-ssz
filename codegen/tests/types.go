@@ -2,7 +2,9 @@ package tests
 
 import (
 	"encoding/binary"
+	"errors"
 	"math/big"
+	"sync/atomic"
 	"time"
 
 	dynssz "github.com/pk910/dynamic-ssz"
@@ -429,6 +431,84 @@ var VecSpecLen_Payload = VecSpecLen{
 // fallback truncates.
 var VecSpecLen_Specs = map[string]any{"VECSPEC_LEN": 8}
 
+// SpecSizedElem is a dynamic element whose fixed section a spec value
+// decides. A list of them generated in a later batch (SpecSizedList) describes
+// the element without its subtree and must not bound the list by the static
+// fallback, which a preset can shrink below.
+type SpecSizedElem struct {
+	V [8]uint64 `ssz-size:"4" dynssz-size:"VECSPEC_LEN"`
+	L []uint64  `ssz-max:"4"`
+}
+
+type SpecSizedList struct {
+	Items []*SpecSizedElem `ssz-max:"4"`
+}
+
+// SpecPairElem is a dynamic element with three spec-decided widths. A list of
+// them generated in a later batch (SpecPairList) resolves each on its own, as
+// the element's code does, so a spec that defines only some of them, or sets
+// a bit count the byte count rounds up, still decodes.
+type SpecPairElem struct {
+	A    []byte    `ssz-size:"32" dynssz-size:"SPEC_A"`
+	B    [8]uint64 `ssz-size:"4" dynssz-size:"SPEC_B"`
+	Bits []byte    `ssz-type:"bitvector" ssz-bitsize:"20" dynssz-bitsize:"SPEC_BITS"`
+	L    []uint64  `ssz-max:"4"`
+}
+
+type SpecPairList struct {
+	Items []*SpecPairElem `ssz-max:"4"`
+}
+
+// SpecPairVec holds children generated in an earlier batch: a vector of
+// SpecPairElem, a dynamic field whose body is not part of the fixed section,
+// and a VecSpecLen, a static child whose declared, spec-decided size the
+// declaration imports. A list of SpecPairVec generated later is bounded by
+// that declaration.
+type SpecPairVec struct {
+	Pair [2]*SpecPairElem
+	V    VecSpecLen
+	L    []uint64 `ssz-max:"4"`
+}
+
+// SpecPairVecList is generated in-process by the codegen tests only; it
+// lists SpecPairVec elements, whose declaration imports SpecPairElem's.
+type SpecPairVecList struct {
+	Items []*SpecPairVec `ssz-max:"4"`
+}
+
+// SpecOnlyElem is a dynamic element whose vector has no static fallback: its
+// declared floor part (VLEN):0 is nothing until VLEN is defined, so a list of
+// them generated later (SpecOnlyList) decodes an empty list without VLEN and
+// is bounded once it is defined.
+type SpecOnlyElem struct {
+	V []byte   `dynssz-size:"VLEN"`
+	L []uint64 `ssz-max:"4"`
+}
+
+type SpecOnlyList struct {
+	Items []*SpecOnlyElem `ssz-max:"4"`
+}
+
+// OneByteLists holds lists whose elements hold at least one byte, a bit list's
+// termination bit or a union's selector, so their offset tables are bounded
+// by one byte per element.
+type OneByteLists struct {
+	Bits   [][]byte `ssz-type:"list,bitlist" ssz-max:"4,64"`
+	Unions []dynssz.CompatibleUnion[struct {
+		A uint32
+		B uint64
+	}] `ssz-max:"4"`
+}
+
+var SpecSizedList_Payload = SpecSizedList{
+	Items: []*SpecSizedElem{
+		{V: [8]uint64{1, 2, 3, 4, 5, 6, 7, 8}},
+		{V: [8]uint64{9}, L: []uint64{10}},
+		{},
+		{},
+	},
+}
+
 // WrappedElemLists holds lists whose elements are type wrappers around basic
 // values, alongside the plain lists they must hash identically to. A wrapper is
 // transparent to SSZ: the list packs the wrapped values and merkleizes them
@@ -707,6 +787,30 @@ var ViewTypes1_Payload = ViewTypes1_Base{
 	},
 }
 
+// ViewList_Base holds a list of ViewTypes1_Base served through the dynamic
+// ViewTypes1_View2. The elements are generated in an earlier batch, so the
+// ViewList batch describes them without their subtree and bounds the list's
+// offset table by the fixed section their structure guarantees: 20 bytes for
+// the data type, 16 for the view.
+type ViewList_Base struct {
+	Items []*ViewTypes1_Base `ssz-max:"4"`
+	Tail  uint8
+}
+
+type ViewList_View struct {
+	Items []*ViewTypes1_View2 `ssz-max:"4"`
+	Tail  uint8
+}
+
+var ViewList_Payload = ViewList_Base{
+	Items: []*ViewTypes1_Base{
+		{F1: 1, F2: []uint64{2, 3}, F3: [2][]uint64{{4}, {5, 6}}, C1: &ViewTypes1_C1{F1: 7, F2: []uint64{8}}},
+		{F1: 9, C1: &ViewTypes1_C1{F1: 10}},
+		{},
+	},
+	Tail: 11,
+}
+
 // OptionalListTypes exercises ssz-type:"optional-list" — pointers encoded as
 // canonical List[T, 1]. Static and dynamic element pointers are covered, and
 // optional-list works without extended types.
@@ -785,15 +889,16 @@ var UnionExprVariantSize_Payload = UnionExprVariantSize{
 	}]{Variant: 1, Data: []uint16{1, 2, 3, 4}},
 }
 
+// VecDynElemExprSize_Inner is the variable-size element of VecDynElemExprSize.
+type VecDynElemExprSize_Inner struct {
+	D []byte `ssz-max:"8"`
+}
+
 // VecDynElemExprSize is a regression type for the generated stream decoder: a
 // vector of dynamic-size elements whose length comes from a dynssz-size
 // expression. The decoder's first-offset check compares the uint32 offset
 // against `<len-expr>*4`; when the length is a typed int expression the RHS must
 // be cast to uint32, otherwise the generated code failed to compile.
-type VecDynElemExprSize_Inner struct {
-	D []byte `ssz-max:"8"`
-}
-
 type VecDynElemExprSize struct {
 	V []VecDynElemExprSize_Inner `ssz-size:"2" dynssz-size:"VDE_SIZE"`
 }
@@ -1097,6 +1202,26 @@ var AnnotatedNestedContainer_Payload = AnnotatedNestedContainer{
 	},
 }
 
+// AnnotatedRoots is a list of 32-byte roots declared through Annotate.
+type AnnotatedRoots [][]byte
+
+var _ = sszutils.Annotate[AnnotatedRoots](`ssz-size:"?,32" ssz-max:"8"`)
+
+// AnnotatedRootsField lowers the limit and keeps the root size from the
+// annotation. It also describes the wrapper and unions below.
+type AnnotatedRootsField struct {
+	Data AnnotatedRoots `ssz-max:"4"`
+}
+
+// AnnotatedRootsHolder holds the same field as a container, a TypeWrapper, a
+// Union and a CompatibleUnion.
+type AnnotatedRootsHolder struct {
+	C  AnnotatedRootsField
+	W  dynssz.TypeWrapper[AnnotatedRootsField, AnnotatedRoots]
+	U  dynssz.Union[AnnotatedRootsField]
+	CU dynssz.CompatibleUnion[AnnotatedRootsField]
+}
+
 // InitAnnotatedList tests Annotate calls inside init() functions.
 type InitAnnotatedList []uint16
 
@@ -1151,6 +1276,161 @@ var NoDynExprTypes_Payload = NoDynExprTypes{
 	BitLst: []byte{1, 2, 3, 4},
 	Str1:   "hello",
 }
+
+// NoDynWrapped is a type wrapper around a uint64 generated without dynamic
+// expressions.
+type NoDynWrapped struct {
+	Data uint64
+}
+
+var _ = sszutils.Annotate[NoDynWrapped](`ssz-type:"wrapper"`)
+
+// NoDynWrappedDyn is a type wrapper whose only hash method is the dynamic
+// one; static generation inlines its structure instead.
+type NoDynWrappedDyn struct {
+	Data uint64
+}
+
+var _ = sszutils.Annotate[NoDynWrappedDyn](`ssz-type:"wrapper"`)
+
+var _ sszutils.DynamicHashRoot = (*NoDynWrappedDyn)(nil)
+
+func (w *NoDynWrappedDyn) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(w.Data)
+	return nil
+}
+
+// NoDynWrappedHolder places both wrappers where the static hasher packs them
+// and as fields.
+type NoDynWrappedHolder struct {
+	L  []NoDynWrapped    `ssz-max:"8" ssz-type:"?,wrapper"`
+	V  [4]NoDynWrapped   `ssz-type:"?,wrapper"`
+	F  NoDynWrapped      `ssz-type:"wrapper"`
+	DL []NoDynWrappedDyn `ssz-max:"8" ssz-type:"?,wrapper"`
+	DF NoDynWrappedDyn   `ssz-type:"wrapper"`
+}
+
+// NoDynWrappedPlain is the twin with the wrappers removed.
+type NoDynWrappedPlain struct {
+	L  []uint64 `ssz-max:"8"`
+	V  [4]uint64
+	F  uint64
+	DL []uint64 `ssz-max:"8"`
+	DF uint64
+}
+
+var NoDynWrappedHolder_Payload = NoDynWrappedHolder{
+	L:  []NoDynWrapped{{1}, {2}, {3}},
+	V:  [4]NoDynWrapped{{4}, {5}, {6}, {7}},
+	F:  NoDynWrapped{8},
+	DL: []NoDynWrappedDyn{{9}, {10}},
+	DF: NoDynWrappedDyn{11},
+}
+
+var NoDynWrappedPlain_Payload = NoDynWrappedPlain{
+	L:  []uint64{1, 2, 3},
+	V:  [4]uint64{4, 5, 6, 7},
+	F:  8,
+	DL: []uint64{9, 10},
+	DF: 11,
+}
+
+// NoDynDualCustom is a custom type carrying both the static fastssz surface
+// and the spec-aware dynssz surface.
+type NoDynDualCustom struct{ V uint32 }
+
+func (c *NoDynDualCustom) SizeSSZ() int { return 4 }
+
+func (c *NoDynDualCustom) MarshalSSZ() ([]byte, error) { return c.MarshalSSZTo(nil) }
+
+func (c *NoDynDualCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint32(buf, c.V), nil
+}
+
+func (c *NoDynDualCustom) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 4 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	c.V = binary.LittleEndian.Uint32(buf)
+	return nil
+}
+
+func (c *NoDynDualCustom) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint32(root[:], c.V)
+	return root, nil
+}
+
+func (c *NoDynDualCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 4 }
+
+func (c *NoDynDualCustom) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return c.MarshalSSZTo(buf)
+}
+
+func (c *NoDynDualCustom) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	return c.UnmarshalSSZ(buf)
+}
+
+func (c *NoDynDualCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint32(c.V)
+	return nil
+}
+
+// NoDynCustomHolder nests a dual-surface custom type and a static-only one;
+// static generation reaches both through their static methods.
+type NoDynCustomHolder struct {
+	D NoDynDualCustom `ssz-type:"custom" ssz-size:"4"`
+	S CustomType1     `ssz-type:"custom"`
+	N uint64
+}
+
+// noDynStreamCustom carries a static surface and a spec-aware streaming one
+// that agree on the encoding and the root.
+type noDynStreamCustom struct{ A uint32 }
+
+func (c *noDynStreamCustom) SizeSSZ() int                { return 4 }
+func (c *noDynStreamCustom) MarshalSSZ() ([]byte, error) { return c.MarshalSSZTo(nil) }
+func (c *noDynStreamCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return sszutils.MarshalUint32(buf, c.A), nil
+}
+func (c *noDynStreamCustom) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 4 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	c.A = sszutils.UnmarshallUint32(buf)
+	return nil
+}
+func (c *noDynStreamCustom) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint32(root[:], c.A)
+	return root, nil
+}
+func (c *noDynStreamCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 4 }
+func (c *noDynStreamCustom) MarshalSSZEncoder(_ sszutils.DynamicSpecs, enc sszutils.Encoder) error {
+	enc.EncodeUint32(c.A)
+	return nil
+}
+func (c *noDynStreamCustom) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, dec sszutils.Decoder) error {
+	v, err := dec.DecodeUint32()
+	c.A = v
+	return err
+}
+func (c *noDynStreamCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint32(c.A)
+	return nil
+}
+
+// NoDynStreamCustomHolder holds a custom type with both a static and a
+// spec-aware streaming surface; generated statically, the stream is written
+// and read through the static one.
+type NoDynStreamCustomHolder struct {
+	C noDynStreamCustom `ssz-type:"custom" ssz-size:"4"`
+	N uint64
+}
+
+var NoDynStreamCustomHolder_Payload = NoDynStreamCustomHolder{C: noDynStreamCustom{A: 0x01020304}, N: 5}
+
+var NoDynCustomHolder_Payload = NoDynCustomHolder{D: NoDynDualCustom{7}, S: 8, N: 9}
 
 // NoDynNestChild is a variable-size container nested by the NoDynNest* parents.
 // Generated with -with-streaming -without-fastssz -without-dynamic-expressions,
@@ -1396,6 +1676,2161 @@ func (m *MarshalerOnlyType) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszu
 	return nil
 }
 
+// SizerOnlyType implements DynamicSizer but no marshaler or encoder. A
+// defined sizer is consulted even though the bytes come from the inlined
+// walk; the sizer is correct and counts its calls.
+type SizerOnlyType struct {
+	A     uint64
+	B     []byte `ssz-max:"8"`
+	Calls int    `ssz-type:"-"`
+}
+
+var _ sszutils.DynamicSizer = (*SizerOnlyType)(nil)
+
+func (s *SizerOnlyType) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
+	s.Calls++
+	return 8 + 4 + len(s.B)
+}
+
+// SizerOnlyHolder nests SizerOnlyType so the generated sizer meets a child
+// with a sizer but no marshaler.
+type SizerOnlyHolder struct {
+	S SizerOnlyType
+	T uint32
+}
+
+var SizerOnlyHolder_Payload = SizerOnlyHolder{
+	S: SizerOnlyType{A: 7, B: []byte{1, 2, 3}},
+	T: 9,
+}
+
+// BasicWithMethods is a named uint64 that carries the dynamic and the fastssz
+// method sets; its hash methods put the value.
+type BasicWithMethods uint64
+
+var _ sszutils.DynamicMarshaler = (*BasicWithMethods)(nil)
+var _ sszutils.DynamicUnmarshaler = (*BasicWithMethods)(nil)
+var _ sszutils.DynamicSizer = (*BasicWithMethods)(nil)
+var _ sszutils.DynamicHashRoot = (*BasicWithMethods)(nil)
+
+func (b *BasicWithMethods) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return b.MarshalSSZTo(buf)
+}
+
+func (b *BasicWithMethods) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	return b.UnmarshalSSZ(buf)
+}
+
+func (b *BasicWithMethods) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
+	return 8
+}
+
+func (b *BasicWithMethods) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(uint64(*b))
+	return nil
+}
+
+func (b *BasicWithMethods) MarshalSSZ() ([]byte, error) {
+	return b.MarshalSSZTo(nil)
+}
+
+func (b *BasicWithMethods) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(buf, uint64(*b)), nil
+}
+
+func (b *BasicWithMethods) SizeSSZ() int {
+	return 8
+}
+
+func (b *BasicWithMethods) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	*b = BasicWithMethods(binary.LittleEndian.Uint64(buf))
+	return nil
+}
+
+func (b *BasicWithMethods) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:], uint64(*b))
+	return root, nil
+}
+
+// BasicByteWithMethods is the uint8 counterpart: 32 values share one chunk.
+type BasicByteWithMethods uint8
+
+var _ sszutils.DynamicMarshaler = (*BasicByteWithMethods)(nil)
+var _ sszutils.DynamicUnmarshaler = (*BasicByteWithMethods)(nil)
+var _ sszutils.DynamicSizer = (*BasicByteWithMethods)(nil)
+var _ sszutils.DynamicHashRoot = (*BasicByteWithMethods)(nil)
+
+func (b *BasicByteWithMethods) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, byte(*b)), nil
+}
+
+func (b *BasicByteWithMethods) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	if len(buf) != 1 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	*b = BasicByteWithMethods(buf[0])
+	return nil
+}
+
+func (b *BasicByteWithMethods) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
+	return 1
+}
+
+func (b *BasicByteWithMethods) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint8(uint8(*b))
+	return nil
+}
+
+// PackedCustom is a struct-backed uint16 with custom SSZ methods. Its hash
+// method appends only the packed two bytes: as a field the engines pad it to a
+// leaf, inside a list or vector they pack it with its neighbours.
+type PackedCustom struct{ V uint16 }
+
+func (p *PackedCustom) MarshalSSZ() ([]byte, error) {
+	return p.MarshalSSZTo(nil)
+}
+
+func (p *PackedCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint16(buf, p.V), nil
+}
+
+func (p *PackedCustom) SizeSSZ() int { return 2 }
+
+func (p *PackedCustom) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 2 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	p.V = binary.LittleEndian.Uint16(buf)
+	return nil
+}
+
+func (p *PackedCustom) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint16(root[:], p.V)
+	return root, nil
+}
+
+func (p *PackedCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.AppendUint16(p.V)
+	return nil
+}
+
+// OddCustom is a 3-byte custom type whose hash method appends only its bytes.
+// No basic type has that size, so inside a list each value is padded to a leaf
+// of its own, like a Vector[byte, 3] element.
+type OddCustom struct{ B [3]byte }
+
+func (o *OddCustom) MarshalSSZ() ([]byte, error) {
+	return o.MarshalSSZTo(nil)
+}
+
+func (o *OddCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return append(buf, o.B[:]...), nil
+}
+
+func (o *OddCustom) SizeSSZ() int { return 3 }
+
+func (o *OddCustom) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 3 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	copy(o.B[:], buf)
+	return nil
+}
+
+func (o *OddCustom) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	copy(root[:], o.B[:])
+	return root, nil
+}
+
+func (o *OddCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.Append(o.B[:])
+	return nil
+}
+
+// PackedCustomHolder places the append-only custom types as a field, in a
+// list and in a vector; PackedCustomPlain is the twin built from the types
+// they stand for.
+type PackedCustomHolder struct {
+	A PackedCustom    `ssz-type:"custom" ssz-size:"2"`
+	L []PackedCustom  `ssz-type:"?,custom" ssz-size:"?,2" ssz-max:"8"`
+	V [4]PackedCustom `ssz-type:"?,custom" ssz-size:"4,2"`
+	O []OddCustom     `ssz-type:"?,custom" ssz-size:"?,3" ssz-max:"8"`
+}
+
+type PackedCustomPlain struct {
+	A uint16
+	L []uint16 `ssz-max:"8"`
+	V [4]uint16
+	O [][3]byte `ssz-max:"8"`
+}
+
+var PackedCustomHolder_Payload = PackedCustomHolder{
+	A: PackedCustom{V: 0x1234},
+	L: []PackedCustom{{V: 1}, {V: 2}, {V: 3}},
+	V: [4]PackedCustom{{V: 4}, {V: 5}, {V: 6}, {V: 7}},
+	O: []OddCustom{{B: [3]byte{8, 9, 10}}, {B: [3]byte{11, 12, 13}}},
+}
+
+var PackedCustomPlain_Payload = PackedCustomPlain{
+	A: 0x1234,
+	L: []uint16{1, 2, 3},
+	V: [4]uint16{4, 5, 6, 7},
+	O: [][3]byte{{8, 9, 10}, {11, 12, 13}},
+}
+
+// BulkElems holds byte-array elements whose Go width differs from the encoded
+// width, or that carry padding bits, next to one that is laid out exactly as
+// encoded: only the last may be copied in bulk.
+type BulkElems struct {
+	A [][48]byte `ssz-size:"?,32" ssz-max:"8"`
+	B [][48]byte `ssz-size:"?,48" dynssz-size:"?,BULK_LEN" ssz-max:"8"`
+	C [][2]byte  `ssz-type:"?,bitvector" ssz-bitsize:"?,12" ssz-max:"8"`
+	D [][32]byte `ssz-max:"8"`
+}
+
+var BulkElems_Specs = map[string]any{
+	"BULK_LEN": uint64(32),
+}
+
+var BulkElems_Payload = func() BulkElems {
+	var v BulkElems
+	for i := range 3 {
+		var a, b [48]byte
+		for j := range a {
+			a[j] = byte(i*48 + j)
+			b[j] = byte(255 - i*48 - j)
+		}
+		var d [32]byte
+		for j := range d {
+			d[j] = byte(i + j)
+		}
+		v.A = append(v.A, a)
+		v.B = append(v.B, b)
+		v.C = append(v.C, [2]byte{0xff, 0x0f})
+		v.D = append(v.D, d)
+	}
+	return v
+}()
+
+// NamedBit is a named uint8 used as a bitlist element: the engines view the
+// slice as bytes without copying.
+type NamedBit uint8
+
+// NamedBitlists backs plain and progressive bitlists with a named uint8
+// element; NamedBitlistsPlain is the []byte twin.
+type NamedBitlists struct {
+	B []NamedBit `ssz-type:"bitlist" ssz-max:"16"`
+	P []NamedBit `ssz-type:"progressive-bitlist"`
+	E []NamedBit `ssz-type:"bitlist" ssz-max:"16"`
+}
+
+type NamedBitlistsPlain struct {
+	B []byte `ssz-type:"bitlist" ssz-max:"16"`
+	P []byte `ssz-type:"progressive-bitlist"`
+	E []byte `ssz-type:"bitlist" ssz-max:"16"`
+}
+
+var NamedBitlists_Payload = NamedBitlists{
+	B: []NamedBit{0xa5, 0x01},
+	P: []NamedBit{0x0f, 0xf0, 0x81},
+}
+
+var NamedBitlistsPlain_Payload = NamedBitlistsPlain{
+	B: []byte{0xa5, 0x01},
+	P: []byte{0x0f, 0xf0, 0x81},
+}
+
+// foreignHasher stands for a third-party hasher type.
+type foreignHasher struct{ N int }
+
+// ForeignHashWith carries the fastssz method set with a HashTreeRootWith that
+// takes a concrete foreign hasher: that method cannot be called with the
+// engines' hash walker, so both fall back to HashTreeRoot().
+type ForeignHashWith struct{ A uint64 }
+
+func (f *ForeignHashWith) MarshalSSZ() ([]byte, error) {
+	return f.MarshalSSZTo(nil)
+}
+
+func (f *ForeignHashWith) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(buf, f.A), nil
+}
+
+func (f *ForeignHashWith) SizeSSZ() int { return 8 }
+
+func (f *ForeignHashWith) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	f.A = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+
+// HashTreeRoot is the root of a container with one uint64 field: its single
+// leaf.
+func (f *ForeignHashWith) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:], f.A)
+	return root, nil
+}
+
+func (f *ForeignHashWith) HashTreeRootWith(h *foreignHasher) error {
+	h.N++
+	return nil
+}
+
+type ForeignHashWithHolder struct {
+	F ForeignHashWith
+	Y uint8
+}
+
+var ForeignHashWithHolder_Payload = ForeignHashWithHolder{F: ForeignHashWith{A: 0x0102030405060708}, Y: 9}
+
+// FastsszTagged uses the plain fastssz `ssz` tag; both engines read it as
+// ssz-type, so the bitlist is a bitlist and the excluded field is skipped.
+type FastsszTagged struct {
+	Bits   []byte `ssz:"bitlist" ssz-max:"16"`
+	Skip   uint64 `ssz:"-"`
+	Filler uint8
+}
+
+// FastsszTaggedPlain is the dynamic-ssz spelling of the same type.
+type FastsszTaggedPlain struct {
+	Bits   []byte `ssz-type:"bitlist" ssz-max:"16"`
+	Skip   uint64 `ssz-type:"-"`
+	Filler uint8
+}
+
+var FastsszTagged_Payload = FastsszTagged{Bits: []byte{0xa5, 0x01}, Skip: 99, Filler: 7}
+
+var FastsszTaggedPlain_Payload = FastsszTaggedPlain{Bits: []byte{0xa5, 0x01}, Skip: 99, Filler: 7}
+
+// AliasAnnotated is annotated through an alias of itself: the annotation
+// belongs to the named type in both engines, so both fields of the holder are
+// lists of at most six elements.
+type AliasAnnotated []uint64
+
+type AliasAnnotatedAlias = AliasAnnotated
+
+var _ = sszutils.Annotate[AliasAnnotatedAlias](`ssz-max:"6"`)
+
+type AliasAnnotatedHolder struct {
+	B AliasAnnotated
+	C AliasAnnotatedAlias
+}
+
+var AliasAnnotatedHolder_Payload = AliasAnnotatedHolder{B: AliasAnnotated{1, 2, 3}, C: AliasAnnotatedAlias{4, 5}}
+
+// SurplusTags names more tag dimensions than its fields have; the surplus is
+// dropped by both engines and the remaining limits are enforced.
+type SurplusTags struct {
+	F SimpleTypes1_C1 `ssz-max:"10"`
+	G []uint64        `ssz-type:"list,uint64,uint32" ssz-max:"8"`
+	H []uint64        `ssz-max:"64,128"`
+}
+
+var SurplusTags_Payload = SurplusTags{F: SimpleTypes1_C1{F1: 1}, G: []uint64{1, 2, 3}, H: []uint64{4, 5}}
+
+// ElemBitvectors stores bit-sized bitvectors element-wise: pointer elements, a
+// named uint8 slice and the plain byte twin. The padding bits of the last
+// element are checked on every path, as for the byte-backed form.
+type ElemBitvectors struct {
+	P [2]*byte   `ssz-type:"bitvector" ssz-bitsize:"12"`
+	N []NamedBit `ssz-type:"bitvector" ssz-bitsize:"12"`
+	Q []*byte    `ssz-type:"bitvector" ssz-bitsize:"12"`
+	S []*byte    `ssz-type:"bitvector" ssz-bitsize:"12" dynssz-bitsize:"ELEM_BITS"`
+	B [2]byte    `ssz-type:"bitvector" ssz-bitsize:"12"`
+	Z uint8
+}
+
+var ElemBitvectors_Specs = map[string]any{
+	"ELEM_BITS": uint64(12),
+}
+
+var ElemBitvectors_Payload = func() ElemBitvectors {
+	a, b := byte(0xff), byte(0x0f)
+	c, d := byte(0xa5), byte(0x05)
+	e, f := byte(0x11), byte(0x01)
+	return ElemBitvectors{
+		P: [2]*byte{&a, &b},
+		N: []NamedBit{0x3c, 0x0c},
+		Q: []*byte{&c, &d},
+		S: []*byte{&e, &f},
+		B: [2]byte{0x81, 0x08},
+		Z: 9,
+	}
+}()
+
+// BasicMethodsHolder places the method-carrying basic types where the engines
+// pack them: a list, a vector and a byte-sized list.
+type BasicMethodsHolder struct {
+	L []BasicWithMethods `ssz-max:"8"`
+	V [4]BasicWithMethods
+	B []BasicByteWithMethods `ssz-max:"64"`
+}
+
+// BasicMethodsPlain is the twin built from plain basic types; it must produce
+// the same bytes and root as BasicMethodsHolder.
+type BasicMethodsPlain struct {
+	L []uint64 `ssz-max:"8"`
+	V [4]uint64
+	B []uint8 `ssz-max:"64"`
+}
+
+var BasicMethodsHolder_Payload = BasicMethodsHolder{
+	L: []BasicWithMethods{1, 2, 3},
+	V: [4]BasicWithMethods{4, 5, 6, 7},
+	B: []BasicByteWithMethods{8, 9, 10},
+}
+
+var BasicMethodsPlain_Payload = BasicMethodsPlain{
+	L: []uint64{1, 2, 3},
+	V: [4]uint64{4, 5, 6, 7},
+	B: []uint8{8, 9, 10},
+}
+
+// WrappedWithMethods is a type wrapper around a uint64 with hand-written hash
+// methods that put the wrapped value.
+type WrappedWithMethods struct {
+	Data uint64
+}
+
+var _ = sszutils.Annotate[WrappedWithMethods](`ssz-type:"wrapper"`)
+
+var _ sszutils.DynamicHashRoot = (*WrappedWithMethods)(nil)
+
+func (w *WrappedWithMethods) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(w.Data)
+	return nil
+}
+
+func (w *WrappedWithMethods) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:], w.Data)
+	return root, nil
+}
+
+// WrappedGenerated is the same shape with generated methods.
+type WrappedGenerated struct {
+	Data uint64
+}
+
+var _ = sszutils.Annotate[WrappedGenerated](`ssz-type:"wrapper"`)
+
+// WrappedMethodsHolder places both wrapper types in a list and a vector, and
+// WrappedGenerated as a field.
+type WrappedMethodsHolder struct {
+	L  []WrappedWithMethods  `ssz-max:"8" ssz-type:"?,wrapper"`
+	V  [4]WrappedWithMethods `ssz-type:"?,wrapper"`
+	GL []WrappedGenerated    `ssz-max:"8" ssz-type:"?,wrapper"`
+	GV [4]WrappedGenerated   `ssz-type:"?,wrapper"`
+	F  WrappedGenerated      `ssz-type:"wrapper"`
+}
+
+// WrappedMethodsPlain is the twin with the wrappers removed; it must produce
+// the same bytes and root as WrappedMethodsHolder.
+type WrappedMethodsPlain struct {
+	L  []uint64 `ssz-max:"8"`
+	V  [4]uint64
+	GL []uint64 `ssz-max:"8"`
+	GV [4]uint64
+	F  uint64
+}
+
+var WrappedMethodsHolder_Payload = WrappedMethodsHolder{
+	L:  []WrappedWithMethods{{1}, {2}, {3}, {4}, {5}},
+	V:  [4]WrappedWithMethods{{6}, {7}, {8}, {9}},
+	GL: []WrappedGenerated{{10}, {11}, {12}, {13}, {14}},
+	GV: [4]WrappedGenerated{{15}, {16}, {17}, {18}},
+	F:  WrappedGenerated{19},
+}
+
+var WrappedMethodsPlain_Payload = WrappedMethodsPlain{
+	L:  []uint64{1, 2, 3, 4, 5},
+	V:  [4]uint64{6, 7, 8, 9},
+	GL: []uint64{10, 11, 12, 13, 14},
+	GV: [4]uint64{15, 16, 17, 18},
+	F:  19,
+}
+
+// BasicSizedCustom is a custom type of a basic size (8 bytes) with the fastssz
+// method set; its walker method puts the value and its root is the padded
+// value.
+type BasicSizedCustom uint64
+
+func (c *BasicSizedCustom) MarshalSSZ() ([]byte, error) {
+	return c.MarshalSSZTo(nil)
+}
+
+func (c *BasicSizedCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(buf, uint64(*c)), nil
+}
+
+func (c *BasicSizedCustom) SizeSSZ() int { return 8 }
+
+func (c *BasicSizedCustom) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	*c = BasicSizedCustom(binary.LittleEndian.Uint64(buf))
+	return nil
+}
+
+func (c *BasicSizedCustom) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:], uint64(*c))
+	return root, nil
+}
+
+func (c *BasicSizedCustom) HashTreeRootWith(hh sszutils.HashWalker) error {
+	hh.PutUint64(uint64(*c))
+	return nil
+}
+
+// RootOnlyCustom is a custom type of a basic size (2 bytes) whose only hash
+// method returns its root, the padded value.
+type RootOnlyCustom struct{ V uint16 }
+
+func (c *RootOnlyCustom) MarshalSSZ() ([]byte, error) {
+	return c.MarshalSSZTo(nil)
+}
+
+func (c *RootOnlyCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint16(buf, c.V), nil
+}
+
+func (c *RootOnlyCustom) SizeSSZ() int { return 2 }
+
+func (c *RootOnlyCustom) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 2 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	c.V = binary.LittleEndian.Uint16(buf)
+	return nil
+}
+
+func (c *RootOnlyCustom) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint16(root[:], c.V)
+	return root, nil
+}
+
+// BasicSizedCustomHolder places the basic-sized custom types in lists and
+// vectors.
+type BasicSizedCustomHolder struct {
+	L  []BasicSizedCustom  `ssz-type:"?,custom" ssz-size:"?,8" ssz-max:"4"`
+	V  [4]BasicSizedCustom `ssz-type:"?,custom" ssz-size:"4,8"`
+	R  []RootOnlyCustom    `ssz-type:"?,custom" ssz-size:"?,2" ssz-max:"8"`
+	RV [4]RootOnlyCustom   `ssz-type:"?,custom" ssz-size:"4,2"`
+}
+
+// BasicSizedCustomPlain is the twin built from the basic types the custom
+// types stand in for; it must produce the same bytes and root.
+type BasicSizedCustomPlain struct {
+	L  []uint64 `ssz-max:"4"`
+	V  [4]uint64
+	R  []uint16 `ssz-max:"8"`
+	RV [4]uint16
+}
+
+var BasicSizedCustomHolder_Payload = BasicSizedCustomHolder{
+	L:  []BasicSizedCustom{1, 2, 3},
+	V:  [4]BasicSizedCustom{4, 5, 6, 7},
+	R:  []RootOnlyCustom{{8}, {9}, {10}},
+	RV: [4]RootOnlyCustom{{11}, {12}, {13}, {14}},
+}
+
+var BasicSizedCustomPlain_Payload = BasicSizedCustomPlain{
+	L:  []uint64{1, 2, 3},
+	V:  [4]uint64{4, 5, 6, 7},
+	R:  []uint16{8, 9, 10},
+	RV: [4]uint16{11, 12, 13, 14},
+}
+
+// LeafCustom is a custom type of a basic size (8 bytes) whose walker method
+// merkleizes a leaf of its own.
+type LeafCustom struct{ V uint64 }
+
+func (c *LeafCustom) MarshalSSZ() ([]byte, error) {
+	return c.MarshalSSZTo(nil)
+}
+
+func (c *LeafCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(buf, c.V), nil
+}
+
+func (c *LeafCustom) SizeSSZ() int { return 8 }
+
+func (c *LeafCustom) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	c.V = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+
+func (c *LeafCustom) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:], c.V)
+	return root, nil
+}
+
+func (c *LeafCustom) HashTreeRootWith(hh sszutils.HashWalker) error {
+	idx := hh.StartTree(sszutils.TreeTypeNone)
+	hh.PutUint64(c.V)
+	hh.Merkleize(idx)
+	return nil
+}
+
+// LeafCustomHolder lists LeafCustom under a packed limit.
+type LeafCustomHolder struct {
+	L []LeafCustom `ssz-type:"?,custom" ssz-size:"?,8" ssz-max:"4"`
+}
+
+var LeafCustomHolder_Payload = LeafCustomHolder{L: []LeafCustom{{1}, {2}, {3}}}
+
+// ViewNum is a basic type whose view hash method puts the value through a
+// uint16 view.
+type ViewNum uint16
+
+func (v *ViewNum) HashTreeRootWithDynView(view any) func(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	if _, ok := view.(*uint16); !ok {
+		return nil
+	}
+	return func(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+		hh.PutUint16(uint16(*v))
+		return nil
+	}
+}
+
+// LeafViewNum is a basic type whose view hash method merkleizes a leaf of its
+// own.
+type LeafViewNum uint16
+
+func (v *LeafViewNum) HashTreeRootWithDynView(view any) func(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	if _, ok := view.(*uint16); !ok {
+		return nil
+	}
+	return func(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+		idx := hh.StartTree(sszutils.TreeTypeNone)
+		hh.PutUint16(uint16(*v))
+		hh.Merkleize(idx)
+		return nil
+	}
+}
+
+// ViewNumTypes_Base holds the basic-typed views; its layout lives in the view.
+type ViewNumTypes_Base struct {
+	V []ViewNum
+	F ViewNum
+}
+
+// ViewNumTypes_View1 is the schema: a packed list and a field of uint16.
+type ViewNumTypes_View1 struct {
+	V []uint16 `ssz-max:"4"`
+	F uint16
+}
+
+// ViewNumTypes_Plain is the twin built from plain uint16 values.
+type ViewNumTypes_Plain struct {
+	V []uint16 `ssz-max:"4"`
+	F uint16
+}
+
+var ViewNumTypes_Payload = ViewNumTypes_Base{V: []ViewNum{1, 2, 3}, F: 4}
+
+var ViewNumTypes_Plain_Payload = ViewNumTypes_Plain{V: []uint16{1, 2, 3}, F: 4}
+
+// ViewLeafTypes_Base lists LeafViewNum under a packed limit.
+type ViewLeafTypes_Base struct {
+	L []LeafViewNum
+}
+
+// ViewLeafTypes_View1 is its schema.
+type ViewLeafTypes_View1 struct {
+	L []uint16 `ssz-max:"4"`
+}
+
+var ViewLeafTypes_Payload = ViewLeafTypes_Base{L: []LeafViewNum{1, 2, 3}}
+
+// BitCfg has a bit-sized vector whose bit count comes from a spec value with
+// no static bit size; the array's own length is the fallback.
+type BitCfg struct {
+	Flags [4]byte `ssz-type:"bitvector" dynssz-bitsize:"FLAG_BITS"`
+	Num   uint64
+}
+
+// BitCfgDyn adds a trailing dynamic field so the offsets depend on the
+// resolved width.
+type BitCfgDyn struct {
+	Flags [4]byte `ssz-type:"bitvector" dynssz-bitsize:"FLAG_BITS"`
+	Num   uint64
+	List  []uint64 `ssz-max:"16"`
+}
+
+var BitCfg_Payload = BitCfg{Flags: [4]byte{0x01, 0x02, 0x03, 0x04}, Num: 7}
+
+var BitCfgDyn_Payload = BitCfgDyn{Flags: [4]byte{0x01, 0x02, 0x03, 0x04}, Num: 7, List: []uint64{1, 2}}
+
+// HandRecursiveChild is a recursive type with hand-written spec-aware
+// methods, which walk the value by reflection with delegation off.
+type HandRecursiveChild struct {
+	Value    uint64
+	Children []*HandRecursiveChild `ssz-max:"4"`
+}
+
+var handRecursiveDs = dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+
+func (c *HandRecursiveChild) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return handRecursiveDs.MarshalSSZTo(c, buf)
+}
+
+func (c *HandRecursiveChild) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	return handRecursiveDs.UnmarshalSSZ(c, buf)
+}
+
+func (c *HandRecursiveChild) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
+	size, err := handRecursiveDs.SizeSSZ(c)
+	if err != nil {
+		return 0
+	}
+	return size
+}
+
+func (c *HandRecursiveChild) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	return handRecursiveDs.HashTreeRootWith(c, hh)
+}
+
+// HandRecursiveHolder is generated and nests the hand-written recursive type
+// as a field and as list elements.
+type HandRecursiveHolder struct {
+	C HandRecursiveChild
+	L []HandRecursiveChild `ssz-max:"2"`
+}
+
+var HandRecursiveHolder_Payload = HandRecursiveHolder{
+	C: HandRecursiveChild{Value: 1, Children: []*HandRecursiveChild{{Value: 2, Children: []*HandRecursiveChild{{Value: 3}}}}},
+	L: []HandRecursiveChild{{Value: 4}, {Value: 5, Children: []*HandRecursiveChild{{Value: 6}}}},
+}
+
+// OnlyWith is a container whose only hash method is HashTreeRootWith; it
+// hashes its value masked so delegation shows in the root.
+type OnlyWith struct{ Data uint64 }
+
+func (o *OnlyWith) HashTreeRootWith(hh sszutils.HashWalker) error {
+	idx := hh.StartTree(sszutils.TreeTypeNone)
+	hh.PutUint64(o.Data ^ 0xffff)
+	hh.Merkleize(idx)
+	return nil
+}
+
+// OnlyWithNum is a uint64 whose only hash method is HashTreeRootWith.
+type OnlyWithNum uint64
+
+func (o *OnlyWithNum) HashTreeRootWith(hh sszutils.HashWalker) error {
+	hh.PutUint64(uint64(*o) ^ 0xffff)
+	return nil
+}
+
+// OnlyWithHolder places both as a field, a composite list and a packed list.
+type OnlyWithHolder struct {
+	F OnlyWith
+	L []OnlyWith    `ssz-max:"4"`
+	N []OnlyWithNum `ssz-max:"8"`
+}
+
+// OnlyWithReflection is the twin outside the generation set.
+type OnlyWithReflection struct {
+	F OnlyWith
+	L []OnlyWith    `ssz-max:"4"`
+	N []OnlyWithNum `ssz-max:"8"`
+}
+
+// OnlyWithPlain is the twin built from plain values.
+type OnlyWithPlain struct {
+	F struct{ Data uint64 }
+	L []struct{ Data uint64 } `ssz-max:"4"`
+	N []uint64                `ssz-max:"8"`
+}
+
+var OnlyWithHolder_Payload = OnlyWithHolder{F: OnlyWith{1}, L: []OnlyWith{{2}, {3}}, N: []OnlyWithNum{4, 5, 6}}
+
+var OnlyWithReflection_Payload = OnlyWithReflection{F: OnlyWith{1}, L: []OnlyWith{{2}, {3}}, N: []OnlyWithNum{4, 5, 6}}
+
+// OnlyWithPlainPayload builds the plain twin, masked as the hash methods do
+// or unmasked as the structure is.
+func OnlyWithPlainPayload(mask uint64) OnlyWithPlain {
+	return OnlyWithPlain{
+		F: struct{ Data uint64 }{1 ^ mask},
+		L: []struct{ Data uint64 }{{2 ^ mask}, {3 ^ mask}},
+		N: []uint64{4 ^ mask, 5 ^ mask, 6 ^ mask},
+	}
+}
+
+// WrappedU256 is a tagged wrapper around a uint256 whose hash method puts
+// the 32 bytes of its value.
+type WrappedU256 struct {
+	Data [32]byte `ssz-type:"uint256"`
+}
+
+var _ = sszutils.Annotate[WrappedU256](`ssz-type:"wrapper"`)
+
+func (w *WrappedU256) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutBytes(w.Data[:])
+	return nil
+}
+
+// NarrowWrappedU256 is the same wrapper whose hash method puts only a uint64,
+// which is not the packed form of a uint256.
+type NarrowWrappedU256 struct {
+	Data [32]byte `ssz-type:"uint256"`
+}
+
+var _ = sszutils.Annotate[NarrowWrappedU256](`ssz-type:"wrapper"`)
+
+func (w *NarrowWrappedU256) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(binary.LittleEndian.Uint64(w.Data[:8]))
+	return nil
+}
+
+// WrappedU256Holder lists the well-behaved wrapper and NarrowWrappedU256Holder
+// the narrow one; the Reflection twins sit outside the generation set and
+// WrappedU256Plain is the plain twin.
+type WrappedU256Holder struct {
+	L []WrappedU256 `ssz-max:"4" ssz-type:"?,wrapper"`
+}
+
+type WrappedU256Reflection struct {
+	L []WrappedU256 `ssz-max:"4" ssz-type:"?,wrapper"`
+}
+
+type WrappedU256Plain struct {
+	L [][32]byte `ssz-max:"4" ssz-type:"?,uint256"`
+}
+
+type NarrowWrappedU256Holder struct {
+	L []NarrowWrappedU256 `ssz-max:"4" ssz-type:"?,wrapper"`
+}
+
+type NarrowWrappedU256Reflection struct {
+	L []NarrowWrappedU256 `ssz-max:"4" ssz-type:"?,wrapper"`
+}
+
+var WrappedU256Holder_Payload = WrappedU256Holder{L: []WrappedU256{{Data: [32]byte{1}}, {Data: [32]byte{2, 0, 0, 0, 0, 0, 0, 0, 3}}}}
+
+var WrappedU256Reflection_Payload = WrappedU256Reflection{L: []WrappedU256{{Data: [32]byte{1}}, {Data: [32]byte{2, 0, 0, 0, 0, 0, 0, 0, 3}}}}
+
+var WrappedU256Plain_Payload = WrappedU256Plain{L: [][32]byte{{1}, {2, 0, 0, 0, 0, 0, 0, 0, 3}}}
+
+var NarrowWrappedU256Holder_Payload = NarrowWrappedU256Holder{L: []NarrowWrappedU256{{Data: [32]byte{1}}, {Data: [32]byte{2}}}}
+
+var NarrowWrappedU256Reflection_Payload = NarrowWrappedU256Reflection{L: []NarrowWrappedU256{{Data: [32]byte{1}}, {Data: [32]byte{2}}}}
+
+// HugeBitlistHolder holds a bitlist whose limit exceeds the 32-bit int range
+// in bits.
+type HugeBitlistHolder struct {
+	B []byte `ssz-type:"bitlist" ssz-max:"2147483648"`
+}
+
+// WalkerOnlyInner exposes only HashTreeRootWith; WalkerOnlyOuter is generated
+// and WalkerOnlyReflection is its twin outside the generation set, both
+// inheriting the method next to a sibling field.
+type WalkerOnlyInner struct{ A uint64 }
+
+func (v *WalkerOnlyInner) HashTreeRootWith(hh sszutils.HashWalker) error {
+	hh.PutUint64(v.A)
+	return nil
+}
+
+type WalkerOnlyOuter struct {
+	WalkerOnlyInner
+	B uint64
+}
+
+type WalkerOnlyReflection struct {
+	WalkerOnlyInner
+	B uint64
+}
+
+var WalkerOnlyOuter_Payload = WalkerOnlyOuter{WalkerOnlyInner: WalkerOnlyInner{A: 1}, B: 2}
+
+var WalkerOnlyReflection_Payload = WalkerOnlyReflection{WalkerOnlyInner: WalkerOnlyInner{A: 1}, B: 2}
+
+// CycleBatchA and CycleBatchB form one cycle whose members are generated
+// together, so each member's code reaches the other through its depth twins.
+type CycleBatchA struct {
+	V  uint64
+	Bs []CycleBatchB `ssz-max:"4"`
+}
+
+type CycleBatchB struct {
+	W  uint32
+	As []CycleBatchA `ssz-max:"4"`
+}
+
+// CycleBatchChain builds an A -> B -> A -> ... chain n hops deep;
+// CycleBatchChainB starts the same chain at B.
+func CycleBatchChain(n int) CycleBatchA {
+	if n <= 0 {
+		return CycleBatchA{V: 1}
+	}
+	return CycleBatchA{V: uint64(n), Bs: []CycleBatchB{{W: uint32(n), As: []CycleBatchA{CycleBatchChain(n - 1)}}}}
+}
+
+func CycleBatchChainB(n int) CycleBatchB {
+	return CycleBatchB{W: uint32(n), As: []CycleBatchA{CycleBatchChain(n)}}
+}
+
+// RecursiveLeafNode is a recursive type whose view leaves the recursive field
+// out, so the view's methods carry no depth while the data type's do.
+type RecursiveLeafNode struct {
+	Value    uint64
+	Children []*RecursiveLeafNode `ssz-max:"4"`
+}
+
+type RecursiveLeafNode_View1 struct {
+	Value uint64
+}
+
+var RecursiveLeafNode_Payload = RecursiveLeafNode{Value: 7, Children: []*RecursiveLeafNode{{Value: 8}}}
+
+// EOFMatrixInner is the nested container of EOFMatrix.
+type EOFMatrixInner struct {
+	A uint64
+	L []uint64 `ssz-max:"4"`
+	C uint32
+}
+
+// EOFMatrix holds the shapes whose decoding depends on how a reader splits
+// its bytes around EOF: nested variable-size lists and a nested container.
+type EOFMatrix struct {
+	LL [][]uint16 `ssz-max:"4,8"`
+	BL [][]byte   `ssz-max:"4,8"`
+	X  uint16
+	D  EOFMatrixInner
+}
+
+// SinglePlain, SingleViewBase and SingleCustomHolder are generated one type
+// per output file, so each file has to compile on the imports its own code
+// uses: a plain container, a view-only type and a custom-typed field.
+type SinglePlain struct {
+	A uint64
+	B uint32
+}
+
+type SingleViewBase struct {
+	F1 uint64
+	F2 []uint64 `ssz-max:"64"`
+}
+
+// SingleViewBase_View1 is a view for SingleViewBase.
+type SingleViewBase_View1 struct {
+	F1 uint64
+}
+
+type SingleCustomHolder struct {
+	C noDynStreamCustom `ssz-type:"custom" ssz-size:"4"`
+	N uint64
+}
+
+// RuntimeProduct sizes a byte matrix from two spec values whose product can
+// pass the platform int range.
+type RuntimeProduct struct {
+	Data [][]byte `ssz-size:"1,1" dynssz-size:"OUTER,INNER"`
+}
+
+// negShell delegates every operation to its own methods and reports a
+// negative size; NegShellHolder's generated code must refuse it.
+type negShell struct{ V uint64 }
+
+func (negShell) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) { return buf, nil }
+func (negShell) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error           { return nil }
+func (negShell) SizeSSZDyn(_ sszutils.DynamicSpecs) int                            { return -1 }
+func (negShell) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+var _ = sszutils.Annotate[negShell](`ssz-static:"true"`)
+
+type NegShellHolder struct {
+	S negShell
+	N uint64
+}
+
+// BadBitsZero, BadCompatNone and EmptyCompat are refused by both front ends:
+// a literal bit size of zero on an array, dynssz.None in a compatible union,
+// and a compatible union without variants.
+type BadBitsZero struct {
+	B [4]byte `ssz-type:"bitvector" ssz-bitsize:"0"`
+}
+
+type BadCompatNone struct {
+	U dynssz.CompatibleUnion[struct {
+		N dynssz.None
+		A uint64
+	}]
+}
+
+type EmptyCompat struct {
+	U dynssz.CompatibleUnion[struct{}]
+}
+
+// shallowBasic delegates every operation to its own methods and is built
+// shallow by both front ends; its SSZ shape is the basic width, so a holder
+// pads it to a leaf and a list packs it.
+type shallowBasic uint16
+
+var _ = sszutils.Annotate[shallowBasic](`ssz-static:"true"`)
+
+func (*shallowBasic) SizeSSZDyn(sszutils.DynamicSpecs) int { return 2 }
+func (v *shallowBasic) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint16(b, uint16(*v)), nil
+}
+func (v *shallowBasic) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) error {
+	if len(b) != 2 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	*v = shallowBasic(binary.LittleEndian.Uint16(b))
+	return nil
+}
+func (v *shallowBasic) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, h sszutils.HashWalker) error {
+	h.AppendUint16(uint16(*v))
+	return nil
+}
+
+// WideAggregate sums three 1 GiB vectors: the total fits a 64-bit int and
+// not a 32-bit one, where no value of the type can exist.
+type WideAggregate struct {
+	A []byte `ssz-size:"1073741824"`
+	B []byte `ssz-size:"1073741824"`
+	C []byte `ssz-size:"1073741824"`
+}
+
+// The shapes below place a declared size no 32-bit target can hold in every
+// position the emitters form a byte offset for: beside a dynamic sibling, in
+// a list of variable-size elements, behind an optional, and split across the
+// static fields between two dynamic ones. Generated on any host, they must
+// compile for a 32-bit target.
+type WideBesideDynElem struct {
+	X []byte `ssz-size:"3000000000"`
+}
+
+type WideBesideDyn struct {
+	V []WideBesideDynElem `ssz-size:"1"`
+	D []byte              `ssz-max:"8"`
+}
+
+type WideDynElem struct {
+	X []byte `ssz-size:"3000000000"`
+	D []byte `ssz-max:"8"`
+}
+
+type WideDynList struct {
+	L []WideDynElem `ssz-max:"2"`
+}
+
+type WideOptionalInner struct {
+	X []byte `ssz-size:"3000000000"`
+}
+
+type WideOptional struct {
+	O *WideOptionalInner `ssz-type:"optional"`
+}
+
+// WideUnionVariants carries a declared size no 32-bit target can hold inside a
+// union variant, where the variant's length check and its size are formed from
+// that declaration.
+type WideUnionVariants struct {
+	A WideOptionalInner
+	B uint64
+}
+
+type WideUnionHolder struct {
+	U dynssz.CompatibleUnion[WideUnionVariants] `ssz-type:"compatible-union"`
+}
+
+// WideExprAfterStatic puts a spec-sized field behind a wide static one, so the
+// fixed section's byte positions are formed from that declaration.
+type WideExprAfterStatic struct {
+	S []byte `ssz-size:"3000000000"`
+	E []byte `ssz-size:"32" dynssz-size:"SPEC"`
+}
+
+type WideSplitStatics struct {
+	D1 []byte `ssz-max:"8"`
+	S1 []byte `ssz-size:"1500000000"`
+	S2 []byte `ssz-size:"1500000000"`
+	D2 []byte `ssz-max:"8"`
+}
+
+// WideListElem carries a declared size no 32-bit target can hold, held in a
+// list rather than a vector so the element count is divided by that size.
+type WideListElem struct {
+	X []byte `ssz-size:"3000000000"`
+}
+
+type WideListHolder struct {
+	L []WideListElem `ssz-max:"2"`
+}
+
+// WideElemInner is the variable-size element of WideElems.
+type WideElemInner struct {
+	L []byte `ssz-max:"8"`
+}
+
+// WideElems places a 3 GB static field behind a vector of variable-size
+// elements, so the first offset and the element bounds carry the big size.
+type WideElems struct {
+	V []WideElemInner `ssz-size:"2"`
+	W []byte          `ssz-size:"3000000000"`
+}
+
+// wideWrapperDescriptor holds 300 excluded fields before the single wrapped
+// value, a position no byte-wide index can address.
+type wideWrapperDescriptor struct {
+	S000, S001, S002, S003, S004, S005, S006, S007, S008, S009 uint64 `ssz:"-"`
+	S010, S011, S012, S013, S014, S015, S016, S017, S018, S019 uint64 `ssz:"-"`
+	S020, S021, S022, S023, S024, S025, S026, S027, S028, S029 uint64 `ssz:"-"`
+	S030, S031, S032, S033, S034, S035, S036, S037, S038, S039 uint64 `ssz:"-"`
+	S040, S041, S042, S043, S044, S045, S046, S047, S048, S049 uint64 `ssz:"-"`
+	S050, S051, S052, S053, S054, S055, S056, S057, S058, S059 uint64 `ssz:"-"`
+	S060, S061, S062, S063, S064, S065, S066, S067, S068, S069 uint64 `ssz:"-"`
+	S070, S071, S072, S073, S074, S075, S076, S077, S078, S079 uint64 `ssz:"-"`
+	S080, S081, S082, S083, S084, S085, S086, S087, S088, S089 uint64 `ssz:"-"`
+	S090, S091, S092, S093, S094, S095, S096, S097, S098, S099 uint64 `ssz:"-"`
+	S100, S101, S102, S103, S104, S105, S106, S107, S108, S109 uint64 `ssz:"-"`
+	S110, S111, S112, S113, S114, S115, S116, S117, S118, S119 uint64 `ssz:"-"`
+	S120, S121, S122, S123, S124, S125, S126, S127, S128, S129 uint64 `ssz:"-"`
+	S130, S131, S132, S133, S134, S135, S136, S137, S138, S139 uint64 `ssz:"-"`
+	S140, S141, S142, S143, S144, S145, S146, S147, S148, S149 uint64 `ssz:"-"`
+	S150, S151, S152, S153, S154, S155, S156, S157, S158, S159 uint64 `ssz:"-"`
+	S160, S161, S162, S163, S164, S165, S166, S167, S168, S169 uint64 `ssz:"-"`
+	S170, S171, S172, S173, S174, S175, S176, S177, S178, S179 uint64 `ssz:"-"`
+	S180, S181, S182, S183, S184, S185, S186, S187, S188, S189 uint64 `ssz:"-"`
+	S190, S191, S192, S193, S194, S195, S196, S197, S198, S199 uint64 `ssz:"-"`
+	S200, S201, S202, S203, S204, S205, S206, S207, S208, S209 uint64 `ssz:"-"`
+	S210, S211, S212, S213, S214, S215, S216, S217, S218, S219 uint64 `ssz:"-"`
+	S220, S221, S222, S223, S224, S225, S226, S227, S228, S229 uint64 `ssz:"-"`
+	S230, S231, S232, S233, S234, S235, S236, S237, S238, S239 uint64 `ssz:"-"`
+	S240, S241, S242, S243, S244, S245, S246, S247, S248, S249 uint64 `ssz:"-"`
+	S250, S251, S252, S253, S254, S255, S256, S257, S258, S259 uint64 `ssz:"-"`
+	Data                                                       []byte `ssz-size:"4"`
+}
+
+// WideWrapperHolder carries the wrapper struct itself, so both engines
+// address its value by field index.
+type WideWrapperHolder struct {
+	W wideWrapperDescriptor `ssz-type:"wrapper"`
+}
+
+// WideWrapperHolderRefl is the same shape without generated methods.
+type WideWrapperHolderRefl struct {
+	W wideWrapperDescriptor `ssz-type:"wrapper"`
+}
+
+// extScalar is a delegated signed basic, which is a basic shape only where
+// extended types are enabled.
+type extScalar int32
+
+var _ = sszutils.Annotate[extScalar](`ssz-static:"true"`)
+
+func (*extScalar) SizeSSZDyn(sszutils.DynamicSpecs) int { return 4 }
+func (v *extScalar) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint32(b, uint32(*v)), nil
+}
+func (v *extScalar) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) error {
+	if len(b) != 4 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	*v = extScalar(binary.LittleEndian.Uint32(b))
+	return nil
+}
+func (v *extScalar) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, h sszutils.HashWalker) error {
+	h.AppendUint32(uint32(*v))
+	return nil
+}
+
+type ExtScalarHolder struct {
+	A extScalar
+	L []extScalar `ssz-max:"8"`
+}
+
+// ExtScalarHolderRefl is the same shape without generated methods.
+type ExtScalarHolderRefl struct {
+	A extScalar
+	L []extScalar `ssz-max:"8"`
+}
+
+// customPair is a two-byte custom type: reflection packs it in list scope, so
+// the generator has to reach the same shape from its annotation.
+type customPair [2]byte
+
+var _ = sszutils.Annotate[customPair](`ssz-type:"custom" ssz-size:"2" ssz-static:"true"`)
+
+func (*customPair) SizeSSZDyn(sszutils.DynamicSpecs) int { return 2 }
+func (v *customPair) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return append(b, v[:]...), nil
+}
+func (v *customPair) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) error {
+	if len(b) != 2 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	copy(v[:], b)
+	return nil
+}
+func (v *customPair) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, h sszutils.HashWalker) error {
+	h.Append(v[:])
+	return nil
+}
+
+type CustomPairList struct {
+	L []customPair `ssz-max:"8"`
+}
+
+// CustomPairField holds the delegated custom type as a plain field. The field
+// reference constrains nothing, so the type keeps the fixed framing its own
+// annotation declares and sits inline rather than behind an offset.
+type CustomPairField struct {
+	A uint64
+	C customPair
+}
+
+// CustomPairFieldRefl is the same shape without generated methods.
+type CustomPairFieldRefl struct {
+	A uint64
+	C customPair
+}
+
+// CustomPairListRefl is the same shape without generated methods.
+type CustomPairListRefl struct {
+	L []customPair `ssz-max:"8"`
+}
+
+// dynWidthCustom is a delegated custom type whose width one spec value
+// supplies: two bytes by default, whatever WIDTH says otherwise. A width that
+// is not a literal makes the value composite, so it takes a leaf of its own
+// rather than packing with its neighbours.
+type dynWidthCustom [4]byte
+
+var _ = sszutils.Annotate[dynWidthCustom](`ssz-type:"custom" ssz-static:"true" ssz-size:"2" dynssz-size:"WIDTH"`)
+
+func dynWidthOf(ds sszutils.DynamicSpecs) (int, error) {
+	w, err := sszutils.ResolveSpecValueWithDefault(ds, "WIDTH", 2)
+	if err != nil {
+		return 0, err
+	}
+	// The width has to fit the four bytes this type holds, which is also what
+	// makes the narrowing below safe.
+	if w > 4 {
+		return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "WIDTH %d exceeds the four bytes of this type", w)
+	}
+	return int(w), nil
+}
+
+func (*dynWidthCustom) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
+	w, err := dynWidthOf(ds)
+	if err != nil {
+		return 0
+	}
+	return w
+}
+
+func (v *dynWidthCustom) MarshalSSZDyn(ds sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	w, err := dynWidthOf(ds)
+	if err != nil {
+		return nil, err
+	}
+	return append(b, v[:w]...), nil
+}
+
+func (v *dynWidthCustom) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, b []byte) error {
+	w, err := dynWidthOf(ds)
+	if err != nil {
+		return err
+	}
+	if len(b) != w {
+		return sszutils.ErrUnexpectedEOF
+	}
+	copy(v[:], b)
+	return nil
+}
+
+func (v *dynWidthCustom) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, h sszutils.HashWalker) error {
+	w, err := dynWidthOf(ds)
+	if err != nil {
+		return err
+	}
+	h.Append(v[:w])
+	return nil
+}
+
+type DynWidthList struct {
+	L []dynWidthCustom `ssz-max:"17"`
+}
+
+// DynWidthListRefl is the same shape without generated methods.
+type DynWidthListRefl struct {
+	L []dynWidthCustom `ssz-max:"17"`
+}
+
+// declaredU64 is a Go array declaring a uint64 shape, a width its Go kind
+// does not state; the emitters must keep picking their element paths by the
+// Go kind.
+type declaredU64 [8]byte
+
+var _ = sszutils.Annotate[declaredU64](`ssz-type:"uint64" ssz-static:"true"`)
+
+func (*declaredU64) SizeSSZDyn(sszutils.DynamicSpecs) int { return 8 }
+func (v *declaredU64) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return append(b, v[:]...), nil
+}
+func (v *declaredU64) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) error {
+	if len(b) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	copy(v[:], b)
+	return nil
+}
+func (v *declaredU64) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, h sszutils.HashWalker) error {
+	h.Append(v[:])
+	return nil
+}
+
+type DeclaredU64Holder struct {
+	L []declaredU64 `ssz-max:"8"`
+}
+
+// DeclaredU64HolderRefl is the same shape without generated methods.
+type DeclaredU64HolderRefl struct {
+	L []declaredU64 `ssz-max:"8"`
+}
+
+// DeclaredU64Field holds the same delegate as a plain field: the declared
+// uint64 shape is the type's own, and the field reference neither states it
+// nor drops it.
+type DeclaredU64Field struct {
+	A uint64
+	C declaredU64
+}
+
+// DeclaredU64FieldRefl is the same shape without generated methods.
+type DeclaredU64FieldRefl struct {
+	A uint64
+	C declaredU64
+}
+
+// sizerCustom is a delegated custom type that declares a fixed framing but no
+// width: only its own sizer states the three bytes it writes.
+type sizerCustom struct{ X uint8 }
+
+var _ = sszutils.Annotate[sizerCustom](`ssz-type:"custom" ssz-static:"true"`)
+
+func (*sizerCustom) SizeSSZDyn(sszutils.DynamicSpecs) int { return 3 }
+func (v *sizerCustom) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return append(b, v.X, 0, 0), nil
+}
+func (v *sizerCustom) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) error {
+	if len(b) != 3 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	v.X = b[0]
+	return nil
+}
+func (v *sizerCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, h sszutils.HashWalker) error {
+	h.PutUint8(v.X)
+	return nil
+}
+
+// SizerCustomField holds it as a plain field. The reflection engine reads the
+// width from the sizer and frames the field inline; the generator has no
+// sizer to call and refuses the type instead of guessing.
+type SizerCustomField struct {
+	A uint64
+	C sizerCustom
+}
+
+// plainExtScalar is a delegated signed basic in the batch generated without
+// extended types: a delegated type is never traversed, so both front ends
+// keep its shape whatever that flag says.
+type plainExtScalar int32
+
+var _ = sszutils.Annotate[plainExtScalar](`ssz-static:"true"`)
+
+func (*plainExtScalar) SizeSSZDyn(sszutils.DynamicSpecs) int { return 4 }
+func (v *plainExtScalar) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint32(b, uint32(*v)), nil
+}
+func (v *plainExtScalar) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) error {
+	if len(b) != 4 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	*v = plainExtScalar(binary.LittleEndian.Uint32(b))
+	return nil
+}
+func (v *plainExtScalar) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, h sszutils.HashWalker) error {
+	h.AppendUint32(uint32(*v))
+	return nil
+}
+
+type PlainExtHolder struct {
+	L []plainExtScalar `ssz-max:"8"`
+}
+
+// PlainExtHolderRefl is the same shape without generated methods.
+type PlainExtHolderRefl struct {
+	L []plainExtScalar `ssz-max:"8"`
+}
+
+// amount declares a 16-byte basic shape by annotation, which no Go kind can
+// state. Packed scopes size their capacity by that width in both engines.
+type amount [16]byte
+
+var _ = sszutils.Annotate[amount](`ssz-type:"uint128" ssz-static:"true"`)
+
+func (*amount) SizeSSZDyn(sszutils.DynamicSpecs) int { return 16 }
+func (v *amount) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return append(b, v[:]...), nil
+}
+func (v *amount) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) error {
+	if len(b) != 16 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	copy(v[:], b)
+	return nil
+}
+func (v *amount) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, h sszutils.HashWalker) error {
+	h.Append(v[:])
+	return nil
+}
+
+type AmountList struct {
+	L []amount `ssz-max:"8"`
+}
+
+// exprWidthCustom is a delegated custom type whose width only a spec value
+// names on the reference: WIDTH bytes, two when nothing says otherwise. A
+// width dynWidthOf refuses is zero bytes here; the refusal itself is
+// dynWidthCustom's to report.
+type exprWidthCustom [4]byte
+
+func (*exprWidthCustom) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
+	w, _ := dynWidthOf(ds)
+	return w
+}
+
+func (v *exprWidthCustom) MarshalSSZDyn(ds sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	w, _ := dynWidthOf(ds)
+	return append(b, v[:w]...), nil
+}
+
+func (v *exprWidthCustom) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) error {
+	*v = exprWidthCustom{}
+	copy(v[:], b)
+	return nil
+}
+
+func (v *exprWidthCustom) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	w, _ := dynWidthOf(ds)
+	hh.PutBytes(v[:w])
+	return nil
+}
+
+// ExprWidthHolder references exprWidthCustom with its width from WIDTH alone,
+// as a field and as a list element.
+type ExprWidthHolder struct {
+	E exprWidthCustom   `ssz-type:"custom" dynssz-size:"WIDTH"`
+	L []exprWidthCustom `ssz-type:"?,custom" dynssz-size:"?,WIDTH" ssz-max:"4"`
+}
+
+// ExprWidthHolderRefl is the same shape without generated methods.
+type ExprWidthHolderRefl struct {
+	E exprWidthCustom   `ssz-type:"custom" dynssz-size:"WIDTH"`
+	L []exprWidthCustom `ssz-type:"?,custom" dynssz-size:"?,WIDTH" ssz-max:"4"`
+}
+
+// annExprWidthCustom is exprWidthCustom with the width named on the type's
+// own annotation instead of on each reference.
+type annExprWidthCustom [4]byte
+
+var _ = sszutils.Annotate[annExprWidthCustom](`ssz-type:"custom" dynssz-size:"WIDTH"`)
+
+func (*annExprWidthCustom) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
+	w, _ := dynWidthOf(ds)
+	return w
+}
+
+func (v *annExprWidthCustom) MarshalSSZDyn(ds sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	w, _ := dynWidthOf(ds)
+	return append(b, v[:w]...), nil
+}
+
+func (v *annExprWidthCustom) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) error {
+	*v = annExprWidthCustom{}
+	copy(v[:], b)
+	return nil
+}
+
+func (v *annExprWidthCustom) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	w, _ := dynWidthOf(ds)
+	hh.PutBytes(v[:w])
+	return nil
+}
+
+// AnnExprWidthHolder references annExprWidthCustom without any width of its
+// own, as a field and as a list element.
+type AnnExprWidthHolder struct {
+	E annExprWidthCustom
+	L []annExprWidthCustom `ssz-max:"4"`
+}
+
+// AnnExprWidthHolderRefl is the same shape without generated methods.
+type AnnExprWidthHolderRefl struct {
+	E annExprWidthCustom
+	L []annExprWidthCustom `ssz-max:"4"`
+}
+
+// AmountListRefl is the same shape without generated methods.
+type AmountListRefl struct {
+	L []amount `ssz-max:"8"`
+}
+
+// noAnnDelegate delegates every operation but carries no annotation, so
+// neither engine builds it shallow and the cycle it closes with NoAnnParent
+// is an ordinary recursive cycle.
+type noAnnDelegate struct {
+	V uint64
+	P []NoAnnParent `ssz-max:"4"`
+}
+
+func (noAnnDelegate) SizeSSZDyn(sszutils.DynamicSpecs) int { return 8 }
+func (v noAnnDelegate) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(b, v.V), nil
+}
+func (v *noAnnDelegate) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) error {
+	if len(b) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	v.V = binary.LittleEndian.Uint64(b)
+	return nil
+}
+func (v noAnnDelegate) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, h sszutils.HashWalker) error {
+	h.PutUint64(v.V)
+	return nil
+}
+
+type NoAnnParent struct {
+	A noAnnDelegate
+}
+
+type ShallowBasicHolder struct {
+	A shallowBasic
+	B uint64
+}
+
+// ShallowBasicHolderRefl is the same shape without generated methods.
+type ShallowBasicHolderRefl struct {
+	A shallowBasic
+	B uint64
+}
+
+type ShallowBasicList struct {
+	L []shallowBasic `ssz-max:"65"`
+}
+
+type ShallowBasicListRefl struct {
+	L []shallowBasic `ssz-max:"65"`
+}
+
+// edgeOpaque owns an eight-byte wire format and lies on a cycle with
+// edgeCycleA, which has no methods, through a Go field that is not part of
+// that format: describing edgeCycleA is refused by both front ends.
+type edgeOpaque struct {
+	Value    uint64
+	Children []edgeCycleA `ssz-max:"4"`
+	Bad      map[string]int
+}
+
+var _ = sszutils.Annotate[edgeOpaque](`ssz-static:"true"`)
+
+func (v *edgeOpaque) MarshalSSZDyn(_ sszutils.DynamicSpecs, dst []byte) ([]byte, error) {
+	if v == nil {
+		return binary.LittleEndian.AppendUint64(dst, 0), nil
+	}
+	return binary.LittleEndian.AppendUint64(dst, v.Value), nil
+}
+func (v *edgeOpaque) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	v.Value = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+func (v *edgeOpaque) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 8 }
+func (v *edgeOpaque) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, h sszutils.HashWalker) error {
+	idx := h.StartTree(sszutils.TreeTypeNone)
+	if v == nil {
+		h.PutUint64(0)
+	} else {
+		h.PutUint64(v.Value)
+	}
+	h.Merkleize(idx)
+	return nil
+}
+
+type edgeCycleA struct{ Opaque edgeOpaque }
+
+type EdgeCycleParent struct{ A edgeCycleA }
+
+// BadHugeVector declares 2^32 bytes, one past the SSZ size limit.
+type BadHugeVector struct {
+	V []uint64 `ssz-size:"536870912"`
+}
+
+// BadHugeContainer's fixed section sums to 2^32 bytes.
+type BadHugeContainer struct {
+	A []byte `ssz-size:"2147483648"`
+	B []byte `ssz-size:"2147483648"`
+}
+
+// BadHugeDynVector declares 2^61 variable-size elements: a length the
+// vector byte-size check never sees, since the element has no static size.
+type BadHugeDynVector struct {
+	V []DynVecElem `ssz-size:"2305843009213693952"`
+}
+
+// BadOffsetTable declares 2^30 variable-size elements, whose offset table
+// alone fills the fixed section.
+type BadOffsetTable struct {
+	V []DynVecElem `ssz-size:"1073741824"`
+}
+
+// OffsetTableSpec sizes a vector of variable-size elements from a spec value.
+type OffsetTableSpec struct {
+	V []DynVecElem `ssz-size:"1" dynssz-size:"COUNT"`
+}
+
+// specSumInner is sized by two spec values; SpecSumInline inlines it, so the
+// holder's generated prelude sums the two sizes itself. SpecSumInner is its
+// generated twin, whose sizer SpecSumDelegated calls instead.
+type specSumInner struct {
+	A []byte `ssz-size:"1" dynssz-size:"SIZE_A"`
+	B []byte `ssz-size:"1" dynssz-size:"SIZE_B"`
+}
+
+type SpecSumInner struct {
+	A []byte `ssz-size:"1" dynssz-size:"SIZE_A"`
+	B []byte `ssz-size:"1" dynssz-size:"SIZE_B"`
+}
+
+type SpecSumInline struct {
+	V []specSumInner `ssz-size:"1" dynssz-size:"COUNT"`
+}
+
+type SpecSumDelegated struct {
+	V []SpecSumInner `ssz-size:"1" dynssz-size:"COUNT"`
+}
+
+// partialComposite is a composite type whose hash method leaves a partial
+// chunk, eight raw bytes, instead of one root; goodComposite honours the
+// contract. Both walkers refuse the first and agree on the second.
+type partialComposite struct{ A, B uint64 }
+
+func (p *partialComposite) HashTreeRootWith(hh sszutils.HashWalker) error {
+	hh.Append([]byte{1, 2, 3, 4, 5, 6, 7, 8})
+	return nil
+}
+func (p *partialComposite) HashTreeRoot() ([32]byte, error) { return [32]byte{9}, nil }
+
+// flushedComposite leaves a partial chunk and then adds a leaf, which flushes
+// the partial bytes into a padded leaf of their own.
+type flushedComposite struct{ A, B uint64 }
+
+func (p *flushedComposite) HashTreeRootWith(hh sszutils.HashWalker) error {
+	hh.Append([]byte{1, 2, 3, 4, 5, 6, 7, 8})
+	hh.PutUint64(p.B)
+	return nil
+}
+func (p *flushedComposite) HashTreeRoot() ([32]byte, error) { return [32]byte{9}, nil }
+
+type FlushedHolder struct {
+	N uint64
+	P flushedComposite
+	M uint64
+}
+
+type FlushedHolderRefl struct {
+	N uint64
+	P flushedComposite
+	M uint64
+}
+
+// A delegate that leaves a partial chunk is followed here by each shape that
+// opens a region right on it: a byte vector, a bitlist and a container. Both
+// walkers have to lay those out the same way, whatever the delegate left.
+type PartialVecHolder struct {
+	P partialComposite
+	V [48]byte
+}
+
+// PartialVecHolderRefl is the same shape without generated methods.
+type PartialVecHolderRefl struct {
+	P partialComposite
+	V [48]byte
+}
+
+type PartialBitlistHolder struct {
+	P partialComposite
+	B []byte `ssz-type:"bitlist" ssz-max:"64"`
+}
+
+// PartialBitlistHolderRefl is the same shape without generated methods.
+type PartialBitlistHolderRefl struct {
+	P partialComposite
+	B []byte `ssz-type:"bitlist" ssz-max:"64"`
+}
+
+// plainPair is an ordinary container, so the field after the delegate opens a
+// scope rather than writing a value.
+type plainPair struct{ A, B uint64 }
+
+type PartialScopeHolder struct {
+	P partialComposite
+	C plainPair
+}
+
+// PartialScopeHolderRefl is the same shape without generated methods.
+type PartialScopeHolderRefl struct {
+	P partialComposite
+	C plainPair
+}
+
+type goodComposite struct{ A, B uint64 }
+
+func (g *goodComposite) HashTreeRootWith(hh sszutils.HashWalker) error {
+	idx := hh.StartTree(sszutils.TreeTypeNone)
+	hh.PutUint64(g.A)
+	hh.PutUint64(g.B)
+	hh.Merkleize(idx)
+	return nil
+}
+func (g *goodComposite) HashTreeRoot() ([32]byte, error) { return [32]byte{}, nil }
+
+type PartialHolder struct {
+	N uint64
+	P partialComposite
+	M uint64
+}
+
+type PartialHolderRefl struct {
+	N uint64
+	P partialComposite
+	M uint64
+}
+
+type GoodHolder struct {
+	N uint64
+	G goodComposite
+	M uint64
+}
+
+type GoodHolderRefl struct {
+	N uint64
+	G goodComposite
+	M uint64
+}
+
+// fixedOctets is a named slice with its own eight-byte fixed codec: it lies
+// on no cycle and must keep its shallow static descriptor.
+type fixedOctets []byte
+
+var _ = sszutils.Annotate[fixedOctets](`ssz-static:"true"`)
+
+func (v *fixedOctets) MarshalSSZDyn(_ sszutils.DynamicSpecs, dst []byte) ([]byte, error) {
+	var data [8]byte
+	if v != nil {
+		copy(data[:], *v)
+	}
+	return append(dst, data[:]...), nil
+}
+func (v *fixedOctets) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	*v = append((*v)[:0], buf...)
+	return nil
+}
+func (v *fixedOctets) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 8 }
+func (v *fixedOctets) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, h sszutils.HashWalker) error {
+	var data [8]byte
+	if v != nil {
+		copy(data[:], *v)
+	}
+	h.PutBytes(data[:])
+	return nil
+}
+
+type OctetParent struct{ Data fixedOctets }
+
+type OctetParentRefl struct{ Data fixedOctets }
+
+// KnownSizeLists carries one fixed-element list and one list of lists large
+// enough that a stream decode seeded from the read buffer would grow them.
+type KnownSizeLists struct {
+	L  []uint32   `ssz-max:"1048576"`
+	LL [][]uint16 `ssz-max:"16384,64"`
+}
+
+var EOFMatrix_Payload = EOFMatrix{LL: [][]uint16{{1, 2}, {3}}, BL: [][]byte{{1, 2}, {3}}, X: 7, D: EOFMatrixInner{A: 1, L: []uint64{3, 4}, C: 5}}
+
+// CountedNum is a named uint64 whose hash method counts its calls and puts
+// the value; CountedNumErr makes it fail instead.
+type CountedNum uint64
+
+var (
+	CountedNumCalls int
+	CountedNumErr   error
+)
+
+func (c *CountedNum) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	CountedNumCalls++
+	if CountedNumErr != nil {
+		return CountedNumErr
+	}
+	hh.PutUint64(uint64(*c))
+	return nil
+}
+
+// CountedNumHolder lists CountedNum under a limit and progressively.
+type CountedNumHolder struct {
+	L []CountedNum `ssz-max:"8"`
+	P []CountedNum `ssz-type:"progressive-list"`
+}
+
+// CountedNumReflection is the twin outside the generation set.
+type CountedNumReflection struct {
+	L []CountedNum `ssz-max:"8"`
+	P []CountedNum `ssz-type:"progressive-list"`
+}
+
+// CountedNumPlain is the twin built from plain uint64 values.
+type CountedNumPlain struct {
+	L []uint64 `ssz-max:"8"`
+	P []uint64 `ssz-type:"progressive-list"`
+}
+
+var CountedNumHolder_Payload = CountedNumHolder{L: []CountedNum{1, 2, 3}, P: []CountedNum{4, 5, 6, 7, 8}}
+
+var CountedNumReflection_Payload = CountedNumReflection{L: []CountedNum{1, 2, 3}, P: []CountedNum{4, 5, 6, 7, 8}}
+
+var CountedNumPlain_Payload = CountedNumPlain{L: []uint64{1, 2, 3}, P: []uint64{4, 5, 6, 7, 8}}
+
+// ViewNum64 is a uint64 whose view hash method puts the value plus one
+// through a uint64 view.
+type ViewNum64 uint64
+
+func (v *ViewNum64) HashTreeRootWithDynView(view any) func(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	if _, ok := view.(*uint64); !ok {
+		return nil
+	}
+	return func(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+		hh.PutUint64(uint64(*v) + 1)
+		return nil
+	}
+}
+
+// ViewNum64Types_Base lists ViewNum64; its layout lives in the view.
+type ViewNum64Types_Base struct {
+	V []ViewNum64
+}
+
+// ViewNum64Types_View1 is the schema: a packed list of uint64.
+type ViewNum64Types_View1 struct {
+	V []uint64 `ssz-max:"4"`
+}
+
+// ViewNum64Types_Reflection is the twin outside the generation set.
+type ViewNum64Types_Reflection struct {
+	V []ViewNum64
+}
+
+// ViewNum64Types_Plain is the twin built from the values the view method puts.
+type ViewNum64Types_Plain struct {
+	V []uint64 `ssz-max:"4"`
+}
+
+var ViewNum64Types_Payload = ViewNum64Types_Base{V: []ViewNum64{1, 2, 3}}
+
+var ViewNum64Types_Reflection_Payload = ViewNum64Types_Reflection{V: []ViewNum64{1, 2, 3}}
+
+var ViewNum64Types_Plain_Payload = ViewNum64Types_Plain{V: []uint64{2, 3, 4}}
+
+// PromotedViewInner gets generated view methods for PromotedViewSchema.
+type PromotedViewInner struct{ B uint64 }
+
+// PromotedViewSchema is its view schema.
+type PromotedViewSchema struct{ B uint64 }
+
+// PromotedViewOuter embeds the generated type and shadows its field; it is
+// not generated, so the promoted view methods are all it offers.
+type PromotedViewOuter struct {
+	PromotedViewInner
+	B uint64
+}
+
+// UnionSpecVariants has a variant whose width comes from a spec value.
+type UnionSpecVariants struct {
+	Bytes [8]byte `ssz-size:"4" dynssz-size:"UNION_WIDTH"`
+}
+
+// UnionSpecChild and CompatUnionSpecChild hold the union; UnionSpecParent and
+// CompatUnionSpecParent hold the child, so the parent's choice of child method
+// decides whether the width follows the instance's specs.
+type UnionSpecChild struct {
+	Choice dynssz.Union[UnionSpecVariants]
+}
+
+type UnionSpecParent struct {
+	Child UnionSpecChild
+	Tail  uint8
+}
+
+type CompatUnionSpecChild struct {
+	Choice dynssz.CompatibleUnion[UnionSpecVariants]
+}
+
+type CompatUnionSpecParent struct {
+	Child CompatUnionSpecChild
+	Tail  uint8
+}
+
+var UnionSpecParent_Payload = UnionSpecParent{
+	Child: UnionSpecChild{Choice: dynssz.Union[UnionSpecVariants]{Variant: 0, Data: [8]byte{1, 2, 3, 4, 5, 6, 7, 8}}},
+	Tail:  9,
+}
+
+var CompatUnionSpecParent_Payload = CompatUnionSpecParent{
+	Child: CompatUnionSpecChild{Choice: dynssz.CompatibleUnion[UnionSpecVariants]{Variant: 1, Data: [8]byte{1, 2, 3, 4, 5, 6, 7, 8}}},
+	Tail:  9,
+}
+
+var UnionSpec_Specs = map[string]any{"UNION_WIDTH": uint64(8)}
+
+// RecursiveOverlapA lies on two cycles that share RecursiveOverlapB, so every
+// one of the three types is a cycle member and charges a nesting level.
+type RecursiveOverlapA struct {
+	B []RecursiveOverlapB `ssz-max:"1"`
+	C []RecursiveOverlapC `ssz-max:"1"`
+}
+
+type RecursiveOverlapB struct {
+	A []RecursiveOverlapA `ssz-max:"1"`
+}
+
+type RecursiveOverlapC struct {
+	B []RecursiveOverlapB `ssz-max:"1"`
+}
+
+var RecursiveOverlapA_Payload = RecursiveOverlapA{
+	B: []RecursiveOverlapB{{A: []RecursiveOverlapA{{}}}},
+	C: []RecursiveOverlapC{{B: []RecursiveOverlapB{{A: []RecursiveOverlapA{{C: []RecursiveOverlapC{{}}}}}}}},
+}
+
+// OptSpecInner is a fixed-size container whose width comes from a spec value.
+type OptSpecInner struct {
+	Y []byte `ssz-size:"4" dynssz-size:"OPT_INNER_LEN"`
+	Z uint32
+}
+
+// OptSpecBytes is a byte vector whose width comes from a spec value.
+type OptSpecBytes []byte
+
+var _ = sszutils.Annotate[OptSpecBytes](`ssz-size:"4" dynssz-size:"OPT_INNER_LEN"`)
+
+// OptSpecHolder holds both as optional values, so a present value occupies
+// the presence byte plus the width the instance's specs resolve.
+type OptSpecHolder struct {
+	A     uint8
+	Opt   *OptSpecInner `ssz-type:"optional"`
+	Bytes *OptSpecBytes `ssz-type:"optional"`
+	Tail  uint8
+}
+
+func optSpecHolderPayload(width int) OptSpecHolder {
+	y := make([]byte, width)
+	b := make(OptSpecBytes, width)
+	for i := range width {
+		y[i], b[i] = byte(i+1), byte(0x10+i)
+	}
+	return OptSpecHolder{A: 1, Opt: &OptSpecInner{Y: y, Z: 7}, Bytes: &b, Tail: 9}
+}
+
+var OptSpecHolder_Payload = optSpecHolderPayload(6)
+
+var OptSpecHolder_Specs = map[string]any{"OPT_INNER_LEN": uint64(6)}
+
+// WidthCustom is a custom type whose fastssz methods bake the default width of
+// two bytes while its dynssz buffer methods take the width from CUSTOM_WIDTH.
+type WidthCustom struct{ Data []byte }
+
+func (c *WidthCustom) SizeSSZ() int { return 2 }
+
+func (c *WidthCustom) MarshalSSZ() ([]byte, error) { return c.MarshalSSZTo(nil) }
+
+func (c *WidthCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	if len(c.Data) != 2 {
+		return nil, sszutils.ErrVectorLengthFn(len(c.Data), 2)
+	}
+	return append(buf, c.Data...), nil
+}
+
+func (c *WidthCustom) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 2 {
+		return sszutils.ErrVectorLengthFn(len(buf), 2)
+	}
+	c.Data = append([]byte(nil), buf...)
+	return nil
+}
+
+func (c *WidthCustom) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	copy(root[:], c.Data)
+	return root, nil
+}
+
+func (c *WidthCustom) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
+	return sszutils.CapToInt(widthCustomWidth(ds))
+}
+
+func (c *WidthCustom) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	if uint64(len(c.Data)) != widthCustomWidth(ds) {
+		return nil, sszutils.ErrVectorLengthFn(len(c.Data), widthCustomWidth(ds))
+	}
+	return append(buf, c.Data...), nil
+}
+
+func (c *WidthCustom) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) error {
+	if uint64(len(buf)) != widthCustomWidth(ds) {
+		return sszutils.ErrVectorLengthFn(len(buf), widthCustomWidth(ds))
+	}
+	c.Data = append([]byte(nil), buf...)
+	return nil
+}
+
+func (c *WidthCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutBytes(c.Data)
+	return nil
+}
+
+func widthCustomWidth(ds sszutils.DynamicSpecs) uint64 {
+	width, _ := sszutils.ResolveSpecValueWithDefault(ds, "CUSTOM_WIDTH", 2)
+	return width
+}
+
+// WidthCustomHolder nests the custom type as a dynamic field.
+type WidthCustomHolder struct {
+	Item WidthCustom `ssz-type:"custom"`
+	Tail uint8
+}
+
+func widthCustomHolderPayload(width int) WidthCustomHolder {
+	data := make([]byte, width)
+	for i := range data {
+		data[i] = byte(0x20 + i)
+	}
+	return WidthCustomHolder{Item: WidthCustom{Data: data}, Tail: 9}
+}
+
+var WidthCustomHolder_Payload = widthCustomHolderPayload(3)
+
+var WidthCustomHolder_Specs = map[string]any{"CUSTOM_WIDTH": uint64(3)}
+
+// ZeroSizeShell serializes to no bytes through its own static methods.
+type ZeroSizeShell struct{}
+
+var _ = sszutils.Annotate[ZeroSizeShell](`ssz-static:"true"`)
+
+func (z *ZeroSizeShell) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 0 }
+
+func (z *ZeroSizeShell) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+
+func (z *ZeroSizeShell) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	if len(buf) != 0 {
+		return sszutils.ErrTrailingDataFn(len(buf))
+	}
+	return nil
+}
+
+func (z *ZeroSizeShell) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(0)
+	return nil
+}
+
+// ZeroSizeShellList lists a zero-size element; its count cannot be derived
+// from a region, so decoding fails instead of dividing by zero.
+type ZeroSizeShellList struct {
+	L []ZeroSizeShell `ssz-max:"4"`
+}
+
+// ZeroSizeShellOptional holds a zero-size element as an optional-list; a
+// present value would leave the region as empty as an absent one, so decoding
+// fails instead of losing presence.
+type ZeroSizeShellOptional struct {
+	Item *ZeroSizeShell `ssz-type:"optional-list"`
+}
+
+// WideByteCustom is a custom type stored in a uint8 whose SSZ width is four
+// bytes.
+type WideByteCustom uint8
+
+func (c *WideByteCustom) SizeSSZ() int { return 4 }
+
+func (c *WideByteCustom) MarshalSSZ() ([]byte, error) { return c.MarshalSSZTo(nil) }
+
+func (c *WideByteCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint32(buf, uint32(*c)), nil
+}
+
+func (c *WideByteCustom) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 4 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	*c = WideByteCustom(binary.LittleEndian.Uint32(buf))
+	return nil
+}
+
+func (c *WideByteCustom) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint32(root[:], uint32(*c))
+	return root, nil
+}
+
+func (c *WideByteCustom) HashTreeRootWith(hh sszutils.HashWalker) error {
+	hh.PutUint32(uint32(*c))
+	return nil
+}
+
+// WideByteCustomHolder places the custom type in a list and a vector, where
+// each element takes its declared width.
+type WideByteCustomHolder struct {
+	L []WideByteCustom  `ssz-type:"?,custom" ssz-size:"?,4" ssz-max:"8"`
+	V [3]WideByteCustom `ssz-type:"?,custom" ssz-size:"3,4"`
+	T uint8
+}
+
+var WideByteCustomHolder_Payload = WideByteCustomHolder{
+	L: []WideByteCustom{1, 2},
+	V: [3]WideByteCustom{3, 4, 5},
+	T: 6,
+}
+
 // CoverageTypes6 wraps MarshalerOnlyType as a field to trigger the
 // DynamicMarshaler/DynamicUnmarshaler dispatch branches.
 type CoverageTypes6 struct {
@@ -1595,6 +4030,12 @@ func (n *nestedDelegatedDyn) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh ssz
 	hh.FillUpTo32()
 	hh.MerkleizeWithMixin(idx, uint64(len(n.Items)), 1024)
 	return nil
+}
+
+// ReflectDelegatedDynList holds a fully delegated variable-size type as a
+// list element, which the reflect front end describes without its fields.
+type ReflectDelegatedDynList struct {
+	L []nestedDelegatedDyn `ssz-max:"3"`
 }
 
 // NestedDelegatedDynContainer references the variable-size fully-delegated type
@@ -2112,6 +4553,23 @@ type StreamVecDynSize struct {
 type StreamVecElem struct {
 	X []byte `ssz-max:"8"`
 }
+
+// OversizedArrayDynVec holds Go arrays longer than their declared vector
+// length whose elements are variable-size: only the declared length is
+// encoded, sized and hashed, and both engines must agree on that.
+type OversizedArrayDynVec struct {
+	P [8]*StreamVecElem `ssz-size:"4"`
+	V [8]StreamVecElem  `ssz-size:"4"`
+}
+
+var OversizedArrayDynVec_Payload = func() OversizedArrayDynVec {
+	var v OversizedArrayDynVec
+	for i := range v.P {
+		v.P[i] = &StreamVecElem{X: []byte{byte(i), byte(i)}}
+		v.V[i] = StreamVecElem{X: []byte{byte(i)}}
+	}
+	return v
+}()
 
 var StreamVecDynSize_Specs = map[string]any{
 	"STREAMVEC_LEN": uint64(2),
@@ -2870,6 +5328,7 @@ type ViewMixHolder struct {
 	A ViewMixChildA
 	B ViewMixChildB
 	C ViewMixChildC
+	E ViewMixChildD
 	N namedCovBytes `ssz-max:"8"`
 	L aliasCovBytes `ssz-max:"8"`
 	U dynssz.CompatibleUnion[struct {
@@ -2901,10 +5360,23 @@ type ViewMixChildC_View struct {
 	Z uint64
 }
 
+// ViewMixChildD is static with a spec-sized field, so its buffer-only view
+// delegate is framed at the runtime-resolved size.
+type ViewMixChildD struct {
+	Y []byte `ssz-size:"4" dynssz-size:"VIEWMIX_D_SIZE"`
+	Z uint64
+}
+
+type ViewMixChildD_View struct {
+	Y []byte `ssz-size:"4" dynssz-size:"VIEWMIX_D_SIZE"`
+	Z uint64
+}
+
 type ViewMixHolder_View struct {
 	A ViewMixChildA_View
 	B ViewMixChildB_View
 	C ViewMixChildC_View
+	E ViewMixChildD_View
 	N []byte `ssz-max:"8"`
 	L []byte `ssz-max:"8"`
 	U dynssz.CompatibleUnion[struct {
@@ -2972,6 +5444,28 @@ var ViewMixHolder_Payload = ViewMixHolder{
 	A: ViewMixChildA{X: []byte{1}, Y: 2},
 	B: ViewMixChildB{X: []byte{3}, Z: 4},
 	C: ViewMixChildC{Y: 5, Z: 6},
+	E: ViewMixChildD{Y: []byte{1, 2, 3, 4}, Z: 12},
+	N: namedCovBytes{7},
+	L: aliasCovBytes{8},
+	U: dynssz.CompatibleUnion[struct {
+		V1 uint64
+		V2 ViewMixChildA
+	}]{Variant: 2, Data: ViewMixChildA{X: []byte{9}, Y: 10}},
+	D: []byte{11},
+}
+
+// ViewMixHolder_Specs supplies the spec value ViewMixChildD.Y is sized from.
+var ViewMixHolder_Specs = map[string]any{
+	"VIEWMIX_D_SIZE": uint64(6),
+}
+
+// ViewMixHolder_SpecsPayload sizes ViewMixChildD.Y from ViewMixHolder_Specs
+// instead of the static default.
+var ViewMixHolder_SpecsPayload = ViewMixHolder{
+	A: ViewMixChildA{X: []byte{1}, Y: 2},
+	B: ViewMixChildB{X: []byte{3}, Z: 4},
+	C: ViewMixChildC{Y: 5, Z: 6},
+	E: ViewMixChildD{Y: []byte{1, 2, 3, 4, 5, 6}, Z: 12},
 	N: namedCovBytes{7},
 	L: aliasCovBytes{8},
 	U: dynssz.CompatibleUnion[struct {
@@ -2998,4 +5492,837 @@ var GenCovPtrWrapper_Payload = GenCovPtrWrapper{
 	W: &dynssz.TypeWrapper[genCovPtrWrapInner, *[]uint8]{
 		Data: &genCovPtrWrapData,
 	},
+}
+
+// mixedOpaqueDelegated is an external fully-delegated type whose structure the
+// engines cannot traverse: it is usable only through its Dynamic* methods.
+type mixedOpaqueDelegated struct {
+	V    uint64
+	Note any
+}
+
+var _ = sszutils.Annotate[mixedOpaqueDelegated](`ssz-static:"true"`)
+
+func (n *mixedOpaqueDelegated) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 8 }
+func (n *mixedOpaqueDelegated) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(buf, n.V), nil
+}
+func (n *mixedOpaqueDelegated) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	n.V = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+func (n *mixedOpaqueDelegated) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(n.V)
+	return nil
+}
+
+// MixedOpaqueHolder is generated in default mode next to a static type; its
+// opaque child must still be delegated to, not traversed.
+type MixedOpaqueHolder struct {
+	N mixedOpaqueDelegated
+	A uint64
+}
+
+// MixedStatic is generated without dynamic expressions in the same batch.
+type MixedStatic struct {
+	A uint64
+	B []uint64 `ssz-max:"4"`
+}
+
+// MixedExt needs extended types; the neighbouring default-mode types must not
+// inherit that.
+type MixedExt struct {
+	S int8
+	L []uint64 `ssz-max:"4"`
+}
+
+var (
+	MixedOpaqueHolder_Payload = MixedOpaqueHolder{N: mixedOpaqueDelegated{V: 0x1122}, A: 7}
+	MixedStatic_Payload       = MixedStatic{A: 9, B: []uint64{1, 2, 3}}
+	MixedExt_Payload          = MixedExt{S: -3, L: []uint64{4, 5}}
+)
+
+// mixedDynOnlyCustom is served by its dynssz methods alone.
+type mixedDynOnlyCustom struct{ V uint32 }
+
+func (c *mixedDynOnlyCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 4 }
+func (c *mixedDynOnlyCustom) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint32(buf, c.V), nil
+}
+func (c *mixedDynOnlyCustom) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	c.V = binary.LittleEndian.Uint32(buf)
+	return nil
+}
+func (c *mixedDynOnlyCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint32(c.V)
+	return nil
+}
+
+// MixedDynCustomHolder holds a custom type without any fastssz method.
+type MixedDynCustomHolder struct {
+	C mixedDynOnlyCustom `ssz-type:"custom" ssz-size:"4"`
+	N uint64
+}
+
+var MixedDynCustomHolder_Payload = MixedDynCustomHolder{C: mixedDynOnlyCustom{V: 0x0a0b0c0d}, N: 3}
+
+// mixedNegSizeCustom reports a negative size.
+type mixedNegSizeCustom struct{}
+
+func (n *mixedNegSizeCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return -1 }
+func (n *mixedNegSizeCustom) MarshalSSZEncoder(_ sszutils.DynamicSpecs, _ sszutils.Encoder) error {
+	return nil
+}
+func (n *mixedNegSizeCustom) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, _ sszutils.Decoder) error {
+	return nil
+}
+func (n *mixedNegSizeCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+// MixedNegSizeHolder places the negative-size custom type where the encoder
+// takes its size for an offset.
+type MixedNegSizeHolder struct {
+	A uint64
+	C mixedNegSizeCustom   `ssz-type:"custom"`
+	L []mixedNegSizeCustom `ssz-max:"4" ssz-type:"?,custom"`
+}
+
+// BigVecFixed declares a vector past the 32-bit int range; the generated
+// file must still build there and refuse the shape.
+type BigVecFixed struct {
+	V []byte `ssz-size:"3000000000"`
+}
+
+// DynVecElem is the variable-size element of DynVecDeclared.
+type DynVecElem struct {
+	B []byte `ssz-max:"64"`
+}
+
+// DynVecDeclared is a vector of variable-size elements whose declared length
+// is a claim the decoders must not allocate for before the bytes arrive.
+type DynVecDeclared struct {
+	V []DynVecElem `ssz-size:"65536"`
+}
+
+// BigIntLimit carries a bigint limit past the 32-bit int range.
+type BigIntLimit struct {
+	B *big.Int `ssz-type:"bigint" ssz-max:"4294967296"`
+}
+
+// BigIntSpecLimit states its bigint limit through the spec, with the static
+// value as the fallback the generator bakes when no spec resolves it.
+type BigIntSpecLimit struct {
+	B *big.Int `ssz-type:"bigint" ssz-max:"5" dynssz-max:"BIGINT_SPEC_MAX"`
+}
+
+// The probe fixtures carry different subsets of the fastssz-style methods, so a
+// test can tell which method each engine reaches for. Every method encodes what
+// walking the type would encode, so delegation is invisible in the output and
+// only the counters below distinguish the paths.
+var (
+	ProbeMarshalSSZCalls   atomic.Int64
+	ProbeMarshalSSZToCalls atomic.Int64
+	ProbeSizeSSZCalls      atomic.Int64
+	ProbeUnmarshalSSZCalls atomic.Int64
+	ProbeHashTreeRootCalls atomic.Int64
+)
+
+// ResetProbeCounts clears the probe call counters.
+func ResetProbeCounts() {
+	ProbeMarshalSSZCalls.Store(0)
+	ProbeMarshalSSZToCalls.Store(0)
+	ProbeSizeSSZCalls.Store(0)
+	ProbeUnmarshalSSZCalls.Store(0)
+	ProbeHashTreeRootCalls.Store(0)
+}
+
+// ProbeMarshalOnly carries MarshalSSZ and nothing else, so marshalling reaches
+// it only through the buffer-returning fallback.
+type ProbeMarshalOnly struct {
+	V uint64
+}
+
+func (t *ProbeMarshalOnly) MarshalSSZ() ([]byte, error) {
+	ProbeMarshalSSZCalls.Add(1)
+	return binary.LittleEndian.AppendUint64(nil, t.V), nil
+}
+
+// ProbeStaticSurface carries the three methods generated code calls, without
+// MarshalSSZ.
+type ProbeStaticSurface struct {
+	V uint64
+}
+
+func (t *ProbeStaticSurface) MarshalSSZTo(dst []byte) ([]byte, error) {
+	ProbeMarshalSSZToCalls.Add(1)
+	return binary.LittleEndian.AppendUint64(dst, t.V), nil
+}
+
+func (t *ProbeStaticSurface) SizeSSZ() int {
+	ProbeSizeSSZCalls.Add(1)
+	return 8
+}
+
+func (t *ProbeStaticSurface) UnmarshalSSZ(buf []byte) error {
+	ProbeUnmarshalSSZCalls.Add(1)
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	t.V = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+
+// ProbeNoSizer marshals and unmarshals through its own methods and leaves
+// sizing to the walk.
+type ProbeNoSizer struct {
+	V uint64
+}
+
+func (t *ProbeNoSizer) MarshalSSZTo(dst []byte) ([]byte, error) {
+	ProbeMarshalSSZToCalls.Add(1)
+	return binary.LittleEndian.AppendUint64(dst, t.V), nil
+}
+
+func (t *ProbeNoSizer) UnmarshalSSZ(buf []byte) error {
+	ProbeUnmarshalSSZCalls.Add(1)
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	t.V = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+
+// ProbeFullFastssz carries the whole fastssz surface, as a fastssz-generated
+// type does.
+type ProbeFullFastssz struct {
+	V uint64
+}
+
+func (t *ProbeFullFastssz) MarshalSSZ() ([]byte, error) {
+	ProbeMarshalSSZCalls.Add(1)
+	return binary.LittleEndian.AppendUint64(nil, t.V), nil
+}
+
+func (t *ProbeFullFastssz) MarshalSSZTo(dst []byte) ([]byte, error) {
+	ProbeMarshalSSZToCalls.Add(1)
+	return binary.LittleEndian.AppendUint64(dst, t.V), nil
+}
+
+func (t *ProbeFullFastssz) SizeSSZ() int {
+	ProbeSizeSSZCalls.Add(1)
+	return 8
+}
+
+func (t *ProbeFullFastssz) UnmarshalSSZ(buf []byte) error {
+	ProbeUnmarshalSSZCalls.Add(1)
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	t.V = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+
+func (t *ProbeFullFastssz) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:8], t.V)
+	return root, nil
+}
+
+// ProbePromotedInner provides the static surface to whatever embeds it.
+type ProbePromotedInner struct {
+	V uint64
+}
+
+func (t *ProbePromotedInner) MarshalSSZTo(dst []byte) ([]byte, error) {
+	ProbeMarshalSSZToCalls.Add(1)
+	return binary.LittleEndian.AppendUint64(dst, t.V), nil
+}
+
+func (t *ProbePromotedInner) SizeSSZ() int {
+	ProbeSizeSSZCalls.Add(1)
+	return 8
+}
+
+func (t *ProbePromotedInner) UnmarshalSSZ(buf []byte) error {
+	ProbeUnmarshalSSZCalls.Add(1)
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	t.V = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+
+// ProbePromoted reaches the inner type's methods by promotion, so they answer
+// for the embedded value and not for this one.
+type ProbePromoted struct {
+	ProbePromotedInner
+	W uint64
+}
+
+// ProbeDynamicSizer is variable-size, so its width is known only by asking it.
+type ProbeDynamicSizer struct {
+	V []byte `ssz-max:"32"`
+}
+
+func (t *ProbeDynamicSizer) MarshalSSZTo(dst []byte) ([]byte, error) {
+	ProbeMarshalSSZToCalls.Add(1)
+	dst = binary.LittleEndian.AppendUint32(dst, 4)
+	return append(dst, t.V...), nil
+}
+
+func (t *ProbeDynamicSizer) SizeSSZ() int {
+	ProbeSizeSSZCalls.Add(1)
+	return 4 + len(t.V)
+}
+
+func (t *ProbeDynamicSizer) UnmarshalSSZ(buf []byte) error {
+	ProbeUnmarshalSSZCalls.Add(1)
+	if len(buf) < 4 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	t.V = append([]byte(nil), buf[4:]...)
+	return nil
+}
+
+// ErrProbeMarshal is what ProbeMarshalFails reports.
+var ErrProbeMarshal = errors.New("probe marshal failed")
+
+// ProbeMarshalFails fails in the only marshalling method it has, so the error
+// travels back through the buffer-returning fallback.
+type ProbeMarshalFails struct {
+	V uint64
+}
+
+func (t *ProbeMarshalFails) MarshalSSZ() ([]byte, error) {
+	ProbeMarshalSSZCalls.Add(1)
+	return nil, ErrProbeMarshal
+}
+
+// ProbeFailHolder reaches the failing probe through generated code.
+type ProbeFailHolder struct {
+	A ProbeMarshalFails
+}
+
+// ProbeFailWalkHolder reaches it through the reflection walk.
+type ProbeFailWalkHolder struct {
+	A ProbeMarshalFails
+}
+
+// ProbePromotedValueInner gives whatever embeds it a MarshalSSZ and nothing
+// else, the shape that reaches the promotion rule through a single method.
+type ProbePromotedValueInner struct {
+	V uint64
+}
+
+func (t *ProbePromotedValueInner) MarshalSSZ() ([]byte, error) {
+	ProbeMarshalSSZCalls.Add(1)
+	return binary.LittleEndian.AppendUint64(nil, t.V), nil
+}
+
+// ProbePromotedValue reaches MarshalSSZ by promotion, so it must be walked:
+// the promoted method answers for the embedded value and would drop W.
+type ProbePromotedValue struct {
+	ProbePromotedValueInner
+	W uint64
+}
+
+// ProbeMixedPromotionInner contributes a promoted sizer.
+type ProbeMixedPromotionInner struct {
+	V uint64
+}
+
+func (t *ProbeMixedPromotionInner) SizeSSZ() int {
+	ProbeSizeSSZCalls.Add(1)
+	return 8
+}
+
+// ProbeMixedPromotion declares one static method itself and reaches another by
+// promotion. Mixing them would measure the embedded value and marshal this one,
+// so neither may be used.
+type ProbeMixedPromotion struct {
+	ProbeMixedPromotionInner
+	W uint64
+}
+
+func (t *ProbeMixedPromotion) MarshalSSZTo(dst []byte) ([]byte, error) {
+	ProbeMarshalSSZToCalls.Add(1)
+	dst = binary.LittleEndian.AppendUint64(dst, t.V)
+	return binary.LittleEndian.AppendUint64(dst, t.W), nil
+}
+
+// ProbePromotionHolder carries both promotion shapes as fields.
+type ProbePromotionHolder struct {
+	A ProbePromotedValue
+	B ProbeMixedPromotion
+}
+
+// ProbeWalkHolder holds the same shapes as ProbeHolder and stays out of the
+// generation set, so it has no methods of its own for either engine to reach:
+// it is always walked, and each probe is met as a field.
+type ProbeWalkHolder struct {
+	A ProbeMarshalOnly
+	B ProbeStaticSurface
+	C ProbeNoSizer
+	D ProbeFullFastssz
+	E ProbePromoted
+	F []byte `ssz-max:"32"`
+	G ProbeDynamicSizer
+}
+
+// ProbeHolder places each probe shape where an engine has to choose a path. The
+// trailing list makes the container variable-size, so sizing walks its fields
+// instead of reading one static width.
+type ProbeHolder struct {
+	A ProbeMarshalOnly
+	B ProbeStaticSurface
+	C ProbeNoSizer
+	D ProbeFullFastssz
+	E ProbePromoted
+	F []byte `ssz-max:"32"`
+	G ProbeDynamicSizer
+}
+
+// GiBElem declares a width a 32-bit int holds comfortably, so no per-width
+// guard refuses it; only the product with a list length passes the domain.
+type GiBElem struct {
+	X []byte `ssz-size:"1073741824"`
+}
+
+// GiBList holds enough of them that the product wraps a 32-bit int while
+// staying inside a 64-bit one, which is where the two targets disagree.
+type GiBList struct {
+	L []GiBElem `ssz-max:"8"`
+}
+
+// SpecLimitChild carries a limit a preset may resolve away from its static
+// tag. It is generated with -legacy, so it also exposes the static method set
+// a parent could reach it through.
+type SpecLimitChild struct {
+	Items []uint64 `ssz-max:"4" dynssz-max:"SPEC_LIMIT_MAX"`
+}
+
+// SpecLimitParent nests SpecLimitChild as a field and as a list element.
+type SpecLimitParent struct {
+	X uint32
+	C SpecLimitChild
+	L []SpecLimitChild `ssz-max:"2"`
+}
+
+// TypeHintInner is a plain container generated in the same run as the holder
+// below, which references it with an SSZ type the generated annotation does
+// not declare.
+type TypeHintInner struct {
+	A uint64
+	B uint32
+}
+
+// TypeHintOverride reaches TypeHintInner as a progressive container, so the
+// field is described inline rather than through the type's own methods.
+type TypeHintOverride struct {
+	X TypeHintInner `ssz-type:"progressive-container"`
+	Y uint64
+}
+
+var TypeHintOverride_Payload = TypeHintOverride{X: TypeHintInner{A: 1, B: 2}, Y: 3}
+
+// SpecWidthInner is generated in the same run as its holder, which declares it
+// custom; its width is a spec value with a static fallback.
+type SpecWidthInner struct {
+	X []byte `ssz-size:"8" dynssz-size:"SPEC_WIDTH"`
+}
+
+// SpecWidthHolder reaches SpecWidthInner as a custom field with and without a
+// declared width, and as list and vector elements.
+type SpecWidthHolder struct {
+	F SpecWidthInner    `ssz-type:"custom"`
+	G SpecWidthInner    `ssz-type:"custom" ssz-size:"8" dynssz-size:"SPEC_WIDTH"`
+	L []SpecWidthInner  `ssz-max:"4" ssz-type:"?,custom"`
+	V [2]SpecWidthInner `ssz-type:"?,custom"`
+}
+
+func specWidthHolderPayload(width int) SpecWidthHolder {
+	fill := func(b byte) []byte {
+		data := make([]byte, width)
+		for i := range data {
+			data[i] = b
+		}
+		return data
+	}
+	return SpecWidthHolder{
+		F: SpecWidthInner{X: fill(1)},
+		G: SpecWidthInner{X: fill(6)},
+		L: []SpecWidthInner{{X: fill(2)}, {X: fill(3)}},
+		V: [2]SpecWidthInner{{X: fill(4)}, {X: fill(5)}},
+	}
+}
+
+// fsWidthCustom is static by annotation, declares no width, and carries the
+// fastssz surface only: its width is read from SizeSSZ on a zero value.
+type fsWidthCustom struct{ X uint8 }
+
+var _ = sszutils.Annotate[fsWidthCustom](`ssz-type:"custom" ssz-static:"true"`)
+
+func (*fsWidthCustom) SizeSSZ() int                  { return 3 }
+func (v *fsWidthCustom) MarshalSSZ() ([]byte, error) { return v.MarshalSSZTo(nil) }
+func (v *fsWidthCustom) MarshalSSZTo(b []byte) ([]byte, error) {
+	return append(b, v.X, 0, 0), nil
+}
+func (v *fsWidthCustom) UnmarshalSSZ(b []byte) error {
+	if len(b) != 3 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	v.X = b[0]
+	return nil
+}
+func (v *fsWidthCustom) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	root[0] = v.X
+	return root, nil
+}
+
+// FsWidthHolder reaches fsWidthCustom as a field and as list elements.
+type FsWidthHolder struct {
+	A uint64
+	C fsWidthCustom
+	L []fsWidthCustom `ssz-max:"4"`
+}
+
+var FsWidthHolder_Payload = FsWidthHolder{A: 7, C: fsWidthCustom{X: 1}, L: []fsWidthCustom{{X: 2}, {X: 3}}}
+
+// zeroWidthCustom is static by annotation and reports a width of zero.
+type zeroWidthCustom struct{}
+
+var _ = sszutils.Annotate[zeroWidthCustom](`ssz-type:"custom" ssz-static:"true"`)
+
+func (*zeroWidthCustom) SizeSSZ() int                          { return 0 }
+func (*zeroWidthCustom) MarshalSSZ() ([]byte, error)           { return nil, nil }
+func (*zeroWidthCustom) MarshalSSZTo(b []byte) ([]byte, error) { return b, nil }
+func (*zeroWidthCustom) UnmarshalSSZ([]byte) error             { return nil }
+func (*zeroWidthCustom) HashTreeRoot() ([32]byte, error)       { return [32]byte{}, nil }
+
+// ZeroWidthList holds a list of zero-width elements: no length has a wire
+// form of its own, so the type is refused wherever it is used.
+type ZeroWidthList struct {
+	L []zeroWidthCustom `ssz-max:"4"`
+}
+
+// ZeroWidthShell is a static container whose only field has a zero width.
+type ZeroWidthShell struct{ Z zeroWidthCustom }
+
+// ZeroWidthWrapperList, ZeroWidthShellList and ZeroWidthOptionalList reach a
+// zero-width custom type through a wrapper element, a container element and
+// an optional-list; each shape is refused wherever it is used.
+type ZeroWidthWrapperList struct {
+	W []dynssz.TypeWrapper[struct {
+		Data zeroWidthCustom
+	}, zeroWidthCustom] `ssz-max:"4" ssz-type:"?,wrapper"`
+}
+
+type ZeroWidthShellList struct {
+	S []ZeroWidthShell `ssz-max:"4"`
+}
+
+type ZeroWidthOptionalList struct {
+	O *zeroWidthCustom `ssz-type:"optional-list"`
+}
+
+// ZeroWidthOptional holds a zero-width custom type in a regular optional,
+// whose presence byte keeps the encoding unambiguous.
+type ZeroWidthOptional struct {
+	A uint8
+	O *zeroWidthCustom `ssz-type:"optional"`
+}
+
+var ZeroWidthOptional_Payload = ZeroWidthOptional{A: 1, O: &zeroWidthCustom{}}
+
+// SpecViewIsolation_Base serves two views whose expressions differ: view A
+// keeps a static fallback, view B is spec-only. A spec set lacking ONLY_B
+// must leave view A working.
+type SpecViewIsolation_Base struct {
+	V []uint16 `ssz-size:"4"`
+}
+
+type SpecViewIsolation_ViewA struct {
+	V []uint16 `ssz-size:"4" dynssz-size:"ONLY_A"`
+}
+
+type SpecViewIsolation_ViewB struct {
+	V []uint16 `dynssz-size:"ONLY_B"`
+}
+
+// SpecViewShared_View is served by two data types: SpecViewShared_T1 holds a
+// child the view's methods inline, SpecViewShared_T2 a generated child they
+// delegate to, so the two builders of the view number its expressions in
+// opposite order and must not share a cached set.
+type SpecViewShared_ChildView struct {
+	W []uint16 `ssz-size:"2" dynssz-size:"SHARED_W"`
+}
+
+type SpecViewShared_ChildPlain struct {
+	W []uint16 `ssz-size:"2"`
+}
+
+type SpecViewShared_ChildGen struct {
+	W []uint16 `ssz-size:"2"`
+}
+
+type SpecViewShared_View struct {
+	Child *SpecViewShared_ChildView
+	V     []uint16 `ssz-size:"4" dynssz-size:"SHARED_V"`
+}
+
+type SpecViewShared_T1 struct {
+	Child *SpecViewShared_ChildPlain
+	V     []uint16 `ssz-size:"4"`
+}
+
+type SpecViewShared_T2 struct {
+	Child *SpecViewShared_ChildGen
+	V     []uint16 `ssz-size:"4"`
+}
+
+// UnionSpecOnlyVariants holds variants whose width is fixed purely by a spec
+// expression with no literal fallback: a uint16 vector, a bitvector and a byte
+// vector. Each has a static size of 0 at generation time, and the generated
+// decoders must still frame the variant at its resolved width.
+type UnionSpecOnlyVariants struct {
+	V  []uint16 `dynssz-size:"USO_LEN"`
+	BV []byte   `ssz-type:"bitvector" dynssz-bitsize:"USO_BITS"`
+	B  []byte   `dynssz-size:"USO_LEN"`
+}
+
+type UnionSpecOnlyCompat struct {
+	U dynssz.CompatibleUnion[UnionSpecOnlyVariants]
+}
+
+type UnionSpecOnlyClassic struct {
+	U dynssz.Union[UnionSpecOnlyVariants]
+}
+
+var UnionSpecOnly_Specs = map[string]any{
+	"USO_LEN":  uint64(4),
+	"USO_BITS": uint64(12),
+}
+
+// UnionSpecOnly_Values lists one value per variant with its serialized width
+// under UnionSpecOnly_Specs.
+var UnionSpecOnly_Values = []struct {
+	Data any
+	Size int
+}{
+	{Data: []uint16{1, 2, 3, 4}, Size: 8},
+	{Data: []byte{0xff, 0x0f}, Size: 2},
+	{Data: []byte{1, 2, 3, 4}, Size: 4},
+}
+
+// GenU128 is a uint128 held as two words with generated methods. As a list
+// or vector element its root method must leave the packed 16 bytes, and as a
+// field or standalone root a whole chunk.
+type GenU128 [2]uint64
+
+var _ = sszutils.Annotate[GenU128](`ssz-type:"uint128"`)
+
+// GenU128Wrap is a generated wrapper around a word-form uint128.
+type GenU128Wrap struct {
+	Data [2]uint64 `ssz-type:"uint128"`
+}
+
+var _ = sszutils.Annotate[GenU128Wrap](`ssz-type:"wrapper"`)
+
+type GenU128Holder struct {
+	L []GenU128 `ssz-max:"8"`
+	V [2]GenU128
+	F GenU128
+	W []GenU128Wrap `ssz-max:"8" ssz-type:"?,wrapper"`
+}
+
+// GenU128HolderRef is the same shape with inline element types and no
+// generated methods.
+type GenU128HolderRef struct {
+	L [][2]uint64  `ssz-type:"?,uint128" ssz-max:"8"`
+	V [2][2]uint64 `ssz-type:"?,uint128"`
+	F [2]uint64    `ssz-type:"uint128"`
+	W [][2]uint64  `ssz-type:"?,uint128" ssz-max:"8"`
+}
+
+var GenU128Holder_Payload = GenU128Holder{
+	L: []GenU128{{1, 0}, {2, 0}, {3, 4}, {5, 6}, {7, 8}, {9, 10}},
+	V: [2]GenU128{{3, 0}, {4, 0}},
+	F: GenU128{11, 12},
+	W: []GenU128Wrap{{Data: [2]uint64{13, 0}}, {Data: [2]uint64{14, 15}}, {Data: [2]uint64{16, 0}}, {Data: [2]uint64{17, 0}}, {Data: [2]uint64{18, 0}}, {Data: [2]uint64{19, 20}}},
+}
+
+var GenU128HolderRef_Payload = GenU128HolderRef{
+	L: [][2]uint64{{1, 0}, {2, 0}, {3, 4}, {5, 6}, {7, 8}, {9, 10}},
+	V: [2][2]uint64{{3, 0}, {4, 0}},
+	F: [2]uint64{11, 12},
+	W: [][2]uint64{{13, 0}, {14, 15}, {16, 0}, {17, 0}, {18, 0}, {19, 20}},
+}
+
+// ProbeHinted has a partial fastssz surface and no annotation; it resolves to
+// a vector on its own, so a field hint naming a vector keeps its methods and
+// one naming another SSZ type drops them.
+type ProbeHinted [4]uint64
+
+func (t *ProbeHinted) MarshalSSZ() ([]byte, error) {
+	ProbeMarshalSSZCalls.Add(1)
+	return sszutils.MarshalUint64Slice(nil, (*t)[:]), nil
+}
+
+func (t *ProbeHinted) UnmarshalSSZ(buf []byte) error {
+	ProbeUnmarshalSSZCalls.Add(1)
+	if len(buf) != 32 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	sszutils.UnmarshalUint64Slice((*t)[:], buf)
+	return nil
+}
+
+func (t *ProbeHinted) HashTreeRoot() ([32]byte, error) {
+	ProbeHashTreeRootCalls.Add(1)
+	var root [32]byte
+	sszutils.MarshalUint64Slice(root[:0], (*t)[:])
+	return root, nil
+}
+
+// ProbeHintedGrid nests two vectors; a hint on its element dimension decides
+// like one on the type itself.
+type ProbeHintedGrid [2][4]uint64
+
+func (t *ProbeHintedGrid) MarshalSSZ() ([]byte, error) {
+	ProbeMarshalSSZCalls.Add(1)
+	buf := make([]byte, 0, 64)
+	for i := range t {
+		buf = sszutils.MarshalUint64Slice(buf, t[i][:])
+	}
+	return buf, nil
+}
+
+func (t *ProbeHintedGrid) UnmarshalSSZ(buf []byte) error {
+	ProbeUnmarshalSSZCalls.Add(1)
+	if len(buf) != 64 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	for i := range t {
+		sszutils.UnmarshalUint64Slice(t[i][:], buf[i*32:])
+	}
+	return nil
+}
+
+func (t *ProbeHintedGrid) HashTreeRoot() ([32]byte, error) {
+	ProbeHashTreeRootCalls.Add(1)
+	return dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()).HashTreeRoot(t)
+}
+
+// ProbeHintedElem declares its shape through an annotation; ProbeHintedOuter
+// carries the methods, so a hint on the element dimension is compared with
+// the annotation.
+type ProbeHintedElem []uint64
+
+var _ = sszutils.Annotate[ProbeHintedElem](`ssz-size:"4"`)
+
+type ProbeHintedOuter [2]ProbeHintedElem
+
+func (t *ProbeHintedOuter) MarshalSSZ() ([]byte, error) {
+	ProbeMarshalSSZCalls.Add(1)
+	buf := make([]byte, 0, 64)
+	for i := range t {
+		buf = sszutils.MarshalUint64Slice(buf, t[i])
+	}
+	return buf, nil
+}
+
+func (t *ProbeHintedOuter) UnmarshalSSZ(buf []byte) error {
+	ProbeUnmarshalSSZCalls.Add(1)
+	if len(buf) != 64 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	for i := range t {
+		t[i] = make(ProbeHintedElem, 4)
+		sszutils.UnmarshalUint64Slice(t[i], buf[i*32:])
+	}
+	return nil
+}
+
+func (t *ProbeHintedOuter) HashTreeRoot() ([32]byte, error) {
+	ProbeHashTreeRootCalls.Add(1)
+	return dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()).HashTreeRoot(t)
+}
+
+// ProbeHintedOuterAnn declares its element dimension as a list, which takes
+// the place of ProbeHintedElem's own vector declaration below it.
+type ProbeHintedOuterAnn [2]ProbeHintedElem
+
+var _ = sszutils.Annotate[ProbeHintedOuterAnn](`ssz-type:"vector,list" ssz-max:"?,4"`)
+
+func (t *ProbeHintedOuterAnn) MarshalSSZ() ([]byte, error) {
+	ProbeMarshalSSZCalls.Add(1)
+	return dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()).MarshalSSZ(t)
+}
+
+func (t *ProbeHintedOuterAnn) UnmarshalSSZ(buf []byte) error {
+	ProbeUnmarshalSSZCalls.Add(1)
+	return dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()).UnmarshalSSZ(t, buf)
+}
+
+func (t *ProbeHintedOuterAnn) HashTreeRoot() ([32]byte, error) {
+	ProbeHashTreeRootCalls.Add(1)
+	return dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()).HashTreeRoot(t)
+}
+
+// ProbeHintedLimited declares its limit through its annotation, which a
+// field's tag carries along with its own type hint.
+type ProbeHintedLimited []ProbeHinted
+
+var _ = sszutils.Annotate[ProbeHintedLimited](`ssz-max:"4"`)
+
+func (t *ProbeHintedLimited) MarshalSSZ() ([]byte, error) {
+	ProbeMarshalSSZCalls.Add(1)
+	return dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()).MarshalSSZ(t)
+}
+
+func (t *ProbeHintedLimited) UnmarshalSSZ(buf []byte) error {
+	ProbeUnmarshalSSZCalls.Add(1)
+	return dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()).UnmarshalSSZ(t, buf)
+}
+
+func (t *ProbeHintedLimited) HashTreeRoot() ([32]byte, error) {
+	ProbeHashTreeRootCalls.Add(1)
+	return dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()).HashTreeRoot(t)
+}
+
+// ProbeHintedHolder is generated; ProbeHintedWalked is walked by reflection.
+type ProbeHintedHolder struct {
+	Plain     ProbeHinted
+	Same      ProbeHinted         `ssz-type:"vector"`
+	Other     ProbeHinted         `ssz-type:"uint256"`
+	GridSame  ProbeHintedGrid     `ssz-type:"vector,vector"`
+	GridElem  ProbeHintedGrid     `ssz-type:"vector,uint256"`
+	GridOpen  ProbeHintedGrid     `ssz-type:"?,uint256"`
+	OuterSame ProbeHintedOuter    `ssz-type:"vector,vector"`
+	OuterOpen ProbeHintedOuter    `ssz-type:"vector,?"`
+	AnnList   ProbeHintedOuterAnn `ssz-type:"vector,list"`
+	LimSame   ProbeHintedLimited  `ssz-type:"list"`
+	LimOther  ProbeHintedLimited  `ssz-type:"list,uint256"`
+}
+
+type ProbeHintedWalked struct {
+	Plain     ProbeHinted
+	Same      ProbeHinted         `ssz-type:"vector"`
+	Other     ProbeHinted         `ssz-type:"uint256"`
+	GridSame  ProbeHintedGrid     `ssz-type:"vector,vector"`
+	GridElem  ProbeHintedGrid     `ssz-type:"vector,uint256"`
+	GridOpen  ProbeHintedGrid     `ssz-type:"?,uint256"`
+	OuterSame ProbeHintedOuter    `ssz-type:"vector,vector"`
+	OuterOpen ProbeHintedOuter    `ssz-type:"vector,?"`
+	AnnList   ProbeHintedOuterAnn `ssz-type:"vector,list"`
+	LimSame   ProbeHintedLimited  `ssz-type:"list"`
+	LimOther  ProbeHintedLimited  `ssz-type:"list,uint256"`
+}
+
+// ProbeHintedOverride re-declares the annotated element as a list; it is only
+// described, never hashed.
+type ProbeHintedOverride struct {
+	OuterList ProbeHintedOuter `ssz-type:"vector,list"`
 }

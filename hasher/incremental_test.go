@@ -7,6 +7,8 @@ package hasher
 import (
 	"encoding/binary"
 	"fmt"
+	"math/bits"
+	"sync"
 	"testing"
 
 	"github.com/pk910/dynamic-ssz/sszutils"
@@ -679,8 +681,84 @@ func TestBinaryRemainderPreservation(t *testing.T) {
 	}
 }
 
+// veryLargeReference caches the non-incremental root of the first total
+// chunks LE(0), LE(1), ... per merkleization, so the very-large tests compute
+// each reference once instead of once per collapse interval. Each key has its
+// own once, so distinct references are computed concurrently.
+var veryLargeReference = struct {
+	sync.Mutex
+	entries map[string]*veryLargeReferenceEntry
+}{entries: make(map[string]*veryLargeReferenceEntry, 16)}
+
+type veryLargeReferenceEntry struct {
+	once sync.Once
+	root [32]byte
+	err  error
+}
+
+// parallelUnlessNarrowAddressSpace runs the very large cases concurrently only
+// where the address space holds them. Each builds a buffer of total*32 bytes and
+// grows it while reducing, so a handful in parallel exhausts the four gigabytes
+// a 32-bit process can address, which shows up as an out-of-memory fault that
+// depends on collector timing rather than on anything under test. Run there,
+// they simply take their turn.
+func parallelUnlessNarrowAddressSpace(t *testing.T) {
+	t.Helper()
+	if bits.UintSize >= 64 {
+		t.Parallel()
+	}
+}
+
+func veryLargeReferenceRoot(t *testing.T, kind string, total int, merkleize func(h *Hasher, idx int)) [32]byte {
+	t.Helper()
+	key := fmt.Sprintf("%s/%d", kind, total)
+	veryLargeReference.Lock()
+	entry, ok := veryLargeReference.entries[key]
+	if !ok {
+		entry = &veryLargeReferenceEntry{}
+		veryLargeReference.entries[key] = entry
+	}
+	veryLargeReference.Unlock()
+
+	entry.once.Do(func() {
+		h := FastHasherPool.Get()
+		defer FastHasherPool.Put(h)
+		idx := h.StartTree(sszutils.TreeTypeNone)
+		for i := 0; i < total; i++ {
+			var chunk [32]byte
+			binary.LittleEndian.PutUint64(chunk[:], uint64(i))
+			h.buf = append(h.buf, chunk[:]...)
+		}
+		h.FillUpTo32()
+		merkleize(h, idx)
+		entry.root, entry.err = h.HashRoot()
+	})
+	if entry.err != nil {
+		t.Fatalf("ref: %v", entry.err)
+	}
+	return entry.root
+}
+
+// binaryReferenceRoot is the reference root of a binary list of total chunks.
+func binaryReferenceRoot(t *testing.T, total int) [32]byte {
+	t.Helper()
+	return veryLargeReferenceRoot(t, "binary", total, func(h *Hasher, idx int) {
+		h.MerkleizeWithMixin(idx, uint64(total), uint64(total))
+	})
+}
+
+// progressiveReferenceRoot is the reference root of a progressive list of
+// total chunks.
+func progressiveReferenceRoot(t *testing.T, total int) [32]byte {
+	t.Helper()
+	return veryLargeReferenceRoot(t, "progressive", total, func(h *Hasher, idx int) {
+		h.MerkleizeProgressiveWithMixin(idx, uint64(total))
+	})
+}
+
 // TestIncrementalBinaryVeryLarge tests binary incremental with 2M+ entries.
 func TestIncrementalBinaryVeryLarge(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		total    int
@@ -691,23 +769,11 @@ func TestIncrementalBinaryVeryLarge(t *testing.T) {
 		{"3M_every128", 3_000_000, 128},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// Reference: TreeTypeNone
+			parallelUnlessNarrowAddressSpace(t)
 			hRef := FastHasherPool.Get()
 			defer FastHasherPool.Put(hRef)
 
-			refIdx := hRef.StartTree(sszutils.TreeTypeNone)
-			for i := 0; i < tc.total; i++ {
-				var chunk [32]byte
-				binary.LittleEndian.PutUint64(chunk[:], uint64(i))
-				hRef.buf = append(hRef.buf, chunk[:]...)
-			}
-			hRef.FillUpTo32()
-			hRef.MerkleizeWithMixin(refIdx, uint64(tc.total), uint64(tc.total))
-			refRoot, err := hRef.HashRoot()
-			if err != nil {
-				t.Fatalf("ref: %v", err)
-			}
-			hRef.Reset()
+			refRoot := binaryReferenceRoot(t, tc.total)
 
 			// Incremental
 			incIdx := hRef.StartTree(sszutils.TreeTypeBinary)
@@ -735,6 +801,7 @@ func TestIncrementalBinaryVeryLarge(t *testing.T) {
 
 // TestProgressiveVeryLarge tests progressive incremental with 2M+ entries.
 func TestProgressiveVeryLarge(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		total    int
@@ -745,23 +812,11 @@ func TestProgressiveVeryLarge(t *testing.T) {
 		{"3M_every128", 3_000_000, 128},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			parallelUnlessNarrowAddressSpace(t)
 			hRef := FastHasherPool.Get()
 			defer FastHasherPool.Put(hRef)
 
-			// Reference
-			refIdx := hRef.StartTree(sszutils.TreeTypeNone)
-			for i := 0; i < tc.total; i++ {
-				var chunk [32]byte
-				binary.LittleEndian.PutUint64(chunk[:], uint64(i))
-				hRef.buf = append(hRef.buf, chunk[:]...)
-			}
-			hRef.FillUpTo32()
-			hRef.MerkleizeProgressiveWithMixin(refIdx, uint64(tc.total))
-			refRoot, err := hRef.HashRoot()
-			if err != nil {
-				t.Fatalf("ref: %v", err)
-			}
-			hRef.Reset()
+			refRoot := progressiveReferenceRoot(t, tc.total)
 
 			// Incremental
 			incIdx := hRef.StartTree(sszutils.TreeTypeProgressive)
@@ -790,6 +845,7 @@ func TestProgressiveVeryLarge(t *testing.T) {
 // TestIncrementalBinaryVeryLargeOdd tests binary incremental with 2M+ odd entries
 // to exercise remainder handling at every depth level.
 func TestIncrementalBinaryVeryLargeOdd(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		total    int
@@ -803,22 +859,11 @@ func TestIncrementalBinaryVeryLargeOdd(t *testing.T) {
 		{"2000003_every17", 2_000_003, 17}, // prime total, prime interval
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			parallelUnlessNarrowAddressSpace(t)
 			hRef := FastHasherPool.Get()
 			defer FastHasherPool.Put(hRef)
 
-			refIdx := hRef.StartTree(sszutils.TreeTypeNone)
-			for i := 0; i < tc.total; i++ {
-				var chunk [32]byte
-				binary.LittleEndian.PutUint64(chunk[:], uint64(i))
-				hRef.buf = append(hRef.buf, chunk[:]...)
-			}
-			hRef.FillUpTo32()
-			hRef.MerkleizeWithMixin(refIdx, uint64(tc.total), uint64(tc.total))
-			refRoot, err := hRef.HashRoot()
-			if err != nil {
-				t.Fatalf("ref: %v", err)
-			}
-			hRef.Reset()
+			refRoot := binaryReferenceRoot(t, tc.total)
 
 			incIdx := hRef.StartTree(sszutils.TreeTypeBinary)
 			for i := 0; i < tc.total; i++ {
@@ -846,6 +891,7 @@ func TestIncrementalBinaryVeryLargeOdd(t *testing.T) {
 // TestProgressiveVeryLargeOdd tests progressive incremental with odd totals
 // at various progressive level boundaries.
 func TestProgressiveVeryLargeOdd(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		total    int
@@ -857,22 +903,11 @@ func TestProgressiveVeryLargeOdd(t *testing.T) {
 		{"3000001_every128", 3_000_001, 128},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			parallelUnlessNarrowAddressSpace(t)
 			hRef := FastHasherPool.Get()
 			defer FastHasherPool.Put(hRef)
 
-			refIdx := hRef.StartTree(sszutils.TreeTypeNone)
-			for i := 0; i < tc.total; i++ {
-				var chunk [32]byte
-				binary.LittleEndian.PutUint64(chunk[:], uint64(i))
-				hRef.buf = append(hRef.buf, chunk[:]...)
-			}
-			hRef.FillUpTo32()
-			hRef.MerkleizeProgressiveWithMixin(refIdx, uint64(tc.total))
-			refRoot, err := hRef.HashRoot()
-			if err != nil {
-				t.Fatalf("ref: %v", err)
-			}
-			hRef.Reset()
+			refRoot := progressiveReferenceRoot(t, tc.total)
 
 			incIdx := hRef.StartTree(sszutils.TreeTypeProgressive)
 			for i := 0; i < tc.total; i++ {
@@ -1084,5 +1119,43 @@ func TestMerkleizeProgressiveUnalignedBranchParity(t *testing.T) {
 
 	if std != inc {
 		t.Fatalf("incremental root diverges from standard root for unaligned content: %x != %x", inc, std)
+	}
+}
+
+// A Collapse hint on a scope opened without a declared shape reduces only
+// its deferred children: the scope may still close as either tree, so its
+// own chunks are left for the close, and the root is the hint-free root
+// whichever close follows.
+func TestCollapseHintOnUndeclaredScope(t *testing.T) {
+	for _, n := range []int{64, 256, 1000} {
+		for _, close := range []struct {
+			name string
+			fn   func(hh *Hasher, idx int)
+		}{
+			{"progressive", func(hh *Hasher, idx int) { hh.MerkleizeProgressive(idx) }},
+			{"binary", func(hh *Hasher, idx int) { hh.Merkleize(idx) }},
+			{"binary mixin", func(hh *Hasher, idx int) { hh.MerkleizeWithMixin(idx, uint64(n), 1<<40) }},
+		} {
+			walk := func(hint bool) [32]byte {
+				hh := NewHasher()
+				defer hh.Reset()
+				idx := hh.Index()
+				for i := 0; i < n; i++ {
+					hh.PutUint64(uint64(i + 1))
+					if hint {
+						hh.Collapse()
+					}
+				}
+				close.fn(hh, idx)
+				root, err := hh.HashRoot()
+				if err != nil {
+					t.Fatalf("%s, %d chunks: HashRoot: %v", close.name, n, err)
+				}
+				return root
+			}
+			if want, got := walk(false), walk(true); got != want {
+				t.Errorf("%s close of %d chunks: root with hints %x != root without %x", close.name, n, got, want)
+			}
+		}
 	}
 }

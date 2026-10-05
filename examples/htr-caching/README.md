@@ -28,6 +28,11 @@ func (v *CachedValidator) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszut
     }
     var root [32]byte
     copy(root[:], hh.Hash())
+    // hh.Hash() performs the reduction; the bytes are a root only while
+    // HashErr is nil
+    if err := hh.HashErr(); err != nil {
+        return err
+    }
     v.Root = &root
     return nil
 }
