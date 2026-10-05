@@ -134,10 +134,14 @@ and hashed and the outer type's other fields do not appear.
 A default generation of a type with spec expressions emits static wrappers
 only with `-legacy`; each forwards to the type's own dynamic method with the
 global instance's specs. A spec-free generation emits real static bodies.
-The reflection engine never reaches a wrapper from an instance of its own: a
-type with an annotation and the complete dynamic surface is served by its
-dynamic surface, or walked under `WithNoDelegation`, so the global instance's
-specs decide only for callers of the wrappers themselves.
+The reflection engine recognizes a generated type by its annotation together
+with the complete dynamic surface, and does not reach such a type's wrappers
+from an instance of its own: it is served by its dynamic surface, or walked
+under `WithNoDelegation`, so the global instance's specs decide only for
+callers of the wrappers themselves. A type without an annotation is not
+classified, whether hand-written or generated before v1.3.3 introduced the
+annotation, and keeps the historical behavior: under `WithNoDelegation` its
+static surface is used when `WithNoFastSsz` allows it, wrappers included.
 The `ds.*` entry points are the supported way in; calling a child's generated
 method directly bypasses the rule and the recursion bound.
 

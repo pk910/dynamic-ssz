@@ -7704,7 +7704,8 @@ func TestTypeHintDeeperDimensionOverrides(t *testing.T) {
 // expression: the complete dynamic surface beside the static one, whose
 // methods forward to the global instance. The three types below carry the
 // same methods and differ in annotation and in how much of the dynamic
-// surface they declare.
+// surface they declare. legacyShape itself has no annotation, as a generation
+// before v1.3.3 has none.
 type legacyShape struct {
 	Items []uint64 `ssz-max:"4" dynssz-max:"LEGACY_MAX"`
 }
@@ -7762,9 +7763,11 @@ var (
 // wrappers over the global instance's specs, so a type with an annotation and
 // the complete dynamic surface loses its static surface on every path: the
 // shallow build drops it when delegating, and the traversal under
-// NoDelegation drops it as well, so the walk never reaches a wrapper. A type
-// without an annotation, or with only part of the dynamic surface, is
-// hand-written and keeps its static surface under NoDelegation.
+// NoDelegation drops it as well, so the walk never reaches its wrappers. A type
+// without an annotation is not classified, whether hand-written or generated
+// before the annotation existed, and a type with only part of the dynamic
+// surface is hand-written: both keep their static surface under NoDelegation,
+// the historical behavior, on purpose.
 func TestTypeCache_GeneratedStaticSurfaceDropped(t *testing.T) {
 	const static = SszCompatFlagFastsszSurface | SszCompatFlagFastsszHashRoot | SszCompatFlagFastsszHashRootWith
 
