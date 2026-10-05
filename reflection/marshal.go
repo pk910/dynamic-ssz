@@ -768,9 +768,10 @@ func (ctx *ReflectionCtx) marshalDynamicList(sourceType *ssztypes.TypeDescriptor
 			return err
 		}
 
+		byteItems := isPlainByteList(fieldType)
 		for i := 0; i < sliceLen-1; i++ {
 			itemVal := sourceValue.Index(i)
-			size, err := ctx.getSszValueSize(fieldType, itemVal, depth)
+			size, err := ctx.listItemSize(fieldType, byteItems, itemVal, depth)
 			if err != nil {
 				return sszutils.ErrorWithPathf(err, "[%d]", i)
 			}
