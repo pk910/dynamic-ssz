@@ -31,7 +31,7 @@ func TestOfficialSSZSpecsV010(t *testing.T) {
 	}
 
 	var files []string
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error { //nolint:gosec // The caller explicitly selects this read-only test-data tree.
 		if err != nil {
 			return err
 		}
@@ -64,13 +64,13 @@ func TestOfficialSSZSpecsV010(t *testing.T) {
 				t.Fatalf("fixture contains %d cases, want 1", len(cases))
 			}
 			for name, tc := range cases {
-				t.Run(name, func(t *testing.T) { runFixture(t, ds, rel, tc) })
+				t.Run(name, func(t *testing.T) { runFixture(t, ds, rel, &tc) })
 			}
 		})
 	}
 }
 
-func runFixture(t *testing.T, ds *dynssz.DynSsz, path string, tc fixture) {
+func runFixture(t *testing.T, ds *dynssz.DynSsz, path string, tc *fixture) {
 	t.Helper()
 	encodedHex := tc.Serialized
 	if tc.RawBytes != "" {
@@ -78,9 +78,9 @@ func runFixture(t *testing.T, ds *dynssz.DynSsz, path string, tc fixture) {
 	}
 	encoded := decodeHex(t, encodedHex)
 
-	value, err := newFixtureValue(filepath.ToSlash(path), tc.TypeName)
-	if err != nil {
-		t.Fatal(err)
+	value, factoryErr := newFixtureValue(filepath.ToSlash(path), tc.TypeName)
+	if factoryErr != nil {
+		t.Fatal(factoryErr)
 	}
 	if tc.RejectionReason != "" {
 		if err := ds.UnmarshalSSZ(value, encoded); err == nil {
@@ -103,8 +103,8 @@ func runFixture(t *testing.T, ds *dynssz.DynSsz, path string, tc fixture) {
 	if !bytes.Equal(remarshaled, encoded) {
 		t.Fatalf("round trip %s: got %x, want %x", tc.TypeName, remarshaled, encoded)
 	}
-	if size, err := ds.SizeSSZ(value); err != nil || size != len(encoded) {
-		t.Fatalf("size %s: got %d (%v), want %d", tc.TypeName, size, err, len(encoded))
+	if size, sizeErr := ds.SizeSSZ(value); sizeErr != nil || size != len(encoded) {
+		t.Fatalf("size %s: got %d (%v), want %d", tc.TypeName, size, sizeErr, len(encoded))
 	}
 	wantRoot := decodeHex(t, tc.Root)
 	gotRoot, err := ds.HashTreeRoot(value)
