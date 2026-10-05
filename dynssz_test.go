@@ -5681,9 +5681,24 @@ func TestNegativeDelegatedSizeAtEntryPoints(t *testing.T) {
 	}
 }
 
+// resetPools empties the pools the entry points take their encoders and
+// decoders from, so the next call of each allocates its own.
+func (d *DynSsz) resetPools() {
+	d.bufferEncoders = sync.Pool{}
+	d.bufferDecoders = sync.Pool{}
+	d.streamEncoders = sync.Pool{}
+	d.streamDecoders = sync.Pool{}
+}
+
 // A declared size is trusted, so a known-size reader decode sizes its lists
 // from the declaration like a buffer decode does: the only allocations it
-// adds are the decoder and its read buffer, never a growth series.
+// adds are the decoder and its read buffer, never a growth series. The pools
+// are emptied before every call so that each one allocates its decoder:
+// under the race detector a pool drops what is returned to it at random,
+// and the count would vary with it. The offset slices of the reader decode
+// come from a pool of their own, which varies the count by a few in the same
+// way; the allowance covers that, and a growth series of either list is far
+// past it.
 func TestKnownSizeReaderAllocatesLikeBuffer(t *testing.T) {
 	type lists struct {
 		L  []uint32   `ssz-max:"1048576"`
@@ -5699,16 +5714,18 @@ func TestKnownSizeReaderAllocatesLikeBuffer(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	buffer := testing.AllocsPerRun(5, func() {
+		ds.resetPools()
 		if err := ds.UnmarshalSSZ(&lists{}, full); err != nil {
 			t.Fatal(err)
 		}
 	})
 	reader := testing.AllocsPerRun(5, func() {
+		ds.resetPools()
 		if err := ds.UnmarshalSSZReader(&lists{}, bytes.NewReader(full), len(full)); err != nil {
 			t.Fatal(err)
 		}
 	})
-	if reader > buffer+8 {
+	if reader > buffer+12 {
 		t.Fatalf("known-size reader decode: %v allocs, buffer decode: %v", reader, buffer)
 	}
 }
