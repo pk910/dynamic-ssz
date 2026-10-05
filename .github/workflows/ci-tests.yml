@@ -15,7 +15,10 @@ permissions:
 jobs:
   # Run the independent, implementation-neutral SSZ vectors. Consensus-spec
   # fixtures exercise Ethereum objects, while this suite directly pins the SSZ
-  # rules added by EIP-7495/EIP-7916/EIP-8016 and boundary/rejection behavior.
+  # rules added by EIP-7495/EIP-7916/EIP-8016, boundary and rejection
+  # behavior, and Merkle proofs. The vectors are generated from a pinned
+  # commit of the upstream reference implementation; the Go types they declare
+  # and the SSZ methods for those types are generated from the vectors.
   official-ssz-tests:
     runs-on: ubuntu-latest
 
@@ -28,17 +31,27 @@ jobs:
       with:
         go-version: '1.25.11'
 
+    - name: Set up uv
+      uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      with:
+        enable-cache: false
+
+    - name: Get pinned SSZ vectors version
+      id: ssz-specs-version
+      run: echo "version=$(./tests/sszspecs/setup_test_data.sh version)" >> "$GITHUB_OUTPUT"
+
     - name: Cache official SSZ vectors
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: tests/sszspecs/fixtures
-        key: official-ssz-v0.1.0-e2a65f032b59835c
+        key: official-ssz-${{ steps.ssz-specs-version.outputs.version }}
 
-    - name: Download and verify official SSZ vectors
+    - name: Generate official SSZ vectors, their Go types and SSZ methods
       run: ./tests/sszspecs/setup_test_data.sh setup
 
     - name: Run official SSZ vectors
-      run: go test -count=1 ./tests/sszspecs
+      run: go test -count=1 -v -run TestOfficialSSZSpecs ./tests/sszspecs | grep -v -e '^=== ' -e '^    --- PASS'
+      shell: bash -o pipefail {0}
       env:
         SSZ_SPECS_TESTS_DIR: ${{ github.workspace }}/tests/sszspecs/fixtures
 
