@@ -23,6 +23,11 @@ The generated corpus now includes both classic `Union` and `CompatibleUnion`
 (including explicit sparse selectors), plus progressive lists of composite
 elements.
 
+Pull-request CI runs twelve 30-second rounds and regenerates the corpus between
+rounds. The six minutes of actual fuzzing therefore cover twelve independent
+schema universes with varied type counts, nesting depths, collection bounds,
+and extended-type settings.
+
 ```bash
 make fuzz DURATION=60s NUM_TYPES=100 MAX_DEPTH=4
 
