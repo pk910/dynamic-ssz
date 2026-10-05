@@ -13,6 +13,8 @@ import (
 	"math/big"
 	"reflect"
 	"sync"
+	"sync/atomic"
+	"unsafe"
 
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/reflection"
@@ -56,8 +58,12 @@ type DynSsz struct {
 	specValues     map[string]any              // Dynamic specification values
 	specValueCache map[string]*cachedSpecValue // Cache for parsed specification expressions
 	specCacheMutex sync.RWMutex
-	specSets       sync.Map // specSets holds the resolved spec set of generated types
-	options        *DynSszOptions
+	// specSets holds the resolved spec set of generated types by the identity
+	// of their key type. A set is read on every entry of a generated method
+	// and stored once per type, so readers load an immutable map without a
+	// lock, and a store publishes a copy under specCacheMutex.
+	specSets atomic.Pointer[map[unsafe.Pointer][]uint64]
+	options  *DynSszOptions
 }
 
 // defaultLogCb is where verbose logging goes when a caller names no sink.

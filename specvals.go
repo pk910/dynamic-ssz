@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"unsafe"
 
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
@@ -563,12 +564,19 @@ func stripSpecSpaces(name string) string {
 	}, name)
 }
 
+// specSetKeyWord returns the identity of a spec set key: the type pointer a
+// reflect.Type holds. Two keys are the same type exactly when they hold the
+// same pointer, and a map over the pointer is looked up without hashing an
+// interface, which is most of what a lookup by reflect.Type costs.
+func specSetKeyWord(key reflect.Type) unsafe.Pointer {
+	return (*[2]unsafe.Pointer)(unsafe.Pointer(&key))[1]
+}
+
 // LoadSpecSet returns the spec set cached for the generated type key, or nil
 // when no method of that type has resolved one under this instance yet.
 func (d *DynSsz) LoadSpecSet(key reflect.Type) []uint64 {
-	if set, ok := d.specSets.Load(key); ok {
-		cached, _ := set.([]uint64)
-		return cached
+	if sets := d.specSets.Load(); sets != nil {
+		return (*sets)[specSetKeyWord(key)]
 	}
 	return nil
 }
@@ -577,7 +585,27 @@ func (d *DynSsz) LoadSpecSet(key reflect.Type) []uint64 {
 // instance never change, so two callers that resolved the set at the same time
 // hold equal sets; the first one stored is the one every caller shares.
 func (d *DynSsz) StoreSpecSet(key reflect.Type, set []uint64) []uint64 {
-	cached, _ := d.specSets.LoadOrStore(key, set)
-	stored, _ := cached.([]uint64)
-	return stored
+	word := specSetKeyWord(key)
+
+	d.specCacheMutex.Lock()
+	defer d.specCacheMutex.Unlock()
+
+	var current map[unsafe.Pointer][]uint64
+	if sets := d.specSets.Load(); sets != nil {
+		current = *sets
+	}
+	if cached, ok := current[word]; ok {
+		return cached
+	}
+
+	// Readers hold the published map without a lock, so it is never written:
+	// a store publishes a copy. Stores happen once per generated type.
+	next := make(map[unsafe.Pointer][]uint64, len(current)+1)
+	for k, v := range current {
+		next[k] = v
+	}
+	next[word] = set
+	d.specSets.Store(&next)
+
+	return set
 }
