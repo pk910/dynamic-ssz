@@ -35,7 +35,11 @@ func WithNoFastSsz() DynSszOption {
 // WithNoDelegation disables delegation to a type's own generated Dynamic* SSZ
 // methods (MarshalSSZDyn, UnmarshalSSZDyn, HashTreeRootWith and friends,
 // including their DynamicView* variants). Fastssz-style methods are governed
-// separately by WithNoFastSsz.
+// separately by WithNoFastSsz for a type without a dynamic surface. A type
+// that carries the complete dynamic surface is walked by reflection even when
+// it also has static methods: a -legacy generation's static methods forward to
+// the global instance's specs, and only the method set tells them from real
+// static bodies.
 //
 // This differs from WithNoFastSsz, which only disables the legacy fastssz
 // fallback: WithNoFastSsz leaves generated dynamic methods in charge, whereas

@@ -199,7 +199,7 @@ func (ctx *decoderContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 	// Inline types with fastssz unmarshaler
 	hasSpecExpr := desc.SszTypeFlags&(ssztypes.SszTypeFlagHasSizeExpr|ssztypes.SszTypeFlagHasMaxExpr) != 0
 	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszUnmarshaler != 0
-	useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasSpecExpr
+	useFastSsz := isFastsszUnmarshaler && !hasSpecExpr && (!ctx.options.NoFastSsz || ctx.noDynBufferCalls)
 	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
 		useFastSsz = true
 	}
@@ -334,7 +334,7 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 	// spec-aware one.
 	hasSpecExpr := desc.SszTypeFlags&(ssztypes.SszTypeFlagHasSizeExpr|ssztypes.SszTypeFlagHasMaxExpr) != 0
 	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszUnmarshaler != 0
-	useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasSpecExpr
+	useFastSsz := isFastsszUnmarshaler && !hasSpecExpr && (!ctx.options.NoFastSsz || ctx.noDynBufferCalls)
 	if desc.SszType == ssztypes.SszCustomType {
 		// A custom type has no structure to inline: it is reached through its
 		// spec-aware methods when it has them and dynamic calls are allowed,

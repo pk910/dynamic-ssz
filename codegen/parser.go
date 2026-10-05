@@ -1642,13 +1642,13 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	}
 
 	// Per the SSZ spec, containers (including progressive containers) must have
-	// at least one field. Reject a struct that would be encoded field-by-field
-	// with no SSZ-encodable (exported) fields. Types that delegate to their own
-	// SSZ methods (any compat flag set) are exempt: they do not use the plain
-	// container layout.
+	// at least one field. The container builder refuses a zero-field struct
+	// already; this keeps the rule where the reflection type cache states it. A
+	// struct's methods do not exempt it: a value its own methods serialize is a
+	// custom type and declares that with an ssz-type:"custom" annotation.
 	if desc.SszType == ssztypes.SszContainerType || desc.SszType == ssztypes.SszProgressiveContainerType {
-		if desc.SszCompatFlags == 0 && desc.ContainerDesc != nil && len(desc.ContainerDesc.Fields) == 0 {
-			return nil, fmt.Errorf("container type has no SSZ fields, which is invalid per the SSZ spec")
+		if desc.ContainerDesc != nil && len(desc.ContainerDesc.Fields) == 0 {
+			return nil, fmt.Errorf("container type has no SSZ fields, which is invalid per the SSZ spec; a type serialized by its own methods declares that with an ssz-type:\"custom\" annotation")
 		}
 	}
 

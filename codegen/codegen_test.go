@@ -3060,6 +3060,78 @@ func TestStaticStreamingInlinesExternalDelegated(t *testing.T) {
 	}
 }
 
+// ssChild is a fixed-size type with a real static surface and no dynamic one.
+type ssChild struct {
+	V uint64
+}
+
+func (c *ssChild) MarshalSSZ() ([]byte, error) { return c.MarshalSSZTo(nil) }
+func (c *ssChild) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(buf, c.V), nil
+}
+func (c *ssChild) UnmarshalSSZ(buf []byte) error {
+	c.V = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+func (c *ssChild) SizeSSZ() int                               { return 8 }
+func (c *ssChild) HashTreeRoot() ([32]byte, error)            { return [32]byte{}, nil }
+func (c *ssChild) HashTreeRootWith(sszutils.HashWalker) error { return nil }
+
+type ssHolder struct {
+	A uint32
+	C ssChild
+}
+
+// TestStaticBuildStreamingReachesStaticChild checks that the streaming methods
+// of a static build follow the same rule as its buffer methods: a child with a
+// static surface is reached through it, with or without -without-fastssz, as
+// the delegation page states for a static build's streaming methods. The
+// streaming emitters used to inline such a child when fastssz was off, while
+// the buffer methods beside them delegated to it.
+func TestStaticBuildStreamingReachesStaticChild(t *testing.T) {
+	for _, mode := range []struct {
+		name string
+		opts []CodeGeneratorOption
+	}{
+		{"static build", []CodeGeneratorOption{WithoutDynamicExpressions(), WithCreateEncoderFn(), WithCreateDecoderFn()}},
+		{"static build without fastssz", []CodeGeneratorOption{WithoutDynamicExpressions(), WithNoFastSsz(), WithCreateEncoderFn(), WithCreateDecoderFn()}},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			cg := NewCodeGenerator(nil)
+			cg.BuildFile("gen.go", WithReflectType(reflect.TypeFor[ssHolder](), mode.opts...))
+			files, err := cg.GenerateToMap()
+			if err != nil {
+				t.Fatalf("generate: %v", err)
+			}
+			src := files["gen.go"]
+			encoder := ssMethodBody(src, "MarshalSSZEncoder")
+			decoder := ssMethodBody(src, "UnmarshalSSZDecoder")
+			if !strings.Contains(encoder, "MarshalSSZTo(enc.GetBuffer()") {
+				t.Errorf("the streaming encoder does not reach the child through MarshalSSZTo:\n%s", encoder)
+			}
+			if strings.Contains(encoder, "EncodeUint64(t.V)") {
+				t.Errorf("the streaming encoder inlines the child's field")
+			}
+			if !strings.Contains(decoder, ".UnmarshalSSZ(buf)") {
+				t.Errorf("the streaming decoder does not reach the child through UnmarshalSSZ:\n%s", decoder)
+			}
+		})
+	}
+}
+
+// ssMethodBody returns the source of the named method of the generated holder.
+func ssMethodBody(src, method string) string {
+	start := strings.Index(src, "func (t *ssHolder) "+method+"(")
+	if start < 0 {
+		return ""
+	}
+	end := strings.Index(src[start:], "\n}\n")
+	if end < 0 {
+		return src[start:]
+	}
+	return src[start : start+end]
+}
+
 // nsIllegalDelegated mirrors the repo's nestedDelegatedInner: a delegated type
 // with a structurally-invalid innard (zero-length array). Under
 // WithoutDynamicExpressions the parser traverses it (NoDelegation) and must
@@ -3661,5 +3733,124 @@ func TestSpecSetBuilderFloors(t *testing.T) {
 	set.emit(&code)
 	if !strings.Contains(code.String(), "var err error") || !strings.Contains(code.String(), `if exprs[1], err = sszutils.ResolveSpecValueWithDefault(ds, "VEC_LEN*8+4", 36); err != nil {`) {
 		t.Fatalf("value entry not resolved with its error:\n%s", code.String())
+	}
+}
+
+// nsRecursiveDelegated stands for an external -legacy generation of a recursive
+// type: an annotation, the complete dynamic surface and the static one. A
+// static generation of a holder cannot call the dynamic surface, so the child's
+// static surface is what breaks the cycle; the analysis cache must keep it.
+type nsRecursiveDelegated struct {
+	Value    uint64
+	Children []*nsRecursiveDelegated `ssz-max:"4"`
+}
+
+var _ = sszutils.Annotate[nsRecursiveDelegated](`ssz-static:"false" ssz-minsize:"12"`)
+
+func (*nsRecursiveDelegated) MarshalSSZ() ([]byte, error)                { return nil, nil }
+func (*nsRecursiveDelegated) MarshalSSZTo(buf []byte) ([]byte, error)    { return buf, nil }
+func (*nsRecursiveDelegated) UnmarshalSSZ([]byte) error                  { return nil }
+func (*nsRecursiveDelegated) SizeSSZ() int                               { return 12 }
+func (*nsRecursiveDelegated) HashTreeRoot() ([32]byte, error)            { return [32]byte{}, nil }
+func (*nsRecursiveDelegated) HashTreeRootWith(sszutils.HashWalker) error { return nil }
+func (*nsRecursiveDelegated) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (*nsRecursiveDelegated) UnmarshalSSZDyn(sszutils.DynamicSpecs, []byte) error { return nil }
+func (*nsRecursiveDelegated) SizeSSZDyn(sszutils.DynamicSpecs) int                { return 12 }
+func (*nsRecursiveDelegated) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
+type nsRecursiveHolder struct {
+	A uint32
+	R nsRecursiveDelegated
+}
+
+// TestStaticGenerationKeepsExternalStaticSurface guards the generator's
+// analysis cache against the runtime rule that drops the static surface of a
+// type with the complete dynamic surface under NoDelegation: that rule
+// describes this process, while the static generation describes code that
+// reaches the child only through its static methods, and terminates the
+// child's recursion through them.
+func TestStaticGenerationKeepsExternalStaticSurface(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen.go", WithReflectType(reflect.TypeFor[nsRecursiveHolder](), WithoutDynamicExpressions()))
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	for _, call := range []string{"t.R.SizeSSZ()", "t.R.UnmarshalSSZ("} {
+		if !strings.Contains(files["gen.go"], call) {
+			t.Errorf("expected the holder to reach the recursive child through its static surface (%s)", call)
+		}
+	}
+}
+
+// nsStaticShell is a zero-field struct whose only methods are static, as a
+// hand-written fastssz type may be; nsCustomShell is the same type declared a
+// one-byte custom type. The reflect path of the generator applies the rule of
+// the runtime cache: a struct with no fields is refused whatever its methods,
+// since they state no width, and the declared custom type is reached through
+// its static surface in every mode, a static build included. The go/types path
+// refuses every zero-field container on its own.
+type nsStaticShell struct{}
+
+func (*nsStaticShell) MarshalSSZ() ([]byte, error)             { return []byte{1}, nil }
+func (*nsStaticShell) MarshalSSZTo(buf []byte) ([]byte, error) { return append(buf, 1), nil }
+func (*nsStaticShell) UnmarshalSSZ([]byte) error               { return nil }
+func (*nsStaticShell) SizeSSZ() int                            { return 1 }
+func (*nsStaticShell) HashTreeRoot() ([32]byte, error)         { return [32]byte{1}, nil }
+
+type nsCustomShell struct{}
+
+var _ = sszutils.Annotate[nsCustomShell](`ssz-type:"custom" ssz-size:"1"`)
+
+func (*nsCustomShell) MarshalSSZ() ([]byte, error)             { return []byte{1}, nil }
+func (*nsCustomShell) MarshalSSZTo(buf []byte) ([]byte, error) { return append(buf, 1), nil }
+func (*nsCustomShell) UnmarshalSSZ([]byte) error               { return nil }
+func (*nsCustomShell) SizeSSZ() int                            { return 1 }
+func (*nsCustomShell) HashTreeRoot() ([32]byte, error)         { return [32]byte{1}, nil }
+
+type nsStaticShellHolder struct {
+	A uint32
+	S nsStaticShell
+}
+
+type nsCustomShellHolder struct {
+	A uint32
+	S nsCustomShell
+}
+
+func TestReflectAnalysisRefusesUndeclaredShell(t *testing.T) {
+	for _, mode := range []struct {
+		name string
+		opts []CodeGeneratorOption
+	}{
+		{"default", nil},
+		{"no fastssz", []CodeGeneratorOption{WithNoFastSsz()}},
+		{"static build", []CodeGeneratorOption{WithNoFastSsz(), WithoutDynamicExpressions(), WithCreateEncoderFn(), WithCreateDecoderFn()}},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			cg := NewCodeGenerator(nil)
+			cg.BuildFile("gen.go", WithReflectType(reflect.TypeFor[nsStaticShellHolder](), mode.opts...))
+			if _, err := cg.GenerateToMap(); err == nil || !strings.Contains(err.Error(), "has no SSZ fields") {
+				t.Fatalf("undeclared shell: generate = %v, want the zero-field refusal", err)
+			}
+
+			cg = NewCodeGenerator(nil)
+			cg.BuildFile("gen.go", WithReflectType(reflect.TypeFor[nsCustomShellHolder](), mode.opts...))
+			files, err := cg.GenerateToMap()
+			if err != nil {
+				t.Fatalf("declared custom shell: generate: %v", err)
+			}
+			// A one-byte custom type is sized by its declaration and reached
+			// through its static methods for the bytes themselves.
+			for _, call := range []string{"MarshalSSZTo(", "t.S.UnmarshalSSZ("} {
+				if !strings.Contains(files["gen.go"], call) {
+					t.Errorf("declared custom shell: expected the holder to reach it through its static surface (%s)", call)
+				}
+			}
+		})
 	}
 }
