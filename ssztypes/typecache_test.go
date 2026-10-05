@@ -7799,3 +7799,96 @@ func TestTypeCache_NoDelegationDropsStaticSurfaceBesideDynamic(t *testing.T) {
 		})
 	}
 }
+
+// shellDynamic, shellStatic and shellCustom are zero-field structs that serve
+// every operation through their own methods. shellDynamic carries no
+// annotation, shellStatic declares only how it frames itself, and shellCustom
+// declares itself a fixed-size custom type, as such a type is meant to.
+type shellDynamic struct{}
+
+func (*shellDynamic) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, 1), nil
+}
+func (*shellDynamic) UnmarshalSSZDyn(sszutils.DynamicSpecs, []byte) error { return nil }
+func (*shellDynamic) SizeSSZDyn(sszutils.DynamicSpecs) int                { return 1 }
+func (*shellDynamic) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
+type shellStatic struct{}
+
+func (*shellStatic) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, 1), nil
+}
+func (*shellStatic) UnmarshalSSZDyn(sszutils.DynamicSpecs, []byte) error { return nil }
+func (*shellStatic) SizeSSZDyn(sszutils.DynamicSpecs) int                { return 1 }
+func (*shellStatic) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
+type shellCustom struct{}
+
+func (*shellCustom) MarshalSSZ() ([]byte, error)             { return []byte{1}, nil }
+func (*shellCustom) MarshalSSZTo(buf []byte) ([]byte, error) { return append(buf, 1), nil }
+func (*shellCustom) UnmarshalSSZ([]byte) error               { return nil }
+func (*shellCustom) SizeSSZ() int                            { return 1 }
+func (*shellCustom) HashTreeRoot() ([32]byte, error)         { return [32]byte{1}, nil }
+
+var (
+	_ = sszutils.Annotate[shellStatic](`ssz-static:"true"`)
+	_ = sszutils.Annotate[shellCustom](`ssz-type:"custom" ssz-static:"true"`)
+)
+
+// A zero-field struct is refused however complete its method surface, whatever
+// the options: the methods state no width, and the descriptor would frame the
+// shell at zero bytes. Declared a custom type, it is described through its
+// methods and delegated under every option, so it is accepted everywhere. An
+// ssz-static annotation alone admits it only where the shallow build applies,
+// since NoDelegation traverses the type and finds no field; the custom
+// declaration is the one that holds everywhere.
+func TestTypeCache_ZeroFieldStructNeedsCustomDeclaration(t *testing.T) {
+	const static = SszCompatFlagFastsszSurface | SszCompatFlagFastsszHashRoot | SszCompatFlagFastsszHashRootWith
+	options := []struct {
+		name         string
+		noDelegation bool
+	}{{"delegating", false}, {"no delegation", true}}
+	shells := []struct {
+		name            string
+		value           any
+		acceptedWithout bool // accepted when delegating
+		acceptedUnder   bool // accepted under NoDelegation
+	}{
+		{"complete dynamic surface, no annotation", shellDynamic{}, false, false},
+		{"complete dynamic surface, ssz-static annotation", shellStatic{}, true, false},
+		{"static surface, custom annotation", shellCustom{}, true, true},
+	}
+	for _, shell := range shells {
+		for _, opt := range options {
+			t.Run(shell.name+"/"+opt.name, func(t *testing.T) {
+				cache := NewTypeCache(&dummyDynamicSpecs{})
+				cache.NoDelegation = opt.noDelegation
+
+				desc, err := cache.GetTypeDescriptor(reflect.TypeOf(shell.value), nil, nil, nil)
+				accepted := shell.acceptedWithout
+				if opt.noDelegation {
+					accepted = shell.acceptedUnder
+				}
+				if !accepted {
+					if err == nil || !strings.Contains(err.Error(), "has no SSZ fields") {
+						t.Fatalf("GetTypeDescriptor = %v, want the zero-field refusal", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("GetTypeDescriptor: %v", err)
+				}
+				if desc.Size != 1 || desc.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
+					t.Fatalf("size = %d, dynamic = %v; want the sizer's width of 1, static", desc.Size, desc.SszTypeFlags&SszTypeFlagIsDynamic != 0)
+				}
+				if desc.SszType == SszCustomType && desc.SszCompatFlags&static == 0 {
+					t.Fatal("a custom type keeps its static surface under every option")
+				}
+			})
+		}
+	}
+}

@@ -7859,9 +7859,12 @@ func TestLargeUintViewOverNamedBytes(t *testing.T) {
 }
 
 // zeroSizeShell serializes to no bytes through its own buffer methods. It has
-// no SSZ fields of its own, so it is only valid as a delegate, and it rejects
-// any bytes handed to it so a misframed region is detected.
+// no SSZ fields of its own, so it is only valid as a delegate and declares
+// itself a fixed-size custom type; it rejects any bytes handed to it so a
+// misframed region is detected.
 type zeroSizeShell struct{}
+
+var _ = sszutils.Annotate[zeroSizeShell](`ssz-type:"custom" ssz-static:"true"`)
 
 func (z *zeroSizeShell) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
 	return buf, nil
@@ -9046,8 +9049,11 @@ type emptyPartialHolder struct {
 	A emptyPartialDelegate
 }
 
-// emptyFullDelegate serves every operation through its own methods, so it never
-// uses the container layout and a shell with no fields stands for it.
+// emptyFullDelegate serves every operation through its own methods and so
+// never uses the container layout. A shell with no fields stands for it only
+// where a reference or an annotation declares it custom: the methods alone say
+// nothing about its width, and an instance whose options leave them uncalled
+// would walk the empty shell.
 type emptyFullDelegate struct{}
 
 func (emptyFullDelegate) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
@@ -9065,10 +9071,15 @@ type emptyFullHolder struct {
 	A emptyFullDelegate `ssz-type:"custom"`
 }
 
-// A container with no fields is illegal, and only a type that serves every
-// operation itself is exempt: one delegation method leaves the rest of the
-// type walked. Which methods an instance is allowed to call must not decide
-// whether the schema is legal, so both options answer alike.
+type emptyUndeclaredHolder struct {
+	A emptyFullDelegate
+}
+
+// A container with no fields is illegal, and a struct's methods do not make
+// it legal: a value serialized by its own methods is a custom type and must be
+// declared one, which gives it a width and keeps it delegated under every
+// option. Which methods an instance is allowed to call must not decide whether
+// the schema is legal, so every option set answers alike.
 func TestEmptyContainerNeedsACompleteDelegateSurface(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -9076,12 +9087,22 @@ func TestEmptyContainerNeedsACompleteDelegateSurface(t *testing.T) {
 	}{
 		{"delegating", NewDynSsz(nil)},
 		{"no fastssz", NewDynSsz(nil, WithNoFastSsz())},
+		{"no delegation", NewDynSsz(nil, WithNoDelegation())},
+		{"no delegation, no fastssz", NewDynSsz(nil, WithNoDelegation(), WithNoFastSsz())},
 	} {
 		if _, err := tc.ds.MarshalSSZ(&emptyPartialHolder{}); !errors.Is(err, sszutils.ErrInvalidConstraint) {
 			t.Errorf("%s: a one-method shell was accepted: err = %v", tc.name, err)
 		}
-		if _, err := tc.ds.MarshalSSZ(&emptyFullHolder{}); err != nil {
-			t.Errorf("%s: a complete delegate was refused: %v", tc.name, err)
+		if _, err := tc.ds.MarshalSSZ(&emptyUndeclaredHolder{}); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+			t.Errorf("%s: an undeclared complete delegate was accepted: err = %v", tc.name, err)
+		}
+		// A custom type without a declared size is variable-size, so the
+		// holder frames the delegate's one byte behind an offset.
+		got, err := tc.ds.MarshalSSZ(&emptyFullHolder{})
+		if err != nil {
+			t.Errorf("%s: a declared custom delegate was refused: %v", tc.name, err)
+		} else if !bytes.Equal(got, []byte{4, 0, 0, 0, 1}) {
+			t.Errorf("%s: a declared custom delegate encoded %x, want an offset and its own byte", tc.name, got)
 		}
 	}
 }

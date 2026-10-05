@@ -3714,3 +3714,71 @@ func TestStaticGenerationKeepsExternalStaticSurface(t *testing.T) {
 		}
 	}
 }
+
+// nsStaticShell is a zero-field struct whose only methods are static, as a
+// hand-written fastssz type may be; nsCustomShell is the same type declared a
+// one-byte custom type. The reflect path of the generator applies the rule of
+// the runtime cache: a struct with no fields is refused whatever its methods,
+// since they state no width, and the declared custom type is reached through
+// its static surface in every mode, a static build included. The go/types path
+// refuses every zero-field container on its own.
+type nsStaticShell struct{}
+
+func (*nsStaticShell) MarshalSSZ() ([]byte, error)             { return []byte{1}, nil }
+func (*nsStaticShell) MarshalSSZTo(buf []byte) ([]byte, error) { return append(buf, 1), nil }
+func (*nsStaticShell) UnmarshalSSZ([]byte) error               { return nil }
+func (*nsStaticShell) SizeSSZ() int                            { return 1 }
+func (*nsStaticShell) HashTreeRoot() ([32]byte, error)         { return [32]byte{1}, nil }
+
+type nsCustomShell struct{}
+
+var _ = sszutils.Annotate[nsCustomShell](`ssz-type:"custom" ssz-size:"1"`)
+
+func (*nsCustomShell) MarshalSSZ() ([]byte, error)             { return []byte{1}, nil }
+func (*nsCustomShell) MarshalSSZTo(buf []byte) ([]byte, error) { return append(buf, 1), nil }
+func (*nsCustomShell) UnmarshalSSZ([]byte) error               { return nil }
+func (*nsCustomShell) SizeSSZ() int                            { return 1 }
+func (*nsCustomShell) HashTreeRoot() ([32]byte, error)         { return [32]byte{1}, nil }
+
+type nsStaticShellHolder struct {
+	A uint32
+	S nsStaticShell
+}
+
+type nsCustomShellHolder struct {
+	A uint32
+	S nsCustomShell
+}
+
+func TestReflectAnalysisRefusesUndeclaredShell(t *testing.T) {
+	for _, mode := range []struct {
+		name string
+		opts []CodeGeneratorOption
+	}{
+		{"default", nil},
+		{"no fastssz", []CodeGeneratorOption{WithNoFastSsz()}},
+		{"static build", []CodeGeneratorOption{WithNoFastSsz(), WithoutDynamicExpressions(), WithCreateEncoderFn(), WithCreateDecoderFn()}},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			cg := NewCodeGenerator(nil)
+			cg.BuildFile("gen.go", WithReflectType(reflect.TypeFor[nsStaticShellHolder](), mode.opts...))
+			if _, err := cg.GenerateToMap(); err == nil || !strings.Contains(err.Error(), "has no SSZ fields") {
+				t.Fatalf("undeclared shell: generate = %v, want the zero-field refusal", err)
+			}
+
+			cg = NewCodeGenerator(nil)
+			cg.BuildFile("gen.go", WithReflectType(reflect.TypeFor[nsCustomShellHolder](), mode.opts...))
+			files, err := cg.GenerateToMap()
+			if err != nil {
+				t.Fatalf("declared custom shell: generate: %v", err)
+			}
+			// A one-byte custom type is sized by its declaration and reached
+			// through its static methods for the bytes themselves.
+			for _, call := range []string{"MarshalSSZTo(", "t.S.UnmarshalSSZ("} {
+				if !strings.Contains(files["gen.go"], call) {
+					t.Errorf("declared custom shell: expected the holder to reach it through its static surface (%s)", call)
+				}
+			}
+		})
+	}
+}

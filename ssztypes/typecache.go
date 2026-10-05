@@ -1348,13 +1348,16 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 	}
 
 	// Per the SSZ spec, containers (including progressive containers) must have
-	// at least one field. Reject a struct that would be encoded field-by-field
-	// with no SSZ-encodable (exported) fields. Types that delegate to their own
-	// SSZ methods (any compat flag set) are exempt: they do not use the plain
-	// container layout, so a zero-field struct shell is legitimate for them.
+	// at least one field. A struct with no SSZ-encodable (exported) fields has
+	// no layout to encode and no width the layout could state: a value its own
+	// methods serialize is a custom type, and says so with an ssz-type:"custom"
+	// annotation, which also declares its width and is delegated whatever the
+	// instance's options. Which methods the struct carries does not exempt it:
+	// the descriptor would still frame it at zero bytes, and an option that
+	// leaves those methods uncalled would walk it and encode nothing.
 	if desc.SszType == SszContainerType || desc.SszType == SszProgressiveContainerType {
-		if len(missingDelegatedOperations(desc.SszCompatFlags)) > 0 && desc.ContainerDesc != nil && len(desc.ContainerDesc.Fields) == 0 {
-			return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "container type %v has no SSZ fields, which is invalid per the SSZ spec", schemaType)
+		if desc.ContainerDesc != nil && len(desc.ContainerDesc.Fields) == 0 {
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "container type %v has no SSZ fields, which is invalid per the SSZ spec; a type serialized by its own methods declares that with an ssz-type:\"custom\" annotation", schemaType)
 		}
 	}
 
@@ -1383,11 +1386,8 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 // missingDelegatedOperations names the SSZ operations a set of compatibility
 // flags cannot serve. Each may be served by either the fastssz-style method or
 // the dynssz equivalent, and marshalling accepts either fastssz-style marshal
-// method, so a type serves an operation when it has any one of them.
-//
-// A type that serves every operation never uses the container layout, which is
-// what lets a zero-field shell stand for it; one method is not evidence of
-// that, since a type with a single marshaller is still walked for the rest.
+// method, so a type serves an operation when it has any one of them. A custom
+// type has no layout to fall back on, so it must serve every one.
 func missingDelegatedOperations(f SszCompatFlag) []string {
 	var missing []string
 	if f&(SszCompatFlagFastsszBufferMarshaler|SszCompatFlagFastsszValueMarshaler|SszCompatFlagDynamicMarshaler|SszCompatFlagDynamicEncoder) == 0 {
