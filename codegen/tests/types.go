@@ -1432,6 +1432,41 @@ var NoDynStreamCustomHolder_Payload = NoDynStreamCustomHolder{C: noDynStreamCust
 
 var NoDynCustomHolder_Payload = NoDynCustomHolder{D: NoDynDualCustom{7}, S: 8, N: 9}
 
+// NoDynStreamSpecChild carries a spec-sized field. Generated in the static
+// streaming batch, it has a static sizer that baked the tag value and a
+// streaming encoder that resolves the spec.
+type NoDynStreamSpecChild struct {
+	V []byte   `ssz-size:"8" dynssz-size:"NODYN_STREAM_WIDTH"`
+	L []uint16 `ssz-max:"6"`
+}
+
+// NoDynStreamSpecParent needs the size of every child ahead of writing it on a
+// stream that cannot seek, so its streaming encoder sizes the children first.
+// That size has to be the one the child's streaming encoder then writes.
+type NoDynStreamSpecParent struct {
+	A []*NoDynStreamSpecChild `ssz-max:"3"`
+	B []byte                  `ssz-max:"4"`
+}
+
+var (
+	NoDynStreamSpecParent_Payload = NoDynStreamSpecParent{
+		A: []*NoDynStreamSpecChild{
+			{V: []byte{1, 2, 3, 4, 5, 6, 7, 8}, L: []uint16{7}},
+			{V: []byte{8, 7, 6, 5, 4, 3, 2, 1}, L: []uint16{}},
+		},
+		B: []byte{9},
+	}
+	// NoDynStreamSpecParent_SpecPayload is valid where the spec resolves the
+	// width to 3.
+	NoDynStreamSpecParent_SpecPayload = NoDynStreamSpecParent{
+		A: []*NoDynStreamSpecChild{
+			{V: []byte{1, 2, 3}, L: []uint16{7}},
+			{V: []byte{4, 5, 6}, L: []uint16{}},
+		},
+		B: []byte{9},
+	}
+)
+
 // NoDynNestChild is a variable-size container nested by the NoDynNest* parents.
 // Generated with -with-streaming -without-fastssz -without-dynamic-expressions,
 // its parents must reach it through its static MarshalSSZTo/UnmarshalSSZ/SizeSSZ/

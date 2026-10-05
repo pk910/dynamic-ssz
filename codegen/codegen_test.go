@@ -1853,6 +1853,44 @@ func TestGenerateWithoutDynExprCustomTypes(t *testing.T) {
 	}
 }
 
+// nodynStreamSpecRecNode lies on a recursive cycle and carries a spec-sized
+// field.
+type nodynStreamSpecRecNode struct {
+	Val  []byte                    `ssz-size:"4" dynssz-size:"NODYN_REC_WIDTH"`
+	Kids []*nodynStreamSpecRecNode `ssz-max:"4"`
+}
+
+type nodynStreamSpecRecRoot struct {
+	Nodes []*nodynStreamSpecRecNode `ssz-max:"4"`
+	Tail  []byte                    `ssz-max:"4"`
+}
+
+// A static build's streaming encoder sizes a spec-carrying child inline, since
+// the child's static sizer baked the tag values. A child on a recursive cycle
+// cannot be inlined, so the combination is refused instead of sized wrongly.
+func TestGenerateWithoutDynExprStreamRecursiveSpecChild(t *testing.T) {
+	static := []CodeGeneratorOption{WithoutDynamicExpressions(), WithCreateEncoderFn()}
+
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_rec.go",
+		WithReflectType(reflect.TypeFor[nodynStreamSpecRecRoot](), static...),
+		WithReflectType(reflect.TypeFor[nodynStreamSpecRecNode](), static...))
+	_, err := cg.GenerateToMap()
+	if err == nil || !strings.Contains(err.Error(), "lies on a recursive cycle and carries a spec expression") {
+		t.Fatalf("recursive spec-carrying child in a static streaming build: err = %v, want a rejection", err)
+	}
+
+	// Without streaming there is no size pass to disagree with: the static
+	// methods are generated as before.
+	cg = NewCodeGenerator(nil)
+	cg.BuildFile("gen_rec.go",
+		WithReflectType(reflect.TypeFor[nodynStreamSpecRecRoot](), WithoutDynamicExpressions()),
+		WithReflectType(reflect.TypeFor[nodynStreamSpecRecNode](), WithoutDynamicExpressions()))
+	if _, err = cg.GenerateToMap(); err != nil {
+		t.Fatalf("recursive spec-carrying child in a static build without streaming: %v", err)
+	}
+}
+
 // handRecursiveChild is a recursive type with a hand-written spec-aware
 // marshaler, outside the generation set; genRecursiveChild is its generated
 // twin.

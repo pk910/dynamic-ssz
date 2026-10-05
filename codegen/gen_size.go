@@ -299,7 +299,21 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 		// (every dynssz-generated child in this mode, plus external fastssz types)
 		// is reached through it even when fastssz delegation is otherwise disabled.
 		isFastsszSizer := desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszSizer != 0
-		useFastSsz := isFastsszSizer && !hasSpecExpr && (!ctx.options.NoFastSsz || staticBuild)
+		// A size closure of a static build's streaming encoder sizes what that
+		// encoder writes. The encoder resolves spec expressions and writes a
+		// child that carries one through the child's own streaming encoder, so
+		// the child's static sizer, which baked the tag values, would report a
+		// size the written bytes do not have. Such a child is sized inline,
+		// with its expressions resolved as the encoder resolves them.
+		streamSpecSized := ctx.staticChildDelegation && !ctx.options.WithoutDynamicExpressions &&
+			desc.SszType != ssztypes.SszCustomType &&
+			desc.SszTypeFlags&(ssztypes.SszTypeFlagHasSizeExpr|ssztypes.SszTypeFlagHasMaxExpr) != 0
+		if streamSpecSized && ctx.recursion.threads(desc) {
+			// Inlining a cycle never ends, and a static build has no spec-aware
+			// sizer to call instead.
+			return fmt.Errorf("cannot generate streaming encoder for %s under without-dynamic-expressions: it lies on a recursive cycle and carries a spec expression, so its size can neither be inlined nor read from its static SizeSSZ; generate it with dynamic expressions or without streaming", ctx.typePrinter.TypeString(desc))
+		}
+		useFastSsz := isFastsszSizer && !hasSpecExpr && !streamSpecSized && (!ctx.options.NoFastSsz || staticBuild)
 		if desc.SszType == ssztypes.SszCustomType {
 			// A custom type has no structure to inline: it is reached through its
 			// spec-aware method when it has one and dynamic calls are allowed,

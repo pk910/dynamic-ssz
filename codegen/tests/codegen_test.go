@@ -533,6 +533,11 @@ func TestCodegenNoDynExprTypes(t *testing.T) {
 	testCodegenPayloadByReflection(t, NoDynExprTypes_Payload, nil)
 	testCodegenPayloadByReflection(t, NoDynStreamCustomHolder_Payload, nil)
 
+	// A static build's streaming encoder resolves spec values, so the sizes
+	// it writes offsets from have to be the resolved ones too.
+	testCodegenPayloadByReflection(t, NoDynStreamSpecParent_Payload, nil)
+	testCodegenPayloadByReflection(t, NoDynStreamSpecParent_SpecPayload, map[string]any{"NODYN_STREAM_WIDTH": uint64(3)})
+
 	// The static batch round-trips the dual-surface custom type on the stream
 	// paths. Which method set the generated code reaches it through is the
 	// generator's own invariant, checked where the generator is.
