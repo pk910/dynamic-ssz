@@ -10,3 +10,6 @@ types:
   - NoDynWrappedHolder
   - NoDynCustomHolder
   - NoDynStreamCustomHolder
+  - NoDynStreamSpecChild
+  - NoDynStreamSpecParent
+  - NoDynStreamSpecCustomHolder

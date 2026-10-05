@@ -65,6 +65,12 @@ const (
 const SszCompatFlagFastsszSurface = SszCompatFlagFastsszValueMarshaler | SszCompatFlagFastsszBufferMarshaler |
 	SszCompatFlagFastsszSizer | SszCompatFlagFastsszUnmarshaler
 
+// SszCompatFlagDynamicMethods covers the spec-aware methods a type can carry
+// for its own value. A custom type that carries any of them takes the spec
+// set, and is treated as depending on it.
+const SszCompatFlagDynamicMethods = SszCompatFlagDynamicMarshaler | SszCompatFlagDynamicUnmarshaler |
+	SszCompatFlagDynamicSizer | SszCompatFlagDynamicHashRoot | SszCompatFlagDynamicEncoder | SszCompatFlagDynamicDecoder
+
 // GoTypeFlag is a bitmask indicating Go-specific type properties that affect
 // SSZ encoding behavior.
 type GoTypeFlag uint8

@@ -261,6 +261,35 @@ func (ctx *sizeContext) appendDelegatedSize(indent int, sizeVar, callExpr string
 	ctx.appendCode(indent, "%s += %s\n", sizeVar, delegatedVar)
 }
 
+// inStaticStreamEncoder reports whether this context emits the size closures
+// of a static build's streaming encoder: the encoder resolves spec values,
+// while the static build around it exposes static sizers only.
+func (ctx *sizeContext) inStaticStreamEncoder() bool {
+	return ctx.staticChildDelegation && !ctx.options.WithoutDynamicExpressions
+}
+
+// streamSpecSized reports whether a static build's streaming encoder has to
+// size the child inline. The encoder writes a child that carries a spec
+// expression through the child's own streaming encoder, so the child's static
+// sizer, which baked the tag values, would report a size the written bytes do
+// not have. Such a child is sized inline, with its expressions resolved as
+// the encoder resolves them. A custom type has no structure to inline and is
+// sized through its own methods.
+func (ctx *sizeContext) streamSpecSized(desc *ssztypes.TypeDescriptor) bool {
+	return ctx.inStaticStreamEncoder() && desc.SszType != ssztypes.SszCustomType &&
+		desc.SszTypeFlags&(ssztypes.SszTypeFlagHasSizeExpr|ssztypes.SszTypeFlagHasMaxExpr) != 0
+}
+
+// streamCustomSizer reports whether a static build's streaming encoder sizes
+// a custom type through its spec-aware sizer. The encoder writes a custom
+// type through the type's spec-aware methods when it has them, so its size
+// closures take the sizer that goes with them, as a dynamic build does.
+func (ctx *sizeContext) streamCustomSizer(desc *ssztypes.TypeDescriptor) bool {
+	return ctx.inStaticStreamEncoder() && desc.SszType == ssztypes.SszCustomType &&
+		desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicMarshaler|ssztypes.SszCompatFlagDynamicEncoder) != 0 &&
+		desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0
+}
+
 // sizeType generates size calculation code for any SSZ type, delegating to specific sizers.
 func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar string, indent int, isRoot bool) error {
 	if indent > maxEmitNesting {
@@ -299,7 +328,13 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 		// (every dynssz-generated child in this mode, plus external fastssz types)
 		// is reached through it even when fastssz delegation is otherwise disabled.
 		isFastsszSizer := desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszSizer != 0
-		useFastSsz := isFastsszSizer && !hasSpecExpr && (!ctx.options.NoFastSsz || staticBuild)
+		streamSpecSized := ctx.streamSpecSized(desc)
+		if streamSpecSized && ctx.recursion.threads(desc) {
+			// Inlining a cycle never ends, and a static build has no spec-aware
+			// sizer to call instead.
+			return fmt.Errorf("cannot generate streaming encoder for %s under without-dynamic-expressions: it lies on a recursive cycle and carries a spec expression, so its size can neither be inlined nor read from its static SizeSSZ; generate it with dynamic expressions or without streaming", ctx.typePrinter.TypeString(desc))
+		}
+		useFastSsz := isFastsszSizer && !hasSpecExpr && !streamSpecSized && (!ctx.options.NoFastSsz || staticBuild)
 		if desc.SszType == ssztypes.SszCustomType {
 			// A custom type has no structure to inline: it is reached through its
 			// spec-aware method when it has one and dynamic calls are allowed,
@@ -307,7 +342,9 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 			useFastSsz = desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer == 0 || (staticBuild && isFastsszSizer)
 		}
 
-		if staticBuild {
+		streamCustomSizer := ctx.streamCustomSizer(desc)
+
+		if staticBuild && !streamCustomSizer {
 			if useFastSsz {
 				fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "SizeSSZ")
 				ctx.appendDelegatedSize(indent, sizeVar, fmt.Sprintf("%s.%s(%s)", varName, fn, strings.TrimPrefix(arg, ", ")))

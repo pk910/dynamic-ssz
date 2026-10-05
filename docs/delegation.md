@@ -37,11 +37,33 @@ child depends on the spec. Under that condition the static method produces
 the same bytes and root as the dynamic one and skips the spec argument, so it
 is preferred on every path. A static method baked its tags into its output and
 enforces them when it encodes, decodes and hashes, so a child whose size or
-limit depends on the spec is always reached through a spec-aware surface. The two engines decide this
+limit depends on the spec is reached through a spec-aware surface, with the
+limitation described below. The two engines decide this
 differently: the reflection engine resolves the spec values and only counts
 one that differs from the static tag (`HasDynamicSize`, `HasDynamicMax`),
 while generated code, which sees no spec values, counts every expression
 (`HasSizeExpr`, `HasMaxExpr`).
+
+**Known limitation.** A type generated with `-without-dynamic-expressions`
+must not contain a type that is generated without that flag and uses spec
+expressions (`dynssz-size`, `dynssz-max`, `dynssz-bitsize`). The outer type is
+then always served by its static methods, which use the static tag values for
+the inner type even when the spec values differ. The same applies to a
+hand-written type with fastssz-style methods only.
+
+Example: `Outer` is generated with `-without-dynamic-expressions` and holds
+`Inner`, generated without it, where `Inner` has a list tagged
+`ssz-max:"16" dynssz-max:"MAX_ITEMS"`. With `MAX_ITEMS` set to 4, `Outer`
+still encodes, decodes and hashes with a limit of 16.
+
+These combinations work with any spec values:
+
+| Outer type | Inner type | Result |
+|---|---|---|
+| with the flag | with the flag | correct |
+| without the flag | with the flag | correct |
+| without the flag | without the flag | correct |
+| with the flag | without the flag, uses spec expressions | static tag values are used |
 
 ## The order per handler
 
@@ -95,10 +117,20 @@ fails generation with a message naming the missing static method.
 
 ## Custom types
 
-A `ssz-type:"custom"` value always delegates: it has no structure to walk. Its
-dynamic or streaming surface is preferred over its static one whenever a
-spec-aware call is allowed, since a static method may bake in preset values.
-A static build reaches it through its static surface or fails.
+A `ssz-type:"custom"` value always delegates: it has no structure to walk.
+What it does with a spec value cannot be seen either, so its methods say it:
+
+- A custom type that carries a spec-aware method (dynamic or streaming) takes
+  the spec set and counts as depending on the spec. It is reached through its
+  spec-aware methods, and every type that holds it is treated like a type with
+  a spec expression below it: none of them is served by a static method.
+- A custom type with static methods only cannot depend on the spec and is
+  reached through those.
+
+A build without dynamic expressions is the exception for its buffer methods:
+they take no spec set, so they reach a custom type through its static surface,
+also when it carries both, and fail when it has none. Its streaming methods
+carry the spec set and follow the rule above.
 
 A custom type is static with a literal `ssz-size`, with a spec expression, or
 when its annotation declares `ssz-static:"true"`. A width that is not a

@@ -243,9 +243,11 @@ func (ctx *decoderContext) unmarshalDelegatedMethod(desc *ssztypes.TypeDescripto
 	// structural switch below, unless it has no traversable structure (custom
 	// or shallow-delegated externals), which cannot be inlined. Keyed off
 	// noDynBufferCalls because the streaming decoder clears WithoutDynamicExpressions.
-	if ctx.noDynBufferCalls &&
+	// A custom type is the exception: its spec-aware buffer method is
+	// hand-written, exists whatever the build, and is how it asks for the spec.
+	if ctx.noDynBufferCalls && desc.SszType != ssztypes.SszCustomType &&
 		desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
-		if desc.SszType == ssztypes.SszCustomType || isShallowDelegatedDescriptor(desc) {
+		if isShallowDelegatedDescriptor(desc) {
 			return false, fmt.Errorf("cannot generate static decoder for %s under without-dynamic-expressions: it provides only a dynamic (spec-aware) UnmarshalSSZDyn and has no static UnmarshalSSZ, streaming UnmarshalSSZDecoder, or inlinable structure; add it to the generation set or provide a static unmarshaler", ctx.typePrinter.TypeString(desc))
 		}
 		// fall through: inline the type's structure via the switch below
@@ -336,11 +338,12 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastsszUnmarshaler != 0
 	useFastSsz := isFastsszUnmarshaler && !hasSpecExpr && (!ctx.options.NoFastSsz || ctx.noDynBufferCalls)
 	if desc.SszType == ssztypes.SszCustomType {
-		// A custom type has no structure to inline: it is reached through its
-		// spec-aware methods when it has them and dynamic calls are allowed,
-		// otherwise through its static ones.
-		useFastSsz = desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicUnmarshaler|ssztypes.SszCompatFlagDynamicDecoder) == 0 ||
-			(ctx.noDynBufferCalls && isFastsszUnmarshaler)
+		// A custom type has no structure to inline, and its methods say
+		// whether it needs the spec. A streaming method always carries the
+		// spec set, in a static build too, so the type is reached through a
+		// spec-aware method whenever it has one and through its static ones
+		// only when it has none.
+		useFastSsz = desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicUnmarshaler|ssztypes.SszCompatFlagDynamicDecoder) == 0
 	}
 
 	if useFastSsz && !isRoot && !isView {

@@ -1172,6 +1172,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			p.detectCompatFlags(desc, originalType, innerDataType, innerSchemaType)
 			// Delegate through the spec-aware dynamic methods, not the fastssz ones.
 			desc.SszCompatFlags &^= ssztypes.SszCompatFlagFastsszSurface | ssztypes.SszCompatFlagFastsszHashRoot | ssztypes.SszCompatFlagFastsszHashRootWith
+			desc.SszTypeFlags |= customSpecFlags(desc)
 			// A shallow descriptor must not be cached as the type's full descriptor.
 			if cacheable {
 				delete(p.cache, typeKey)
@@ -1675,6 +1676,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		if len(missing) > 0 {
 			return nil, fmt.Errorf("custom ssz type %v is missing a fastssz or dynssz %s implementation", originalType, strings.Join(missing, ", "))
 		}
+		desc.SszTypeFlags |= customSpecFlags(desc)
 	}
 
 	if !cacheable {
@@ -2969,4 +2971,16 @@ func (p *Parser) typeMatches(typ types.Type, expectedTypeStr string) bool {
 		return ok
 	}
 	return false
+}
+
+// customSpecFlags returns the flag a custom type raises for the spec values it
+// may use, as the reflection type cache raises it. A custom type is not
+// traversed, so its methods say whether it needs the spec: one that carries a
+// spec-aware method is treated as carrying a spec expression, and the types
+// that hold it are not served by a static method that baked the values in.
+func customSpecFlags(desc *ssztypes.TypeDescriptor) ssztypes.SszTypeFlag {
+	if desc.SszType != ssztypes.SszCustomType || desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMethods == 0 {
+		return 0
+	}
+	return ssztypes.SszTypeFlagHasMaxExpr
 }

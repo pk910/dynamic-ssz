@@ -224,6 +224,16 @@ serves a baked result to a `DynSsz` that resolves them differently. Calling the
 generated methods directly is what makes the distinction visible, and there the
 buffer methods carry the static contract.
 
+Do not use this flag on a type that contains a type generated without it when
+that inner type uses spec expressions. See the known limitation in
+[Delegation](delegation.md).
+
+A streaming encoder that has to know a child's size before writing it sizes a
+spec-carrying child inline, with the spec values it writes it with, instead of
+through the child's static `SizeSSZ`. A spec-carrying child on a recursive
+cycle cannot be inlined, so that combination is refused at generation time:
+generate the type with dynamic expressions, or without streaming.
+
 ## Programmatic API
 
 ### Basic Example

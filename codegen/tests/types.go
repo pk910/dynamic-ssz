@@ -1421,8 +1421,8 @@ func (c *noDynStreamCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszu
 }
 
 // NoDynStreamCustomHolder holds a custom type with both a static and a
-// spec-aware streaming surface; generated statically, the stream is written
-// and read through the static one.
+// spec-aware streaming surface; generated statically, the buffer methods use
+// the static one and the stream is written and read through the streaming one.
 type NoDynStreamCustomHolder struct {
 	C noDynStreamCustom `ssz-type:"custom" ssz-size:"4"`
 	N uint64
@@ -1431,6 +1431,118 @@ type NoDynStreamCustomHolder struct {
 var NoDynStreamCustomHolder_Payload = NoDynStreamCustomHolder{C: noDynStreamCustom{A: 0x01020304}, N: 5}
 
 var NoDynCustomHolder_Payload = NoDynCustomHolder{D: NoDynDualCustom{7}, S: 8, N: 9}
+
+// noDynStreamSpecCustom is a byte list whose limit is a spec value. Its static
+// methods baked the limit of 4; its streaming methods resolve the spec.
+type noDynStreamSpecCustom struct{ B []byte }
+
+func (c *noDynStreamSpecCustom) SizeSSZ() int                { return len(c.B) }
+func (c *noDynStreamSpecCustom) MarshalSSZ() ([]byte, error) { return c.MarshalSSZTo(nil) }
+func (c *noDynStreamSpecCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	if len(c.B) > 4 {
+		return nil, sszutils.ErrListTooBig
+	}
+	return append(buf, c.B...), nil
+}
+func (c *noDynStreamSpecCustom) UnmarshalSSZ(buf []byte) error {
+	if len(buf) > 4 {
+		return sszutils.ErrListTooBig
+	}
+	c.B = append([]byte{}, buf...)
+	return nil
+}
+func (c *noDynStreamSpecCustom) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	if len(c.B) > 4 {
+		return root, sszutils.ErrListTooBig
+	}
+	copy(root[:], c.B)
+	return root, nil
+}
+func (c *noDynStreamSpecCustom) limit(ds sszutils.DynamicSpecs) (int, error) {
+	limit, err := sszutils.ResolveSpecValueWithDefault(ds, "NODYN_CUSTOM_MAX", 4)
+	return sszutils.CapToInt(limit), err
+}
+func (c *noDynStreamSpecCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return len(c.B) }
+func (c *noDynStreamSpecCustom) MarshalSSZEncoder(ds sszutils.DynamicSpecs, enc sszutils.Encoder) error {
+	limit, err := c.limit(ds)
+	if err != nil {
+		return err
+	}
+	if len(c.B) > limit {
+		return sszutils.ErrListTooBig
+	}
+	enc.EncodeBytes(c.B)
+	return nil
+}
+func (c *noDynStreamSpecCustom) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, dec sszutils.Decoder) error {
+	limit, err := c.limit(ds)
+	if err != nil {
+		return err
+	}
+	buf, err := dec.DecodeRemaining(limit)
+	if err != nil {
+		return err
+	}
+	c.B = append([]byte{}, buf...)
+	return nil
+}
+func (c *noDynStreamSpecCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutBytes(c.B)
+	return nil
+}
+
+// NoDynStreamSpecCustomHolder holds the custom type as a variable-size value
+// next to a second one. The custom type carries spec-aware methods, so it
+// counts as depending on the spec: the holder's static methods, which reach
+// it through its static ones, do not answer for an instance. The holder's
+// stream methods carry the spec set and reach it through its spec-aware ones.
+type NoDynStreamSpecCustomHolder struct {
+	C noDynStreamSpecCustom `ssz-type:"custom"`
+	B []byte                `ssz-max:"4"`
+}
+
+var (
+	NoDynStreamSpecCustomHolder_Payload = NoDynStreamSpecCustomHolder{C: noDynStreamSpecCustom{B: []byte{1, 2, 3}}, B: []byte{9}}
+	// NoDynStreamSpecCustomHolder_SpecPayload is valid where the spec resolves
+	// the custom type's limit to 8.
+	NoDynStreamSpecCustomHolder_SpecPayload = NoDynStreamSpecCustomHolder{C: noDynStreamSpecCustom{B: []byte{1, 2, 3, 4, 5, 6}}, B: []byte{9}}
+)
+
+// NoDynStreamSpecChild carries a spec-sized field. Generated in the static
+// streaming batch, it has a static sizer that baked the tag value and a
+// streaming encoder that resolves the spec.
+type NoDynStreamSpecChild struct {
+	V []byte   `ssz-size:"8" dynssz-size:"NODYN_STREAM_WIDTH"`
+	L []uint16 `ssz-max:"6"`
+}
+
+// NoDynStreamSpecParent needs the size of every child ahead of writing it on a
+// stream that cannot seek, so its streaming encoder sizes the children first.
+// That size has to be the one the child's streaming encoder then writes.
+type NoDynStreamSpecParent struct {
+	A []*NoDynStreamSpecChild `ssz-max:"3"`
+	B []byte                  `ssz-max:"4"`
+}
+
+var (
+	NoDynStreamSpecParent_Payload = NoDynStreamSpecParent{
+		A: []*NoDynStreamSpecChild{
+			{V: []byte{1, 2, 3, 4, 5, 6, 7, 8}, L: []uint16{7}},
+			{V: []byte{8, 7, 6, 5, 4, 3, 2, 1}, L: []uint16{}},
+		},
+		B: []byte{9},
+	}
+	// NoDynStreamSpecParent_SpecPayload is valid where the spec resolves the
+	// width to 3.
+	NoDynStreamSpecParent_SpecPayload = NoDynStreamSpecParent{
+		A: []*NoDynStreamSpecChild{
+			{V: []byte{1, 2, 3}, L: []uint16{7}},
+			{V: []byte{4, 5, 6}, L: []uint16{}},
+		},
+		B: []byte{9},
+	}
+)
 
 // NoDynNestChild is a variable-size container nested by the NoDynNest* parents.
 // Generated with -with-streaming -without-fastssz -without-dynamic-expressions,
