@@ -272,11 +272,16 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 	if cfg == nil || cfg.viewDescriptor == nil {
 		marshaler, hasMarshaler := source.(sszutils.DynamicMarshaler)
 		sszEncoder, hasEncoder := source.(sszutils.DynamicEncoder)
-		hasMarshaler = hasMarshaler && d.delegable(source, "MarshalSSZDyn")
-		hasEncoder = hasEncoder && d.delegable(source, "MarshalSSZEncoder")
+		// One lookup answers for the three methods asked about below.
+		var promoted map[string]bool
+		if hasMarshaler || hasEncoder {
+			promoted = d.typeCache.PromotedDelegationMethods(reflect.TypeOf(source))
+		}
+		hasMarshaler = hasMarshaler && !promoted["MarshalSSZDyn"]
+		hasEncoder = hasEncoder && !promoted["MarshalSSZEncoder"]
 		if (hasMarshaler || hasEncoder) && !d.options.NoDelegation {
 			var buf []byte
-			if sizer, ok := source.(sszutils.DynamicSizer); ok && d.delegable(source, "SizeSSZDyn") {
+			if sizer, ok := source.(sszutils.DynamicSizer); ok && !promoted["SizeSSZDyn"] {
 				size := sizer.SizeSSZDyn(d)
 				if err := checkDelegatedSize(source, size); err != nil {
 					return nil, err
