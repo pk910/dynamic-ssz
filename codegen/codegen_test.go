@@ -2775,6 +2775,19 @@ func TestGenerateEncoderRejectsNegativeSize(t *testing.T) {
 	if got := strings.Count(code, `"negative size %d"`); got < 4 {
 		t.Errorf("generated encoder checks %d delegated sizes, want at least 4:\n%s", got, code)
 	}
+	// A size closure that asks a child for its size takes the specs from its
+	// context argument instead of capturing the method's, which would
+	// allocate the closure on every call.
+	closures := strings.Split(code, " = func(ctx *encoderCtx, ")[1:]
+	if len(closures) == 0 {
+		t.Fatalf("generated encoder has no size closures:\n%s", code)
+	}
+	for _, closure := range closures {
+		body, _, _ := strings.Cut(closure, "\n\t}\n")
+		if strings.Contains(body, "(ds") && !strings.Contains(body, "ds := ctx.ds\n") {
+			t.Errorf("size closure captures ds:\n%s", body)
+		}
+	}
 }
 
 // genOptSpecSized is a fixed-size element whose width comes from a spec value.
