@@ -356,11 +356,12 @@ func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 	isFastsszMarshaler := desc.SszCompatFlags&(ssztypes.SszCompatFlagFastsszBufferMarshaler|ssztypes.SszCompatFlagFastsszValueMarshaler) != 0
 	useFastSsz := isFastsszMarshaler && !hasSpecExpr && (!ctx.options.NoFastSsz || ctx.noDynBufferCalls)
 	if desc.SszType == ssztypes.SszCustomType {
-		// A custom type has no structure to inline: it is reached through its
-		// spec-aware methods when it has them and dynamic calls are allowed,
-		// otherwise through its static ones.
-		useFastSsz = desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicMarshaler|ssztypes.SszCompatFlagDynamicEncoder) == 0 ||
-			(ctx.noDynBufferCalls && isFastsszMarshaler)
+		// A custom type has no structure to inline, and its methods say
+		// whether it needs the spec. A streaming method always carries the
+		// spec set, in a static build too, so the type is reached through a
+		// spec-aware method whenever it has one and through its static ones
+		// only when it has none.
+		useFastSsz = desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicMarshaler|ssztypes.SszCompatFlagDynamicEncoder) == 0
 	}
 
 	if useFastSsz && !isRoot && !isView {
@@ -388,9 +389,11 @@ func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 	// remaining dynamic-only type is inlined by falling through to the structural
 	// switch below, unless it has no traversable structure (custom or
 	// shallow-delegated externals), which cannot be inlined.
-	if ctx.noDynBufferCalls && !isRoot && !isView &&
+	// A custom type is the exception: its spec-aware buffer method is
+	// hand-written, exists whatever the build, and is how it asks for the spec.
+	if ctx.noDynBufferCalls && !isRoot && !isView && desc.SszType != ssztypes.SszCustomType &&
 		desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 {
-		if desc.SszType == ssztypes.SszCustomType || isShallowDelegatedDescriptor(desc) {
+		if isShallowDelegatedDescriptor(desc) {
 			return fmt.Errorf("cannot generate static encoder for %s under without-dynamic-expressions: it provides only a dynamic (spec-aware) MarshalSSZDyn and has no static MarshalSSZTo, streaming MarshalSSZEncoder, or inlinable structure; add it to the generation set or provide a static marshaler", ctx.typePrinter.TypeString(desc))
 		}
 		// fall through: inline the type's structure via the switch below

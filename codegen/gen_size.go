@@ -321,7 +321,14 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 			useFastSsz = desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer == 0 || (staticBuild && isFastsszSizer)
 		}
 
-		if staticBuild {
+		// A static build's streaming encoder writes a custom type through the
+		// type's spec-aware methods when it has them, so its size closures
+		// take the spec-aware sizer that goes with them, as a dynamic build does.
+		streamCustomSizer := ctx.staticChildDelegation && !ctx.options.WithoutDynamicExpressions && desc.SszType == ssztypes.SszCustomType &&
+			desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicMarshaler|ssztypes.SszCompatFlagDynamicEncoder) != 0 &&
+			desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0
+
+		if staticBuild && !streamCustomSizer {
 			if useFastSsz {
 				fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "SizeSSZ")
 				ctx.appendDelegatedSize(indent, sizeVar, fmt.Sprintf("%s.%s(%s)", varName, fn, strings.TrimPrefix(arg, ", ")))

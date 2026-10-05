@@ -541,7 +541,9 @@ func TestCodegenNoDynExprTypes(t *testing.T) {
 	// The static batch round-trips the dual-surface custom type on the stream
 	// paths. Which method set the generated code reaches it through is the
 	// generator's own invariant, checked where the generator is.
-	if _, generated := any(&NoDynStreamCustomHolder_Payload).(sszutils.DynamicMarshaler); !generated {
+	// A static build generates no MarshalSSZDyn; its streaming encoder is what
+	// tells generated code from none.
+	if _, generated := any(&NoDynStreamCustomHolder_Payload).(sszutils.DynamicEncoder); !generated {
 		t.Skip("no generated code present")
 	}
 	ds := dynssz.NewDynSsz(nil)
@@ -555,6 +557,28 @@ func TestCodegenNoDynExprTypes(t *testing.T) {
 	}
 	if back != NoDynStreamCustomHolder_Payload {
 		t.Fatalf("stream round trip = %+v, want %+v", back, NoDynStreamCustomHolder_Payload)
+	}
+
+	// A custom type that carries spec-aware methods depends on the spec, and
+	// so does the static build that holds it: every operation reaches the
+	// custom type through its spec-aware methods, and a value only the
+	// resolved limit admits is sized, hashed, written and read alike.
+	testCodegenPayloadByReflection(t, NoDynStreamSpecCustomHolder_Payload, nil)
+	specs := map[string]any{"NODYN_CUSTOM_MAX": uint64(8)}
+	testCodegenPayloadByReflection(t, NoDynStreamSpecCustomHolder_SpecPayload, specs)
+	ds = dynssz.NewDynSsz(specs)
+	want, err := ds.MarshalSSZ(&NoDynStreamSpecCustomHolder_SpecPayload)
+	if err != nil {
+		t.Fatalf("spec marshal: %v", err)
+	}
+	for _, size := range []int{len(want), -1} {
+		var specBack NoDynStreamSpecCustomHolder
+		if err = ds.UnmarshalSSZReader(&specBack, bytes.NewReader(want), size); err != nil {
+			t.Fatalf("spec reader (size %d): %v", size, err)
+		}
+		if !reflect.DeepEqual(specBack, NoDynStreamSpecCustomHolder_SpecPayload) {
+			t.Fatalf("spec stream round trip (size %d) = %+v, want %+v", size, specBack, NoDynStreamSpecCustomHolder_SpecPayload)
+		}
 	}
 }
 

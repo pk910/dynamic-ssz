@@ -954,6 +954,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			// those handle every operation correctly.
 			desc.SszCompatFlags &^= SszCompatFlagFastsszSurface | SszCompatFlagFastsszHashRoot | SszCompatFlagFastsszHashRootWith
 			desc.HashTreeRootWithMethod = nil
+			desc.SszTypeFlags |= tc.customSpecFlags(desc)
 			// A shallow descriptor has no traversed subtree: a static one still
 			// knows its size, a dynamic one holds the floor its generation
 			// declared, resolved against the specs as generated code resolves
@@ -1376,11 +1377,29 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			}
 			return sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "custom ssz type %v is missing a fastssz or dynssz %s implementation", schemaType, strings.Join(missing, ", "))
 		}
+		desc.SszTypeFlags |= tc.customSpecFlags(desc)
 	}
 
 	desc.SetMinSize()
 
 	return nil
+}
+
+// customSpecFlags returns the flag a custom type raises for the spec values it
+// may use. A custom type is not traversed, so what it does with a spec value
+// is not seen; its methods say it instead. One that carries a spec-aware
+// method takes the spec set and is treated as depending on it, which the
+// types that hold it derive like any other child flag: none of them is served
+// by a static method that baked the values in. A custom type with static
+// methods only cannot depend on the spec and raises nothing.
+func (tc *TypeCache) customSpecFlags(desc *TypeDescriptor) SszTypeFlag {
+	if desc.SszType != SszCustomType || desc.SszCompatFlags&SszCompatFlagDynamicMethods == 0 {
+		return 0
+	}
+	if tc.noSpecResolution {
+		return SszTypeFlagHasMaxExpr
+	}
+	return SszTypeFlagHasDynamicMax
 }
 
 // missingDelegatedOperations names the SSZ operations a set of compatibility

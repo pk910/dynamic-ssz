@@ -12,3 +12,4 @@ types:
   - NoDynStreamCustomHolder
   - NoDynStreamSpecChild
   - NoDynStreamSpecParent
+  - NoDynStreamSpecCustomHolder

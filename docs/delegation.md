@@ -117,10 +117,20 @@ fails generation with a message naming the missing static method.
 
 ## Custom types
 
-A `ssz-type:"custom"` value always delegates: it has no structure to walk. Its
-dynamic or streaming surface is preferred over its static one whenever a
-spec-aware call is allowed, since a static method may bake in preset values.
-A static build reaches it through its static surface or fails.
+A `ssz-type:"custom"` value always delegates: it has no structure to walk.
+What it does with a spec value cannot be seen either, so its methods say it:
+
+- A custom type that carries a spec-aware method (dynamic or streaming) takes
+  the spec set and counts as depending on the spec. It is reached through its
+  spec-aware methods, and every type that holds it is treated like a type with
+  a spec expression below it: none of them is served by a static method.
+- A custom type with static methods only cannot depend on the spec and is
+  reached through those.
+
+A build without dynamic expressions is the exception for its buffer methods:
+they take no spec set, so they reach a custom type through its static surface,
+also when it carries both, and fail when it has none. Its streaming methods
+carry the spec set and follow the rule above.
 
 A custom type is static with a literal `ssz-size`, with a spec expression, or
 when its annotation declares `ssz-static:"true"`. A width that is not a

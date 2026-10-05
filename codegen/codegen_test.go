@@ -1781,19 +1781,27 @@ type nodynStreamHolder struct {
 	N uint64
 }
 
+// nodynStreamDynHolder holds the custom type as a variable-size value next to
+// a second one, so the streaming encoder has to size it ahead of writing it.
+type nodynStreamDynHolder struct {
+	C nodynStreamCustom `ssz-type:"custom"`
+	B []byte            `ssz-max:"4"`
+}
+
 type nodynDynHolder struct {
 	C nodynDynCustom `ssz-type:"custom"`
 	N uint64
 }
 
-// Under WithoutDynamicExpressions a custom type with a static surface is
-// reached through it, on every buffer and stream path, and one without a
-// static surface is rejected by every emitter.
+// Under WithoutDynamicExpressions the buffer methods reach a custom type
+// through its static surface and reject one that has none. The streaming
+// methods carry the spec set and reach the type through its spec-aware
+// methods whenever it has them, falling back to the static ones.
 func TestGenerateWithoutDynExprCustomTypes(t *testing.T) {
 	static := []CodeGeneratorOption{WithoutDynamicExpressions(), WithCreateEncoderFn(), WithCreateDecoderFn()}
 
 	cg := NewCodeGenerator(nil)
-	cg.BuildFile("gen_dual.go", WithReflectType(reflect.TypeFor[nodynDualHolder](), static...))
+	cg.BuildFile("gen_dual.go", WithReflectType(reflect.TypeFor[nodynDualHolder](), WithoutDynamicExpressions()))
 	files, err := cg.GenerateToMap()
 	if err != nil {
 		t.Fatalf("generate dual-surface holder: %v", err)
@@ -1810,8 +1818,10 @@ func TestGenerateWithoutDynExprCustomTypes(t *testing.T) {
 		}
 	}
 
-	// The streaming encoder and decoder take the static surface too, so a
-	// stream is written and read with the same encoding.
+	// A streaming method carries the spec set in a static build too, so it
+	// reaches the custom type through the type's spec-aware streaming methods;
+	// the buffer methods keep the static ones. Stream writing, the sizes it
+	// takes ahead of writing, and stream reading go the same way.
 	cg = NewCodeGenerator(nil)
 	cg.BuildFile("gen_stream.go", WithReflectType(reflect.TypeFor[nodynStreamHolder](), static...))
 	files, err = cg.GenerateToMap()
@@ -1819,15 +1829,51 @@ func TestGenerateWithoutDynExprCustomTypes(t *testing.T) {
 		t.Fatalf("generate stream-surface holder: %v", err)
 	}
 	code = files["gen_stream.go"]
-	for _, tok := range []string{".C.MarshalSSZEncoder(", ".C.UnmarshalSSZDecoder(", ".C.SizeSSZDyn("} {
-		if strings.Contains(code, tok) {
-			t.Errorf("generated code reaches the custom type through spec-aware %s under without-dynamic-expressions", tok)
+	for _, want := range []string{"t.MarshalSSZEncoder(ds, enc)", ".C.UnmarshalSSZDecoder(ds, dec)", ".MarshalSSZTo(", ".UnmarshalSSZ("} {
+		if !strings.Contains(code, want) {
+			t.Errorf("generated code does not reach the custom type through %s:\n%s", want, code)
 		}
 	}
-	for _, want := range []string{".MarshalSSZTo(", "sszutils.DecodeDelegateBuffer(dec, 4)"} {
+	if strings.Contains(code, "sszutils.DecodeDelegateBuffer(dec, 4)") {
+		t.Errorf("generated stream decoder reads the custom type through its static unmarshaler:\n%s", code)
+	}
+
+	cg = NewCodeGenerator(nil)
+	cg.BuildFile("gen_stream_dyn.go", WithReflectType(reflect.TypeFor[nodynStreamDynHolder](), static...))
+	files, err = cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate variable-size stream-surface holder: %v", err)
+	}
+	code = files["gen_stream_dyn.go"]
+	for _, want := range []string{".MarshalSSZEncoder(ds, enc)", ".UnmarshalSSZDecoder(ds, dec)", ".SizeSSZDyn(ds)"} {
 		if !strings.Contains(code, want) {
-			t.Errorf("generated stream code does not reach the custom type through %s:\n%s", want, code)
+			t.Errorf("generated stream code does not reach the variable-size custom type through %s:\n%s", want, code)
 		}
+	}
+
+	// A custom type whose spec-aware methods are buffer methods is reached
+	// through those from the streaming methods, and through its static ones
+	// from the buffer methods.
+	cg = NewCodeGenerator(nil)
+	cg.BuildFile("gen_dual_stream.go", WithReflectType(reflect.TypeFor[nodynDualHolder](), static...))
+	files, err = cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate dual-surface holder with streaming: %v", err)
+	}
+	code = files["gen_dual_stream.go"]
+	for _, want := range []string{".MarshalSSZDyn(ds, enc.GetBuffer())", ".UnmarshalSSZDyn(ds, buf)", ".MarshalSSZTo(dst)", ".UnmarshalSSZ(buf"} {
+		if !strings.Contains(code, want) {
+			t.Errorf("generated code does not reach the buffer-only custom type through %s:\n%s", want, code)
+		}
+	}
+
+	// A custom type with spec-aware methods only can be streamed by a static
+	// build, which has no static buffer method to offer for it.
+	cg = NewCodeGenerator(nil)
+	cg.BuildFile("gen_dyn_stream.go", WithReflectType(reflect.TypeFor[nodynDynHolder](),
+		WithoutDynamicExpressions(), WithNoMarshalSSZ(), WithNoUnmarshalSSZ(), WithNoSizeSSZ(), WithNoHashTreeRoot(), WithCreateEncoderFn(), WithCreateDecoderFn()))
+	if _, err = cg.GenerateToMap(); err != nil {
+		t.Fatalf("generate streaming methods over a spec-aware-only custom type: %v", err)
 	}
 
 	for _, tc := range []struct {
@@ -1839,8 +1885,6 @@ func TestGenerateWithoutDynExprCustomTypes(t *testing.T) {
 		{"unmarshal", []CodeGeneratorOption{WithNoMarshalSSZ(), WithNoSizeSSZ(), WithNoHashTreeRoot()}, "static unmarshaler"},
 		{"size", []CodeGeneratorOption{WithNoMarshalSSZ(), WithNoUnmarshalSSZ(), WithNoHashTreeRoot()}, "static sizer"},
 		{"hash", []CodeGeneratorOption{WithNoMarshalSSZ(), WithNoUnmarshalSSZ(), WithNoSizeSSZ()}, "static hash tree root"},
-		{"encoder", []CodeGeneratorOption{WithNoMarshalSSZ(), WithNoUnmarshalSSZ(), WithNoSizeSSZ(), WithNoHashTreeRoot(), WithCreateEncoderFn()}, "static encoder"},
-		{"decoder", []CodeGeneratorOption{WithNoMarshalSSZ(), WithNoUnmarshalSSZ(), WithNoSizeSSZ(), WithNoHashTreeRoot(), WithCreateDecoderFn()}, "static decoder"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cg := NewCodeGenerator(nil)
