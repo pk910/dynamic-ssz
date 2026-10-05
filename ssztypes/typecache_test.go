@@ -7699,3 +7699,103 @@ func TestTypeHintDeeperDimensionOverrides(t *testing.T) {
 		t.Errorf("Deep element is %v, want bitlist", elem)
 	}
 }
+
+// legacyShape is the shape of a -legacy generation of a type with a spec
+// expression: the complete dynamic surface beside the static one, whose
+// methods forward to the global instance. The three types below carry the
+// same methods and differ in annotation and in how much of the dynamic
+// surface they declare.
+type legacyShape struct {
+	Items []uint64 `ssz-max:"4" dynssz-max:"LEGACY_MAX"`
+}
+
+func (*legacyShape) MarshalSSZ() ([]byte, error)                { return nil, nil }
+func (*legacyShape) MarshalSSZTo(buf []byte) ([]byte, error)    { return buf, nil }
+func (*legacyShape) UnmarshalSSZ([]byte) error                  { return nil }
+func (*legacyShape) SizeSSZ() int                               { return 4 }
+func (*legacyShape) HashTreeRoot() ([32]byte, error)            { return [32]byte{}, nil }
+func (*legacyShape) HashTreeRootWith(sszutils.HashWalker) error { return nil }
+func (*legacyShape) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (*legacyShape) UnmarshalSSZDyn(sszutils.DynamicSpecs, []byte) error { return nil }
+func (*legacyShape) SizeSSZDyn(sszutils.DynamicSpecs) int                { return 4 }
+func (*legacyShape) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
+type annotatedLegacyShape legacyShape
+
+func (*annotatedLegacyShape) MarshalSSZ() ([]byte, error)                { return nil, nil }
+func (*annotatedLegacyShape) MarshalSSZTo(buf []byte) ([]byte, error)    { return buf, nil }
+func (*annotatedLegacyShape) UnmarshalSSZ([]byte) error                  { return nil }
+func (*annotatedLegacyShape) SizeSSZ() int                               { return 4 }
+func (*annotatedLegacyShape) HashTreeRoot() ([32]byte, error)            { return [32]byte{}, nil }
+func (*annotatedLegacyShape) HashTreeRootWith(sszutils.HashWalker) error { return nil }
+func (*annotatedLegacyShape) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (*annotatedLegacyShape) UnmarshalSSZDyn(sszutils.DynamicSpecs, []byte) error { return nil }
+func (*annotatedLegacyShape) SizeSSZDyn(sszutils.DynamicSpecs) int                { return 4 }
+func (*annotatedLegacyShape) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
+// annotatedPartialShape declares the static surface and a single dynamic
+// method, as a hand-written type might.
+type annotatedPartialShape legacyShape
+
+func (*annotatedPartialShape) MarshalSSZ() ([]byte, error)                { return nil, nil }
+func (*annotatedPartialShape) MarshalSSZTo(buf []byte) ([]byte, error)    { return buf, nil }
+func (*annotatedPartialShape) UnmarshalSSZ([]byte) error                  { return nil }
+func (*annotatedPartialShape) SizeSSZ() int                               { return 4 }
+func (*annotatedPartialShape) HashTreeRoot() ([32]byte, error)            { return [32]byte{}, nil }
+func (*annotatedPartialShape) HashTreeRootWith(sszutils.HashWalker) error { return nil }
+func (*annotatedPartialShape) SizeSSZDyn(sszutils.DynamicSpecs) int       { return 4 }
+
+var (
+	_ = sszutils.Annotate[annotatedLegacyShape](`ssz-static:"false" ssz-minsize:"4"`)
+	_ = sszutils.Annotate[annotatedPartialShape](`ssz-static:"false" ssz-minsize:"4"`)
+)
+
+// A generated type's static methods are the same bodies again or -legacy
+// wrappers over the global instance's specs, so a type with an annotation and
+// the complete dynamic surface loses its static surface on every path: the
+// shallow build drops it when delegating, and the traversal under
+// NoDelegation drops it as well, so the walk never reaches a wrapper. A type
+// without an annotation, or with only part of the dynamic surface, is
+// hand-written and keeps its static surface under NoDelegation.
+func TestTypeCache_GeneratedStaticSurfaceDropped(t *testing.T) {
+	const static = SszCompatFlagFastsszSurface | SszCompatFlagFastsszHashRoot | SszCompatFlagFastsszHashRootWith
+
+	for _, tc := range []struct {
+		name         string
+		value        any
+		noDelegation bool
+		keepStatic   bool
+	}{
+		{"annotated, complete dynamic surface, delegating", annotatedLegacyShape{}, false, false},
+		{"annotated, complete dynamic surface, no delegation", annotatedLegacyShape{}, true, false},
+		{"no annotation, no delegation", legacyShape{}, true, true},
+		{"annotated, partial dynamic surface, no delegation", annotatedPartialShape{}, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := NewTypeCache(&dummyDynamicSpecs{})
+			cache.NoDelegation = tc.noDelegation
+
+			desc, err := cache.GetTypeDescriptor(reflect.TypeOf(tc.value), nil, nil, nil)
+			if err != nil {
+				t.Fatalf("GetTypeDescriptor: %v", err)
+			}
+			if kept := desc.SszCompatFlags&static != 0; kept != tc.keepStatic {
+				t.Fatalf("static surface kept = %v, want %v (compat flags %b)", kept, tc.keepStatic, desc.SszCompatFlags)
+			}
+			if hasMethod := desc.HashTreeRootWithMethod != nil; hasMethod != tc.keepStatic {
+				t.Fatalf("HashTreeRootWithMethod set = %v, want %v", hasMethod, tc.keepStatic)
+			}
+			if desc.SszCompatFlags&SszCompatFlagDynamicSizer == 0 {
+				t.Fatal("the dynamic surface must stay flagged; the walker decides on NoDelegation")
+			}
+		})
+	}
+}

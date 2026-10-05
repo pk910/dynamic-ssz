@@ -1228,6 +1228,19 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 
 	tc.detectCompatFlags(desc, runtimeType, schemaType)
 
+	// A type that declares itself through an annotation and carries the complete
+	// dynamic surface is generated code. Its static methods, when it has them,
+	// are the same bodies again or, with -legacy, wrappers that forward to the
+	// global instance's specs; neither may answer for this instance's specs, so
+	// the static surface is dropped as the shallow path above drops it. Such a
+	// type reaches this traversal under NoDelegation, which then walks it. The
+	// rule reads the type's own annotation and methods, so a flag the recursion
+	// fix-up raises later cannot change it.
+	if staticAnnotation != nil && desc.SszType != SszCustomType && fullyDelegatesSSZ(runtimeType, tc.PromotedDelegationMethods(runtimeType)) {
+		desc.SszCompatFlags &^= SszCompatFlagFastsszSurface | SszCompatFlagFastsszHashRoot | SszCompatFlagFastsszHashRootWith
+		desc.HashTreeRootWithMethod = nil
+	}
+
 	// A plain container that only satisfies a delegation interface through a
 	// method promoted from an embedded field must not delegate through it: the
 	// promoted method serializes just the embedded field and drops the
