@@ -153,11 +153,11 @@ func run(fixtures, out string) error {
 		}
 	}
 
-	if err = writeTypes(filepath.Join(out, typesFile), legal, registry, unsupported); err != nil {
+	if err := writeTypes(filepath.Join(out, typesFile), legal, registry, unsupported); err != nil {
 		return err
 	}
 
-	if err = writeIllegal(filepath.Join(out, illegalFile), illegal, illegalRegistry, inexpressible); err != nil {
+	if err := writeIllegal(filepath.Join(out, illegalFile), illegal, illegalRegistry, inexpressible); err != nil {
 		return err
 	}
 
@@ -165,7 +165,7 @@ func run(fixtures, out string) error {
 }
 
 func readDescriptor(path string) (*descriptor.Descriptor, string, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // the caller names this read-only fixture tree
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, "", err
 	}
@@ -215,7 +215,7 @@ func (e *emitter) emit(d *descriptor.Descriptor) (string, error) {
 	case "Uint256":
 		return e.declare(key, d.Kind, "[32]byte", `ssz-type:"uint256"`), nil
 	case "BitVector":
-		if err = surplus(d, d.Limit, countLimit); err != nil {
+		if err := surplus(d, d.Limit, countLimit); err != nil {
 			return "", err
 		}
 
@@ -228,7 +228,7 @@ func (e *emitter) emit(d *descriptor.Descriptor) (string, error) {
 
 		return e.declare(key, d.Kind, fmt.Sprintf("[%d]byte", (length+7)/8), tag), nil
 	case "ByteVector":
-		if err = surplus(d, d.Limit, countLimit); err != nil {
+		if err := surplus(d, d.Limit, countLimit); err != nil {
 			return "", err
 		}
 
@@ -245,7 +245,7 @@ func (e *emitter) emit(d *descriptor.Descriptor) (string, error) {
 	case "ByteList":
 		return e.declareList(key, d, "[]byte", "", true)
 	case "Vector":
-		if err = surplus(d, d.Limit, countLimit); err != nil {
+		if err := surplus(d, d.Limit, countLimit); err != nil {
 			return "", err
 		}
 
