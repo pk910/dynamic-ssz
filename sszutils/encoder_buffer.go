@@ -30,6 +30,13 @@ func NewBufferEncoder(buffer []byte) *BufferEncoder {
 	}
 }
 
+// Reset readies the encoder to write into another buffer, as NewBufferEncoder
+// does for a new one.
+func (e *BufferEncoder) Reset(buffer []byte) {
+	e.buffer = buffer[:cap(buffer)]
+	e.pos = len(buffer)
+}
+
 // ensure makes room for n more bytes at the write position. The pre-sized
 // fast path is a single comparison; an under-sized buffer grows with append's
 // amortized strategy. Writing into the buffer without growing it first is a

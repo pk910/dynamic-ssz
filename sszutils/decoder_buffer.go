@@ -34,6 +34,17 @@ func NewBufferDecoder(buffer []byte) *BufferDecoder {
 	}
 }
 
+// Reset readies the decoder to read another buffer. It keeps the region
+// stack, so a decoder that is reused does not allocate it again.
+func (e *BufferDecoder) Reset(buffer []byte) {
+	e.buffer = buffer
+	e.limits = e.limits[:0]
+	e.lastLimit = len(buffer)
+	e.bufferLen = len(buffer)
+	e.position = 0
+	e.malformed = false
+}
+
 // Seekable returns true, indicating that BufferDecoder supports random-access
 // offset reads via DecodeOffsetAt and byte skipping via SkipBytes.
 func (e *BufferDecoder) Seekable() bool {

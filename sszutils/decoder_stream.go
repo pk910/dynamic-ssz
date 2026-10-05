@@ -122,6 +122,45 @@ func NewUnknownStreamDecoder(reader io.Reader, maxBufSize, maxStreamSize int) *S
 }
 
 func newStreamDecoder(reader io.Reader, totalLen, maxBufSize, maxStreamSize int) *StreamDecoder {
+	e := &StreamDecoder{limits: make([]int, 0, 16)}
+	e.reset(reader, totalLen, maxBufSize, maxStreamSize)
+	return e
+}
+
+// maxRetainedStreamBuffer bounds the read buffer a reset decoder keeps. A
+// delegate that decodes from a buffer grows the read buffer to the size of
+// its region, which is worth keeping for the next stream unless it is
+// outsized.
+const maxRetainedStreamBuffer = 1024 * 1024
+
+// Reset readies the decoder to read another stream, with the arguments of
+// NewStreamDecoder. It keeps the region stack and the read buffer, so a
+// decoder that is reused does not allocate them again; the buffer is used at
+// the length a new decoder would have, so a reused decoder reads its stream
+// in the same steps.
+//
+// Slices DecodeBytesBuf returned for the previous stream alias the read buffer
+// and are overwritten by the next one.
+func (e *StreamDecoder) Reset(reader io.Reader, totalLen, maxBufSize int) {
+	if totalLen < 0 {
+		e.ResetUnknown(reader, maxBufSize, 0)
+		return
+	}
+	e.reset(reader, totalLen, maxBufSize, DefaultMaxStreamSize)
+}
+
+// ResetUnknown is Reset with the arguments of NewUnknownStreamDecoder.
+func (e *StreamDecoder) ResetUnknown(reader io.Reader, maxBufSize, maxStreamSize int) {
+	if maxStreamSize <= 0 {
+		maxStreamSize = DefaultMaxStreamSize
+	}
+	if maxStreamSize > maxAllowance {
+		maxStreamSize = maxAllowance
+	}
+	e.reset(reader, lengthUnknown, maxBufSize, maxStreamSize)
+}
+
+func (e *StreamDecoder) reset(reader io.Reader, totalLen, maxBufSize, maxStreamSize int) {
 	if maxBufSize <= 0 {
 		maxBufSize = DefaultStreamDecoderBufSize
 	}
@@ -133,24 +172,28 @@ func newStreamDecoder(reader io.Reader, totalLen, maxBufSize, maxStreamSize int)
 	if bufferSize < 8 {
 		bufferSize = 8 // Minimum size to hold a uint64
 	}
+	if cap(e.buffer) < bufferSize || cap(e.buffer) > maxRetainedStreamBuffer {
+		e.buffer = make([]byte, bufferSize)
+	} else {
+		e.buffer = e.buffer[:bufferSize]
+	}
 
 	rootLimit, rootOpen := totalLen, false
 	if totalLen < 0 {
 		rootLimit, rootOpen = maxStreamSize, true
 	}
 
-	return &StreamDecoder{
-		reader:    reader,
-		limits:    make([]int, 0, 16),
-		lastLimit: rootLimit,
-		lastOpen:  rootOpen,
-		streamLen: totalLen,
-		maxSize:   maxStreamSize,
-		position:  0,
-		buffer:    make([]byte, bufferSize),
-		bufferPos: 0,
-		bufferLen: 0,
-	}
+	e.reader = reader
+	e.limits = e.limits[:0]
+	e.lastLimit = rootLimit
+	e.lastOpen = rootOpen
+	e.streamLen = totalLen
+	e.position = 0
+	e.maxSize = maxStreamSize
+	e.eofSeen = false
+	e.truncated = false
+	e.bufferPos = 0
+	e.bufferLen = 0
 }
 
 func (e *StreamDecoder) Seekable() bool {
@@ -352,7 +395,12 @@ func (e *StreamDecoder) growBuffer(n int) {
 	if newSize < n {
 		newSize = n
 	}
-	newBuf := make([]byte, newSize)
+	// A reused decoder may hold the capacity already (see Reset).
+	newBuf := e.buffer[:0]
+	if cap(newBuf) < newSize {
+		newBuf = make([]byte, newSize)
+	}
+	newBuf = newBuf[:newSize]
 	available := e.bufferLen - e.bufferPos
 	copy(newBuf, e.buffer[e.bufferPos:e.bufferLen])
 	e.buffer = newBuf

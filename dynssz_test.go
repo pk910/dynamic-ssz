@@ -794,6 +794,47 @@ func TestMarshalSSZWriterReusesEncoder(t *testing.T) {
 	}
 }
 
+func TestEntryPointsReuseEncodersAndDecoders(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz())
+	container := &testSimpleContainer{Value: 42}
+
+	expected, err := ds.MarshalSSZ(container)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Every call after the first takes the encoder or decoder the previous one
+	// returned, in whatever state that call left it: a failed decode must not
+	// leak into the next.
+	for i := 0; i < 3; i++ {
+		buf, err := ds.MarshalSSZTo(container, make([]byte, 0, 8))
+		if err != nil || !bytes.Equal(buf, expected) {
+			t.Fatalf("call %d: MarshalSSZTo = %x, %v", i, buf, err)
+		}
+
+		var fromBuffer testSimpleContainer
+		if err := ds.UnmarshalSSZ(&fromBuffer, expected[:len(expected)-1]); err == nil {
+			t.Fatalf("call %d: UnmarshalSSZ accepted a truncated input", i)
+		}
+		if err := ds.UnmarshalSSZ(&fromBuffer, expected); err != nil || fromBuffer != *container {
+			t.Fatalf("call %d: UnmarshalSSZ = %+v, %v", i, fromBuffer, err)
+		}
+
+		var fromReader testSimpleContainer
+		if err := ds.UnmarshalSSZReader(&fromReader, bytes.NewReader(expected[:len(expected)-1]), len(expected)); err == nil {
+			t.Fatalf("call %d: UnmarshalSSZReader accepted a truncated input", i)
+		}
+		if err := ds.UnmarshalSSZReader(&fromReader, bytes.NewReader(expected), len(expected)); err != nil || fromReader != *container {
+			t.Fatalf("call %d: UnmarshalSSZReader = %+v, %v", i, fromReader, err)
+		}
+
+		var fromStream testSimpleContainer
+		if err := ds.UnmarshalSSZReader(&fromStream, bytes.NewReader(expected), -1); err != nil || fromStream != *container {
+			t.Fatalf("call %d: UnmarshalSSZReader of unknown length = %+v, %v", i, fromStream, err)
+		}
+	}
+}
+
 type errorWriter struct {
 	err error
 }
@@ -8580,10 +8621,14 @@ type hugeDynVec []hugeDynVecElem
 
 var _ = sszutils.Annotate[hugeDynVec](`ssz-size:"10000000"`)
 
-// reservedBytes reports what the heap grew by while fn ran.
+// reservedBytes reports what the heap grew by while fn ran. fn runs once
+// before the measured run: a collection drops the bookkeeping of the pools the
+// entry points take their encoders and decoders from, and the first call after
+// it allocates that again.
 func reservedBytes(fn func()) uint64 {
 	var before, after runtime.MemStats
 	runtime.GC()
+	fn()
 	runtime.ReadMemStats(&before)
 	fn()
 	runtime.ReadMemStats(&after)
