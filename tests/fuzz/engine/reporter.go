@@ -13,18 +13,14 @@ import (
 type IssueType string
 
 const (
-	IssuePanic           IssueType = "panic"
-	IssueMarshalMismatch IssueType = "marshal-mismatch"
-	IssueSizeMismatch    IssueType = "size-mismatch"
-	IssueHTRMismatch     IssueType = "htr-mismatch"
-	IssueStreamMismatch  IssueType = "stream-mismatch"
-	IssueUnmarshalDiff   IssueType = "unmarshal-diff"
-	// Deep-oracle issue types.
-	IssueSizeMismatch      IssueType = "size-mismatch"      // SizeSSZ != len(MarshalSSZ)
-	IssueReferenceMismatch IssueType = "reference-mismatch" // independent reference oracle divergence
-	IssueProofFail         IssueType = "proof-fail"         // tree/GetTree or Merkle proof failure
-	IssueMetamorphic       IssueType = "metamorphic"        // distinct serializations share an HTR
-	IssueNonDeterministic  IssueType = "nondeterministic"   // HashTreeRoot not stable across repeats
+	IssuePanic             IssueType = "panic"
+	IssueMarshalMismatch   IssueType = "marshal-mismatch"
+	IssueSizeMismatch      IssueType = "size-mismatch"
+	IssueHTRMismatch       IssueType = "htr-mismatch"
+	IssueStreamMismatch    IssueType = "stream-mismatch"
+	IssueUnmarshalDiff     IssueType = "unmarshal-diff"
+	IssueReferenceMismatch IssueType = "reference-mismatch"
+	IssueNonDeterministic  IssueType = "nondeterministic"
 )
 
 // Issue represents a single fuzzing issue found.

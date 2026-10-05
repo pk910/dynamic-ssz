@@ -32,9 +32,8 @@ func main() {
 		duration   = flag.Duration("duration", 0, "Maximum run duration (0 = infinite)")
 		statsEvery = flag.Duration("stats-every", 5*time.Second, "Stats print interval")
 		workers    = flag.Int("workers", runtime.NumCPU(), "Number of parallel workers")
-		oracles    = flag.Bool("oracles", true, "Run the deep-oracle battery (native HTR, size, reference, tree/proofs, HashTreeRootWith, metamorphic, determinism)")
-		proofs     = flag.Bool("proofs", true, "Run tree generation + Merkle proof checks (part of the oracle battery)")
-		reference  = flag.Bool("reference", true, "Run the independent reference oracle (part of the oracle battery)")
+		oracles    = flag.Bool("oracles", true, "Run independent and invariant checks on valid values")
+		reference  = flag.Bool("reference", true, "Run the independent classic-SSZ reference oracle")
 	)
 	flag.Parse()
 
@@ -79,22 +78,8 @@ func main() {
 	// exercises the generated decoders against open regions.
 	dsUnknown := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithStreamReaderBufferSize(8))
 	dsUnknownExt := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithExtendedTypes(), dynssz.WithStreamReaderBufferSize(8))
-
-	// Deep-oracle engines. The codegen (delegating) instances drive the
-	// tree/proof battery through the generated code; the native-hash instances
-	// (WithNoFastHash → standard-library sha256) give a third HashTreeRoot
-	// backend to cross-check against the accelerated one.
-	dsCg := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz())
-	dsCgExt := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithExtendedTypes())
 	dsNative := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation(), dynssz.WithNoFastHash())
 	dsNativeExt := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation(), dynssz.WithExtendedTypes(), dynssz.WithNoFastHash())
-
-	instances := &engine.Instances{
-		Refl: ds, ReflExt: dsExt,
-		Codegen: dsCg, CodegenExt: dsCgExt,
-		Native: dsNative, NativeExt: dsNativeExt,
-		Unknown: dsUnknown, UnknownExt: dsUnknownExt,
-	}
 
 	// Warm up type caches by doing one marshal per type.
 	// This populates the cache before workers start, avoiding write contention.
@@ -134,8 +119,8 @@ func main() {
 		workerSeed := *seed + int64(i)*6364136223846793005
 		go func() {
 			defer wg.Done()
-			eng := engine.NewEngine(reporter, stats, instances, workerSeed, *maxData)
-			eng.SetOracles(*oracles, *proofs, *reference)
+			eng := engine.NewEngine(reporter, stats, ds, dsExt, workerSeed, *maxData, dsUnknown, dsUnknownExt)
+			eng.SetOracles(*oracles, *reference, dsNative, dsNativeExt)
 			typeIdx := i // stagger starting positions
 			for {
 				select {

@@ -13,6 +13,35 @@ permissions:
   contents: read
 
 jobs:
+  # Run the independent, implementation-neutral SSZ vectors. Consensus-spec
+  # fixtures exercise Ethereum objects, while this suite directly pins the SSZ
+  # rules added by EIP-7495/EIP-7916/EIP-8016 and boundary/rejection behavior.
+  official-ssz-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: '1.25.11'
+
+    - name: Cache official SSZ vectors
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: tests/sszspecs/fixtures
+        key: official-ssz-v0.1.0-e2a65f032b59835c
+
+    - name: Download and verify official SSZ vectors
+      run: ./tests/sszspecs/setup_test_data.sh setup
+
+    - name: Run official SSZ vectors
+      run: go test -count=1 ./tests/sszspecs
+      env:
+        SSZ_SPECS_TESTS_DIR: ${{ github.workspace }}/tests/sszspecs/fixtures
+
   # Run spec tests in matrix (no coverage upload here)
   spec-tests:
     runs-on: ubuntu-latest
@@ -189,7 +218,7 @@ jobs:
   # Collect and upload coverage after spec tests and unit tests complete
   unit-tests-and-coverage:
     runs-on: ubuntu-latest
-    needs: [spec-tests, unit-tests]
+    needs: [official-ssz-tests, spec-tests, unit-tests]
     if: always()
 
     steps:
@@ -197,8 +226,9 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Check dependency results
-      if: needs.spec-tests.result != 'success' || needs.unit-tests.result != 'success'
+      if: needs.official-ssz-tests.result != 'success' || needs.spec-tests.result != 'success' || needs.unit-tests.result != 'success'
       run: |
+        echo "official-ssz-tests: ${{ needs.official-ssz-tests.result }}"
         echo "spec-tests: ${{ needs.spec-tests.result }}"
         echo "unit-tests: ${{ needs.unit-tests.result }}"
         exit 1

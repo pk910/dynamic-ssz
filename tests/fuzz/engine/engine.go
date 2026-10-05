@@ -35,7 +35,9 @@ type Stats struct {
 	WalkerPrograms    atomic.Uint64
 	WalkerMismatches  atomic.Uint64
 	Successes         atomic.Uint64
-	OracleChecks      atomic.Uint64 // deep-oracle checks run (native/size/reference/tree/proofs/...)
+	OracleChecks      atomic.Uint64
+	ReferenceChecks   atomic.Uint64
+	ReferenceSkips    atomic.Uint64
 }
 
 // Engine is the core fuzz testing engine.
@@ -49,66 +51,49 @@ type Engine struct {
 	// to a known length during the decoder's initial fill.
 	dsUnknown         *dynssz.DynSsz
 	dsUnknownExtended *dynssz.DynSsz
-	// Codegen (delegating) and native-hash instances drive the deep-oracle
-	// checks (tree/proofs on the codegen engine; fast-vs-native HTR).
-	dsCg        *dynssz.DynSsz
-	dsCgExt     *dynssz.DynSsz
-	dsNative    *dynssz.DynSsz
-	dsNativeExt *dynssz.DynSsz
-	reporter    *Reporter
-	stats       *Stats
-	rng         *rand.Rand
-	filler      *Filler
-	maxDataLen  int
-	oracles     bool // run the deep-oracle battery on valid instances
-	proofs      bool // run tree-generation + proof checks (part of the oracle battery)
-	reference   bool // run the independent reference oracle (part of the oracle battery)
+	dsNative          *dynssz.DynSsz
+	dsNativeExtended  *dynssz.DynSsz
+	reporter          *Reporter
+	stats             *Stats
+	rng               *rand.Rand
+	filler            *Filler
+	maxDataLen        int
+	oracles           bool
+	reference         bool
 }
 
-// Instances holds the shared DynSsz configurations a fuzz run uses. All are
-// safe to share across workers (the type cache is mutex-guarded).
-type Instances struct {
-	Refl, ReflExt       *dynssz.DynSsz // reflection engine (WithNoFastSsz, WithNoDelegation) [+extended]
-	Codegen, CodegenExt *dynssz.DynSsz // codegen/delegation engine (WithNoFastSsz) [+extended]
-	Native, NativeExt   *dynssz.DynSsz // reflection + WithNoFastHash (native sha256) [+extended]
-	Unknown, UnknownExt *dynssz.DynSsz // codegen + tiny stream buffer for open-region decoding [+extended]
+// SetOracles enables independent and invariant checks for valid values. The
+// native engines must use WithNoFastHash so they exercise a separate SHA-256
+// backend.
+func (e *Engine) SetOracles(enabled, reference bool, native, nativeExtended *dynssz.DynSsz) {
+	e.oracles = enabled
+	e.reference = reference
+	e.dsNative = native
+	e.dsNativeExtended = nativeExtended
 }
 
 // NewEngine creates a new fuzz engine with its own RNG but shared DynSsz
 // instances. The DynSsz TypeCache is thread-safe (uses sync.RWMutex),
 // so sharing avoids duplicating large type caches across workers.
-func NewEngine(reporter *Reporter, stats *Stats, inst *Instances, seed int64, maxDataLen int) *Engine {
+func NewEngine(reporter *Reporter, stats *Stats, ds, dsExtended *dynssz.DynSsz, seed int64, maxDataLen int, dsUnknown ...*dynssz.DynSsz) *Engine {
 	rng := rand.New(rand.NewSource(seed))
 
-	return &Engine{
-		ds:                inst.Refl,
-		dsExtended:        inst.ReflExt,
-		dsCg:              inst.Codegen,
-		dsCgExt:           inst.CodegenExt,
-		dsNative:          inst.Native,
-		dsNativeExt:       inst.NativeExt,
-		dsUnknown:         inst.Unknown,
-		dsUnknownExtended: inst.UnknownExt,
-		reporter:          reporter,
-		stats:             stats,
-		rng:               rng,
-		filler:            NewFiller(rng),
-		maxDataLen:        maxDataLen,
-		oracles:           true,
-		proofs:            true,
-		reference:         true,
+	e := &Engine{
+		ds:         ds,
+		dsExtended: dsExtended,
+		reporter:   reporter,
+		stats:      stats,
+		rng:        rng,
+		filler:     NewFiller(rng),
+		maxDataLen: maxDataLen,
 	}
-}
-
-// SetOracles toggles the deep-oracle battery and its sub-batteries. oracles
-// gates the whole battery (native HTR, size, reference, tree/proofs,
-// HashTreeRootWith, metamorphic, determinism); proofs gates tree generation +
-// Merkle proofs; reference gates the independent reference oracle. All default
-// to on.
-func (e *Engine) SetOracles(oracles, proofs, reference bool) {
-	e.oracles = oracles
-	e.proofs = proofs
-	e.reference = reference
+	if len(dsUnknown) > 0 {
+		e.dsUnknown = dsUnknown[0]
+	}
+	if len(dsUnknown) > 1 {
+		e.dsUnknownExtended = dsUnknown[1]
+	}
+	return e
 }
 
 // FuzzEntry runs one fuzz iteration on a given type entry.
@@ -182,9 +167,6 @@ func (e *Engine) fuzzValidInstance(entry corpus.TypeEntry, ds *dynssz.DynSsz) {
 	// Round-trip: marshal -> unmarshal -> marshal
 	e.testRoundTrip(entry, ds, instance, nil)
 
-	// Deep-oracle battery: native-hash HTR, size==len, independent
-	// reference oracle, tree generation + proofs, HashTreeRootWith reuse,
-	// metamorphic HTR, and determinism.
 	if e.oracles {
 		e.oracleChecks(entry, ds, instance)
 	}
@@ -1099,7 +1081,7 @@ func PrintStats(stats *Stats, elapsed time.Duration) {
 
 	fmt.Printf(
 		"\r[%s] iters: %d (%.0f/s) | valid: %d mutated: %d random: %d | "+
-			"ok: %d panic: %d marshal: %d size: %d htr: %d stream: %d unmarshal: %d walker: %d/%d | "+
+			"ok: %d oracle: %d ref: %d/%d panic: %d marshal: %d size: %d htr: %d stream: %d unmarshal: %d walker: %d/%d | "+
 			"mem: %s alloc, %s sys, %d gc",
 		elapsed.Truncate(time.Second),
 		iters, rate,
@@ -1108,6 +1090,8 @@ func PrintStats(stats *Stats, elapsed time.Duration) {
 		stats.RandomInputs.Load(),
 		stats.Successes.Load(),
 		stats.OracleChecks.Load(),
+		stats.ReferenceChecks.Load(),
+		stats.ReferenceChecks.Load()+stats.ReferenceSkips.Load(),
 		stats.Panics.Load(),
 		stats.MarshalMismatches.Load(),
 		stats.SizeMismatches.Load(),
