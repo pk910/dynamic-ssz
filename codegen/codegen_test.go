@@ -3060,6 +3060,78 @@ func TestStaticStreamingInlinesExternalDelegated(t *testing.T) {
 	}
 }
 
+// ssChild is a fixed-size type with a real static surface and no dynamic one.
+type ssChild struct {
+	V uint64
+}
+
+func (c *ssChild) MarshalSSZ() ([]byte, error) { return c.MarshalSSZTo(nil) }
+func (c *ssChild) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(buf, c.V), nil
+}
+func (c *ssChild) UnmarshalSSZ(buf []byte) error {
+	c.V = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+func (c *ssChild) SizeSSZ() int                               { return 8 }
+func (c *ssChild) HashTreeRoot() ([32]byte, error)            { return [32]byte{}, nil }
+func (c *ssChild) HashTreeRootWith(sszutils.HashWalker) error { return nil }
+
+type ssHolder struct {
+	A uint32
+	C ssChild
+}
+
+// TestStaticBuildStreamingReachesStaticChild checks that the streaming methods
+// of a static build follow the same rule as its buffer methods: a child with a
+// static surface is reached through it, with or without -without-fastssz, as
+// the delegation page states for a static build's streaming methods. The
+// streaming emitters used to inline such a child when fastssz was off, while
+// the buffer methods beside them delegated to it.
+func TestStaticBuildStreamingReachesStaticChild(t *testing.T) {
+	for _, mode := range []struct {
+		name string
+		opts []CodeGeneratorOption
+	}{
+		{"static build", []CodeGeneratorOption{WithoutDynamicExpressions(), WithCreateEncoderFn(), WithCreateDecoderFn()}},
+		{"static build without fastssz", []CodeGeneratorOption{WithoutDynamicExpressions(), WithNoFastSsz(), WithCreateEncoderFn(), WithCreateDecoderFn()}},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			cg := NewCodeGenerator(nil)
+			cg.BuildFile("gen.go", WithReflectType(reflect.TypeFor[ssHolder](), mode.opts...))
+			files, err := cg.GenerateToMap()
+			if err != nil {
+				t.Fatalf("generate: %v", err)
+			}
+			src := files["gen.go"]
+			encoder := ssMethodBody(src, "MarshalSSZEncoder")
+			decoder := ssMethodBody(src, "UnmarshalSSZDecoder")
+			if !strings.Contains(encoder, "MarshalSSZTo(enc.GetBuffer()") {
+				t.Errorf("the streaming encoder does not reach the child through MarshalSSZTo:\n%s", encoder)
+			}
+			if strings.Contains(encoder, "EncodeUint64(t.V)") {
+				t.Errorf("the streaming encoder inlines the child's field")
+			}
+			if !strings.Contains(decoder, ".UnmarshalSSZ(buf)") {
+				t.Errorf("the streaming decoder does not reach the child through UnmarshalSSZ:\n%s", decoder)
+			}
+		})
+	}
+}
+
+// ssMethodBody returns the source of the named method of the generated holder.
+func ssMethodBody(src, method string) string {
+	start := strings.Index(src, "func (t *ssHolder) "+method+"(")
+	if start < 0 {
+		return ""
+	}
+	end := strings.Index(src[start:], "\n}\n")
+	if end < 0 {
+		return src[start:]
+	}
+	return src[start : start+end]
+}
+
 // nsIllegalDelegated mirrors the repo's nestedDelegatedInner: a delegated type
 // with a structurally-invalid innard (zero-length array). Under
 // WithoutDynamicExpressions the parser traverses it (NoDelegation) and must

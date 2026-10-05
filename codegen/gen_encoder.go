@@ -354,7 +354,7 @@ func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 	// spec-aware one.
 	hasSpecExpr := desc.SszTypeFlags&(ssztypes.SszTypeFlagHasSizeExpr|ssztypes.SszTypeFlagHasMaxExpr) != 0
 	isFastsszMarshaler := desc.SszCompatFlags&(ssztypes.SszCompatFlagFastsszBufferMarshaler|ssztypes.SszCompatFlagFastsszValueMarshaler) != 0
-	useFastSsz := !ctx.options.NoFastSsz && isFastsszMarshaler && !hasSpecExpr
+	useFastSsz := isFastsszMarshaler && !hasSpecExpr && (!ctx.options.NoFastSsz || ctx.noDynBufferCalls)
 	if desc.SszType == ssztypes.SszCustomType {
 		// A custom type has no structure to inline: it is reached through its
 		// spec-aware methods when it has them and dynamic calls are allowed,
