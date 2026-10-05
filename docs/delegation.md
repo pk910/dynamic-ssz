@@ -37,11 +37,33 @@ child depends on the spec. Under that condition the static method produces
 the same bytes and root as the dynamic one and skips the spec argument, so it
 is preferred on every path. A static method baked its tags into its output and
 enforces them when it encodes, decodes and hashes, so a child whose size or
-limit depends on the spec is always reached through a spec-aware surface. The two engines decide this
+limit depends on the spec is reached through a spec-aware surface, with the
+limitation described below. The two engines decide this
 differently: the reflection engine resolves the spec values and only counts
 one that differs from the static tag (`HasDynamicSize`, `HasDynamicMax`),
 while generated code, which sees no spec values, counts every expression
 (`HasSizeExpr`, `HasMaxExpr`).
+
+**Known limitation.** A type generated with `-without-dynamic-expressions`
+must not contain a type that is generated without that flag and uses spec
+expressions (`dynssz-size`, `dynssz-max`, `dynssz-bitsize`). The outer type is
+then always served by its static methods, which use the static tag values for
+the inner type even when the spec values differ. The same applies to a
+hand-written type with fastssz-style methods only.
+
+Example: `Outer` is generated with `-without-dynamic-expressions` and holds
+`Inner`, generated without it, where `Inner` has a list tagged
+`ssz-max:"16" dynssz-max:"MAX_ITEMS"`. With `MAX_ITEMS` set to 4, `Outer`
+still encodes, decodes and hashes with a limit of 16.
+
+These combinations work with any spec values:
+
+| Outer type | Inner type | Result |
+|---|---|---|
+| with the flag | with the flag | correct |
+| without the flag | with the flag | correct |
+| without the flag | without the flag | correct |
+| with the flag | without the flag, uses spec expressions | static tag values are used |
 
 ## The order per handler
 
