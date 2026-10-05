@@ -13,6 +13,35 @@ permissions:
   contents: read
 
 jobs:
+  # Run the independent, implementation-neutral SSZ vectors. Consensus-spec
+  # fixtures exercise Ethereum objects, while this suite directly pins the SSZ
+  # rules added by EIP-7495/EIP-7916/EIP-8016 and boundary/rejection behavior.
+  official-ssz-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: '1.25.11'
+
+    - name: Cache official SSZ vectors
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: tests/sszspecs/fixtures
+        key: official-ssz-v0.1.0-e2a65f032b59835c
+
+    - name: Download and verify official SSZ vectors
+      run: ./tests/sszspecs/setup_test_data.sh setup
+
+    - name: Run official SSZ vectors
+      run: go test -count=1 ./tests/sszspecs
+      env:
+        SSZ_SPECS_TESTS_DIR: ${{ github.workspace }}/tests/sszspecs/fixtures
+
   # Run spec tests in matrix (no coverage upload here)
   spec-tests:
     runs-on: ubuntu-latest
@@ -189,7 +218,7 @@ jobs:
   # Collect and upload coverage after spec tests and unit tests complete
   unit-tests-and-coverage:
     runs-on: ubuntu-latest
-    needs: [spec-tests, unit-tests]
+    needs: [official-ssz-tests, spec-tests, unit-tests]
     if: always()
 
     steps:
@@ -197,8 +226,9 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Check dependency results
-      if: needs.spec-tests.result != 'success' || needs.unit-tests.result != 'success'
+      if: needs.official-ssz-tests.result != 'success' || needs.spec-tests.result != 'success' || needs.unit-tests.result != 'success'
       run: |
+        echo "official-ssz-tests: ${{ needs.official-ssz-tests.result }}"
         echo "spec-tests: ${{ needs.spec-tests.result }}"
         echo "unit-tests: ${{ needs.unit-tests.result }}"
         exit 1
@@ -287,10 +317,11 @@ jobs:
         go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
         govulncheck ./...
 
-  # Quick smoke fuzz test to catch regressions early
+  # Multi-corpus fuzz campaign. Regenerating between short rounds explores far
+  # more schemas than spending the same wall time on one generated type set.
   fuzz-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
     - name: Checkout code
@@ -304,7 +335,7 @@ jobs:
     - name: Download dependencies
       run: go mod download
 
-    - name: Run smoke fuzz test
+    - name: Run multi-corpus fuzz campaign
       env:
         GOMEMLIMIT: 4GiB
       run: |
@@ -313,28 +344,62 @@ jobs:
         REPORT_DIR="${RUNNER_TEMP}/fuzz-reports"
         mkdir -p "${REPORT_DIR}"
 
-        # Generate a fresh corpus with a random seed
-        SEED=$(od -A n -t u4 -N 4 /dev/urandom | tr -d ' ')
-        echo "Generating corpus with seed=$SEED"
-        rm -f tests/fuzz/corpus/*_gen.go
-        go run ./tests/fuzz/cmd/generate -num-types 50 -seed "$SEED" -extended=true
+        # Twelve 30-second rounds keep this job close to the rest of the
+        # roughly seven-minute CI suite while generating a new schema universe
+        # every round. Varying the bounds reaches both dense shallow types and
+        # smaller, deeply nested ones.
+        for ROUND in $(seq 1 12); do
+          SEED=$(od -A n -t u4 -N 4 /dev/urandom | tr -d ' ')
+          NUM_TYPES=$((40 + (ROUND % 4) * 20))
+          MAX_DEPTH=$((3 + ROUND % 3))
+          MAX_FIELDS=$((6 + (ROUND % 4) * 2))
+          MAX_ARRAY=$((16 + (ROUND % 4) * 16))
+          MAX_LIST=$((32 + (ROUND % 3) * 32))
+          if [ $((ROUND % 3)) -eq 0 ]; then
+            EXTENDED=false
+          else
+            EXTENDED=true
+          fi
 
-        # Run fuzzer for 30 seconds
-        go run ./tests/fuzz/cmd/fuzz \
-          -duration 30s \
-          -report-dir "${REPORT_DIR}" \
-          -workers 2
+          ROUND_REPORT="${REPORT_DIR}/round-${ROUND}"
+          mkdir -p "${ROUND_REPORT}"
+          printf 'round=%s seed=%s types=%s depth=%s fields=%s array=%s list=%s extended=%s\n' \
+            "${ROUND}" "${SEED}" "${NUM_TYPES}" "${MAX_DEPTH}" "${MAX_FIELDS}" \
+            "${MAX_ARRAY}" "${MAX_LIST}" "${EXTENDED}" | tee "${ROUND_REPORT}/config.txt"
 
-        # Check for issues
-        ISSUES=$(find "${REPORT_DIR}" -maxdepth 2 -name "issue-*" -type d 2>/dev/null | wc -l)
-        if [ "$ISSUES" -gt "0" ]; then
-          echo "::error::Smoke fuzz found $ISSUES issues!"
-          for d in "${REPORT_DIR}"/round-*/issue-*/; do
-            if [ -d "$d" ]; then
-              echo "--- $(basename "$d") ---"
-              cat "$d/details.txt"
-            fi
-          done
-          exit 1
-        fi
-        echo "Smoke fuzz passed (seed=$SEED)"
+          rm -f tests/fuzz/corpus/*_gen.go
+          go run ./tests/fuzz/cmd/generate \
+            -num-types "${NUM_TYPES}" \
+            -max-fields "${MAX_FIELDS}" \
+            -max-depth "${MAX_DEPTH}" \
+            -max-array-len "${MAX_ARRAY}" \
+            -max-list-limit "${MAX_LIST}" \
+            -seed "${SEED}" \
+            -extended="${EXTENDED}"
+          cp tests/fuzz/corpus/types_gen.go "${ROUND_REPORT}/types_gen.go"
+
+          go run ./tests/fuzz/cmd/fuzz \
+            -duration 30s \
+            -report-dir "${ROUND_REPORT}" \
+            -seed "${SEED}" \
+            -workers 2
+
+          ISSUES=$(find "${ROUND_REPORT}" -maxdepth 1 -name 'issue-*' -type d | wc -l)
+          if [ "${ISSUES}" -gt 0 ]; then
+            echo "::error::Fuzz round ${ROUND} found ${ISSUES} issues"
+            for ISSUE_DIR in "${ROUND_REPORT}"/issue-*/; do
+              echo "--- $(basename "${ISSUE_DIR}") ---"
+              cat "${ISSUE_DIR}/details.txt"
+            done
+            exit 1
+          fi
+        done
+
+        echo "Multi-corpus fuzz campaign passed: 12 fresh corpora, 6 minutes fuzz time"
+
+    - name: Upload fuzz failure artifacts
+      if: failure()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: fuzz-smoke-failure
+        path: ${{ runner.temp }}/fuzz-reports

@@ -13,12 +13,14 @@ import (
 type IssueType string
 
 const (
-	IssuePanic           IssueType = "panic"
-	IssueMarshalMismatch IssueType = "marshal-mismatch"
-	IssueSizeMismatch    IssueType = "size-mismatch"
-	IssueHTRMismatch     IssueType = "htr-mismatch"
-	IssueStreamMismatch  IssueType = "stream-mismatch"
-	IssueUnmarshalDiff   IssueType = "unmarshal-diff"
+	IssuePanic             IssueType = "panic"
+	IssueMarshalMismatch   IssueType = "marshal-mismatch"
+	IssueSizeMismatch      IssueType = "size-mismatch"
+	IssueHTRMismatch       IssueType = "htr-mismatch"
+	IssueStreamMismatch    IssueType = "stream-mismatch"
+	IssueUnmarshalDiff     IssueType = "unmarshal-diff"
+	IssueReferenceMismatch IssueType = "reference-mismatch"
+	IssueNonDeterministic  IssueType = "nondeterministic"
 )
 
 // Issue represents a single fuzzing issue found.

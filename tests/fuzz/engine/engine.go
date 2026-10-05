@@ -35,6 +35,9 @@ type Stats struct {
 	WalkerPrograms    atomic.Uint64
 	WalkerMismatches  atomic.Uint64
 	Successes         atomic.Uint64
+	OracleChecks      atomic.Uint64
+	ReferenceChecks   atomic.Uint64
+	ReferenceSkips    atomic.Uint64
 }
 
 // Engine is the core fuzz testing engine.
@@ -48,11 +51,25 @@ type Engine struct {
 	// to a known length during the decoder's initial fill.
 	dsUnknown         *dynssz.DynSsz
 	dsUnknownExtended *dynssz.DynSsz
+	dsNative          *dynssz.DynSsz
+	dsNativeExtended  *dynssz.DynSsz
 	reporter          *Reporter
 	stats             *Stats
 	rng               *rand.Rand
 	filler            *Filler
 	maxDataLen        int
+	oracles           bool
+	reference         bool
+}
+
+// SetOracles enables independent and invariant checks for valid values. The
+// native engines must use WithNoFastHash so they exercise a separate SHA-256
+// backend.
+func (e *Engine) SetOracles(enabled, reference bool, native, nativeExtended *dynssz.DynSsz) {
+	e.oracles = enabled
+	e.reference = reference
+	e.dsNative = native
+	e.dsNativeExtended = nativeExtended
 }
 
 // NewEngine creates a new fuzz engine with its own RNG but shared DynSsz
@@ -149,6 +166,10 @@ func (e *Engine) fuzzValidInstance(entry corpus.TypeEntry, ds *dynssz.DynSsz) {
 
 	// Round-trip: marshal -> unmarshal -> marshal
 	e.testRoundTrip(entry, ds, instance, nil)
+
+	if e.oracles {
+		e.oracleChecks(entry, ds, instance)
+	}
 }
 
 // fuzzMutatedValid creates valid data, then mutates it and tests unmarshal.
@@ -1060,7 +1081,7 @@ func PrintStats(stats *Stats, elapsed time.Duration) {
 
 	fmt.Printf(
 		"\r[%s] iters: %d (%.0f/s) | valid: %d mutated: %d random: %d | "+
-			"ok: %d panic: %d marshal: %d size: %d htr: %d stream: %d unmarshal: %d walker: %d/%d | "+
+			"ok: %d oracle: %d ref: %d/%d panic: %d marshal: %d size: %d htr: %d stream: %d unmarshal: %d walker: %d/%d | "+
 			"mem: %s alloc, %s sys, %d gc",
 		elapsed.Truncate(time.Second),
 		iters, rate,
@@ -1068,6 +1089,9 @@ func PrintStats(stats *Stats, elapsed time.Duration) {
 		stats.MutatedFills.Load(),
 		stats.RandomInputs.Load(),
 		stats.Successes.Load(),
+		stats.OracleChecks.Load(),
+		stats.ReferenceChecks.Load(),
+		stats.ReferenceChecks.Load()+stats.ReferenceSkips.Load(),
 		stats.Panics.Load(),
 		stats.MarshalMismatches.Load(),
 		stats.SizeMismatches.Load(),
