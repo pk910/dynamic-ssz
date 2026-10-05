@@ -7702,10 +7702,10 @@ func TestTypeHintDeeperDimensionOverrides(t *testing.T) {
 
 // legacyShape is the shape of a -legacy generation of a type with a spec
 // expression: the complete dynamic surface beside the static one, whose
-// methods forward to the global instance. The three types below carry the
-// same methods and differ in annotation and in how much of the dynamic
-// surface they declare. legacyShape itself has no annotation, as a generation
-// before v1.3.3 has none.
+// methods forward to the global instance. It has no annotation, as a
+// generation before v1.3.3 has none; annotatedLegacyShape carries the same
+// methods with one, and annotatedPartialShape declares only part of the
+// dynamic surface.
 type legacyShape struct {
 	Items []uint64 `ssz-max:"4" dynssz-max:"LEGACY_MAX"`
 }
@@ -7759,16 +7759,13 @@ var (
 	_ = sszutils.Annotate[annotatedPartialShape](`ssz-static:"false" ssz-minsize:"4"`)
 )
 
-// A generated type's static methods are the same bodies again or -legacy
-// wrappers over the global instance's specs, so a type with an annotation and
-// the complete dynamic surface loses its static surface on every path: the
-// shallow build drops it when delegating, and the traversal under
-// NoDelegation drops it as well, so the walk never reaches its wrappers. A type
-// without an annotation is not classified, whether hand-written or generated
-// before the annotation existed, and a type with only part of the dynamic
-// surface is hand-written: both keep their static surface under NoDelegation,
-// the historical behavior, on purpose.
-func TestTypeCache_GeneratedStaticSurfaceDropped(t *testing.T) {
+// Under NoDelegation a type with the complete dynamic surface is walked,
+// static methods or not: a -legacy generation's static methods forward to the
+// global instance's specs, and only the method set tells them from real static
+// bodies, so the static surface is dropped as the shallow build drops it when
+// delegating. The annotation plays no part. A type with only part of the
+// dynamic surface has no such wrappers and keeps its static surface.
+func TestTypeCache_NoDelegationDropsStaticSurfaceBesideDynamic(t *testing.T) {
 	const static = SszCompatFlagFastsszSurface | SszCompatFlagFastsszHashRoot | SszCompatFlagFastsszHashRootWith
 
 	for _, tc := range []struct {
@@ -7779,7 +7776,7 @@ func TestTypeCache_GeneratedStaticSurfaceDropped(t *testing.T) {
 	}{
 		{"annotated, complete dynamic surface, delegating", annotatedLegacyShape{}, false, false},
 		{"annotated, complete dynamic surface, no delegation", annotatedLegacyShape{}, true, false},
-		{"no annotation, no delegation", legacyShape{}, true, true},
+		{"no annotation, complete dynamic surface, no delegation", legacyShape{}, true, false},
 		{"annotated, partial dynamic surface, no delegation", annotatedPartialShape{}, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

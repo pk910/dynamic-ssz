@@ -1228,18 +1228,19 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 
 	tc.detectCompatFlags(desc, runtimeType, schemaType)
 
-	// A type that declares itself through an annotation and carries the complete
-	// dynamic surface is generated code. Its static methods, when it has them,
-	// are the same bodies again or, with -legacy, wrappers that forward to the
-	// global instance's specs; neither may answer for this instance's specs, so
-	// the static surface is dropped as the shallow path above drops it. Such a
-	// type reaches this traversal under NoDelegation, which then walks it. The
-	// rule reads the type's own annotation and methods, so a flag the recursion
-	// fix-up raises later cannot change it. A cache that describes code for the
-	// generator (noSpecResolution) keeps the surface: a static generation reaches
-	// such a child only through its static methods, and they are what break its
-	// recursion there.
-	if staticAnnotation != nil && !tc.noSpecResolution && desc.SszType != SszCustomType && fullyDelegatesSSZ(runtimeType, tc.PromotedDelegationMethods(runtimeType)) {
+	// Under NoDelegation a type that carries the complete dynamic surface is
+	// walked, static methods or not. A -legacy generation of a type with spec
+	// expressions emits static methods that forward to the type's dynamic method
+	// with the global instance's specs, and nothing but the method set tells
+	// them from real static bodies: a type with both surfaces could reach the
+	// global specs from an instance of its own, so its static surface is dropped
+	// as the shallow path above drops it. The static surface of a type without a
+	// dynamic one stays governed by NoFastSsz. The rule reads the type's own
+	// methods, so a flag the recursion fix-up raises later cannot change it. A
+	// cache that describes code for the generator (noSpecResolution) keeps the
+	// surface: a static generation reaches such a child only through its static
+	// methods, and they are what break its recursion there.
+	if tc.NoDelegation && !tc.noSpecResolution && desc.SszType != SszCustomType && fullyDelegatesSSZ(runtimeType, tc.PromotedDelegationMethods(runtimeType)) {
 		desc.SszCompatFlags &^= SszCompatFlagFastsszSurface | SszCompatFlagFastsszHashRoot | SszCompatFlagFastsszHashRootWith
 		desc.HashTreeRootWithMethod = nil
 	}

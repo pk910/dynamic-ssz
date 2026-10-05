@@ -3696,10 +3696,11 @@ type nsRecursiveHolder struct {
 }
 
 // TestStaticGenerationKeepsExternalStaticSurface guards the generator's
-// analysis cache against the runtime rule that drops a generated type's static
-// surface under NoDelegation: that rule describes this process, while the
-// static generation describes code that reaches the child only through its
-// static methods, and terminates the child's recursion through them.
+// analysis cache against the runtime rule that drops the static surface of a
+// type with the complete dynamic surface under NoDelegation: that rule
+// describes this process, while the static generation describes code that
+// reaches the child only through its static methods, and terminates the
+// child's recursion through them.
 func TestStaticGenerationKeepsExternalStaticSurface(t *testing.T) {
 	cg := NewCodeGenerator(nil)
 	cg.BuildFile("gen.go", WithReflectType(reflect.TypeFor[nsRecursiveHolder](), WithoutDynamicExpressions()))
