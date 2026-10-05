@@ -1235,8 +1235,11 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 	// the static surface is dropped as the shallow path above drops it. Such a
 	// type reaches this traversal under NoDelegation, which then walks it. The
 	// rule reads the type's own annotation and methods, so a flag the recursion
-	// fix-up raises later cannot change it.
-	if staticAnnotation != nil && desc.SszType != SszCustomType && fullyDelegatesSSZ(runtimeType, tc.PromotedDelegationMethods(runtimeType)) {
+	// fix-up raises later cannot change it. A cache that describes code for the
+	// generator (noSpecResolution) keeps the surface: a static generation reaches
+	// such a child only through its static methods, and they are what break its
+	// recursion there.
+	if staticAnnotation != nil && !tc.noSpecResolution && desc.SszType != SszCustomType && fullyDelegatesSSZ(runtimeType, tc.PromotedDelegationMethods(runtimeType)) {
 		desc.SszCompatFlags &^= SszCompatFlagFastsszSurface | SszCompatFlagFastsszHashRoot | SszCompatFlagFastsszHashRootWith
 		desc.HashTreeRootWithMethod = nil
 	}

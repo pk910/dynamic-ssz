@@ -3663,3 +3663,53 @@ func TestSpecSetBuilderFloors(t *testing.T) {
 		t.Fatalf("value entry not resolved with its error:\n%s", code.String())
 	}
 }
+
+// nsRecursiveDelegated stands for an external -legacy generation of a recursive
+// type: an annotation, the complete dynamic surface and the static one. A
+// static generation of a holder cannot call the dynamic surface, so the child's
+// static surface is what breaks the cycle; the analysis cache must keep it.
+type nsRecursiveDelegated struct {
+	Value    uint64
+	Children []*nsRecursiveDelegated `ssz-max:"4"`
+}
+
+var _ = sszutils.Annotate[nsRecursiveDelegated](`ssz-static:"false" ssz-minsize:"12"`)
+
+func (*nsRecursiveDelegated) MarshalSSZ() ([]byte, error)                { return nil, nil }
+func (*nsRecursiveDelegated) MarshalSSZTo(buf []byte) ([]byte, error)    { return buf, nil }
+func (*nsRecursiveDelegated) UnmarshalSSZ([]byte) error                  { return nil }
+func (*nsRecursiveDelegated) SizeSSZ() int                               { return 12 }
+func (*nsRecursiveDelegated) HashTreeRoot() ([32]byte, error)            { return [32]byte{}, nil }
+func (*nsRecursiveDelegated) HashTreeRootWith(sszutils.HashWalker) error { return nil }
+func (*nsRecursiveDelegated) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (*nsRecursiveDelegated) UnmarshalSSZDyn(sszutils.DynamicSpecs, []byte) error { return nil }
+func (*nsRecursiveDelegated) SizeSSZDyn(sszutils.DynamicSpecs) int                { return 12 }
+func (*nsRecursiveDelegated) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
+type nsRecursiveHolder struct {
+	A uint32
+	R nsRecursiveDelegated
+}
+
+// TestStaticGenerationKeepsExternalStaticSurface guards the generator's
+// analysis cache against the runtime rule that drops a generated type's static
+// surface under NoDelegation: that rule describes this process, while the
+// static generation describes code that reaches the child only through its
+// static methods, and terminates the child's recursion through them.
+func TestStaticGenerationKeepsExternalStaticSurface(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen.go", WithReflectType(reflect.TypeFor[nsRecursiveHolder](), WithoutDynamicExpressions()))
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	for _, call := range []string{"t.R.SizeSSZ()", "t.R.UnmarshalSSZ("} {
+		if !strings.Contains(files["gen.go"], call) {
+			t.Errorf("expected the holder to reach the recursive child through its static surface (%s)", call)
+		}
+	}
+}
