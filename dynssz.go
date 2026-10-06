@@ -6,6 +6,7 @@
 package dynssz
 
 import (
+	"cmp"
 	"fmt"
 	"io"
 	"log/slog"
@@ -766,13 +767,12 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
 	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation, d.options.MaxNestingDepth)
 
 	size, err := ctx.SizeSSZ(sourceTypeDesc, sourceValue)
-	if err != nil {
-		return 0, err
-	}
-
 	// Every size is bounded to the SSZ size limit where it enters the size
 	// domain, and that limit is the platform int where the int is narrower, so
-	// the value fits: min(MaxUint32, MaxInt) can never exceed MaxInt.
+	// the value fits; the bound is stated where the conversion is made.
+	if err != nil || size > math.MaxInt {
+		return 0, cmp.Or(err, sszutils.ErrPlatformOverflowWidthFn("SSZ size", uint64(size)))
+	}
 	return int(size), nil
 }
 
