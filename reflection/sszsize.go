@@ -27,6 +27,32 @@ func delegatedSize(desc *ssztypes.TypeDescriptor, size int) (int64, error) {
 	return int64(size), nil
 }
 
+// isPlainByteList reports whether desc is a list of bytes whose size is its
+// length and nothing else: no pointer to follow, no view, no method of its own
+// that answers for it and no place in a recursive cycle.
+func isPlainByteList(desc *ssztypes.TypeDescriptor) bool {
+	return (desc.SszType == ssztypes.SszListType || desc.SszType == ssztypes.SszProgressiveListType) &&
+		desc.ElemDesc.SszType == ssztypes.SszUint8Type &&
+		desc.GoTypeFlags&(ssztypes.GoTypeFlagIsPointer|ssztypes.GoTypeFlagIsView) == 0 &&
+		desc.SszCompatFlags == 0 &&
+		desc.SszTypeFlags&ssztypes.SszTypeFlagRecursionMember == 0
+}
+
+// listItemSize is getSszValueSize for the items of a list of dynamic items.
+// A list of plain byte lists (the transactions of a block) is sized by the
+// length of each item, without the walk into it; byteItems is
+// isPlainByteList(desc), asked once per list. An item past its limit takes
+// the walk, which reports it.
+func (ctx *ReflectionCtx) listItemSize(desc *ssztypes.TypeDescriptor, byteItems bool, item reflect.Value, depth reflectionDepth) (int64, error) {
+	if byteItems {
+		size := uint64(item.Len())
+		if size <= sszutils.MaxSszSize && (desc.SszTypeFlags&ssztypes.SszTypeFlagHasLimit == 0 || size <= desc.Limit) {
+			return int64(size), nil
+		}
+	}
+	return ctx.getSszValueSize(desc, item, depth)
+}
+
 // getSszValueSize calculates the exact SSZ-encoded size of a value.
 //
 // This internal function is used by SizeSSZ to determine buffer requirements for serialization.
@@ -241,8 +267,9 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 				staticSize = uint64(sliceLen)
 			case fieldType.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0:
 				// slice with dynamic size items, so we have to go through each item
+				byteItems := isPlainByteList(fieldType)
 				for i := 0; i < sliceLen; i++ {
-					size, err := ctx.getSszValueSize(fieldType, targetValue.Index(i), depth)
+					size, err := ctx.listItemSize(fieldType, byteItems, targetValue.Index(i), depth)
 					if err != nil {
 						return 0, sszutils.ErrorWithPathf(err, "[%d]", i)
 					}

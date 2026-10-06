@@ -770,6 +770,71 @@ func TestMarshalSSZWriterWriteError(t *testing.T) {
 	}
 }
 
+func TestMarshalSSZWriterReusesEncoder(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz())
+	container := &testSimpleContainer{Value: 42}
+
+	expected, err := ds.MarshalSSZ(container)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// A failed write must not leak into the calls that reuse its encoder.
+	if err := ds.MarshalSSZWriter(container, &errorWriter{err: fmt.Errorf("write failed")}); err == nil {
+		t.Fatal("expected write error")
+	}
+	for i := 0; i < 3; i++ {
+		var buf bytes.Buffer
+		if err := ds.MarshalSSZWriter(container, &buf); err != nil {
+			t.Fatalf("call %d: unexpected error: %v", i, err)
+		}
+		if !bytes.Equal(buf.Bytes(), expected) {
+			t.Fatalf("call %d: unexpected output: %x", i, buf.Bytes())
+		}
+	}
+}
+
+func TestEntryPointsReuseEncodersAndDecoders(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz())
+	container := &testSimpleContainer{Value: 42}
+
+	expected, err := ds.MarshalSSZ(container)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Every call after the first takes the encoder or decoder the previous one
+	// returned, in whatever state that call left it: a failed decode must not
+	// leak into the next.
+	for i := 0; i < 3; i++ {
+		buf, err := ds.MarshalSSZTo(container, make([]byte, 0, 8))
+		if err != nil || !bytes.Equal(buf, expected) {
+			t.Fatalf("call %d: MarshalSSZTo = %x, %v", i, buf, err)
+		}
+
+		var fromBuffer testSimpleContainer
+		if err := ds.UnmarshalSSZ(&fromBuffer, expected[:len(expected)-1]); err == nil {
+			t.Fatalf("call %d: UnmarshalSSZ accepted a truncated input", i)
+		}
+		if err := ds.UnmarshalSSZ(&fromBuffer, expected); err != nil || fromBuffer != *container {
+			t.Fatalf("call %d: UnmarshalSSZ = %+v, %v", i, fromBuffer, err)
+		}
+
+		var fromReader testSimpleContainer
+		if err := ds.UnmarshalSSZReader(&fromReader, bytes.NewReader(expected[:len(expected)-1]), len(expected)); err == nil {
+			t.Fatalf("call %d: UnmarshalSSZReader accepted a truncated input", i)
+		}
+		if err := ds.UnmarshalSSZReader(&fromReader, bytes.NewReader(expected), len(expected)); err != nil || fromReader != *container {
+			t.Fatalf("call %d: UnmarshalSSZReader = %+v, %v", i, fromReader, err)
+		}
+
+		var fromStream testSimpleContainer
+		if err := ds.UnmarshalSSZReader(&fromStream, bytes.NewReader(expected), -1); err != nil || fromStream != *container {
+			t.Fatalf("call %d: UnmarshalSSZReader of unknown length = %+v, %v", i, fromStream, err)
+		}
+	}
+}
+
 type errorWriter struct {
 	err error
 }
@@ -5616,9 +5681,24 @@ func TestNegativeDelegatedSizeAtEntryPoints(t *testing.T) {
 	}
 }
 
+// resetPools empties the pools the entry points take their encoders and
+// decoders from, so the next call of each allocates its own.
+func (d *DynSsz) resetPools() {
+	d.bufferEncoders = sync.Pool{}
+	d.bufferDecoders = sync.Pool{}
+	d.streamEncoders = sync.Pool{}
+	d.streamDecoders = sync.Pool{}
+}
+
 // A declared size is trusted, so a known-size reader decode sizes its lists
 // from the declaration like a buffer decode does: the only allocations it
-// adds are the decoder and its read buffer, never a growth series.
+// adds are the decoder and its read buffer, never a growth series. The pools
+// are emptied before every call so that each one allocates its decoder:
+// under the race detector a pool drops what is returned to it at random,
+// and the count would vary with it. The offset slices of the reader decode
+// come from a pool of their own, which varies the count by a few in the same
+// way; the allowance covers that, and a growth series of either list is far
+// past it.
 func TestKnownSizeReaderAllocatesLikeBuffer(t *testing.T) {
 	type lists struct {
 		L  []uint32   `ssz-max:"1048576"`
@@ -5634,16 +5714,18 @@ func TestKnownSizeReaderAllocatesLikeBuffer(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	buffer := testing.AllocsPerRun(5, func() {
+		ds.resetPools()
 		if err := ds.UnmarshalSSZ(&lists{}, full); err != nil {
 			t.Fatal(err)
 		}
 	})
 	reader := testing.AllocsPerRun(5, func() {
+		ds.resetPools()
 		if err := ds.UnmarshalSSZReader(&lists{}, bytes.NewReader(full), len(full)); err != nil {
 			t.Fatal(err)
 		}
 	})
-	if reader > buffer+8 {
+	if reader > buffer+12 {
 		t.Fatalf("known-size reader decode: %v allocs, buffer decode: %v", reader, buffer)
 	}
 }
@@ -8556,10 +8638,14 @@ type hugeDynVec []hugeDynVecElem
 
 var _ = sszutils.Annotate[hugeDynVec](`ssz-size:"10000000"`)
 
-// reservedBytes reports what the heap grew by while fn ran.
+// reservedBytes reports what the heap grew by while fn ran. fn runs once
+// before the measured run: a collection drops the bookkeeping of the pools the
+// entry points take their encoders and decoders from, and the first call after
+// it allocates that again.
 func reservedBytes(fn func()) uint64 {
 	var before, after runtime.MemStats
 	runtime.GC()
+	fn()
 	runtime.ReadMemStats(&before)
 	fn()
 	runtime.ReadMemStats(&after)

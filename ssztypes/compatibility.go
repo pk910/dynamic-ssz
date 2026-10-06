@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"unsafe"
 
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
@@ -72,12 +73,39 @@ var delegationMethodNames = []string{
 // delegation hot path, so it is memoized per TypeCache. A nil map means no
 // delegation method is promoted.
 func (tc *TypeCache) PromotedDelegationMethods(targetType reflect.Type) map[string]bool {
-	if v, ok := tc.promotedDelegation.Load(targetType); ok {
-		cached, _ := v.(map[string]bool)
+	// A reflect.Type holds its type pointer in its data word, and two of them
+	// are the same type exactly when they hold the same pointer. A map over
+	// the pointer is looked up without hashing an interface.
+	word := (*[2]unsafe.Pointer)(unsafe.Pointer(&targetType))[1]
+
+	var current map[unsafe.Pointer]map[string]bool
+	if cache := tc.promotedDelegation.Load(); cache != nil {
+		current = *cache
+	}
+	if cached, ok := current[word]; ok {
 		return cached
 	}
+
 	result := structPromotedDelegationMethods(targetType)
-	tc.promotedDelegation.Store(targetType, result)
+
+	tc.promotedDelegationMutex.Lock()
+	defer tc.promotedDelegationMutex.Unlock()
+
+	current = nil
+	if cache := tc.promotedDelegation.Load(); cache != nil {
+		current = *cache
+	}
+
+	// Readers hold the published map without a lock, so it is never written:
+	// a new entry publishes a copy. The result is a pure function of the
+	// type, so a caller that lost the race to another publishes an equal one.
+	next := make(map[unsafe.Pointer]map[string]bool, len(current)+1)
+	for k, v := range current {
+		next[k] = v
+	}
+	next[word] = result
+	tc.promotedDelegation.Store(&next)
+
 	return result
 }
 

@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"unsafe"
 
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
@@ -95,9 +97,12 @@ type TypeCache struct {
 	// rather than for this process. See DisableSpecResolution.
 	noSpecResolution bool
 
-	// promotedDelegation memoizes PromotedDelegationMethods (reflect.Type ->
-	// map[string]bool); the detection sits on the per-call delegation hot path.
-	promotedDelegation sync.Map
+	// promotedDelegation memoizes PromotedDelegationMethods by the identity of
+	// the type. The detection sits on the per-call delegation hot path, so
+	// readers load an immutable map without a lock, and the first lookup of a
+	// type publishes a copy under promotedDelegationMutex.
+	promotedDelegation      atomic.Pointer[map[unsafe.Pointer]map[string]bool]
+	promotedDelegationMutex sync.Mutex
 }
 
 // emptySpecs is a no-op DynamicSpecs used when a TypeCache is created without a

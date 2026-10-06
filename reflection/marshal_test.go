@@ -1002,6 +1002,47 @@ func TestSizeSSZListDynamicElements(t *testing.T) {
 	}
 }
 
+func TestSizeSSZListOfByteLists(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type byteLists struct {
+		Data [][]byte `ssz-max:"10,4"`
+	}
+
+	input := byteLists{[][]byte{{1, 2}, {}, {3, 4, 5, 6}}}
+	size, err := dynssz.SizeSSZ(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Container offset (4) + 3 item offsets (12) + 2 + 0 + 4 bytes
+	if size != 22 {
+		t.Errorf("expected size 22, got %d", size)
+	}
+
+	// The streamed form sizes the items for its offsets and must agree with
+	// the buffered form.
+	bufResult, err := dynssz.MarshalSSZ(input)
+	if err != nil {
+		t.Fatalf("MarshalSSZ error: %v", err)
+	}
+	memWriter := bytes.NewBuffer(nil)
+	if err := dynssz.MarshalSSZWriter(input, memWriter); err != nil {
+		t.Fatalf("MarshalSSZWriter error: %v", err)
+	}
+	if len(bufResult) != size || !bytes.Equal(bufResult, memWriter.Bytes()) {
+		t.Errorf("encoding mismatch: size %d, buffer %x, writer %x", size, bufResult, memWriter.Bytes())
+	}
+
+	// An item past its limit is refused with the item's path, as by the walk.
+	tooLong := byteLists{[][]byte{{1}, {1, 2, 3, 4, 5}}}
+	if _, err := dynssz.SizeSSZ(tooLong); err == nil || !strings.Contains(err.Error(), "Data[1]") {
+		t.Errorf("expected a list length error at Data[1], got %v", err)
+	}
+	if err := dynssz.MarshalSSZWriter(tooLong, bytes.NewBuffer(nil)); err == nil {
+		t.Error("expected MarshalSSZWriter to refuse an item past its limit")
+	}
+}
+
 func TestSizeSSZListStaticElements(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithNoFastSsz())
 

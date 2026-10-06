@@ -13,6 +13,8 @@ import (
 	"math/big"
 	"reflect"
 	"sync"
+	"sync/atomic"
+	"unsafe"
 
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/reflection"
@@ -56,8 +58,18 @@ type DynSsz struct {
 	specValues     map[string]any              // Dynamic specification values
 	specValueCache map[string]*cachedSpecValue // Cache for parsed specification expressions
 	specCacheMutex sync.RWMutex
-	specSets       sync.Map // specSets holds the resolved spec set of generated types
-	options        *DynSszOptions
+	// specSets holds the resolved spec set of generated types by the identity
+	// of their key type. A set is read on every entry of a generated method
+	// and stored once per type, so readers load an immutable map without a
+	// lock, and a store publishes a copy under specCacheMutex.
+	specSets atomic.Pointer[map[unsafe.Pointer][]uint64]
+	options  *DynSszOptions
+
+	// Idle encoders and decoders of the entry points.
+	bufferEncoders sync.Pool
+	bufferDecoders sync.Pool
+	streamEncoders sync.Pool
+	streamDecoders sync.Pool
 }
 
 // defaultLogCb is where verbose logging goes when a caller names no sink.
@@ -215,6 +227,22 @@ func (d *DynSsz) delegable(v any, method string) bool {
 	return !d.typeCache.PromotedDelegationMethods(reflect.TypeOf(v))[method]
 }
 
+// acquireBufferEncoder returns an idle buffer encoder writing into buf.
+func (d *DynSsz) acquireBufferEncoder(buf []byte) *sszutils.BufferEncoder {
+	if enc, ok := d.bufferEncoders.Get().(*sszutils.BufferEncoder); ok {
+		enc.Reset(buf)
+		return enc
+	}
+	return sszutils.NewBufferEncoder(buf)
+}
+
+// releaseBufferEncoder returns enc to the idle encoders, without the buffer
+// it wrote, which belongs to the caller.
+func (d *DynSsz) releaseBufferEncoder(enc *sszutils.BufferEncoder) {
+	enc.Reset(nil)
+	d.bufferEncoders.Put(enc)
+}
+
 // MarshalSSZ serializes the given source into its SSZ (Simple Serialize) representation.
 //
 // This method dynamically handles the serialization of Go types to SSZ format, supporting both
@@ -266,11 +294,16 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 	if cfg == nil || cfg.viewDescriptor == nil {
 		marshaler, hasMarshaler := source.(sszutils.DynamicMarshaler)
 		sszEncoder, hasEncoder := source.(sszutils.DynamicEncoder)
-		hasMarshaler = hasMarshaler && d.delegable(source, "MarshalSSZDyn")
-		hasEncoder = hasEncoder && d.delegable(source, "MarshalSSZEncoder")
+		// One lookup answers for the three methods asked about below.
+		var promoted map[string]bool
+		if hasMarshaler || hasEncoder {
+			promoted = d.typeCache.PromotedDelegationMethods(reflect.TypeOf(source))
+		}
+		hasMarshaler = hasMarshaler && !promoted["MarshalSSZDyn"]
+		hasEncoder = hasEncoder && !promoted["MarshalSSZEncoder"]
 		if (hasMarshaler || hasEncoder) && !d.options.NoDelegation {
 			var buf []byte
-			if sizer, ok := source.(sszutils.DynamicSizer); ok && d.delegable(source, "SizeSSZDyn") {
+			if sizer, ok := source.(sszutils.DynamicSizer); ok && !promoted["SizeSSZDyn"] {
 				size := sizer.SizeSSZDyn(d)
 				if err := checkDelegatedSize(source, size); err != nil {
 					return nil, err
@@ -282,11 +315,14 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 			if hasMarshaler {
 				return marshaler.MarshalSSZDyn(d, buf)
 			}
-			enc := sszutils.NewBufferEncoder(buf)
-			if err := sszEncoder.MarshalSSZEncoder(d, enc); err != nil {
+			enc := d.acquireBufferEncoder(buf)
+			err := sszEncoder.MarshalSSZEncoder(d, enc)
+			newBuf := enc.GetBuffer()
+			d.releaseBufferEncoder(enc)
+			if err != nil {
 				return nil, err
 			}
-			return enc.GetBuffer(), nil
+			return newBuf, nil
 		}
 	} else if viewMarshaler, ok := source.(sszutils.DynamicViewMarshaler); ok && !d.options.NoDelegation && d.delegable(source, "MarshalSSZDynView") {
 		if marshalFn := viewMarshaler.MarshalSSZDynView(cfg.viewDescriptor); marshalFn != nil {
@@ -330,13 +366,14 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 	// The type cache bounds every static size to the platform int at analysis
 	// and a delegated sizer speaks int, so the size fits here.
 	buf := make([]byte, 0, size)
-	encoder := sszutils.NewBufferEncoder(buf)
+	encoder := d.acquireBufferEncoder(buf)
 	err = ctx.MarshalSSZ(sourceTypeDesc, sourceValue, encoder)
+	newBuf := encoder.GetBuffer()
+	d.releaseBufferEncoder(encoder)
 	if err != nil {
 		return nil, err
 	}
 
-	newBuf := encoder.GetBuffer()
 	if int64(len(newBuf)) != size {
 		return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "ssz length does not match expected length (expected: %v, got: %v)", size, len(newBuf))
 	}
@@ -400,11 +437,14 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 				return marshaler.MarshalSSZDyn(d, buf)
 			}
 			if sszEncoder, ok := source.(sszutils.DynamicEncoder); ok && d.delegable(source, "MarshalSSZEncoder") {
-				enc := sszutils.NewBufferEncoder(buf)
-				if err := sszEncoder.MarshalSSZEncoder(d, enc); err != nil {
+				enc := d.acquireBufferEncoder(buf)
+				err := sszEncoder.MarshalSSZEncoder(d, enc)
+				newBuf := enc.GetBuffer()
+				d.releaseBufferEncoder(enc)
+				if err != nil {
 					return nil, err
 				}
-				return enc.GetBuffer(), nil
+				return newBuf, nil
 			}
 		}
 	} else if viewMarshaler, ok := source.(sszutils.DynamicViewMarshaler); ok && !d.options.NoDelegation && d.delegable(source, "MarshalSSZDynView") {
@@ -445,18 +485,37 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 		buf = grown
 	}
 
-	encoder := sszutils.NewBufferEncoder(buf)
+	encoder := d.acquireBufferEncoder(buf)
 	err = ctx.MarshalSSZ(sourceTypeDesc, sourceValue, encoder)
+	newBuf := encoder.GetBuffer()
+	d.releaseBufferEncoder(encoder)
 	if err != nil {
 		return nil, err
 	}
 
-	newBuf := encoder.GetBuffer()
 	if int64(len(newBuf)-len(buf)) != size {
 		return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "ssz length does not match expected length (expected: %v, got: %v)", size, len(newBuf)-len(buf))
 	}
 
 	return newBuf, nil
+}
+
+// acquireStreamEncoder returns an idle stream encoder writing to w. It keeps
+// the buffers of its previous use: a value with a child that marshals through
+// the scratch buffer would otherwise grow it from nothing on every call.
+func (d *DynSsz) acquireStreamEncoder(w io.Writer) *sszutils.StreamEncoder {
+	if enc, ok := d.streamEncoders.Get().(*sszutils.StreamEncoder); ok {
+		enc.Reset(w)
+		return enc
+	}
+	return sszutils.NewStreamEncoder(w, d.options.StreamWriterBufferSize)
+}
+
+// releaseStreamEncoder returns enc to the idle stream encoders, with its
+// buffers.
+func (d *DynSsz) releaseStreamEncoder(enc *sszutils.StreamEncoder) {
+	enc.Reset(nil)
+	d.streamEncoders.Put(enc)
 }
 
 // MarshalSSZWriter serializes the given source into its SSZ representation and writes it directly to an io.Writer.
@@ -533,8 +592,16 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "writer must not be nil")
 	}
 	cfg := applyCallOptions(opts)
-	encoder := sszutils.NewStreamEncoder(w, d.options.StreamWriterBufferSize)
 
+	encoder := d.acquireStreamEncoder(w)
+	err := d.marshalSSZWriter(source, encoder, cfg)
+	d.releaseStreamEncoder(encoder)
+
+	return err
+}
+
+// marshalSSZWriter is MarshalSSZWriter on the encoder it took.
+func (d *DynSsz) marshalSSZWriter(source any, encoder *sszutils.StreamEncoder, cfg *callConfig) error {
 	// This entry point prefers the streaming form and bridges the buffer form
 	// through the encoder's buffer; the buffer entry point prefers the buffer
 	// form, so both reach the same method set, each through its own form
@@ -709,6 +776,22 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
 	return int(size), nil
 }
 
+// acquireBufferDecoder returns an idle buffer decoder reading buf.
+func (d *DynSsz) acquireBufferDecoder(buf []byte) *sszutils.BufferDecoder {
+	if dec, ok := d.bufferDecoders.Get().(*sszutils.BufferDecoder); ok {
+		dec.Reset(buf)
+		return dec
+	}
+	return sszutils.NewBufferDecoder(buf)
+}
+
+// releaseBufferDecoder returns dec to the idle decoders, without the input
+// it read, which belongs to the caller.
+func (d *DynSsz) releaseBufferDecoder(dec *sszutils.BufferDecoder) {
+	dec.Reset(nil)
+	d.bufferDecoders.Put(dec)
+}
+
 // UnmarshalSSZ decodes the given SSZ-encoded data into the target object.
 //
 // This method is the counterpart to MarshalSSZ, reconstructing Go values from their SSZ representation.
@@ -763,11 +846,14 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 				return unmarshaler.UnmarshalSSZDyn(d, ssz)
 			}
 			if sszDecoder, ok := target.(sszutils.DynamicDecoder); ok && d.delegable(target, "UnmarshalSSZDecoder") {
-				dec := sszutils.NewBufferDecoder(ssz)
-				if err := sszDecoder.UnmarshalSSZDecoder(d, dec); err != nil {
+				dec := d.acquireBufferDecoder(ssz)
+				err := sszDecoder.UnmarshalSSZDecoder(d, dec)
+				remaining := len(ssz) - dec.GetPosition()
+				d.releaseBufferDecoder(dec)
+				if err != nil {
 					return err
 				}
-				if remaining := len(ssz) - dec.GetPosition(); remaining > 0 {
+				if remaining > 0 {
 					return sszutils.ErrTrailingDataFn(remaining)
 				}
 				return nil
@@ -796,20 +882,48 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 
 	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation, d.options.MaxNestingDepth)
 
-	decoder := sszutils.NewBufferDecoder(ssz)
+	decoder := d.acquireBufferDecoder(ssz)
 	decoder.PushLimit(len(ssz))
 
 	err = ctx.UnmarshalSSZ(targetTypeDesc, targetValue, decoder)
 	if err != nil {
+		d.releaseBufferDecoder(decoder)
 		return err
 	}
 
 	consumedDiff := decoder.PopLimit()
+	d.releaseBufferDecoder(decoder)
 	if consumedDiff != 0 {
 		return sszutils.NewSszErrorf(sszutils.ErrOffset, "did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, len(ssz))
 	}
 
 	return nil
+}
+
+// acquireStreamDecoder returns an idle stream decoder reading r: size bytes
+// of it, or for a negative size a stream of unknown length up to
+// maxStreamSize. It keeps the read buffer of its previous use.
+func (d *DynSsz) acquireStreamDecoder(r io.Reader, size, maxStreamSize int) *sszutils.StreamDecoder {
+	bufSize := d.options.StreamReaderBufferSize
+	dec, reused := d.streamDecoders.Get().(*sszutils.StreamDecoder)
+	switch {
+	case reused && size >= 0:
+		dec.Reset(r, size, bufSize)
+	case reused:
+		dec.ResetUnknown(r, bufSize, maxStreamSize)
+	case size >= 0:
+		dec = sszutils.NewStreamDecoder(r, size, bufSize)
+	default:
+		dec = sszutils.NewUnknownStreamDecoder(r, bufSize, maxStreamSize)
+	}
+	return dec
+}
+
+// releaseStreamDecoder returns dec to the idle stream decoders, with its read
+// buffer.
+func (d *DynSsz) releaseStreamDecoder(dec *sszutils.StreamDecoder) {
+	dec.Reset(nil, 0, d.options.StreamReaderBufferSize)
+	d.streamDecoders.Put(dec)
 }
 
 // UnmarshalSSZReader decodes SSZ-encoded data from an io.Reader directly into the target object.
@@ -935,22 +1049,34 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 	if knownSize {
 		// The declared size is trusted input: it bounds the regions and the
 		// reads and sizes the allocations, so it has no ceiling of its own.
-		decoder = sszutils.NewStreamDecoder(r, size, d.options.StreamReaderBufferSize)
+		decoder = d.acquireStreamDecoder(r, size, 0)
 		decoder.PushLimit(size)
 	} else {
 		maxStreamSize := d.options.MaxStreamSize
 		if cfg != nil && cfg.maxStreamSize > 0 {
 			maxStreamSize = cfg.maxStreamSize
 		}
-		decoder = sszutils.NewUnknownStreamDecoder(r, d.options.StreamReaderBufferSize, maxStreamSize)
+		decoder = d.acquireStreamDecoder(r, size, maxStreamSize)
 		// Fill the read buffer once up front. If the whole payload fits, EOF is
 		// observed immediately and the length becomes exact, so the decode runs
 		// on the known-length path with all of its fail-fast validation intact.
 		if err := decoder.Prefill(); err != nil {
+			d.releaseStreamDecoder(decoder)
 			return err
 		}
 		decoder.PushOpenLimit()
 	}
+
+	err := d.unmarshalSSZReader(target, decoder, size, cfg)
+	d.releaseStreamDecoder(decoder)
+
+	return err
+}
+
+// unmarshalSSZReader is UnmarshalSSZReader on the decoder it took, positioned
+// in the root region.
+func (d *DynSsz) unmarshalSSZReader(target any, decoder *sszutils.StreamDecoder, size int, cfg *callConfig) error {
+	knownSize := size >= 0
 
 	// finish closes the root region, asserting the input was fully consumed.
 	finish := func() error {

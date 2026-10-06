@@ -268,6 +268,12 @@ func (ctx *encoderContext) generateSizeFnCode(indent int) (string, error) {
 			return "", err
 		}
 		appendCode(&codeBuf, indent+1, "var %s int64\n", sizeAccumulator)
+		if sizeCtx.usedDynSpecs && strings.Contains(sizeCtx.codeBuf.String(), "(ds") {
+			// The closure takes the specs from its context argument: one that
+			// captured the method's ds would be allocated on every call of
+			// the method.
+			appendCode(&codeBuf, indent+1, "ds := ctx.ds\n")
+		}
 		appendCode(&codeBuf, indent+1, "%s", sizeCtx.staticSizeVars.getCode())
 		appendCode(&codeBuf, indent+1, "%s", sizeCtx.codeBuf.String())
 		appendCode(&codeBuf, indent+1, "%s", emitSizeReturn(ctx.typePrinter))
