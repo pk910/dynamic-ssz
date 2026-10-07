@@ -9900,3 +9900,80 @@ func TestAsyncHashingOldGeneratedProgressiveList(t *testing.T) {
 		}
 	}
 }
+
+// RemoveType on the instance's cache rebuilds the descriptor a call through a
+// pointer cached, and removals racing with encode, decode and hash calls leave
+// every result correct.
+func TestRemoveTypeThroughDynSsz(t *testing.T) {
+	type removeItem struct {
+		A uint64
+		L []uint64 `ssz-max:"16"`
+	}
+	ds := NewDynSsz(nil)
+	value := &removeItem{A: 7, L: []uint64{1, 2, 3}}
+	want, err := ds.MarshalSSZ(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRoot, err := ds.HashTreeRoot(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ptr := reflect.TypeOf(value)
+	tc := ds.GetTypeCache()
+	first, err := tc.GetTypeDescriptor(ptr, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tc.RemoveType(reflect.TypeOf(removeItem{}))
+	if again, _ := tc.GetTypeDescriptor(ptr, nil, nil, nil); again == first {
+		t.Fatal("RemoveType did not evict the descriptor cached for the pointer")
+	}
+	if got, err := ds.MarshalSSZ(value); err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("marshal after RemoveType = %x, %v; want %x", got, err, want)
+	}
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				tc.RemoveType(ptr)
+				tc.RemoveType(reflect.TypeOf(removeItem{}))
+			}
+		}
+	}()
+	var workers sync.WaitGroup
+	for range 8 {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for range 300 {
+				got, err := ds.MarshalSSZ(value)
+				if err != nil || !bytes.Equal(got, want) {
+					t.Errorf("marshal = %x, %v; want %x", got, err, want)
+					return
+				}
+				root, err := ds.HashTreeRoot(value)
+				if err != nil || root != wantRoot {
+					t.Errorf("root = %x, %v; want %x", root, err, wantRoot)
+					return
+				}
+				decoded := &removeItem{}
+				if err := ds.UnmarshalSSZ(decoded, want); err != nil || !reflect.DeepEqual(decoded, value) {
+					t.Errorf("unmarshal = %+v, %v; want %+v", decoded, err, value)
+					return
+				}
+			}
+		}()
+	}
+	workers.Wait()
+	close(stop)
+	wg.Wait()
+}
