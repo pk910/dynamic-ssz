@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unsafe"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
@@ -532,7 +533,7 @@ func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sou
 			}
 		}
 	} else {
-		for i := 0; i < dataLen; i++ {
+		for i := ctx.marshalBulkElements(sourceType.ElemDesc, sourceValue, dataLen, encoder); i < dataLen; i++ {
 			itemVal := sourceValue.Index(i)
 			err := ctx.marshalType(sourceType.ElemDesc, itemVal, encoder, depth)
 			if err != nil {
@@ -714,7 +715,7 @@ func (ctx *ReflectionCtx) marshalList(sourceType *ssztypes.TypeDescriptor, sourc
 		fieldType := sourceType.ElemDesc
 		isPointer := fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0
 
-		for i := 0; i < sliceLen; i++ {
+		for i := ctx.marshalBulkElements(fieldType, sourceValue, sliceLen, encoder); i < sliceLen; i++ {
 			itemVal := sourceValue.Index(i)
 			if isPointer && itemVal.IsNil() {
 				itemVal = reflect.New(fieldType.Type.Elem())
@@ -1067,4 +1068,19 @@ func (ctx *ReflectionCtx) marshalBigInt(sourceType *ssztypes.TypeDescriptor, sou
 	encoder.EncodeBytes(mag)
 
 	return nil
+}
+
+// marshalBulkElements encodes the first n elements of value as one block when
+// bulkElements allows it, and returns how many it encoded.
+func (ctx *ReflectionCtx) marshalBulkElements(elem *ssztypes.TypeDescriptor, value reflect.Value, n int, encoder sszutils.Encoder) int {
+	ptr := ctx.bulkElements(elem, value)
+	if ptr == nil || n == 0 {
+		return 0
+	}
+	if elem.SszType == ssztypes.SszUint64Type {
+		sszutils.EncodeUint64Slice(encoder, unsafe.Slice((*uint64)(ptr), n))
+	} else {
+		encoder.EncodeBytes(unsafe.Slice((*byte)(ptr), n*int(value.Type().Elem().Size())))
+	}
+	return n
 }

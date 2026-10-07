@@ -5,8 +5,11 @@
 package reflection_test
 
 import (
+	"bytes"
 	"fmt"
 	"math/big"
+	"reflect"
+	"testing"
 	"time"
 
 	dynssz "github.com/pk910/dynamic-ssz"
@@ -1785,4 +1788,172 @@ func (c *TestContainerWithDynamicEncoderAndMarshaler) HashTreeRootWithDyn(ds ssz
 	hh.PutUint16(c.Field3)
 	hh.Merkleize(indx)
 	return nil
+}
+
+type bulkGwei uint64
+
+type bulkRoot [32]byte
+
+// bulkLists holds every list shape the bulk path takes, plus shapes it leaves
+// to the element walk.
+type bulkLists struct {
+	U  []uint64     `ssz-max:"100000"`
+	G  []bulkGwei   `ssz-max:"100000"`
+	R  [][32]byte   `ssz-max:"100000"`
+	N  []bulkRoot   `ssz-max:"100000"`
+	K  [][48]byte   `ssz-max:"100000"`
+	PU []uint64     `ssz-type:"progressive-list"`
+	PR [][32]byte   `ssz-type:"progressive-list"`
+	B  []bool       `ssz-max:"100000"`
+	P  []*bulkLists `ssz-max:"1"`
+}
+
+// bulkVectors holds the vector shapes: arrays, and slices shorter than their
+// length, which are zero-padded.
+type bulkVectors struct {
+	AU [5]uint64
+	AR [3][32]byte
+	AK [2][48]byte
+	SU []uint64   `ssz-size:"600"`
+	SR [][32]byte `ssz-size:"600"`
+}
+
+func newBulkLists(n int) *bulkLists {
+	v := &bulkLists{}
+	for i := range n {
+		var r [32]byte
+		var k [48]byte
+		r[0], r[31], k[0], k[47] = byte(i), byte(i>>8), byte(i), 0xff
+		v.U = append(v.U, uint64(i)*0x0101010101010101+1)
+		v.G = append(v.G, bulkGwei(i))
+		v.R = append(v.R, r)
+		v.N = append(v.N, bulkRoot(r))
+		v.K = append(v.K, k)
+		v.PU = append(v.PU, uint64(i)<<32|7)
+		v.PR = append(v.PR, r)
+		v.B = append(v.B, i%3 == 0)
+	}
+	if n > 0 {
+		v.P = []*bulkLists{{U: []uint64{9}}}
+	}
+	return v
+}
+
+func newBulkVectors(n int) *bulkVectors {
+	v := &bulkVectors{AU: [5]uint64{1, 2, 3, 4, 5}}
+	v.AR[1][5], v.AK[1][40] = 7, 9
+	for i := range min(n, 600) {
+		var r [32]byte
+		r[i%32] = byte(i)
+		v.SU = append(v.SU, uint64(i)+3)
+		v.SR = append(v.SR, r)
+	}
+	return v
+}
+
+// checkBulkEqualsWalk compares the bulk path with the element walk, which a
+// verbose instance always takes, for every operation.
+func checkBulkEqualsWalk(t *testing.T, value any) {
+	t.Helper()
+	bulk := dynssz.NewDynSsz(nil)
+	walk := dynssz.NewDynSsz(nil, dynssz.WithVerbose(), dynssz.WithLogCb(func(string, ...any) {}))
+	async := dynssz.NewDynSsz(nil, dynssz.WithAsyncHashing(4))
+
+	want, err := walk.MarshalSSZ(value)
+	if err != nil {
+		t.Fatalf("walk marshal: %v", err)
+	}
+	wantRoot, err := walk.HashTreeRoot(value)
+	if err != nil {
+		t.Fatalf("walk root: %v", err)
+	}
+
+	got, err := bulk.MarshalSSZ(value)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Errorf("MarshalSSZ differs from the element walk (err=%v)", err)
+	}
+	byValue := reflect.ValueOf(value).Elem().Interface() // arrays not addressable
+	got, err = bulk.MarshalSSZ(byValue)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Errorf("MarshalSSZ by value differs from the element walk (err=%v)", err)
+	}
+	var buf bytes.Buffer
+	if err = bulk.MarshalSSZWriter(value, &buf); err != nil || !bytes.Equal(buf.Bytes(), want) {
+		t.Errorf("MarshalSSZWriter differs from the element walk (err=%v)", err)
+	}
+	for name, ds := range map[string]*dynssz.DynSsz{"bulk": bulk, "async": async} {
+		for _, v := range []any{value, byValue} {
+			root, rootErr := ds.HashTreeRoot(v)
+			if rootErr != nil || root != wantRoot {
+				t.Errorf("%s HashTreeRoot(%T) = %x, %v; want %x", name, v, root, rootErr, wantRoot)
+			}
+		}
+	}
+
+	typ := reflect.TypeOf(value).Elem()
+	for _, mode := range []string{"buffer", "reader", "reader unknown size"} {
+		decoded := reflect.New(typ).Interface()
+		switch mode {
+		case "buffer":
+			err = bulk.UnmarshalSSZ(decoded, want)
+		case "reader":
+			err = bulk.UnmarshalSSZReader(decoded, bytes.NewReader(want), len(want))
+		default:
+			err = bulk.UnmarshalSSZReader(decoded, bytes.NewReader(want), -1)
+		}
+		if err != nil {
+			t.Errorf("%s decode: %v", mode, err)
+			continue
+		}
+		again, err := walk.MarshalSSZ(decoded)
+		if err != nil || !bytes.Equal(again, want) {
+			t.Errorf("%s decode does not round-trip (err=%v)", mode, err)
+		}
+	}
+}
+
+// The bulk path encodes, decodes and hashes exactly like the element walk,
+// around the 256-element collapse points and through zero padding.
+func TestBulkElementsMatchElementWalk(t *testing.T) {
+	for _, n := range []int{0, 1, 255, 256, 257, 600} {
+		checkBulkEqualsWalk(t, newBulkLists(n))
+		checkBulkEqualsWalk(t, newBulkVectors(n))
+	}
+}
+
+// Lists large enough for background hashing give the same roots.
+func TestBulkElementsLargeLists(t *testing.T) {
+	checkBulkEqualsWalk(t, newBulkLists(70000))
+}
+
+// Decoding into a target that already holds longer slices reuses their
+// backing arrays and still yields exactly the decoded values.
+func TestBulkElementsDecodeIntoUsedTarget(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+	want := newBulkLists(300)
+	raw, err := ds.MarshalSSZ(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := newBulkLists(900)
+	if err := ds.UnmarshalSSZ(target, raw); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ds.MarshalSSZ(target); err != nil || !bytes.Equal(got, raw) {
+		t.Errorf("decode into a used target differs (err=%v)", err)
+	}
+}
+
+// A stream that ends inside a bulk block is refused.
+func TestBulkElementsTruncatedStream(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+	raw, err := ds.MarshalSSZ(newBulkLists(600))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cut := range []int{len(raw) / 2, len(raw) - 1} {
+		if err := ds.UnmarshalSSZReader(&bulkLists{}, bytes.NewReader(raw[:cut]), len(raw)); err == nil {
+			t.Errorf("stream cut at %d of %d decoded", cut, len(raw))
+		}
+	}
 }

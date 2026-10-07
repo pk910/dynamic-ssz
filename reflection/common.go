@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"math"
 	"reflect"
+	"unsafe"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
@@ -203,4 +204,31 @@ func bitvectorPaddingBits(desc *ssztypes.TypeDescriptor, vec reflect.Value, n in
 	}
 	paddingMask := uint8((uint16(0xff) << (desc.BitSize % 8)) & 0xff)
 	return uint8(last.Uint()) & paddingMask
+}
+
+// bulkElements returns the backing memory of value's elements when they can be
+// handled as one block: plain uint64 values or plain byte arrays, stored back
+// to back. It returns nil when the elements are walked one by one.
+func (ctx *ReflectionCtx) bulkElements(elem *ssztypes.TypeDescriptor, value reflect.Value) unsafe.Pointer {
+	if ctx.verbose || elem.SszCompatFlags != 0 ||
+		elem.GoTypeFlags&(ssztypes.GoTypeFlagIsPointer|ssztypes.GoTypeFlagIsString|ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsView) != 0 ||
+		elem.SszTypeFlags&(ssztypes.SszTypeFlagIsDynamic|ssztypes.SszTypeFlagHasBitSize|ssztypes.SszTypeFlagRecursionMember) != 0 ||
+		int64(value.Type().Elem().Size()) != elem.Size {
+		return nil
+	}
+	switch {
+	case elem.SszType == ssztypes.SszUint64Type && elem.Type.Kind() == reflect.Uint64:
+	case elem.SszType == ssztypes.SszVectorType && elem.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 &&
+		elem.Type.Kind() == reflect.Array && elem.Type.Elem().Kind() == reflect.Uint8 &&
+		int64(elem.Type.Len()) == elem.Len && elem.ElemDesc.SszCompatFlags == 0:
+	default:
+		return nil
+	}
+	switch {
+	case value.Kind() == reflect.Slice:
+		return value.UnsafePointer()
+	case value.CanAddr():
+		return unsafe.Pointer(value.UnsafeAddr())
+	}
+	return nil
 }
