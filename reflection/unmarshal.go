@@ -645,6 +645,7 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 	arrLen := int(vecLen)
 
 	var newValue reflect.Value
+	var byteSlice []byte
 	switch targetType.Kind {
 	case reflect.Slice:
 		// A vector's length comes from the type, so the slice is sized before
@@ -662,10 +663,10 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 		if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			sliceT = sliceT.Elem()
 		}
-		// Optimization: avoid reflect.MakeSlice for common byte slice types
+		// A byte slice is decoded as a plain []byte and set at the end: a
+		// reflect.Value of it would put the slice header on the heap.
 		if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 && targetType.ElemDesc.Type.Kind() == reflect.Uint8 {
-			byteSlice := make([]byte, arrLen)
-			newValue = reflect.ValueOf(byteSlice)
+			byteSlice = make([]byte, arrLen)
 		} else {
 			newValue = expandSliceValue(targetValue, sliceT, arrLen)
 		}
@@ -697,7 +698,7 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 				ptr := unsafe.Pointer(newValue.UnsafeAddr())
 				buf = unsafe.Slice((*byte)(ptr), arrLen)
 			} else {
-				buf = newValue.Bytes()
+				buf = byteSlice
 			}
 
 			_, err := decoder.DecodeBytes(buf)
@@ -727,7 +728,10 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 		}
 	}
 
-	if targetType.Kind != reflect.Array {
+	switch {
+	case byteSlice != nil:
+		targetValue.SetBytes(byteSlice)
+	case targetType.Kind != reflect.Array:
 		targetValue.Set(newValue)
 	}
 
@@ -1008,15 +1012,22 @@ func (ctx *ReflectionCtx) unmarshalList(targetType *ssztypes.TypeDescriptor, tar
 		fieldT = fieldT.Elem()
 	}
 
+	// A byte slice is decoded as a plain []byte and set once: a reflect.Value
+	// of it would put the slice header on the heap.
+	if targetType.Kind == reflect.Slice && targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 && fieldType.Type.Kind() == reflect.Uint8 {
+		byteSlice := make([]byte, sliceLen)
+		if sliceLen > 0 {
+			if _, err := decoder.DecodeBytes(byteSlice); err != nil {
+				return err
+			}
+		}
+		targetValue.SetBytes(byteSlice)
+		return nil
+	}
+
 	var newValue reflect.Value
 	if targetType.Kind == reflect.Slice {
-		// Optimization: avoid reflect.MakeSlice for common byte slice types
-		if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 && fieldType.Type.Kind() == reflect.Uint8 {
-			byteSlice := make([]byte, sliceLen)
-			newValue = reflect.ValueOf(byteSlice)
-		} else {
-			newValue = expandSliceValue(targetValue, fieldT, sliceLen)
-		}
+		newValue = expandSliceValue(targetValue, fieldT, sliceLen)
 	} else {
 		newValue = reflect.New(fieldT).Elem()
 	}
