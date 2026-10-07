@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unsafe"
 
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/ssztypes"
@@ -714,7 +715,7 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 		hh.AppendBytes32(bytes)
 	} else {
 		// For other types, process each element
-		for i := 0; i < sliceLen; i++ {
+		for i := ctx.hashBulkElements(sourceType.ElemDesc, sourceValue, sliceLen, hh); i < sliceLen; i++ {
 			fieldValue := sourceValue.Index(i)
 
 			err := ctx.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, packed, depth)
@@ -757,7 +758,7 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 //
 // The function includes optimizations for common types:
 //   - Byte slices: Direct appending with chunk padding
-//   - Uint64 slices: Efficient 8-byte appending
+//   - Uint64 slices and 32-byte roots: appended as one block
 //   - Nested byte arrays: Special handling for [][]byte patterns
 //
 // Parameters:
@@ -804,7 +805,7 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 	} else {
 		// For other types, process each element
 		arrayLen := sourceValue.Len()
-		for i := 0; i < arrayLen; i++ {
+		for i := ctx.hashBulkElements(sourceType.ElemDesc, sourceValue, arrayLen, hh); i < arrayLen; i++ {
 			fieldValue := sourceValue.Index(i)
 
 			err := ctx.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, itemSize > 0, depth)
@@ -1071,4 +1072,31 @@ func packedElemSize(elemDesc *ssztypes.TypeDescriptor) int64 {
 	default:
 		return 0
 	}
+}
+
+// hashBulkElements appends the first n elements of value as blocks when
+// bulkElements allows it, collapsing every 256 elements as the element walk
+// does, and returns how many it appended. A byte array is its own root only
+// when it fills exactly one chunk.
+func (ctx *ReflectionCtx) hashBulkElements(elem *ssztypes.TypeDescriptor, value reflect.Value, n int, hh sszutils.HashWalker) int {
+	isUint64 := elem.SszType == ssztypes.SszUint64Type
+	if n == 0 || (!isUint64 && elem.Size != 32) {
+		return 0
+	}
+	ptr := ctx.bulkElements(elem, value)
+	if ptr == nil {
+		return 0
+	}
+	for i := 0; i < n; i += 256 {
+		end := min(i+256, n)
+		if isUint64 {
+			sszutils.HashUint64Slice(hh, unsafe.Slice((*uint64)(ptr), n)[i:end])
+		} else {
+			hh.Append(unsafe.Slice((*byte)(ptr), n*32)[i*32 : end*32])
+		}
+		if end%256 == 0 {
+			hh.Collapse()
+		}
+	}
+	return n
 }

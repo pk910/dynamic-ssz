@@ -931,6 +931,14 @@ func (ctx *ReflectionCtx) unmarshalFixedElements(fieldType *ssztypes.TypeDescrip
 	}
 
 	itemSize := int(fieldSize)
+	if ptr := ctx.bulkElements(fieldType, newValue); ptr != nil && count > 0 {
+		if fieldType.SszType == ssztypes.SszUint64Type {
+			return sszutils.DecodeUint64Slice(decoder, unsafe.Slice((*uint64)(ptr), count))
+		}
+		_, err := decoder.DecodeBytes(unsafe.Slice((*byte)(ptr), count*itemSize))
+		return err
+	}
+
 	// Optional-pointer elements decode in place via the addressable slot so an
 	// absent optional can be set back to a nil pointer.
 	isPointer := fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && fieldType.SszType != ssztypes.SszOptionalType
