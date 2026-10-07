@@ -2746,7 +2746,8 @@ func (tc *TypeCache) GetAllTypes() [][2]reflect.Type {
 	return types
 }
 
-// RemoveType removes a specific type (with runtime == schema) from the cache.
+// RemoveType removes a specific type (with runtime == schema) from the cache,
+// in both its value and pointer form.
 //
 // This method is useful for cache management scenarios where you need to force
 // recomputation of a type descriptor, such as after configuration changes or
@@ -2788,9 +2789,15 @@ func (tc *TypeCache) RemoveTypeKey(runtimeType, schemaType reflect.Type) {
 		schemaType = schemaType.Elem()
 	}
 
-	key := typeKey{runtime: runtimeType, schema: schemaType}
-	delete(tc.descriptors, key)
-	delete(tc.hintedDescriptors, key)
+	// A type is cached in the form it was requested in, so both the value and
+	// the pointer form are removed.
+	for _, key := range []typeKey{
+		{runtime: runtimeType, schema: schemaType},
+		{runtime: reflect.PointerTo(runtimeType), schema: reflect.PointerTo(schemaType)},
+	} {
+		delete(tc.descriptors, key)
+		delete(tc.hintedDescriptors, key)
+	}
 }
 
 // RemoveAllTypes clears all cached type descriptors from the cache, both the

@@ -7892,3 +7892,87 @@ func TestTypeCache_ZeroFieldStructNeedsCustomDeclaration(t *testing.T) {
 		}
 	}
 }
+
+// RemoveType and RemoveTypeKey evict a type whether it was cached as a value
+// or as a pointer, whichever form they are given, and leave other types alone.
+func TestTypeCache_RemoveTypeBothForms(t *testing.T) {
+	type removeData struct {
+		A uint64
+		B []uint64 `ssz-max:"4"`
+	}
+	type removeView struct {
+		A uint64
+	}
+	val, ptr := reflect.TypeOf(removeData{}), reflect.TypeOf(&removeData{})
+	other := reflect.TypeOf(uint32(0))
+
+	for _, requested := range []reflect.Type{val, ptr} {
+		for _, removed := range []reflect.Type{val, ptr} {
+			cache := NewTypeCache(&dummyDynamicSpecs{})
+			first, err := cache.GetTypeDescriptor(requested, nil, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			kept, err := cache.GetTypeDescriptor(other, nil, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			cache.RemoveType(removed)
+			if _, ok := cache.descriptors[typeKey{runtime: requested, schema: requested}]; ok {
+				t.Errorf("RemoveType(%v) left %v cached", removed, requested)
+			}
+			if again, _ := cache.GetTypeDescriptor(requested, nil, nil, nil); again == first {
+				t.Errorf("RemoveType(%v): %v was not rebuilt", removed, requested)
+			}
+			if again, _ := cache.GetTypeDescriptor(other, nil, nil, nil); again != kept {
+				t.Errorf("RemoveType(%v) evicted the unrelated %v", removed, other)
+			}
+		}
+	}
+
+	// A tagged pointer field is cached as a hinted variant of its pointer type.
+	type removeList []uint64
+	type removeHolder struct {
+		P *removeList `ssz-max:"8"`
+	}
+	listPtrKey := typeKey{runtime: reflect.TypeOf(&removeList{}), schema: reflect.TypeOf(&removeList{})}
+	for _, removed := range []reflect.Type{reflect.TypeOf(removeList{}), reflect.TypeOf(&removeList{})} {
+		cache := NewTypeCache(&dummyDynamicSpecs{})
+		if _, err := cache.GetTypeDescriptor(reflect.TypeOf(&removeHolder{}), nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if len(cache.hintedDescriptors[listPtrKey]) == 0 {
+			t.Fatal("expected a hinted variant for the tagged pointer field")
+		}
+		cache.RemoveType(removed)
+		if len(cache.hintedDescriptors[listPtrKey]) != 0 {
+			t.Errorf("RemoveType(%v) left the hinted pointer variant", removed)
+		}
+	}
+
+	// Removing a type that was never cached, or a pointer to a pointer, is a
+	// no-op for the rest of the cache.
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	kept, err := cache.GetTypeDescriptor(ptr, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache.RemoveType(reflect.TypeOf(removeView{}))
+	cache.RemoveType(reflect.TypeOf((**removeView)(nil)))
+	if again, _ := cache.GetTypeDescriptor(ptr, nil, nil, nil); again != kept {
+		t.Error("removing other types evicted *removeData")
+	}
+
+	viewVal, viewPtr := reflect.TypeOf(removeView{}), reflect.TypeOf(&removeView{})
+	for _, pair := range [][2]reflect.Type{{val, viewVal}, {ptr, viewPtr}} {
+		cache := NewTypeCache(&dummyDynamicSpecs{})
+		if _, err := cache.GetTypeDescriptorWithSchema(pair[0], pair[1], nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		cache.RemoveTypeKey(val, viewVal)
+		if _, ok := cache.descriptors[typeKey{runtime: pair[0], schema: pair[1]}]; ok {
+			t.Errorf("RemoveTypeKey left the view pair %v/%v cached", pair[0], pair[1])
+		}
+	}
+}
