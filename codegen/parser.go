@@ -37,56 +37,48 @@ const (
 )
 
 // hashWalkerMethods lists the methods of sszutils.HashWalker by name with their
-// signature keys (see reflectTypeKey).
-var hashWalkerMethods = func() map[string]string {
-	walker := reflect.TypeOf((*sszutils.HashWalker)(nil)).Elem()
-	methods := make(map[string]string, walker.NumMethod())
-	for i := range walker.NumMethod() {
-		method := walker.Method(i)
-		methods[method.Name] = reflectTypeKey(method.Type)
-	}
-	return methods
-}()
-
-// reflectTypeKey spells a reflect type the way goTypeKey spells the same
-// go/types type, so a signature seen through either can be compared.
-func reflectTypeKey(t reflect.Type) string {
-	switch t.Kind() {
-	case reflect.Pointer:
-		return "*" + reflectTypeKey(t.Elem())
-	case reflect.Slice:
-		return "[]" + reflectTypeKey(t.Elem())
-	case reflect.Array:
-		return fmt.Sprintf("[%d]%s", t.Len(), reflectTypeKey(t.Elem()))
-	case reflect.Func:
-		params := make([]string, t.NumIn())
-		for i := range params {
-			params[i] = reflectTypeKey(t.In(i))
-			if t.IsVariadic() && i == t.NumIn()-1 {
-				params[i] = "..." + params[i][2:]
-			}
-		}
-		results := make([]string, t.NumOut())
-		for i := range results {
-			results[i] = reflectTypeKey(t.Out(i))
-		}
-		return "func(" + strings.Join(params, ",") + ")(" + strings.Join(results, ",") + ")"
-	default:
-		// A named type, including a universe type such as error, is spelled
-		// by its name; an unnamed type of another kind by the kind.
-		if t.PkgPath() != "" {
-			return t.PkgPath() + "." + t.Name()
-		}
-		if t.Name() != "" {
-			return t.Name()
-		}
-		return t.Kind().String()
-	}
+// signature keys (see goTypeKey). It is spelled out rather than derived from
+// reflect.Type.Method: any reachable call to that method makes the linker keep
+// every exported method of every type in the program, which costs a consumer
+// binary around a megabyte. TestParserWalkerParameterAcceptsHashWalker checks
+// it against the interface, so a changed walker fails the test rather than
+// the generator.
+var hashWalkerMethods = map[string]string{
+	"Append":                               "func([]uint8)()",
+	"AppendBool":                           "func(bool)()",
+	"AppendBytes32":                        "func([]uint8)()",
+	"AppendUint16":                         "func(uint16)()",
+	"AppendUint32":                         "func(uint32)()",
+	"AppendUint64":                         "func(uint64)()",
+	"AppendUint8":                          "func(uint8)()",
+	"Collapse":                             "func()()",
+	"CurrentIndex":                         "func()(int)",
+	"FillUpTo32":                           "func()()",
+	"Hash":                                 "func()([]uint8)",
+	"HashErr":                              "func()(error)",
+	"HashRoot":                             "func()([32]uint8,error)",
+	"Index":                                "func()(int)",
+	"Merkleize":                            "func(int)()",
+	"MerkleizeProgressive":                 "func(int)()",
+	"MerkleizeProgressiveWithActiveFields": "func(int,[]uint8)()",
+	"MerkleizeProgressiveWithMixin":        "func(int,uint64)()",
+	"MerkleizeWithMixin":                   "func(int,uint64,uint64)()",
+	"PutBitlist":                           "func([]uint8,uint64)()",
+	"PutBool":                              "func(bool)()",
+	"PutBytes":                             "func([]uint8)()",
+	"PutProgressiveBitlist":                "func([]uint8)()",
+	"PutUint16":                            "func(uint16)()",
+	"PutUint32":                            "func(uint32)()",
+	"PutUint64":                            "func(uint64)()",
+	"PutUint64Array":                       "func([]uint64,...uint64)()",
+	"PutUint8":                             "func(uint8)()",
+	"StartTree":                            "func(github.com/pk910/dynamic-ssz/sszutils.TreeType)(int)",
+	"WithTemp":                             "func(func([]uint8)([]uint8))()",
 }
 
-// goTypeKey spells a go/types type the way reflectTypeKey spells the same
-// reflect type; a type of a kind the walker never uses gets a key of its own
-// that matches nothing.
+// goTypeKey spells a go/types type the way reflectTypeKey (in the tests)
+// spells the same reflect type; a type of a kind the walker never uses gets a
+// key of its own that matches nothing.
 func goTypeKey(t types.Type) string {
 	switch t := types.Unalias(t).(type) {
 	case *types.Pointer:

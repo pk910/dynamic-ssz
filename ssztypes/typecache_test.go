@@ -6618,6 +6618,23 @@ func TestPromotedDelegationWalkerMethodAndValueReceivers(t *testing.T) {
 	}
 }
 
+// delegationMethodByName spells every delegation method name as a literal, so
+// a name added to delegationMethodNames without a matching case would fall
+// through to "not found" and silently stop being detected as promoted.
+func TestDelegationMethodByNameCoversAllNames(t *testing.T) {
+	typ := reflect.TypeOf(&valueReceiverOuter{})
+	for _, name := range delegationMethodNames {
+		want, wantOK := typ.MethodByName(name)
+		got, gotOK := delegationMethodByName(typ, name)
+		if gotOK != wantOK || got.Name != want.Name {
+			t.Errorf("%s: delegationMethodByName = (%q, %v), MethodByName = (%q, %v)", name, got.Name, gotOK, want.Name, wantOK)
+		}
+	}
+	if _, ok := delegationMethodByName(typ, "String"); ok {
+		t.Error("a name outside delegationMethodNames was looked up")
+	}
+}
+
 // plainIfaceEmbed carries a non-SSZ embedded interface next to a delegating
 // embedded struct; the interface contributes no delegation surface and must
 // not hide the promotion coming from the struct.
