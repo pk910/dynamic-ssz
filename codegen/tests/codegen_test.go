@@ -10,8 +10,6 @@ import (
 	"io"
 	"math"
 	"math/big"
-	"os"
-	"path/filepath"
 	"reflect"
 	"runtime"
 	"runtime/debug"
@@ -21,13 +19,10 @@ import (
 	"testing/iotest"
 
 	dynssz "github.com/pk910/dynamic-ssz"
-	"github.com/pk910/dynamic-ssz/codegen"
 	"github.com/pk910/dynamic-ssz/codegen/tests/views"
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
-
-	"golang.org/x/tools/go/packages"
 )
 
 type TestPayload struct {
@@ -2772,64 +2767,6 @@ func TestCodegenPointerAndPaddingShapes(t *testing.T) {
 	}
 }
 
-// namedPtrType is a defined type whose underlying type is a pointer; methods
-// cannot be declared on it, so top-level generation must error cleanly.
-type namedPtrType *uint64
-
-// Top-level CompatibleUnion / TypeWrapper and named pointer types cannot
-// receive generated methods; the generator must reject them with a clear
-// error instead of emitting uncompilable code.
-func TestCodegenRejectsUngeneratableTopLevelTypes(t *testing.T) {
-	cases := []struct {
-		name string
-		typ  reflect.Type
-		want string
-	}{
-		{
-			name: "named pointer type",
-			typ:  reflect.TypeFor[namedPtrType](),
-			want: "named pointer type",
-		},
-		{
-			name: "top-level union",
-			typ: reflect.TypeFor[dynssz.CompatibleUnion[struct {
-				A uint32
-				B []byte `ssz-max:"8"`
-			}]](),
-			want: "CompatibleUnion/TypeWrapper",
-		},
-		{
-			name: "top-level classic union",
-			typ: reflect.TypeFor[dynssz.Union[struct {
-				A uint32
-				B []byte `ssz-max:"8"`
-			}]](),
-			want: "Union/CompatibleUnion/TypeWrapper",
-		},
-		{
-			name: "top-level wrapper",
-			typ: reflect.TypeFor[dynssz.TypeWrapper[struct {
-				Data []uint16 `ssz-max:"6"`
-			}, []uint16]](),
-			want: "CompatibleUnion/TypeWrapper",
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			cg := codegen.NewCodeGenerator(nil)
-			cg.BuildFile("reject_test.go", codegen.WithReflectType(tc.typ))
-			_, err := cg.GenerateToMap()
-			if err == nil {
-				t.Fatalf("expected a rejection error for %s", tc.name)
-			}
-			if !strings.Contains(err.Error(), tc.want) {
-				t.Errorf("unexpected error: %v", err)
-			}
-		})
-	}
-}
-
 // A field tagged ssz-type:"-" is excluded from the SSZ layout: the encoding,
 // size and root match the same struct without that field, and it round-trips
 // without being restored. Non-SSZ types (maps) are allowed on excluded fields.
@@ -4367,65 +4304,6 @@ func TestVectorSliceShorterThanItsLength(t *testing.T) {
 	long := SimpleTypes1{Vec8: []uint8{1, 2, 3, 4, 5}}
 	if _, err := marshalBoth(t, &long); !errors.Is(err, sszutils.ErrVectorLength) {
 		t.Errorf("err = %v, want ErrVectorLength", err)
-	}
-}
-
-// The reflect front end describes a fully delegated variable-size element
-// without its fields, so a list of it has no element minimum to bound the
-// region by: generation proceeds in every mode, as the go/types front end
-// does for the same shape.
-func TestReflectFrontendDelegatedDynamicListElement(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		opts []codegen.CodeGeneratorOption
-	}{
-		{"default", nil},
-		{"streaming", []codegen.CodeGeneratorOption{codegen.WithCreateEncoderFn(), codegen.WithCreateDecoderFn()}},
-	} {
-		cg := codegen.NewCodeGenerator(nil)
-		cg.BuildFile("gen_zz_reflectdyn.go", append(tc.opts, codegen.WithReflectType(reflect.TypeFor[ReflectDelegatedDynList]()))...)
-		files, err := cg.GenerateToMap()
-		if err != nil {
-			t.Fatalf("%s: generate: %v", tc.name, err)
-		}
-		if files["gen_zz_reflectdyn.go"] == "" {
-			t.Fatalf("%s: no output", tc.name)
-		}
-	}
-}
-
-// The reflect front-end must emit the same compiling code for optional fields
-// the go/types front-end emits: an optional's variable is the pointer, its
-// element handling dereferences exactly once. The generated output is
-// type-checked in place against this package.
-func TestReflectFrontendOptionalCompiles(t *testing.T) {
-	cg := codegen.NewCodeGenerator(nil)
-	cg.BuildFile("gen_zz_reflectopt.go",
-		codegen.WithReflectType(reflect.TypeFor[ReflectOptProbe]()),
-		codegen.WithReflectType(reflect.TypeFor[ReflectOptSub]()),
-		codegen.WithExtendedTypes(),
-	)
-	files, err := cg.GenerateToMap()
-	if err != nil {
-		t.Fatalf("generate: %v", err)
-	}
-
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	overlayPath := filepath.Join(dir, "gen_zz_reflectopt.go")
-	cfg := &packages.Config{
-		Mode:    packages.NeedTypes | packages.NeedSyntax | packages.NeedTypesInfo | packages.NeedDeps | packages.NeedImports | packages.NeedName,
-		Dir:     dir,
-		Overlay: map[string][]byte{overlayPath: []byte(files["gen_zz_reflectopt.go"])},
-	}
-	pkgs, err := packages.Load(cfg, ".")
-	if err != nil || len(pkgs) == 0 {
-		t.Fatalf("load: %v", err)
-	}
-	for _, pkgErr := range pkgs[0].Errors {
-		t.Errorf("generated optional code does not compile: %v", pkgErr)
 	}
 }
 

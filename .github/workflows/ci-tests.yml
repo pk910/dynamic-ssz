@@ -200,6 +200,17 @@ jobs:
           -cmd 'NOCGO: CGO_ENABLED=0 go test -coverprofile=coverage-unit-nocgo.txt -coverpkg=./... ./...' \
           -cmd '32BIT: GOARCH=386 CGO_ENABLED=0 go test -coverprofile=coverage-unit-386.txt -coverpkg=./... ./...'
 
+    - name: Check the codegen harness as a compat archive
+      # The release workflow packs codegen/tests into an archive that every
+      # later release runs from a version-named directory. Pack and run it the
+      # same way here, so a harness that only works in its own directory or
+      # that grew past its time budget fails on the PR instead of on the
+      # release commit.
+      run: |
+        tar -czf "$RUNNER_TEMP/codegen_dev.tar.gz" -C codegen/tests \
+          $(cd codegen/tests && find . -maxdepth 1 -name '*.go' -printf '%f ')
+        .github/scripts/check-compat-harness.sh "$RUNNER_TEMP/codegen_dev.tar.gz" v0.0.0-dev
+
     - name: Run endianness fallback tests with coverage
       # The dynssz_endian_generic tag swaps the compile-time hostLittleEndian
       # constant for the runtime-detected var, letting the tests force the

@@ -4467,3 +4467,138 @@ func TestHintsMatchDefaultWithAnnotations(t *testing.T) {
 		}
 	}
 }
+
+// probeShapes pairs each probe fixture with the delegate methods it carries.
+var probeShapes = []struct {
+	name  string
+	typ   reflect.Type
+	flags ssztypes.SszCompatFlag
+}{
+	{
+		"ProbeMarshalOnly",
+		reflect.TypeFor[tests.ProbeMarshalOnly](),
+		ssztypes.SszCompatFlagFastsszValueMarshaler,
+	},
+	{
+		"ProbeStaticSurface",
+		reflect.TypeFor[tests.ProbeStaticSurface](),
+		ssztypes.SszCompatFlagFastsszBufferMarshaler | ssztypes.SszCompatFlagFastsszSizer | ssztypes.SszCompatFlagFastsszUnmarshaler,
+	},
+	{
+		"ProbeNoSizer",
+		reflect.TypeFor[tests.ProbeNoSizer](),
+		ssztypes.SszCompatFlagFastsszBufferMarshaler | ssztypes.SszCompatFlagFastsszUnmarshaler,
+	},
+	{
+		"ProbeFullFastssz",
+		reflect.TypeFor[tests.ProbeFullFastssz](),
+		ssztypes.SszCompatFlagFastsszSurface | ssztypes.SszCompatFlagFastsszHashRoot,
+	},
+	{
+		// Every method reaches this type by promotion, so none of them answers
+		// for it and none is flagged.
+		"ProbePromoted",
+		reflect.TypeFor[tests.ProbePromoted](),
+		0,
+	},
+	{
+		// One promoted method is enough, whichever it is.
+		"ProbePromotedValue",
+		reflect.TypeFor[tests.ProbePromotedValue](),
+		0,
+	},
+	{
+		// The promoted sizer answers for the embedded value and is dropped;
+		// the marshaller this type declares itself is kept.
+		"ProbeMixedPromotion",
+		reflect.TypeFor[tests.ProbeMixedPromotion](),
+		ssztypes.SszCompatFlagFastsszBufferMarshaler,
+	},
+}
+
+// The two type front ends must name the same methods for the same type: a
+// family flag let them disagree, which delegated a type in generated code that
+// reflection walked.
+func TestFastsszProbesAgreeAcrossFrontEnds(t *testing.T) {
+	scope := loadTestsPackage(t).Types.Scope()
+
+	const probed = ssztypes.SszCompatFlagFastsszSurface | ssztypes.SszCompatFlagFastsszHashRoot
+
+	for _, shape := range probeShapes {
+		t.Run(shape.name, func(t *testing.T) {
+			reflDesc, err := ssztypes.NewTypeCache(nil).GetTypeDescriptor(reflect.PointerTo(shape.typ), nil, nil, nil)
+			if err != nil {
+				t.Fatalf("reflect descriptor: %v", err)
+			}
+			if got := reflDesc.SszCompatFlags & probed; got != shape.flags {
+				t.Errorf("reflect front end flags = %b, want %b", got, shape.flags)
+			}
+
+			obj := scope.Lookup(shape.name)
+			if obj == nil {
+				t.Fatalf("%s not found in the tests package", shape.name)
+			}
+			goDesc, err := NewParser().GetTypeDescriptor(types.NewPointer(obj.Type()), nil, nil, nil)
+			if err != nil {
+				t.Fatalf("parser descriptor: %v", err)
+			}
+			if got := goDesc.SszCompatFlags & probed; got != shape.flags {
+				t.Errorf("go/types front end flags = %b, want %b", got, shape.flags)
+			}
+		})
+	}
+}
+
+// A field type hint naming the SSZ type a method-carrying type resolves to on
+// its own leaves the type's methods in charge; a hint naming another SSZ type
+// describes the field inline. Both front ends decide alike; that both engines
+// then reach the methods on the same fields is checked in the harness.
+func TestTypeHintOverridesOnlyAnotherType(t *testing.T) {
+	const surface = ssztypes.SszCompatFlagFastsszValueMarshaler | ssztypes.SszCompatFlagFastsszUnmarshaler | ssztypes.SszCompatFlagFastsszHashRoot
+	want := map[string]ssztypes.SszCompatFlag{"Plain": surface, "Same": surface, "Other": 0, "GridSame": surface, "GridElem": 0, "GridOpen": 0, "OuterSame": surface, "OuterOpen": surface, "OuterList": 0, "AnnList": surface, "LimSame": surface, "LimOther": 0}
+
+	for _, typ := range []reflect.Type{reflect.TypeFor[tests.ProbeHintedWalked](), reflect.TypeFor[tests.ProbeHintedOverride]()} {
+		reflDesc, err := ssztypes.NewTypeCache(nil).GetTypeDescriptor(typ, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("reflect descriptor of %v: %v", typ, err)
+		}
+		for _, field := range reflDesc.ContainerDesc.Fields {
+			if got := field.Type.SszCompatFlags & surface; got != want[field.Name] {
+				t.Errorf("reflect front end, %s: flags %b, want %b", field.Name, got, want[field.Name])
+			}
+		}
+	}
+
+	scope := loadTestsPackage(t).Types.Scope()
+	parser := NewParser()
+	// The generator reads the package's Annotate calls; the parser is handed
+	// the one annotation these shapes carry.
+	parser.AnnotationResolver = func(typ types.Type) string {
+		if named, ok := typ.(*types.Named); ok {
+			switch named.Obj().Name() {
+			case "ProbeHintedElem":
+				return `ssz-size:"4"`
+			case "ProbeHintedOuterAnn":
+				return `ssz-type:"vector,list" ssz-max:"?,4"`
+			case "ProbeHintedLimited":
+				return `ssz-max:"4"`
+			}
+		}
+		return ""
+	}
+	for _, name := range []string{"ProbeHintedWalked", "ProbeHintedOverride"} {
+		obj := scope.Lookup(name)
+		if obj == nil {
+			t.Fatalf("%s not found in the tests package", name)
+		}
+		goDesc, descErr := parser.GetTypeDescriptor(obj.Type(), nil, nil, nil)
+		if descErr != nil {
+			t.Fatalf("parser descriptor of %s: %v", name, descErr)
+		}
+		for _, field := range goDesc.ContainerDesc.Fields {
+			if got := field.Type.SszCompatFlags & surface; got != want[field.Name] {
+				t.Errorf("go/types front end, %s: flags %b, want %b", field.Name, got, want[field.Name])
+			}
+		}
+	}
+}

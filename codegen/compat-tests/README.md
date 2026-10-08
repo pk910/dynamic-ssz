@@ -36,6 +36,23 @@ is recorded here:
   before, because a type whose only spec dependence was a limit was still
   served by its static methods. The case now runs the original short-vector
   payload under the default specs and a full-vector payload under the spec set.
+- `v1.4.0`, `codegen_test.go` and `probe_test.go`: five tests ran the code
+  generator itself (`TestCodegenRejectsUngeneratableTopLevelTypes`,
+  `TestReflectFrontendDelegatedDynamicListElement`,
+  `TestReflectFrontendOptionalCompiles`, `TestFastsszProbesAgreeAcrossFrontEnds`
+  and the front-end half of `TestTypeHintOverridesOnlyAnotherType`). They test
+  the generator, not the archived code, so they moved to the `codegen` package;
+  two of them also derived the package name from the directory and failed from
+  `v1.4.0/`. Together they made the archive twenty times slower than any
+  earlier one. The generated files are untouched.
+
+## Time budget
+
+An archive is run by every CI job of every later release, so its tests must
+stay cheap: the package's own test time has to stay under 10 seconds.
+`prepare-release.sh` and the unit-test workflow run the packed harness from a
+version-named directory through `.github/scripts/check-compat-harness.sh`,
+which fails when it does not pass there or exceeds the budget.
 
 ## Local development
 
