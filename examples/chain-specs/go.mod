@@ -4,7 +4,7 @@ go 1.25.8
 
 require (
 	github.com/goccy/go-yaml v1.18.0
-	github.com/pk910/dynamic-ssz v1.3.2
+	github.com/pk910/dynamic-ssz v1.4.0
 )
 
 require (

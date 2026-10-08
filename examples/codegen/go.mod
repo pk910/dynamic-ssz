@@ -4,7 +4,7 @@ go 1.25.8
 
 replace github.com/pk910/dynamic-ssz => ../../
 
-require github.com/pk910/dynamic-ssz v1.3.2
+require github.com/pk910/dynamic-ssz v1.4.0
 
 require (
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect

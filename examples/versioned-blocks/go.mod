@@ -4,7 +4,7 @@ go 1.25.8
 
 require (
 	github.com/attestantio/go-eth2-client v0.29.0
-	github.com/pk910/dynamic-ssz v1.3.2
+	github.com/pk910/dynamic-ssz v1.4.0
 )
 
 require (
