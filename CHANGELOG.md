@@ -2,6 +2,45 @@
 
 All notable changes to the `dynamic-ssz` library are documented here.
 
+## [v1.4.0] 2026-10-08 hardening & async hashing
+
+This is a hardening release. The reflection engine, the code generator, the hasher and `treeproof` went through many rounds of differential fuzzing, external audits and conformance testing. Both engines now produce the same bytes, roots, trees and errors for the same schema, bad input returns an error instead of panicking or allocating without bound, and the code generator is no longer in beta.
+
+### Breaking Changes
+- `CompatibleUnion` selectors now follow EIP-8016. Selectors are 1-based (`1..127`), so the first untagged variant is written as `0x01` instead of `0x00`. Schemas and values that use 0-based selectors need to be migrated.
+- The hash tree root of `ssz-type:"optional"` fields changed (extended types only). Presence is now mixed in as a length, so an absent value and a present zero value no longer have the same root. The root is now the same as for `optional-list`. Serialization is unchanged. Generated code keeps the old root until it is regenerated.
+- Validation is stricter. Some malformed input and schemas that older versions accepted are now rejected with an error. This includes list counts that do not fit the region, non-zero padding bits in bitvectors, trailing or missing bytes, hash tree roots of lists without a limit, conflicting size or type tags, zero-field containers with their own SSZ methods (use `ssz-type:"custom"` for these) and spec-only bounds in code generated without dynamic expressions.
+
+### Added
+- Classic SSZ `Union[T]` with 0-based selectors and `dynssz.None`, next to the EIP-8016 `CompatibleUnion[T]`.
+- Async hashing. Optional background hashing of large subtrees, enabled with `WithAsyncHashing(workers)` or `hasher.EnableAsyncHashing`.
+- Recursive types, as long as every cycle goes through a variable-length field. Nesting depth is limited (default 1024) and can be set with `WithMaxNestingDepth`, `codegen.WithRecursionDepth` or `dynssz-gen -recursion-depth`.
+- Batched tree finalization. `GetTree` now builds a finalized read-only tree through the hashtree backend. New `Node.Finalize`, `treeproof.WithHashFn` and `treeproof.NewWrapperWithHashFn`.
+- Unknown-size stream decoding. `UnmarshalSSZReader` with a negative size reads until EOF and only allocates for bytes that actually arrived. Generated code needs to be regenerated for this.
+- Limits for untrusted input: `WithMaxStreamSize`, the per-call `WithStreamSizeLimit` and `WithMaxNestingDepth`.
+- `ssz-type:"-"` to skip a struct field, and `WithNoDelegation` to ignore the generated methods of a type.
+- `dynssz-gen` options: custom header templates, per-type `skip-*` settings in the config file, `-recursion-depth` and `-remove`.
+- New error values (`ErrStreamTooLarge`, `ErrSszSizeExceeded`, `ErrMaxDepthExceeded` and more), `HashErr()` on `Hasher` and `treeproof.Wrapper`, and `Reset` on all encoders and decoders.
+- Big-endian (s390x) and 32-bit support, tested in CI. New examples (`chain-specs`, `streaming`, `merkle-proofs`, `fork-views`, `htr-caching`) and a docs page about method delegation.
+
+### Changed
+- Performance: generated code resolves the spec expressions of a type once per `DynSsz` instance instead of on every call (regenerate to get this). Encoders and decoders are pooled per instance. The reflection engine sizes byte lists by their length, decodes byte slices without boxing and handles `uint64` and byte-array elements as one block.
+- All size, offset and limit math is done in unsigned 64-bit with explicit range checks, so both engines are safe on 32-bit targets.
+- Spec expressions are evaluated as exact rationals and rounded up once. The `govaluate` dependency is gone. A `name:N` fallback syntax was added.
+- Both engines use the same rules for when the fastssz, `*Dyn` or view methods of a type are called. Promoted methods from embedded fields are no longer used, and fastssz is only used when no resolved spec value differs from the static tags. `sszutils.Annotate` now works across packages and on views, type wrappers and union variants.
+- Conformance tests: the consensus-spec vectors (including Gloas) also run as a 32-bit build, and a new test runs every vector of the official `ethereum/ssz-specs` suite on both engines. The differential fuzzer got an independent reference SSZ implementation and extra checks for trees, proofs, native hashing, sizes and streaming.
+- The code generator is now considered production ready. `hashtree-bindings` bumped to 0.2.6.
+
+### Fixed
+- Panics and unbounded allocations on bad input (oversized declared lists, huge `bitsize` values, stream over-reads, offset overflows, recursive payloads).
+- Cases where reflection and generated code framed, sized or hashed the same schema differently: views of view-serving types, custom types with spec-driven widths, overridden type hints, cross-package `Annotate`, packed large uints, union variants with spec-only widths and code generated without dynamic expressions.
+- Hash tree roots of packed scopes with delegated elements, `Index`-opened scopes, progressive lists under async hashing, partial chunks, short `uint128` and `uint256` values, optionals and lists of type wrappers. `HashTreeRoot` and `GetTree` now agree and return backend errors.
+- Streaming: the streaming encoder of a static build wrote correct data behind wrong offsets for children with spec values. Unions, optionals, custom types and views are now framed the same way on buffer and reader paths.
+- `treeproof`: empty leaves from `ProveMulti`, caller memory being aliased, zero-padding gindices that could not be proven, 32-bit leaf overflow and an unbounded multiproof cache.
+- Zero-padding no longer writes into caller memory, `float32` NaN bits are kept as is, `NewDynSsz` copies its spec map and `RemoveType` removes both the value and the pointer form of a type.
+
+---
+
 ## [v1.3.3] 2026-08-26
 
 ### Fixed
