@@ -1,8 +1,8 @@
 #!/bin/sh
-# Runs a packed codegen harness the way CI runs every compat archive: from a
-# directory named after a version, with no generated code regenerated. The
-# harness must pass there, and it must stay cheap, because an archive is run on
-# every CI job of every later release.
+# Runs a freshly packed codegen harness the way CI runs every compat archive:
+# from a directory named after a version, with no generated code regenerated.
+# The harness must pass there, and it must stay cheap, because an archive is
+# run on every CI job of every later release.
 #
 # Usage: check-compat-harness.sh <archive.tar.gz> <version>
 #

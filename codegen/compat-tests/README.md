@@ -50,9 +50,9 @@ is recorded here:
 
 An archive is run by every CI job of every later release, so its tests must
 stay cheap: the package's own test time has to stay under 10 seconds.
-`prepare-release.sh` and the unit-test workflow run the packed harness from a
-version-named directory through `.github/scripts/check-compat-harness.sh`,
-which fails when it does not pass there or exceeds the budget.
+`prepare-release.sh` runs the freshly packed harness from a version-named
+directory through `.github/scripts/check-compat-harness.sh`, which fails the
+release when it does not pass there or exceeds the budget.
 
 ## Local development
 
