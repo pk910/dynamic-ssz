@@ -49,6 +49,23 @@ func validateTypeEntry(seenTypes map[string]string, typePkgPath, typeName, fileN
 	return nil
 }
 
+// packageNameOf returns the name a package declares, or "" when its directory
+// cannot be read. A reflect type carries only the import path, whose last
+// element need not be the name: the root of this module lives in dynamic-ssz
+// and declares dynssz, and a compat-tests archive unpacked into v1.4.0 declares
+// tests. The package clause is read from the directory; build.FindOnly would
+// stop before it.
+func packageNameOf(pkgPath string) string {
+	if pkgPath == "" {
+		return ""
+	}
+	pkg, err := build.Import(pkgPath, "", 0)
+	if err != nil {
+		return ""
+	}
+	return pkg.Name
+}
+
 // analyzeTypes performs comprehensive type analysis and validation for all types in the generation request.
 //
 // This method is responsible for the critical pre-generation analysis phase, where all types
@@ -93,12 +110,7 @@ func (cg *CodeGenerator) analyzeTypes() error {
 			}
 			typeName = namedType.Name()
 			typePkgPath = namedType.PkgPath()
-			// Look up the actual package name from the import path
-			if typePkgPath != "" {
-				if pkg, err := build.Import(typePkgPath, "", build.FindOnly); err == nil {
-					typePkgName = pkg.Name
-				}
-			}
+			typePkgName = packageNameOf(typePkgPath)
 		} else if t.GoTypesType != nil {
 			typeName = t.GoTypesType.String()
 			types.TypeString(t.GoTypesType, func(pkg *types.Package) string {

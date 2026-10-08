@@ -102,6 +102,18 @@ func loadTestsPackage(t *testing.T) *packages.Package {
 	return pkgs[0]
 }
 
+// The root package lives in a directory called dynamic-ssz and declares
+// package dynssz; a reflect type from it has to generate into the declared
+// name, not the directory's.
+func TestPackageNameOfReadsPackageClause(t *testing.T) {
+	if got := packageNameOf("github.com/pk910/dynamic-ssz"); got != "dynssz" {
+		t.Fatalf("packageNameOf(root) = %q, want dynssz", got)
+	}
+	if got := packageNameOf("github.com/pk910/dynamic-ssz/codegen/no-such-pkg"); got != "" {
+		t.Fatalf("packageNameOf(missing) = %q, want empty", got)
+	}
+}
+
 func TestGenerateListRegionBound(t *testing.T) {
 	cg := NewCodeGenerator(nil)
 	cg.BuildFile("gen_test.go", WithReflectType(reflect.TypeFor[regionBoundTypes]()))
