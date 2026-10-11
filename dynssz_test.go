@@ -9903,8 +9903,8 @@ func TestAsyncHashingOldGeneratedProgressiveList(t *testing.T) {
 }
 
 // RemoveType on the instance's cache rebuilds the descriptor a call through a
-// pointer cached, and removals racing with encode, decode and hash calls leave
-// every result correct.
+// pointer cached, and removals (RemoveType and RemoveAllTypes) racing with
+// encode, decode and hash calls leave every result correct.
 func TestRemoveTypeThroughDynSsz(t *testing.T) {
 	type removeItem struct {
 		A uint64
@@ -9947,6 +9947,7 @@ func TestRemoveTypeThroughDynSsz(t *testing.T) {
 			default:
 				tc.RemoveType(ptr)
 				tc.RemoveType(reflect.TypeOf(removeItem{}))
+				tc.RemoveAllTypes()
 			}
 		}
 	}()

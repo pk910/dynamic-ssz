@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unsafe"
@@ -6092,6 +6093,102 @@ func TestFailedRecursiveBuildPurgesCaches(t *testing.T) {
 	}
 	if n := len(cache.hinted); n != 0 {
 		t.Errorf("hinted cache should be empty after failed recursive build, has %d entries", n)
+	}
+}
+
+type (
+	publishNested struct{ V uint32 }
+	publishFailing struct {
+		N publishNested
+		M map[string]uint32
+	}
+)
+
+// A build that fails publishes nothing, not even the types below it that it
+// completed; the next request for one of them builds it on its own.
+func TestFailedBuildPublishesNothing(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	nested := reflect.TypeOf(publishNested{})
+
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(publishFailing{}), nil, nil, nil); err == nil {
+		t.Fatal("expected error for map field")
+	}
+	if types := cache.GetAllTypes(); len(types) != 0 {
+		t.Fatalf("failed build published %v", types)
+	}
+
+	desc, err := cache.GetTypeDescriptor(nested, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("nested type alone: %v", err)
+	}
+	if desc.Size != 4 || !cache.hasPlain(typeKey{runtime: nested, schema: nested}) {
+		t.Errorf("nested type: size %d, published %v", desc.Size, cache.hasPlain(typeKey{runtime: nested, schema: nested}))
+	}
+}
+
+type (
+	firstUseShared struct{ V uint32 }
+	firstUseA      struct {
+		X uint64
+		S firstUseShared
+	}
+	firstUseB struct {
+		S firstUseShared
+		L []uint64 `ssz-max:"4"`
+	}
+)
+
+// Goroutines that first use overlapping types at the same time all get the
+// one published descriptor of each, and the shared nested type is published
+// once and referenced by both roots.
+func TestTypeCacheConcurrentFirstUse(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	roots := []reflect.Type{reflect.TypeOf(firstUseA{}), reflect.TypeOf(&firstUseB{}), reflect.TypeOf(firstUseShared{})}
+
+	const workers = 24
+	got := make([]*TypeDescriptor, workers)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			desc, err := cache.GetTypeDescriptor(roots[i%len(roots)], nil, nil, nil)
+			if err != nil {
+				t.Errorf("%v: %v", roots[i%len(roots)], err)
+			}
+			got[i] = desc
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	for i, desc := range got {
+		if want, _ := cache.GetTypeDescriptor(roots[i%len(roots)], nil, nil, nil); desc != want {
+			t.Errorf("worker %d got a %v descriptor other than the published one", i, roots[i%len(roots)])
+		}
+	}
+	shared, _ := cache.GetTypeDescriptor(roots[2], nil, nil, nil)
+	a, _ := cache.GetTypeDescriptor(roots[0], nil, nil, nil)
+	b, _ := cache.GetTypeDescriptor(roots[1], nil, nil, nil)
+	if a.ContainerDesc.Fields[1].Type != shared || b.ContainerDesc.Fields[0].Type != shared {
+		t.Error("the roots do not reference the published descriptor of the shared type")
+	}
+
+	seen := make(map[[2]reflect.Type]int, 8)
+	for _, pair := range cache.GetAllTypes() {
+		seen[pair]++
+	}
+	for pair, n := range seen {
+		if n != 1 {
+			t.Errorf("GetAllTypes lists %v %d times", pair, n)
+		}
+	}
+	for _, root := range roots {
+		if seen[[2]reflect.Type{root, root}] != 1 {
+			t.Errorf("GetAllTypes omits %v", root)
+		}
 	}
 }
 
