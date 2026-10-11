@@ -6259,6 +6259,32 @@ func benchStatePayload(tb testing.TB, records int) ([]byte, *DynSsz) {
 	return data, ds
 }
 
+// BenchmarkMarshalCheckpointParallel marshals a small cached type from many
+// goroutines at once, where the type cache lookup is a large share of a call.
+func BenchmarkMarshalCheckpointParallel(b *testing.B) {
+	type checkpoint struct {
+		Epoch uint64
+		Root  [32]byte
+	}
+	ds := NewDynSsz(nil)
+	value := &checkpoint{Epoch: 7, Root: [32]byte{1, 2, 3}}
+	if _, err := ds.MarshalSSZ(value); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		buf := make([]byte, 0, 40)
+		for pb.Next() {
+			var err error
+			if buf, err = ds.MarshalSSZTo(value, buf[:0]); err != nil {
+				b.Error(err)
+				return
+			}
+		}
+	})
+}
+
 // BenchmarkUnmarshalReader compares the three decode paths on the same payload.
 // The interesting column is B/op: the buffer path and the old unknown-size
 // behaviour both have to hold the whole payload, while streaming does not.

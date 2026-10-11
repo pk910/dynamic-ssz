@@ -6097,7 +6097,7 @@ func TestFailedRecursiveBuildPurgesCaches(t *testing.T) {
 }
 
 type (
-	publishNested struct{ V uint32 }
+	publishNested  struct{ V uint32 }
 	publishFailing struct {
 		N publishNested
 		M map[string]uint32
@@ -8039,4 +8039,41 @@ func TestTypeCache_RemoveTypeBothForms(t *testing.T) {
 			t.Errorf("RemoveTypeKey left the view pair %v/%v cached", pair[0], pair[1])
 		}
 	}
+}
+
+// benchCheckpoint is a Checkpoint-sized container: an epoch and a root.
+type benchCheckpoint struct {
+	Epoch uint64
+	Root  [32]byte
+}
+
+// BenchmarkTypeCacheLookup measures the per-call lookup of a cached
+// descriptor, the path every DynSsz entry point takes, from one goroutine and
+// from many at once.
+func BenchmarkTypeCacheLookup(b *testing.B) {
+	cache := NewTypeCache(nil)
+	typ := reflect.TypeOf(&benchCheckpoint{})
+	if _, err := cache.GetTypeDescriptor(typ, nil, nil, nil); err != nil {
+		b.Fatal(err)
+	}
+
+	b.Run("sequential", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, err := cache.GetTypeDescriptor(typ, nil, nil, nil); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("parallel", func(b *testing.B) {
+		b.ReportAllocs()
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				if _, err := cache.GetTypeDescriptor(typ, nil, nil, nil); err != nil {
+					b.Error(err)
+					return
+				}
+			}
+		})
+	})
 }
