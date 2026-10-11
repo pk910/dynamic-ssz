@@ -295,7 +295,12 @@ func (ctx *hashTreeRootContext) hashDelegated(desc *ssztypes.TypeDescriptor, var
 	useFastSsz := ctx.hashUsesFastSsz(desc, isRoot)
 
 	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 && !isRoot && !isView {
-		if !ctx.options.WithoutDynamicExpressions {
+		// The static hasher is taken on the same condition as the static
+		// marshaler, unmarshaler and sizer: the child has one and no size or
+		// limit below it depends on the spec. A custom type is reached through
+		// its spec-aware hasher whenever it has one, as its other operations
+		// are.
+		if !ctx.options.WithoutDynamicExpressions && (!useFastSsz || desc.SszType == ssztypes.SszCustomType) {
 			fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "HashTreeRootWithDyn")
 			appendPackedStart()
 			ctx.appendCode(indent, "if err := %s.%s(ds, hh%s); err != nil {\n\treturn %s\n}\n", varName, fn, arg, typePath.getErrorWith("err"))
@@ -310,7 +315,7 @@ func (ctx *hashTreeRootContext) hashDelegated(desc *ssztypes.TypeDescriptor, var
 		// static HashTreeRootWith is delegated below, one with inlinable
 		// structure is inlined by the caller, one with neither cannot be
 		// generated.
-		if !useFastSsz && (desc.SszType == ssztypes.SszCustomType || isShallowDelegatedDescriptor(desc)) {
+		if ctx.options.WithoutDynamicExpressions && !useFastSsz && (desc.SszType == ssztypes.SszCustomType || isShallowDelegatedDescriptor(desc)) {
 			return true, fmt.Errorf("cannot generate static hash tree root for %s under without-dynamic-expressions: it provides only dynamic (spec-aware) SSZ methods and has no static HashTreeRootWith or inlinable structure; add it to the generation set or provide a static hasher", ctx.typePrinter.TypeString(desc))
 		}
 	}
