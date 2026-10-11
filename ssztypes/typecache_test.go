@@ -5691,6 +5691,10 @@ type staticNoSizer struct{}
 
 func TestDelegatedStaticSize(t *testing.T) {
 	tc := NewTypeCache(nil)
+	// A build holds buildMu when it sizes a type; the sizer runs with it
+	// released and gives it back.
+	tc.buildMu.Lock()
+	defer tc.buildMu.Unlock()
 
 	sz, sized, err := tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticDynSizer{}))
 	if err != nil || !sized || sz != 8 {

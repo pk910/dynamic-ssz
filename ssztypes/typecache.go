@@ -493,6 +493,12 @@ func (tc *TypeCache) detectCompatFlags(desc *TypeDescriptor, runtimeType, schema
 // derives its result from constants and spec values only — never from field data
 // — so a zero value yields the correct size, and spec-dependent fixed sizes are
 // resolved against the cache's specs. View descriptors use the view sizer.
+//
+// The caller holds buildMu. The sizer is user code and may call back into the
+// instance it is given (a wrapper sizing its payload, say), which builds and
+// publishes other types, so it runs with buildMu released. A sizer whose
+// answer depends, through the instance, on the type being built describes an
+// infinitely sized type and recurses until the stack overflows.
 func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType reflect.Type) (int64, bool, error) {
 	specs := tc.specs // never nil: NewTypeCache substitutes emptySpecs{}
 	zero := reflect.New(runtimeType).Interface()
@@ -516,8 +522,15 @@ func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType refle
 
 	if desc.GoTypeFlags&GoTypeFlagIsView != 0 {
 		if sizer, ok := zero.(sszutils.DynamicViewSizer); ok && desc.CodegenInfo != nil {
-			if sizeFn := sizer.SizeSSZDynView(*desc.CodegenInfo); sizeFn != nil {
-				return validate(sizeFn(specs))
+			view := *desc.CodegenInfo
+			n, served := 0, false
+			tc.withoutBuildLock(func() {
+				if sizeFn := sizer.SizeSSZDynView(view); sizeFn != nil {
+					n, served = sizeFn(specs), true
+				}
+			})
+			if served {
+				return validate(n)
 			}
 		}
 		return 0, false, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "static view type %v does not provide a usable view sizer", runtimeType)
@@ -527,12 +540,27 @@ func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType refle
 	// (spec-aware) or the fastssz sizer. Fully-delegated callers always provide
 	// the DynamicSizer; a static custom type may instead provide only fastssz.
 	if sizer, ok := zero.(sszutils.DynamicSizer); ok {
-		return validate(sizer.SizeSSZDyn(specs))
+		var n int
+		tc.withoutBuildLock(func() { n = sizer.SizeSSZDyn(specs) })
+		return validate(n)
 	}
 	if sizer, ok := zero.(sszutils.FastsszSizer); ok {
-		return validate(sizer.SizeSSZ())
+		var n int
+		tc.withoutBuildLock(func() { n = sizer.SizeSSZ() })
+		return validate(n)
 	}
 	return 0, false, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "static type %v provides no usable sizer", runtimeType)
+}
+
+// withoutBuildLock runs fn, a call into user code, with buildMu released. The
+// caller holds buildMu and touches neither the published store nor the hinted
+// variants until fn returns; its own state lives in its builder, which no
+// other goroutine reaches. buildMu is taken again in a defer, so a panicking
+// fn leaves it held for the caller's deferred unlock.
+func (tc *TypeCache) withoutBuildLock(fn func()) {
+	tc.buildMu.Unlock()
+	defer tc.buildMu.Lock()
+	fn()
 }
 
 // RejectMaxOnVector rejects a limit declared for a dimension that is fixed
