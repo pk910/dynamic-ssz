@@ -564,12 +564,11 @@ func stripSpecSpaces(name string) string {
 	}, name)
 }
 
-// specSetKeyWord returns the identity of a spec set key: the type pointer a
-// reflect.Type holds. Two keys are the same type exactly when they hold the
-// same pointer, and a map over the pointer is looked up without hashing an
+// specSetKeyWord returns the identity of a spec set key (see
+// sszutils.TypeWord). A map over the pointer is looked up without hashing an
 // interface, which is most of what a lookup by reflect.Type costs.
 func specSetKeyWord(key reflect.Type) unsafe.Pointer {
-	return (*[2]unsafe.Pointer)(unsafe.Pointer(&key))[1]
+	return sszutils.TypeWord(key)
 }
 
 // LoadSpecSet returns the spec set cached for the generated type key, or nil
