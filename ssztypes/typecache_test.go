@@ -5729,23 +5729,36 @@ type staticNoSizer struct{}
 func TestDelegatedStaticSize(t *testing.T) {
 	tc := NewTypeCache(nil)
 
-	sz, sized, err := tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticDynSizer{}))
+	// The sizer never runs inside a build: the first lookup asks for it to be
+	// run, and the stored answer is returned from then on.
+	sizeOf := func(typ reflect.Type) (int64, bool, error) {
+		t.Helper()
+		_, _, err := tc.delegatedStaticSize(&TypeDescriptor{}, typ)
+		var pending *sizerPendingError
+		if !errors.As(err, &pending) {
+			t.Fatalf("%v: first lookup = %v, want a pending sizer", typ, err)
+		}
+		tc.sizerResults[pending.key] = pending.run(tc.specs)
+		return tc.delegatedStaticSize(&TypeDescriptor{}, typ)
+	}
+
+	sz, sized, err := sizeOf(reflect.TypeOf(staticDynSizer{}))
 	if err != nil || !sized || sz != 8 {
 		t.Errorf("dynssz sizer: size=%d sized=%v err=%v; want 8", sz, sized, err)
 	}
 
-	sz, sized, err = tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticFastSizer{}))
+	sz, sized, err = sizeOf(reflect.TypeOf(staticFastSizer{}))
 	if err != nil || !sized || sz != 16 {
 		t.Errorf("fastssz sizer: size=%d sized=%v err=%v; want 16", sz, sized, err)
 	}
 
-	if _, _, err = tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticNoSizer{})); err == nil {
+	if _, _, err = sizeOf(reflect.TypeOf(staticNoSizer{})); err == nil {
 		t.Error("no sizer: expected error")
 	}
 
 	// A sizer that refuses states no size, which describes the type without a
 	// fixed one rather than refusing the type.
-	if sz, sized, err := tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(delegatedNegSize{})); err != nil || sized || sz != 0 {
+	if sz, sized, err := sizeOf(reflect.TypeOf(delegatedNegSize{})); err != nil || sized || sz != 0 {
 		t.Errorf("refusing sizer: size=%d sized=%v err=%v; want no size and no error", sz, sized, err)
 	}
 }
