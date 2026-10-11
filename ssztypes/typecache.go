@@ -86,7 +86,7 @@ type typeEntry struct {
 type TypeCache struct {
 	specs sszutils.DynamicSpecs
 
-	// published maps a runtime type's identity word (sszutils.TypeWord) to its
+	// published maps a runtime type's identity word (TypeWord) to its
 	// *typeEntry. Readers take no lock. An entry is created once per type; its
 	// descriptors are written under buildMu and cleared by removals.
 	published sync.Map
@@ -261,7 +261,7 @@ func (tc *TypeCache) GetTypeDescriptorWithSchema(runtimeType, schemaType reflect
 // lookupPublished returns the published hint-free descriptor of a (runtime,
 // schema) pair, or nil. It takes no lock.
 func (tc *TypeCache) lookupPublished(runtimeType, schemaType reflect.Type) *TypeDescriptor {
-	e, ok := tc.published.Load(sszutils.TypeWord(runtimeType))
+	e, ok := tc.published.Load(TypeWord(runtimeType))
 	if !ok {
 		return nil
 	}
@@ -269,7 +269,7 @@ func (tc *TypeCache) lookupPublished(runtimeType, schemaType reflect.Type) *Type
 	if runtimeType == schemaType {
 		return entry.plain.Load()
 	}
-	view, _ := entry.views.Load(sszutils.TypeWord(schemaType))
+	view, _ := entry.views.Load(TypeWord(schemaType))
 	desc, _ := view.(*TypeDescriptor)
 	return desc
 }
@@ -277,7 +277,7 @@ func (tc *TypeCache) lookupPublished(runtimeType, schemaType reflect.Type) *Type
 // entryFor returns the published entry of a runtime type, creating it on
 // first use. The caller holds buildMu.
 func (tc *TypeCache) entryFor(runtimeType reflect.Type) *typeEntry {
-	word := sszutils.TypeWord(runtimeType)
+	word := TypeWord(runtimeType)
 	e, ok := tc.published.Load(word)
 	if !ok {
 		e, _ = tc.published.LoadOrStore(word, &typeEntry{})
@@ -311,7 +311,7 @@ func (tc *TypeCache) publish(b *builder) *TypeDescriptor {
 			}
 		default:
 			entry := tc.entryFor(ref.key.runtime)
-			if actual, loaded := entry.views.LoadOrStore(sszutils.TypeWord(ref.key.schema), desc); loaded {
+			if actual, loaded := entry.views.LoadOrStore(TypeWord(ref.key.schema), desc); loaded {
 				desc, _ = actual.(*TypeDescriptor)
 			}
 		}
@@ -769,12 +769,12 @@ func (tc *TypeCache) RemoveTypeKey(runtimeType, schemaType reflect.Type) {
 	} {
 		// The entry itself stays: a reader may hold it, and the next build
 		// of the type fills it again.
-		if e, ok := tc.published.Load(sszutils.TypeWord(key.runtime)); ok {
+		if e, ok := tc.published.Load(TypeWord(key.runtime)); ok {
 			entry, _ := e.(*typeEntry)
 			if key.runtime == key.schema {
 				entry.plain.Store(nil)
 			} else {
-				entry.views.Delete(sszutils.TypeWord(key.schema))
+				entry.views.Delete(TypeWord(key.schema))
 			}
 		}
 		delete(tc.hinted, key)

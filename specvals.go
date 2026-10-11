@@ -15,6 +15,7 @@ import (
 	"strings"
 	"unsafe"
 
+	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
@@ -565,10 +566,10 @@ func stripSpecSpaces(name string) string {
 }
 
 // specSetKeyWord returns the identity of a spec set key (see
-// sszutils.TypeWord). A map over the pointer is looked up without hashing an
+// ssztypes.TypeWord). A map over the pointer is looked up without hashing an
 // interface, which is most of what a lookup by reflect.Type costs.
 func specSetKeyWord(key reflect.Type) unsafe.Pointer {
-	return sszutils.TypeWord(key)
+	return ssztypes.TypeWord(key)
 }
 
 // LoadSpecSet returns the spec set cached for the generated type key, or nil

@@ -123,7 +123,7 @@ func delegationMethodByName(t reflect.Type, name string) (reflect.Method, bool) 
 func (tc *TypeCache) PromotedDelegationMethods(targetType reflect.Type) map[string]bool {
 	// A map over the type's identity word is looked up without hashing an
 	// interface.
-	word := sszutils.TypeWord(targetType)
+	word := TypeWord(targetType)
 
 	var current map[unsafe.Pointer]map[string]bool
 	if cache := tc.promotedDelegation.Load(); cache != nil {
