@@ -1,6 +1,6 @@
 module basic-example
 
-go 1.25.8
+go 1.26.0
 
 require (
 	github.com/attestantio/go-eth2-client v0.29.0
@@ -16,8 +16,8 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/pk910/hashtree-bindings v0.2.6 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	golang.org/x/crypto v0.52.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/crypto v0.58.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect
 )
 
