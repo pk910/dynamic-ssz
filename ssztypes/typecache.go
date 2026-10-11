@@ -918,7 +918,9 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		var fullyDelegated bool
 		promoted := tc.PromotedDelegationMethods(runtimeType)
 		if desc.GoTypeFlags&GoTypeFlagIsView != 0 {
-			fullyDelegated = fullyDelegatesSSZView(runtimeType, promoted)
+			// Only a view the type's dispatcher recognizes is delegated; any other
+			// view is walked.
+			fullyDelegated = fullyDelegatesSSZView(runtimeType, promoted) && servesView(runtimeType, *desc.CodegenInfo)
 		} else {
 			fullyDelegated = fullyDelegatesSSZ(runtimeType, promoted)
 		}
@@ -1577,6 +1579,12 @@ func fullyDelegatesSSZ(runtimeType reflect.Type, promoted map[string]bool) bool 
 			(getDynamicDecoderCompatibility(runtimeType) && !promoted["UnmarshalSSZDecoder"])) &&
 		getDynamicSizerCompatibility(runtimeType) && !promoted["SizeSSZDyn"] &&
 		getDynamicHashRootCompatibility(runtimeType) && !promoted["HashTreeRootWithDyn"]
+}
+
+// servesView reports whether runtimeType's view dispatcher recognizes view.
+func servesView(runtimeType reflect.Type, view any) bool {
+	sizer, ok := reflect.New(runtimeType).Interface().(sszutils.DynamicViewSizer)
+	return ok && sizer.SizeSSZDynView(view) != nil
 }
 
 // fullyDelegatesSSZView is the view-descriptor counterpart of fullyDelegatesSSZ:
