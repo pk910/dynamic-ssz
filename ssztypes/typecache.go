@@ -156,8 +156,9 @@ func (tc *TypeCache) DisableSpecResolution() {
 // Type descriptors are cached for performance, avoiding repeated reflection and analysis of the
 // same types.
 //
-// The method is thread-safe and ensures sequential processing to prevent duplicate computation
-// of type descriptors when called concurrently for the same type.
+// The method is thread-safe. Looking up a cached descriptor takes no lock; building one is
+// serialised with every other build on the cache, so concurrent first calls for the same type
+// build it once and all get the one published descriptor.
 //
 // Parameters:
 //   - t: The reflect.Type for which to obtain a descriptor
