@@ -1764,15 +1764,15 @@ func TestTypeCache_DelegatedShallowBuild(t *testing.T) {
 	})
 
 	t.Run("ViewSizerUnusable", func(t *testing.T) {
-		// A static view type whose view sizer yields no size function cannot have
-		// its size resolved, so the shallow build must fail.
+		// A view the runtime type's dispatcher does not serve is walked like any
+		// other view, so the error is the walk's, about the empty field.
 		_, err := cache.GetTypeDescriptorWithSchema(
 			reflect.TypeOf(delegatedViewNilRuntime{}),
 			reflect.TypeOf(delegatedViewNilSchema{}),
 			nil, nil, nil,
 		)
-		if err == nil || !strings.Contains(err.Error(), "does not provide a usable view sizer") {
-			t.Fatalf("expected unusable view sizer error, got: %v", err)
+		if err == nil || !strings.Contains(err.Error(), "has no SSZ fields") {
+			t.Fatalf("expected the view to be walked, got: %v", err)
 		}
 	})
 

@@ -6438,3 +6438,29 @@ type ProbeHintedWalked struct {
 type ProbeHintedOverride struct {
 	OuterList ProbeHintedOuter `ssz-type:"vector,list"`
 }
+
+// UnknownView_Base is generated with UnknownView_Own as its only view.
+// UnknownView_Dyn and UnknownView_Static are generated types of their own that
+// fit its fields, so they can be passed as views it was not generated for.
+type UnknownView_Base struct {
+	A uint64
+	B []byte `ssz-max:"16"`
+	C uint32
+	D [2]uint64
+}
+
+type UnknownView_Own struct {
+	A uint64
+	C uint32
+}
+
+type UnknownView_Dyn struct {
+	A uint64
+	B []byte `ssz-max:"16"`
+	C uint32
+}
+
+type UnknownView_Static struct {
+	A uint64
+	C uint32
+}
