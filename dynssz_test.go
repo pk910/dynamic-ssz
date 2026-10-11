@@ -19,6 +19,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -9976,4 +9977,270 @@ func TestRemoveTypeThroughDynSsz(t *testing.T) {
 	workers.Wait()
 	close(stop)
 	wg.Wait()
+}
+
+// reentryPayload is the plain container the re-entrant types below wrap.
+type reentryPayload struct{ A, B uint32 }
+
+// reentryInstance returns the instance a re-entrant type was handed.
+func reentryInstance(ds sszutils.DynamicSpecs) *DynSsz {
+	d, _ := ds.(*DynSsz)
+	return d
+}
+
+// reentryCalls counts how often reentryWrap's sizer runs.
+var reentryCalls atomic.Int32
+
+// reentryWrap is a custom static type that sizes, encodes and hashes its
+// payload through the instance it is given, the natural way to write a
+// wrapper around an SSZ value.
+type reentryWrap struct{ Inner reentryPayload }
+
+var _ = sszutils.Annotate[reentryWrap](`ssz-type:"custom" ssz-static:"true"`)
+
+func (c *reentryWrap) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
+	reentryCalls.Add(1)
+	n, err := reentryInstance(ds).SizeSSZ(&c.Inner)
+	if err != nil {
+		return -1
+	}
+	return n
+}
+
+func (c *reentryWrap) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return reentryInstance(ds).MarshalSSZTo(&c.Inner, buf)
+}
+
+func (c *reentryWrap) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) error {
+	return reentryInstance(ds).UnmarshalSSZ(&c.Inner, buf)
+}
+
+func (c *reentryWrap) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	root, err := reentryInstance(ds).HashTreeRoot(&c.Inner)
+	if err != nil {
+		return err
+	}
+	hh.PutBytes(root[:])
+	return nil
+}
+
+// reentryExprWrap takes its width from a spec expression nobody defines, so
+// the width is read from its sizer.
+type reentryExprWrap struct{ reentryWrap }
+
+var _ = sszutils.Annotate[reentryExprWrap](`ssz-type:"custom"`)
+
+// reentryFull is a non-custom type with the complete dynamic surface that
+// declares itself static, so it is described from its sizer without a walk.
+type reentryFull struct{ Inner reentryPayload }
+
+var _ = sszutils.Annotate[reentryFull](`ssz-static:"true"`)
+
+func (c *reentryFull) wrap() *reentryWrap { return (*reentryWrap)(c) }
+
+func (c *reentryFull) SizeSSZDyn(ds sszutils.DynamicSpecs) int { return c.wrap().SizeSSZDyn(ds) }
+
+func (c *reentryFull) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return c.wrap().MarshalSSZDyn(ds, buf)
+}
+
+func (c *reentryFull) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) error {
+	return c.wrap().UnmarshalSSZDyn(ds, buf)
+}
+
+func (c *reentryFull) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	return c.wrap().HashTreeRootWithDyn(ds, hh)
+}
+
+// reentryNested is sized through a holder whose field needs a re-entrant
+// sizer itself.
+type reentryNested struct{ Inner reentryHolder }
+
+var _ = sszutils.Annotate[reentryNested](`ssz-type:"custom" ssz-static:"true"`)
+
+func (c *reentryNested) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
+	n, err := reentryInstance(ds).SizeSSZ(&c.Inner)
+	if err != nil {
+		return -1
+	}
+	return n
+}
+
+func (c *reentryNested) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return reentryInstance(ds).MarshalSSZTo(&c.Inner, buf)
+}
+
+func (c *reentryNested) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) error {
+	return reentryInstance(ds).UnmarshalSSZ(&c.Inner, buf)
+}
+
+func (c *reentryNested) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	root, err := reentryInstance(ds).HashTreeRoot(&c.Inner)
+	if err != nil {
+		return err
+	}
+	hh.PutBytes(root[:])
+	return nil
+}
+
+// reentryPanicky is a custom static type whose sizer panics.
+type reentryPanicky struct{ reentryWrap }
+
+var _ = sszutils.Annotate[reentryPanicky](`ssz-type:"custom" ssz-static:"true"`)
+
+func (c *reentryPanicky) SizeSSZDyn(sszutils.DynamicSpecs) int { panic("sizer failure") }
+
+type (
+	reentryHolder struct {
+		W reentryWrap
+		Y uint8
+	}
+	reentryHolder2 struct {
+		X uint16
+		W reentryWrap
+	}
+	reentryExprHolder struct {
+		W reentryExprWrap `dynssz-size:"REENTRY_UNDEFINED"`
+		Y uint8
+	}
+	reentryFullHolder struct {
+		W reentryFull
+		Y uint8
+	}
+	reentryNestedHolder struct {
+		N reentryNested
+		Z uint8
+	}
+	reentryPanicHolder struct {
+		W reentryPanicky
+		Y uint8
+	}
+)
+
+// withTimeout fails the test instead of hanging when fn never returns.
+func withTimeout(t *testing.T, what string, fn func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fn()
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s: deadlock, the call never returned", what)
+	}
+}
+
+// A static type's sizer runs while the type is described, and may call back
+// into the instance it is given: that used to wait on the cache lock its own
+// build was holding.
+func TestStaticSizerCallsBackIntoInstance(t *testing.T) {
+	payload := reentryPayload{A: 0x01020304, B: 0x05060708}
+	chunk := func(v uint32) []byte {
+		c := make([]byte, 32)
+		binary.LittleEndian.PutUint32(c, v)
+		return c
+	}
+	payloadRoot := sha256.Sum256(append(chunk(payload.A), chunk(payload.B)...))
+	wantRoot := sha256.Sum256(append(payloadRoot[:], chunk(9)...))
+	wantBytes := []byte{4, 3, 2, 1, 8, 7, 6, 5, 9}
+
+	for _, tc := range []struct {
+		name  string
+		value any
+	}{
+		{"static custom", &reentryHolder{W: reentryWrap{payload}, Y: 9}},
+		{"custom sized from an undefined expression", &reentryExprHolder{W: reentryExprWrap{reentryWrap{payload}}, Y: 9}},
+		{"fully delegated static", &reentryFullHolder{W: reentryFull{payload}, Y: 9}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := NewDynSsz(nil)
+			withTimeout(t, tc.name, func() {
+				got, err := ds.MarshalSSZ(tc.value)
+				if err != nil || !bytes.Equal(got, wantBytes) {
+					t.Errorf("MarshalSSZ = %x, %v; want %x", got, err, wantBytes)
+				}
+				if size, err := ds.SizeSSZ(tc.value); err != nil || size != len(wantBytes) {
+					t.Errorf("SizeSSZ = %d, %v; want %d", size, err, len(wantBytes))
+				}
+				if root, err := ds.HashTreeRoot(tc.value); err != nil || root != wantRoot {
+					t.Errorf("HashTreeRoot = %x, %v; want %x", root, err, wantRoot)
+				}
+				decoded := reflect.New(reflect.TypeOf(tc.value).Elem()).Interface()
+				if err := ds.UnmarshalSSZ(decoded, wantBytes); err != nil || !reflect.DeepEqual(decoded, tc.value) {
+					t.Errorf("UnmarshalSSZ = %+v, %v; want %+v", decoded, err, tc.value)
+				}
+			})
+		})
+	}
+
+	t.Run("nested re-entry", func(t *testing.T) {
+		ds := NewDynSsz(nil)
+		value := &reentryNestedHolder{N: reentryNested{reentryHolder{W: reentryWrap{payload}, Y: 9}}, Z: 7}
+		withTimeout(t, "nested", func() {
+			got, err := ds.MarshalSSZ(value)
+			if want := append(append([]byte{}, wantBytes...), 7); err != nil || !bytes.Equal(got, want) {
+				t.Errorf("MarshalSSZ = %x, %v; want %x", got, err, want)
+			}
+		})
+	})
+
+	t.Run("sizer runs once per instance", func(t *testing.T) {
+		ds := NewDynSsz(nil)
+		reentryCalls.Store(0)
+		withTimeout(t, "memo", func() {
+			for _, v := range []any{&reentryHolder{}, &reentryHolder2{}, &reentryHolder{}} {
+				if _, err := ds.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(v), nil, nil, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+		if n := reentryCalls.Load(); n != 1 {
+			t.Errorf("sizer ran %d times while describing two holders, want 1", n)
+		}
+	})
+
+	t.Run("panicking sizer leaves the instance usable", func(t *testing.T) {
+		ds := NewDynSsz(nil)
+		withTimeout(t, "panic", func() {
+			func() {
+				defer func() {
+					if recover() == nil {
+						t.Error("the sizer's panic did not reach the caller")
+					}
+				}()
+				_, _ = ds.MarshalSSZ(&reentryPanicHolder{})
+			}()
+			if got, err := ds.MarshalSSZ(&reentryHolder{W: reentryWrap{payload}, Y: 9}); err != nil || !bytes.Equal(got, wantBytes) {
+				t.Errorf("MarshalSSZ after a panic = %x, %v", got, err)
+			}
+		})
+	})
+
+	t.Run("concurrent first use", func(t *testing.T) {
+		ds := NewDynSsz(nil)
+		withTimeout(t, "concurrent", func() {
+			var wg sync.WaitGroup
+			for i := range 16 {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					values := []any{
+						&reentryHolder{W: reentryWrap{payload}, Y: 9},
+						&reentryFullHolder{W: reentryFull{payload}, Y: 9},
+						&reentryExprHolder{W: reentryExprWrap{reentryWrap{payload}}, Y: 9},
+					}
+					v := values[i%len(values)]
+					if got, err := ds.MarshalSSZ(v); err != nil || !bytes.Equal(got, wantBytes) {
+						t.Errorf("%T: MarshalSSZ = %x, %v", v, got, err)
+					}
+					if root, err := ds.HashTreeRoot(v); err != nil || root != wantRoot {
+						t.Errorf("%T: HashTreeRoot = %x, %v", v, root, err)
+					}
+				}()
+			}
+			wg.Wait()
+		})
+	})
 }
