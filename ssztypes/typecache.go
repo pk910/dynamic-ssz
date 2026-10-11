@@ -127,15 +127,47 @@ func newBuilder(tc *TypeCache) *builder {
 	}
 }
 
-// TypeCache manages cached type descriptors
+// typeEntry holds every published hint-free descriptor of one runtime type.
+type typeEntry struct {
+	// plain is the descriptor with the runtime type as its own schema.
+	plain atomic.Pointer[TypeDescriptor]
+	// views maps a schema type's identity word to the view descriptor of the
+	// runtime type under that schema.
+	views sync.Map
+}
+
+// TypeCache manages cached type descriptors.
+//
+// Rules of the cache:
+//   - A TypeDescriptor is immutable once published. Only a builder modifies
+//     descriptors, and only the ones it owns and has not published yet.
+//   - The per-call lookup of a hint-free descriptor takes no lock.
+//   - buildMu is held for every build, publication, removal and GetAllTypes,
+//     and is released only around a static type's sizer (delegatedStaticSize).
+//   - Publication is all-or-nothing per top-level build, and the first build
+//     to publish a key wins.
+//   - Build errors are not cached; a failing type is analysed again per call.
 type TypeCache struct {
-	specs             sszutils.DynamicSpecs
-	mutex             sync.RWMutex
-	descriptors       map[typeKey]*TypeDescriptor
-	hintedDescriptors map[typeKey][]*hintedVariant
-	CompatFlags       map[string]SszCompatFlag
-	ExtendedTypes     bool
-	NoDelegation      bool
+	specs sszutils.DynamicSpecs
+
+	// published maps a runtime type's identity word (sszutils.TypeWord) to its
+	// *typeEntry. Readers take no lock. An entry is created once per type; its
+	// descriptors are written under buildMu and cleared by removals.
+	published sync.Map
+
+	// buildMu serialises descriptor builds, publication, removals and
+	// GetAllTypes. The per-call lookup never takes it. A build releases it
+	// around the one call into user code it makes, a static type's sizer (see
+	// delegatedStaticSize); its own state lives in a builder, so nothing
+	// half-built is reachable while it is released.
+	buildMu sync.Mutex
+	// hinted holds the descriptors built for references that carry hints.
+	// It is only accessed under buildMu, by builders and removals.
+	hinted map[typeKey][]*hintedVariant
+
+	CompatFlags   map[string]SszCompatFlag
+	ExtendedTypes bool
+	NoDelegation  bool
 
 	// noSpecResolution marks a cache that builds descriptors for code generation
 	// rather than for this process. See DisableSpecResolution.
@@ -162,11 +194,10 @@ func NewTypeCache(specs sszutils.DynamicSpecs) *TypeCache {
 		specs = emptySpecs{}
 	}
 	return &TypeCache{
-		specs:             specs,
-		descriptors:       make(map[typeKey]*TypeDescriptor),
-		hintedDescriptors: make(map[typeKey][]*hintedVariant),
-		CompatFlags:       map[string]SszCompatFlag{},
-		ExtendedTypes:     false,
+		specs:         specs,
+		hinted:        make(map[typeKey][]*hintedVariant, 64),
+		CompatFlags:   map[string]SszCompatFlag{},
+		ExtendedTypes: false,
 	}
 }
 
@@ -293,22 +324,18 @@ func (tc *TypeCache) GetTypeDescriptorWithSchema(runtimeType, schemaType reflect
 		return nil, sszutils.NewSszError(sszutils.ErrUnsupportedType, "type must not be nil")
 	}
 
-	key := typeKey{runtime: runtimeType, schema: schemaType}
-
-	// Check cache first (read lock)
+	// Lock-free per-call path: a published hint-free descriptor.
 	if len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0 {
-		tc.mutex.RLock()
-		if desc, exists := tc.descriptors[key]; exists {
-			tc.mutex.RUnlock()
+		if desc := tc.lookupPublished(runtimeType, schemaType); desc != nil {
 			return desc, nil
 		}
-		tc.mutex.RUnlock()
 	}
 
-	// If not in cache, build and cache it (write lock)
-	tc.mutex.Lock()
-	defer tc.mutex.Unlock()
+	tc.buildMu.Lock()
+	defer tc.buildMu.Unlock()
 
+	// The builder's first lookup is the double check: a build that held
+	// buildMu before this one may have published the descriptor.
 	b := newBuilder(tc)
 	desc, err := b.getTypeDescriptor(runtimeType, schemaType, sizeHints, maxSizeHints, typeHints)
 	if err != nil {
@@ -323,28 +350,80 @@ func (tc *TypeCache) GetTypeDescriptorWithSchema(runtimeType, schemaType reflect
 	if b.recursion {
 		FixupRecursiveFlags(desc)
 	}
-	tc.publish(b)
+	if published := tc.publish(b); published != nil {
+		desc = published
+	}
 
 	return desc, nil
 }
 
-// publish makes every descriptor a successful build completed visible to
-// lookups. Publication is all-or-nothing per top-level build.
-func (tc *TypeCache) publish(b *builder) {
-	for _, ref := range b.order {
-		if !ref.hinted {
-			tc.descriptors[ref.key] = ref.variant.desc
-			continue
-		}
-		tc.hintedDescriptors[ref.key] = append(tc.hintedDescriptors[ref.key], ref.variant)
+// lookupPublished returns the published hint-free descriptor of a (runtime,
+// schema) pair, or nil. It takes no lock.
+func (tc *TypeCache) lookupPublished(runtimeType, schemaType reflect.Type) *TypeDescriptor {
+	e, ok := tc.published.Load(sszutils.TypeWord(runtimeType))
+	if !ok {
+		return nil
 	}
+	entry := e.(*typeEntry)
+	if runtimeType == schemaType {
+		return entry.plain.Load()
+	}
+	if desc, ok := entry.views.Load(sszutils.TypeWord(schemaType)); ok {
+		return desc.(*TypeDescriptor)
+	}
+	return nil
+}
+
+// entryFor returns the published entry of a runtime type, creating it on
+// first use. The caller holds buildMu.
+func (tc *TypeCache) entryFor(runtimeType reflect.Type) *typeEntry {
+	word := sszutils.TypeWord(runtimeType)
+	e, ok := tc.published.Load(word)
+	if !ok {
+		e, _ = tc.published.LoadOrStore(word, &typeEntry{})
+	}
+	return e.(*typeEntry)
+}
+
+// publish makes every descriptor a successful build completed visible to
+// lookups, and returns the published descriptor of the build's root (the
+// last one completed), or nil when the build completed none. Publication is
+// all-or-nothing per top-level build. Builds are serialised by buildMu, so a
+// key is already published only when another build ran while this one waited
+// on a sizer; the first publisher wins, and both descriptors are equal. The
+// caller holds buildMu.
+func (tc *TypeCache) publish(b *builder) *TypeDescriptor {
+	var root *TypeDescriptor
+	for _, ref := range b.order {
+		desc := ref.variant.desc
+		switch {
+		case ref.hinted:
+			if existing := findVariant(tc.hinted[ref.key], ref.variant.sizeHints, ref.variant.maxSizeHints, ref.variant.typeHints); existing != nil {
+				desc = existing
+				break
+			}
+			tc.hinted[ref.key] = append(tc.hinted[ref.key], ref.variant)
+		case ref.key.runtime == ref.key.schema:
+			entry := tc.entryFor(ref.key.runtime)
+			if !entry.plain.CompareAndSwap(nil, desc) {
+				desc = entry.plain.Load()
+			}
+		default:
+			entry := tc.entryFor(ref.key.runtime)
+			if actual, loaded := entry.views.LoadOrStore(sszutils.TypeWord(ref.key.schema), desc); loaded {
+				desc = actual.(*TypeDescriptor)
+			}
+		}
+		root = desc
+	}
+	return root
 }
 
 // lookup returns the descriptor for key and hints that is published already
-// or that this build completed already, or nil.
+// or that this build completed already, or nil. The caller holds buildMu.
 func (b *builder) lookup(key typeKey, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) *TypeDescriptor {
 	if len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0 {
-		if desc, exists := b.tc.descriptors[key]; exists {
+		if desc := b.tc.lookupPublished(key.runtime, key.schema); desc != nil {
 			return desc
 		}
 		return b.builtPlain[key]
@@ -353,7 +432,7 @@ func (b *builder) lookup(key typeKey, sizeHints []SszSizeHint, maxSizeHints []Ss
 	// (type, hints) pair recurs across every container referencing the type,
 	// and the descriptor depends only on the type pair, the hints and the
 	// cache configuration.
-	if desc := findVariant(b.tc.hintedDescriptors[key], sizeHints, maxSizeHints, typeHints); desc != nil {
+	if desc := findVariant(b.tc.hinted[key], sizeHints, maxSizeHints, typeHints); desc != nil {
 		return desc
 	}
 	return findVariant(b.builtHinted[key], sizeHints, maxSizeHints, typeHints)
@@ -2766,7 +2845,7 @@ func NoSszRootError(desc *TypeDescriptor) error {
 // When runtime == schema (normal usage), these represent standard type descriptors.
 // When they differ, the pair represents a view descriptor for fork-dependent SSZ.
 //
-// The method acquires a read lock to ensure thread-safe access to the cache.
+// The method holds the build mutex, so it never sees a build half published.
 //
 // Returns:
 //   - [][2]reflect.Type: A slice of [runtime, schema] type pairs
@@ -2783,16 +2862,25 @@ func NoSszRootError(desc *TypeDescriptor) error {
 //	    }
 //	}
 func (tc *TypeCache) GetAllTypes() [][2]reflect.Type {
-	tc.mutex.RLock()
-	defer tc.mutex.RUnlock()
+	tc.buildMu.Lock()
+	defer tc.buildMu.Unlock()
 
-	types := make([][2]reflect.Type, 0, len(tc.descriptors)+len(tc.hintedDescriptors))
-	for key := range tc.descriptors {
-		types = append(types, [2]reflect.Type{key.runtime, key.schema})
-	}
+	types := make([][2]reflect.Type, 0, len(tc.hinted))
+	tc.published.Range(func(_, e any) bool {
+		entry := e.(*typeEntry)
+		if desc := entry.plain.Load(); desc != nil {
+			types = append(types, [2]reflect.Type{desc.Type, desc.SchemaType})
+		}
+		entry.views.Range(func(_, d any) bool {
+			desc := d.(*TypeDescriptor)
+			types = append(types, [2]reflect.Type{desc.Type, desc.SchemaType})
+			return true
+		})
+		return true
+	})
 	// A type reached only through hint-carrying references has no plain entry.
-	for key := range tc.hintedDescriptors {
-		if _, plain := tc.descriptors[key]; !plain {
+	for key := range tc.hinted {
+		if tc.lookupPublished(key.runtime, key.schema) == nil {
 			types = append(types, [2]reflect.Type{key.runtime, key.schema})
 		}
 	}
@@ -2807,7 +2895,9 @@ func (tc *TypeCache) GetAllTypes() [][2]reflect.Type {
 // recomputation of a type descriptor, such as after configuration changes or
 // when testing different type configurations.
 //
-// The method acquires a write lock to ensure thread-safe removal.
+// The method holds the build mutex, so it never overlaps a publication. A
+// build waiting on a static type's sizer while the type is removed publishes
+// its descriptors when it resumes.
 // Note: This only removes entries where runtime type equals schema type.
 // Use RemoveTypeKey to remove view descriptor entries.
 //
@@ -2828,13 +2918,15 @@ func (tc *TypeCache) RemoveType(t reflect.Type) {
 // RemoveTypeKey removes a specific (runtime, schema) type pair from the cache.
 //
 // This method supports removing view descriptor entries where runtime differs from schema.
+// Like RemoveType, it does not stop a build waiting on a static type's sizer from
+// publishing the pair again when it resumes.
 //
 // Parameters:
 //   - runtimeType: The runtime type of the cache entry to remove
 //   - schemaType: The schema type of the cache entry to remove
 func (tc *TypeCache) RemoveTypeKey(runtimeType, schemaType reflect.Type) {
-	tc.mutex.Lock()
-	defer tc.mutex.Unlock()
+	tc.buildMu.Lock()
+	defer tc.buildMu.Unlock()
 
 	if runtimeType.Kind() == reflect.Ptr {
 		runtimeType = runtimeType.Elem()
@@ -2849,8 +2941,17 @@ func (tc *TypeCache) RemoveTypeKey(runtimeType, schemaType reflect.Type) {
 		{runtime: runtimeType, schema: schemaType},
 		{runtime: reflect.PointerTo(runtimeType), schema: reflect.PointerTo(schemaType)},
 	} {
-		delete(tc.descriptors, key)
-		delete(tc.hintedDescriptors, key)
+		// The entry itself stays: a reader may hold it, and the next build
+		// of the type fills it again.
+		if e, ok := tc.published.Load(sszutils.TypeWord(key.runtime)); ok {
+			entry := e.(*typeEntry)
+			if key.runtime == key.schema {
+				entry.plain.Store(nil)
+			} else {
+				entry.views.Delete(sszutils.TypeWord(key.schema))
+			}
+		}
+		delete(tc.hinted, key)
 	}
 }
 
@@ -2861,9 +2962,10 @@ func (tc *TypeCache) RemoveTypeKey(runtimeType, schemaType reflect.Type) {
 //   - Memory management in long-running applications
 //   - Testing scenarios requiring a clean cache state
 //
-// The method acquires a write lock to ensure thread-safe clearing.
-// After calling this method, all subsequent type descriptor requests
-// will trigger recomputation. Spec values are resolved and memoized by the
+// The method holds the build mutex, so it never overlaps a publication. After
+// calling this method, all subsequent type descriptor requests will trigger
+// recomputation, except that a build waiting on a static type's sizer
+// publishes its descriptors when it resumes. Spec values are resolved and memoized by the
 // owning DynSsz instance, so a changed spec set needs a new DynSsz rather
 // than a cleared cache.
 //
@@ -2874,13 +2976,16 @@ func (tc *TypeCache) RemoveTypeKey(runtimeType, schemaType reflect.Type) {
 //	// All types will be recomputed
 //	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(MyStruct{}), nil, nil, nil)
 func (tc *TypeCache) RemoveAllTypes() {
-	tc.mutex.Lock()
-	defer tc.mutex.Unlock()
+	tc.buildMu.Lock()
+	defer tc.buildMu.Unlock()
 
-	// Create new maps to clear all references, including the hint-carrying
-	// variants that container fields and list elements are cached under.
-	tc.descriptors = make(map[typeKey]*TypeDescriptor)
-	tc.hintedDescriptors = make(map[typeKey][]*hintedVariant)
+	// Clear all references, including the hint-carrying variants that
+	// container fields and list elements are cached under.
+	tc.published.Range(func(word, _ any) bool {
+		tc.published.Delete(word)
+		return true
+	})
+	tc.hinted = make(map[typeKey][]*hintedVariant, 64)
 }
 
 // extractGenericTypeParameter extracts the generic type parameter from a CompatibleUnion type.

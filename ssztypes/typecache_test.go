@@ -732,7 +732,7 @@ func TestTypeCache_HintedCacheManagement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if len(cache.hintedDescriptors[listKey]) == 0 {
+	if cache.hintedLen(listKey) == 0 {
 		t.Fatal("expected a hinted variant for []uint64 with ssz-max")
 	}
 
@@ -747,13 +747,13 @@ func TestTypeCache_HintedCacheManagement(t *testing.T) {
 	}
 
 	cache.RemoveType(listType)
-	if len(cache.hintedDescriptors[listKey]) != 0 {
+	if cache.hintedLen(listKey) != 0 {
 		t.Error("RemoveType left the hinted variants in place")
 	}
 
 	cache.RemoveAllTypes()
-	if len(cache.hintedDescriptors) != 0 || len(cache.GetAllTypes()) != 0 {
-		t.Fatalf("RemoveAllTypes left %d hinted keys and %d listed types", len(cache.hintedDescriptors), len(cache.GetAllTypes()))
+	if len(cache.hinted) != 0 || len(cache.GetAllTypes()) != 0 {
+		t.Fatalf("RemoveAllTypes left %d hinted keys and %d listed types", len(cache.hinted), len(cache.GetAllTypes()))
 	}
 
 	second, err := cache.GetTypeDescriptor(outerType, nil, nil, nil)
@@ -6080,6 +6080,37 @@ type purgeFailC struct {
 	F3 *purgeFailA
 }
 
+// hasPlain reports whether a hint-free descriptor of key is published.
+func (tc *TypeCache) hasPlain(key typeKey) bool {
+	return tc.lookupPublished(key.runtime, key.schema) != nil
+}
+
+// hintedLen returns the number of hinted variants published for key.
+func (tc *TypeCache) hintedLen(key typeKey) int {
+	tc.buildMu.Lock()
+	defer tc.buildMu.Unlock()
+
+	return len(tc.hinted[key])
+}
+
+// plainCount returns the number of published hint-free descriptors, views
+// included.
+func (tc *TypeCache) plainCount() int {
+	n := 0
+	tc.published.Range(func(_, e any) bool {
+		entry := e.(*typeEntry)
+		if entry.plain.Load() != nil {
+			n++
+		}
+		entry.views.Range(func(_, _ any) bool {
+			n++
+			return true
+		})
+		return true
+	})
+	return n
+}
+
 // A failed recursive build must leave neither plain descriptors nor hinted
 // variants behind: everything cached during the build was built against an
 // abandoned graph.
@@ -6089,10 +6120,10 @@ func TestFailedRecursiveBuildPurgesCaches(t *testing.T) {
 	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(&purgeFailA{}), nil, nil, nil); err == nil {
 		t.Fatal("expected error for map field")
 	}
-	if n := len(cache.descriptors); n != 0 {
+	if n := cache.plainCount(); n != 0 {
 		t.Errorf("plain cache should be empty after failed recursive build, has %d entries", n)
 	}
-	if n := len(cache.hintedDescriptors); n != 0 {
+	if n := len(cache.hinted); n != 0 {
 		t.Errorf("hinted cache should be empty after failed recursive build, has %d entries", n)
 	}
 }
@@ -7936,7 +7967,7 @@ func TestTypeCache_RemoveTypeBothForms(t *testing.T) {
 			}
 
 			cache.RemoveType(removed)
-			if _, ok := cache.descriptors[typeKey{runtime: requested, schema: requested}]; ok {
+			if cache.hasPlain(typeKey{runtime: requested, schema: requested}) {
 				t.Errorf("RemoveType(%v) left %v cached", removed, requested)
 			}
 			if again, _ := cache.GetTypeDescriptor(requested, nil, nil, nil); again == first {
@@ -7959,11 +7990,11 @@ func TestTypeCache_RemoveTypeBothForms(t *testing.T) {
 		if _, err := cache.GetTypeDescriptor(reflect.TypeOf(&removeHolder{}), nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
-		if len(cache.hintedDescriptors[listPtrKey]) == 0 {
+		if cache.hintedLen(listPtrKey) == 0 {
 			t.Fatal("expected a hinted variant for the tagged pointer field")
 		}
 		cache.RemoveType(removed)
-		if len(cache.hintedDescriptors[listPtrKey]) != 0 {
+		if cache.hintedLen(listPtrKey) != 0 {
 			t.Errorf("RemoveType(%v) left the hinted pointer variant", removed)
 		}
 	}
@@ -7988,7 +8019,7 @@ func TestTypeCache_RemoveTypeBothForms(t *testing.T) {
 			t.Fatal(err)
 		}
 		cache.RemoveTypeKey(val, viewVal)
-		if _, ok := cache.descriptors[typeKey{runtime: pair[0], schema: pair[1]}]; ok {
+		if cache.hasPlain(typeKey{runtime: pair[0], schema: pair[1]}) {
 			t.Errorf("RemoveTypeKey left the view pair %v/%v cached", pair[0], pair[1])
 		}
 	}
