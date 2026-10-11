@@ -7,6 +7,7 @@ package ssztypes
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"math/bits"
@@ -89,6 +90,7 @@ type TypeCache struct {
 	dynDepth      int
 	recursion     bool
 	pendingKeys   []pendingKey
+	sizerResults  map[typeKey]sizerResult
 	CompatFlags   map[string]SszCompatFlag
 	ExtendedTypes bool
 	NoDelegation  bool
@@ -123,6 +125,7 @@ func NewTypeCache(specs sszutils.DynamicSpecs) *TypeCache {
 		hintedDescriptors: make(map[typeKey][]*hintedVariant),
 		building:          make(map[typeKey][]*buildEntry),
 		buildingTypes:     make(map[reflect.Type]int),
+		sizerResults:      make(map[typeKey]sizerResult),
 		CompatFlags:       map[string]SszCompatFlag{},
 		ExtendedTypes:     false,
 	}
@@ -267,7 +270,20 @@ func (tc *TypeCache) GetTypeDescriptorWithSchema(runtimeType, schemaType reflect
 	tc.mutex.Lock()
 	defer tc.mutex.Unlock()
 
-	return tc.getTypeDescriptor(runtimeType, schemaType, sizeHints, maxSizeHints, typeHints)
+	for {
+		desc, err := tc.getTypeDescriptor(runtimeType, schemaType, sizeHints, maxSizeHints, typeHints)
+		var pending *sizerPendingError
+		if !errors.As(err, &pending) {
+			return desc, err
+		}
+		var result sizerResult
+		func() {
+			tc.mutex.Unlock()
+			defer tc.mutex.Lock()
+			result = pending.run(tc.specs)
+		}()
+		tc.sizerResults[pending.key] = result
+	}
 }
 
 // purgePending drops the cache entries recorded from index from on: they were
@@ -1592,13 +1608,45 @@ func fullyDelegatesSSZView(runtimeType reflect.Type, promoted map[string]bool) b
 		getDynamicViewHashRootCompatibility(runtimeType) && !promoted["HashTreeRootWithDynView"]
 }
 
+// sizerResult is the answer of a static type's own sizer.
+type sizerResult struct {
+	size  int64
+	sized bool
+	err   error
+}
+
+// sizerPendingError abandons a build that needs a sizer answer not memoized
+// yet; GetTypeDescriptorWithSchema runs the sizer with the lock released and
+// retries.
+type sizerPendingError struct {
+	key         typeKey
+	isView      bool
+	codegenInfo *any
+}
+
+func (e *sizerPendingError) Error() string {
+	return fmt.Sprintf("size of static type %v is not known yet", e.key.runtime)
+}
+
 // delegatedStaticSize returns the fixed SSZ byte size of a fully-delegated static
 // type by invoking the type's own sizer on a zero value. A static type's sizer
 // derives its result from constants and spec values only — never from field data
 // — so a zero value yields the correct size, and spec-dependent fixed sizes are
-// resolved against the cache's specs. View descriptors use the view sizer.
+// resolved against the cache's specs. View descriptors use the view sizer. The
+// sizer runs outside the lock (see sizerResults), so a first call abandons the
+// build with a sizerPendingError.
 func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType reflect.Type) (int64, bool, error) {
-	specs := tc.specs // never nil: NewTypeCache substitutes emptySpecs{}
+	key := typeKey{runtime: runtimeType, schema: desc.SchemaType}
+	if result, ok := tc.sizerResults[key]; ok {
+		return result.size, result.sized, result.err
+	}
+	return 0, false, &sizerPendingError{key: key, isView: desc.GoTypeFlags&GoTypeFlagIsView != 0, codegenInfo: desc.CodegenInfo}
+}
+
+// run invokes the sizer of a static type on a zero value. It is called with the
+// cache unlocked.
+func (e *sizerPendingError) run(specs sszutils.DynamicSpecs) sizerResult {
+	runtimeType := e.key.runtime
 	zero := reflect.New(runtimeType).Interface()
 
 	// A sizer returns int; its result enters the size domain here, so it is
@@ -1607,24 +1655,24 @@ func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType refle
 	// over-limit total through that one return -- so the type is described
 	// without a fixed size rather than refused, and the size is asked for again
 	// where a caller can be told why it cannot be given.
-	validate := func(n int) (int64, bool, error) {
+	validate := func(n int) sizerResult {
 		if n < 0 {
-			return 0, false, nil
+			return sizerResult{}
 		}
 		if n > sszutils.MaxSszSize {
-			return 0, false, sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(uint64(n)), "sizer for static type %v returned out-of-range size %d", runtimeType, n)
+			return sizerResult{err: sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(uint64(n)), "sizer for static type %v returned out-of-range size %d", runtimeType, n)}
 		}
 
-		return int64(n), true, nil
+		return sizerResult{size: int64(n), sized: true}
 	}
 
-	if desc.GoTypeFlags&GoTypeFlagIsView != 0 {
-		if sizer, ok := zero.(sszutils.DynamicViewSizer); ok && desc.CodegenInfo != nil {
-			if sizeFn := sizer.SizeSSZDynView(*desc.CodegenInfo); sizeFn != nil {
+	if e.isView {
+		if sizer, ok := zero.(sszutils.DynamicViewSizer); ok && e.codegenInfo != nil {
+			if sizeFn := sizer.SizeSSZDynView(*e.codegenInfo); sizeFn != nil {
 				return validate(sizeFn(specs))
 			}
 		}
-		return 0, false, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "static view type %v does not provide a usable view sizer", runtimeType)
+		return sizerResult{err: sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "static view type %v does not provide a usable view sizer", runtimeType)}
 	}
 
 	// Non-view static types may size themselves through either the dynssz sizer
@@ -1636,7 +1684,7 @@ func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType refle
 	if sizer, ok := zero.(sszutils.FastsszSizer); ok {
 		return validate(sizer.SizeSSZ())
 	}
-	return 0, false, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "static type %v provides no usable sizer", runtimeType)
+	return sizerResult{err: sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "static type %v provides no usable sizer", runtimeType)}
 }
 
 // buildTypeWrapperDescriptor builds a descriptor for TypeWrapper types with runtime/schema pairing.
@@ -2827,6 +2875,7 @@ func (tc *TypeCache) RemoveAllTypes() {
 	// variants that container fields and list elements are cached under.
 	tc.descriptors = make(map[typeKey]*TypeDescriptor)
 	tc.hintedDescriptors = make(map[typeKey][]*hintedVariant)
+	tc.sizerResults = make(map[typeKey]sizerResult)
 }
 
 // extractGenericTypeParameter extracts the generic type parameter from a CompatibleUnion type.
