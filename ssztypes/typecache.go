@@ -265,14 +265,13 @@ func (tc *TypeCache) lookupPublished(runtimeType, schemaType reflect.Type) *Type
 	if !ok {
 		return nil
 	}
-	entry := e.(*typeEntry)
+	entry, _ := e.(*typeEntry)
 	if runtimeType == schemaType {
 		return entry.plain.Load()
 	}
-	if desc, ok := entry.views.Load(sszutils.TypeWord(schemaType)); ok {
-		return desc.(*TypeDescriptor)
-	}
-	return nil
+	view, _ := entry.views.Load(sszutils.TypeWord(schemaType))
+	desc, _ := view.(*TypeDescriptor)
+	return desc
 }
 
 // entryFor returns the published entry of a runtime type, creating it on
@@ -283,7 +282,8 @@ func (tc *TypeCache) entryFor(runtimeType reflect.Type) *typeEntry {
 	if !ok {
 		e, _ = tc.published.LoadOrStore(word, &typeEntry{})
 	}
-	return e.(*typeEntry)
+	entry, _ := e.(*typeEntry)
+	return entry
 }
 
 // publish makes every descriptor a successful build completed visible to
@@ -312,7 +312,7 @@ func (tc *TypeCache) publish(b *builder) *TypeDescriptor {
 		default:
 			entry := tc.entryFor(ref.key.runtime)
 			if actual, loaded := entry.views.LoadOrStore(sszutils.TypeWord(ref.key.schema), desc); loaded {
-				desc = actual.(*TypeDescriptor)
+				desc, _ = actual.(*TypeDescriptor)
 			}
 		}
 		root = desc
@@ -693,12 +693,12 @@ func (tc *TypeCache) GetAllTypes() [][2]reflect.Type {
 
 	types := make([][2]reflect.Type, 0, len(tc.hinted))
 	tc.published.Range(func(_, e any) bool {
-		entry := e.(*typeEntry)
+		entry, _ := e.(*typeEntry)
 		if desc := entry.plain.Load(); desc != nil {
 			types = append(types, [2]reflect.Type{desc.Type, desc.SchemaType})
 		}
 		entry.views.Range(func(_, d any) bool {
-			desc := d.(*TypeDescriptor)
+			desc, _ := d.(*TypeDescriptor)
 			types = append(types, [2]reflect.Type{desc.Type, desc.SchemaType})
 			return true
 		})
@@ -770,7 +770,7 @@ func (tc *TypeCache) RemoveTypeKey(runtimeType, schemaType reflect.Type) {
 		// The entry itself stays: a reader may hold it, and the next build
 		// of the type fills it again.
 		if e, ok := tc.published.Load(sszutils.TypeWord(key.runtime)); ok {
-			entry := e.(*typeEntry)
+			entry, _ := e.(*typeEntry)
 			if key.runtime == key.schema {
 				entry.plain.Store(nil)
 			} else {
