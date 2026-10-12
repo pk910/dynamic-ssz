@@ -6195,6 +6195,73 @@ func TestTypeCacheConcurrentFirstUse(t *testing.T) {
 	}
 }
 
+type (
+	raceA struct {
+		V  uint64
+		Bs []*raceB `ssz-max:"4"`
+	}
+	raceB struct{ A *raceA }
+)
+
+// reachableSeqs reads the publication stamp of every descriptor reachable from
+// desc, the way a reader walking a published graph reads its nodes.
+func reachableSeqs(desc *TypeDescriptor) uint64 {
+	var sum uint64
+	seen := make(map[*TypeDescriptor]bool, 8)
+	var walk func(d *TypeDescriptor)
+	walk = func(d *TypeDescriptor) {
+		if d == nil || seen[d] {
+			return
+		}
+		seen[d] = true
+		sum += d.publishSeq
+		if d.ContainerDesc != nil {
+			for i := range d.ContainerDesc.Fields {
+				walk(d.ContainerDesc.Fields[i].Type)
+			}
+		}
+		walk(d.ElemDesc)
+	}
+	walk(desc)
+	return sum
+}
+
+// A cycle member is stored before its cycle head, so once a lock-free reader
+// can hold the member, publication must not write to anything the member
+// reaches. The reader reads every node of the member's graph as soon as the
+// member appears; the race detector reports any write publication makes to a
+// node after storing the member.
+func TestPublishWritesNothingReachable(t *testing.T) {
+	memberType := reflect.TypeOf(&raceB{})
+	for range 200 {
+		cache := NewTypeCache(&dummyDynamicSpecs{})
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			if _, err := cache.GetTypeDescriptor(reflect.TypeOf(&raceA{}), nil, nil, nil); err != nil {
+				t.Error(err)
+			}
+		}()
+		for finished := false; ; {
+			if member := cache.lookupPublished(memberType, memberType); member != nil {
+				if reachableSeqs(member) == 0 {
+					t.Fatal("a published graph holds unstamped descriptors")
+				}
+				break
+			}
+			if finished {
+				t.Fatal("the build finished without publishing the cycle member")
+			}
+			select {
+			case <-done:
+				finished = true
+			default:
+			}
+		}
+		<-done
+	}
+}
+
 // A nil child in the descriptor graph must serialize as an explicit missing
 // reference rather than panicking or aliasing index 0.
 func TestMarshalCyclicDescriptorNilChild(t *testing.T) {

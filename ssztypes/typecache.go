@@ -310,12 +310,26 @@ func (tc *TypeCache) entryFor(runtimeType reflect.Type) *typeEntry {
 // last one completed), or nil when the build completed none. Publication is
 // all-or-nothing per top-level build. Builds are serialised by buildMu, so a
 // key is already published only when another build ran while this one waited
-// on a sizer; the first publisher wins, and both descriptors are equal. Each
-// publication stamps what it stores with a new sequence number (see
-// builder.lookup). A descriptor stamped and then not stored is harmless: it
-// is never reachable from the store. The caller holds buildMu.
+// on a sizer; the first publisher wins, and both descriptors are equal.
+//
+// Each publication stamps every descriptor the build owns with a new sequence
+// number (see builder.lookup), then stores them; nothing is written after it
+// becomes reachable. Completion order puts a cycle member before its cycle
+// head, so stamping while storing would write to the head after a lock-free
+// reader could reach it through the member. A descriptor stamped and then not
+// stored is harmless: it is never reachable by its key. The caller holds
+// buildMu.
 func (tc *TypeCache) publish(b *builder) *TypeDescriptor {
+	if len(b.order) == 0 {
+		// The root was found on entry: nothing to publish.
+		return nil
+	}
 	tc.publishSeq++
+	for _, ref := range b.order {
+		ref.variant.seq = tc.publishSeq
+		ref.variant.desc.publishSeq = tc.publishSeq
+	}
+
 	var root *TypeDescriptor
 	for _, ref := range b.order {
 		desc := ref.variant.desc
@@ -325,17 +339,14 @@ func (tc *TypeCache) publish(b *builder) *TypeDescriptor {
 				desc = existing
 				break
 			}
-			ref.variant.seq = tc.publishSeq
 			tc.hinted[ref.key] = append(tc.hinted[ref.key], ref.variant)
 		case ref.key.runtime == ref.key.schema:
 			entry := tc.entryFor(ref.key.runtime)
-			desc.publishSeq = tc.publishSeq
 			if !entry.plain.CompareAndSwap(nil, desc) {
 				desc = entry.plain.Load()
 			}
 		default:
 			entry := tc.entryFor(ref.key.runtime)
-			desc.publishSeq = tc.publishSeq
 			if actual, loaded := entry.views.LoadOrStore(TypeWord(ref.key.schema), desc); loaded {
 				if published, ok := actual.(*TypeDescriptor); ok {
 					desc = published
