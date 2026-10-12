@@ -721,8 +721,12 @@ func (b *builder) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, schemaT
 		promoted := tc.PromotedDelegationMethods(runtimeType)
 		if desc.GoTypeFlags&GoTypeFlagIsView != 0 {
 			// Only a view the type's dispatcher recognizes is delegated; any other
-			// view is walked.
-			fullyDelegated = fullyDelegatesSSZView(runtimeType, promoted) && servesView(runtimeType, *desc.CodegenInfo)
+			// view is walked. The dispatcher is user code, so it runs with
+			// buildMu released.
+			if fullyDelegatesSSZView(runtimeType, promoted) {
+				view := *desc.CodegenInfo
+				tc.withoutBuildLock(func() { fullyDelegated = servesView(runtimeType, view) })
+			}
 		} else {
 			fullyDelegated = fullyDelegatesSSZ(runtimeType, promoted)
 		}

@@ -83,7 +83,9 @@ type typeEntry struct {
 //     descriptors, and only the ones it owns and has not published yet.
 //   - The per-call lookup of a hint-free descriptor takes no lock.
 //   - buildMu is held for every build, publication, removal and GetAllTypes,
-//     and is released only around a static type's sizer (delegatedStaticSize).
+//     and is released only around the calls into user code a build makes: a
+//     static type's sizer (delegatedStaticSize) and a view type's dispatcher
+//     (servesView).
 //   - Publication is all-or-nothing per top-level build, and the first build
 //     to publish a key wins.
 //   - A build uses only descriptors published before it started; what other
@@ -100,9 +102,10 @@ type TypeCache struct {
 
 	// buildMu serialises descriptor builds, publication, removals and
 	// GetAllTypes. The per-call lookup never takes it. A build releases it
-	// around the one call into user code it makes, a static type's sizer (see
-	// delegatedStaticSize); its own state lives in a builder, so nothing
-	// half-built is reachable while it is released.
+	// around the calls into user code it makes, a static type's sizer (see
+	// delegatedStaticSize) and a view type's dispatcher (see servesView); its
+	// own state lives in a builder, so nothing half-built is reachable while
+	// it is released.
 	buildMu sync.Mutex
 	// hinted holds the descriptors built for references that carry hints.
 	// It is only accessed under buildMu, by builders and removals.
@@ -591,7 +594,8 @@ func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType refle
 	return 0, false, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "static type %v provides no usable sizer", runtimeType)
 }
 
-// withoutBuildLock runs fn, a call into user code, with buildMu released. The
+// withoutBuildLock runs fn, a call into user code (a static type's sizer or a
+// view type's dispatcher), with buildMu released. The
 // caller holds buildMu and touches neither the published store nor the hinted
 // variants until fn returns; its own state lives in its builder, which no
 // other goroutine reaches. buildMu is taken again in a defer, so a panicking

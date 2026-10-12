@@ -10360,3 +10360,94 @@ func TestRecursiveBuildAcrossSizerWindow(t *testing.T) {
 		t.Error("later callers do not get the parked build's holder")
 	}
 }
+
+// dispatchInstance is the instance dispatchData's view dispatcher calls back
+// into; the test sets it.
+var dispatchInstance atomic.Pointer[DynSsz]
+
+// dispatchInner is sized by dispatchData's dispatcher and used nowhere else,
+// so a fresh instance has to describe it.
+type dispatchInner struct{ A, B uint32 }
+
+// dispatchData has a hand-written view surface whose dispatcher calls back
+// into the instance before it answers. Its view schema declares itself
+// static, so the view is described from the dispatcher without a walk.
+type dispatchData struct{ V uint32 }
+
+var _ = sszutils.Annotate[dispatchDataView](`ssz-static:"true"`)
+
+type (
+	dispatchDataView struct{ V uint32 }
+	dispatchHolder   struct {
+		D dispatchData
+		Y uint8
+	}
+	dispatchHolderView struct {
+		D dispatchDataView
+		Y uint8
+	}
+)
+
+// serves is the dispatcher's check: it sizes dispatchInner through the
+// instance, then recognizes only dispatchDataView.
+func (d *dispatchData) serves(view any) bool {
+	if n, err := dispatchInstance.Load().SizeSSZ(&dispatchInner{}); err != nil || n != 8 {
+		return false
+	}
+	_, ok := view.(*dispatchDataView)
+	return ok
+}
+
+func (d *dispatchData) SizeSSZDynView(view any) func(sszutils.DynamicSpecs) int {
+	if !d.serves(view) {
+		return nil
+	}
+	return func(sszutils.DynamicSpecs) int { return 4 }
+}
+
+func (d *dispatchData) MarshalSSZDynView(view any) func(sszutils.DynamicSpecs, []byte) ([]byte, error) {
+	if !d.serves(view) {
+		return nil
+	}
+	return func(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+		return binary.LittleEndian.AppendUint32(buf, d.V), nil
+	}
+}
+
+func (d *dispatchData) UnmarshalSSZDynView(view any) func(sszutils.DynamicSpecs, []byte) error {
+	if !d.serves(view) {
+		return nil
+	}
+	return func(_ sszutils.DynamicSpecs, buf []byte) error {
+		d.V = binary.LittleEndian.Uint32(buf)
+		return nil
+	}
+}
+
+func (d *dispatchData) HashTreeRootWithDynView(view any) func(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	if !d.serves(view) {
+		return nil
+	}
+	return func(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+		hh.PutUint32(d.V)
+		return nil
+	}
+}
+
+// A view type's dispatcher runs while the type is described, and may call
+// back into the instance: that used to wait on the build lock its own build
+// was holding.
+func TestViewDispatcherCallsBackIntoInstance(t *testing.T) {
+	ds := NewDynSsz(nil)
+	dispatchInstance.Store(ds)
+	value := &dispatchHolder{D: dispatchData{V: 0x01020304}, Y: 9}
+	view := WithViewDescriptor(&dispatchHolderView{})
+	withTimeout(t, "view dispatcher", func() {
+		if size, err := ds.SizeSSZ(value, view); err != nil || size != 5 {
+			t.Errorf("SizeSSZ = %d, %v; want 5", size, err)
+		}
+		if got, err := ds.MarshalSSZ(value, view); err != nil || !bytes.Equal(got, []byte{4, 3, 2, 1, 9}) {
+			t.Errorf("MarshalSSZ = %x, %v", got, err)
+		}
+	})
+}
