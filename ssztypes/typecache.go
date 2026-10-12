@@ -168,8 +168,10 @@ func (tc *TypeCache) DisableSpecResolution() {
 // same types.
 //
 // The method is thread-safe. Looking up a cached descriptor takes no lock; building one is
-// serialised with every other build on the cache, so concurrent first calls for the same type
-// build it once and all get the one published descriptor.
+// serialised with every other build on the cache, and concurrent first calls for the same type
+// all get the one published descriptor. While builds overlap on a static type's sizer, that sizer
+// may run more than once and concurrently, so it must be safe to call concurrently (it is pure
+// by contract, see docs/delegation.md).
 //
 // Parameters:
 //   - t: The reflect.Type for which to obtain a descriptor

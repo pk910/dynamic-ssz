@@ -146,6 +146,10 @@ inner type and returns. It must not depend, through the instance, on the type
 being sized (A's sizer sizing a B that holds a static A). That type is
 infinitely sized, and the sizer recurses until the stack overflows.
 
+While another build waits on a sizer, a second build may describe the same
+type, so the sizer may run more than once and concurrently. It must be safe
+to call concurrently, which a pure sizer is.
+
 Being opaque also exempts it from the rule that a method promoted from an
 embedded field never stands for the outer type. A custom type whose surface is
 entirely promoted delegates to it, so the embedded value is what gets encoded
