@@ -10271,3 +10271,92 @@ func TestStaticSizerCallsBackIntoInstance(t *testing.T) {
 		})
 	})
 }
+
+// windowSized is a static custom type whose sizer parks on its first call, so
+// a test can publish other types while a build waits on it.
+type windowSized struct{ V uint32 }
+
+var _ = sszutils.Annotate[windowSized](`ssz-type:"custom" ssz-static:"true"`)
+
+var (
+	windowFirst   atomic.Bool
+	windowEntered chan struct{}
+	windowRelease chan struct{}
+)
+
+func (w *windowSized) SizeSSZDyn(sszutils.DynamicSpecs) int {
+	if windowFirst.CompareAndSwap(false, true) {
+		close(windowEntered)
+		<-windowRelease
+	}
+	return 4
+}
+
+func (w *windowSized) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, 0, 0, 0, 0), nil
+}
+
+func (w *windowSized) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+
+func (w *windowSized) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutBytes(make([]byte, 32))
+	return nil
+}
+
+type (
+	windowNode struct {
+		S        windowSized
+		Children []*windowNode `ssz-max:"4"`
+	}
+	windowHolder struct{ N *windowNode }
+)
+
+// A build that waits on a sizer while another build publishes the same
+// recursive type must keep its own cycle: what others publish meanwhile is
+// not part of its graph.
+func TestRecursiveBuildAcrossSizerWindow(t *testing.T) {
+	windowEntered = make(chan struct{})
+	windowRelease = make(chan struct{})
+
+	windowFirst.Store(true) // the clean build never parks
+	clean, err := NewDynSsz(nil).GetTypeCache().GetTypeDescriptor(reflect.TypeOf(&windowHolder{}), nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	windowFirst.Store(false)
+	cache := NewDynSsz(nil).GetTypeCache()
+	done := make(chan *ssztypes.TypeDescriptor, 1)
+	go func() {
+		d, err := cache.GetTypeDescriptor(reflect.TypeOf(&windowHolder{}), nil, nil, nil)
+		if err != nil {
+			t.Error(err)
+		}
+		done <- d
+	}()
+	withTimeout(t, "enter sizer", func() { <-windowEntered })
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(&windowNode{}), nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	close(windowRelease)
+	var holder *ssztypes.TypeDescriptor
+	withTimeout(t, "parked build", func() { holder = <-done })
+	if holder == nil {
+		t.Fatal("the parked build failed")
+	}
+
+	node := holder.ContainerDesc.Fields[0].Type
+	children := node.ContainerDesc.Fields[1].Type
+	if children.ElemDesc != node {
+		t.Error("the parked build's node lost its back-edge")
+	}
+	if node.SszTypeFlags&ssztypes.SszTypeFlagRecursionMember == 0 {
+		t.Error("the parked build's node is not marked as a recursion member")
+	}
+	if holder.GetTypeHash() != clean.GetTypeHash() {
+		t.Error("type hash differs from a clean build")
+	}
+	if again, _ := cache.GetTypeDescriptor(reflect.TypeOf(&windowHolder{}), nil, nil, nil); again != holder {
+		t.Error("later callers do not get the parked build's holder")
+	}
+}

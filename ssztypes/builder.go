@@ -62,12 +62,17 @@ type builder struct {
 	// order lists the completed descriptors in completion order, so the root
 	// comes last.
 	order []builtRef
+	// startSeq is the cache's publication sequence when the build started;
+	// the build uses only descriptors published at or before it (see lookup).
+	startSeq uint64
 }
 
-// newBuilder returns the state for a new top-level build on tc.
+// newBuilder returns the state for a new top-level build on tc. The caller
+// holds buildMu.
 func newBuilder(tc *TypeCache) *builder {
 	return &builder{
 		tc:            tc,
+		startSeq:      tc.publishSeq,
 		building:      make(map[typeKey][]*buildEntry, 8),
 		buildingTypes: make(map[reflect.Type]int, 8),
 		builtPlain:    make(map[typeKey]*TypeDescriptor, 8),
@@ -112,23 +117,36 @@ func dimensionType(t reflect.Type, dim int) reflect.Type {
 	}
 }
 
-// lookup returns the descriptor for key and hints that is published already
-// or that this build completed already, or nil. The caller holds buildMu.
+// lookup returns the descriptor for key and hints that this build completed
+// already or that was published before this build started, or nil. The
+// caller holds buildMu.
+//
+// A build uses only descriptors published before it started; what other
+// builds publish while it waits on a sizer is ignored, and the overlapping
+// keys are resolved at publication. A build pushes a type onto its stack only
+// after failing to look it up, and publication is all-or-nothing, so nothing
+// published before the build started contains a type it is building. A graph
+// published during a sizer window may contain one: taking any part of it
+// would hand this build another build's copy of a type it is still building,
+// and its own copy would never get its back-edge.
 func (b *builder) lookup(key typeKey, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) *TypeDescriptor {
 	if len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0 {
-		if desc := b.tc.lookupPublished(key.runtime, key.schema); desc != nil {
+		if desc := b.builtPlain[key]; desc != nil {
 			return desc
 		}
-		return b.builtPlain[key]
+		if desc := b.tc.lookupPublished(key.runtime, key.schema); desc != nil && desc.publishSeq <= b.startSeq {
+			return desc
+		}
+		return nil
 	}
 	// Hint-carrying builds are cached per exact hint combination: the same
 	// (type, hints) pair recurs across every container referencing the type,
 	// and the descriptor depends only on the type pair, the hints and the
 	// cache configuration.
-	if desc := findVariant(b.tc.hinted[key], sizeHints, maxSizeHints, typeHints); desc != nil {
+	if desc := findVariant(b.builtHinted[key], sizeHints, maxSizeHints, typeHints, b.startSeq); desc != nil {
 		return desc
 	}
-	return findVariant(b.builtHinted[key], sizeHints, maxSizeHints, typeHints)
+	return findVariant(b.tc.hinted[key], sizeHints, maxSizeHints, typeHints, b.startSeq)
 }
 
 // derefType strips pointers from t.
@@ -217,10 +235,6 @@ func (b *builder) getTypeDescriptor(runtimeType, schemaType reflect.Type, sizeHi
 	key := typeKey{runtime: runtimeType, schema: schemaType}
 	cacheable := len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0
 
-	if desc := b.lookup(key, sizeHints, maxSizeHints, typeHints); desc != nil {
-		return desc, nil
-	}
-
 	// Detect self-referential (recursive) types. The whole descriptor tree is
 	// built by this builder, so the build stack is tracked with a simple map
 	// holding one entry per (type pair, hints) build in flight — the same Go
@@ -252,6 +266,12 @@ func (b *builder) getTypeDescriptor(runtimeType, schemaType reflect.Type, sizeHi
 		entry.desc.SszTypeFlags |= SszTypeFlagIsDynamic
 		b.recursion = true
 		return entry.desc, nil
+	}
+
+	// A type on the build stack is never looked up: the cycle check above
+	// hands back this build's own in-flight descriptor for it.
+	if desc := b.lookup(key, sizeHints, maxSizeHints, typeHints); desc != nil {
+		return desc, nil
 	}
 
 	// Allocate the descriptor before building its subtree so a recursive

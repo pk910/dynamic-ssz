@@ -49,14 +49,18 @@ func (h *hintSet) matchesHints(sizeHints []SszSizeHint, maxSizeHints []SszMaxSiz
 // reference site.
 type hintedVariant struct {
 	desc *TypeDescriptor
+	// seq is the publication sequence the variant was published under, 0
+	// while it belongs to a builder.
+	seq uint64
 	hintSet
 }
 
 // findVariant returns the descriptor of the variant built with exactly the
-// given hints, or nil.
-func findVariant(variants []*hintedVariant, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) *TypeDescriptor {
+// given hints and published no later than maxSeq, or nil. A variant a builder
+// owns has seq 0, so it always qualifies.
+func findVariant(variants []*hintedVariant, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint, maxSeq uint64) *TypeDescriptor {
 	for _, variant := range variants {
-		if variant.matchesHints(sizeHints, maxSizeHints, typeHints) {
+		if variant.seq <= maxSeq && variant.matchesHints(sizeHints, maxSizeHints, typeHints) {
 			return variant.desc
 		}
 	}
@@ -82,6 +86,9 @@ type typeEntry struct {
 //     and is released only around a static type's sizer (delegatedStaticSize).
 //   - Publication is all-or-nothing per top-level build, and the first build
 //     to publish a key wins.
+//   - A build uses only descriptors published before it started; what other
+//     builds publish while it waits on a sizer is ignored, and the
+//     overlapping keys are resolved at publication.
 //   - Build errors are not cached; a failing type is analysed again per call.
 type TypeCache struct {
 	specs sszutils.DynamicSpecs
@@ -100,6 +107,10 @@ type TypeCache struct {
 	// hinted holds the descriptors built for references that carry hints.
 	// It is only accessed under buildMu, by builders and removals.
 	hinted map[typeKey][]*hintedVariant
+	// publishSeq counts publications; each one stamps the descriptors it
+	// stores with the new value, so a build can tell what was published
+	// before it started. Guarded by buildMu, never reset.
+	publishSeq uint64
 
 	CompatFlags   map[string]SszCompatFlag
 	ExtendedTypes bool
@@ -291,26 +302,32 @@ func (tc *TypeCache) entryFor(runtimeType reflect.Type) *typeEntry {
 // last one completed), or nil when the build completed none. Publication is
 // all-or-nothing per top-level build. Builds are serialised by buildMu, so a
 // key is already published only when another build ran while this one waited
-// on a sizer; the first publisher wins, and both descriptors are equal. The
-// caller holds buildMu.
+// on a sizer; the first publisher wins, and both descriptors are equal. Each
+// publication stamps what it stores with a new sequence number (see
+// builder.lookup). A descriptor stamped and then not stored is harmless: it
+// is never reachable from the store. The caller holds buildMu.
 func (tc *TypeCache) publish(b *builder) *TypeDescriptor {
+	tc.publishSeq++
 	var root *TypeDescriptor
 	for _, ref := range b.order {
 		desc := ref.variant.desc
 		switch {
 		case ref.hinted:
-			if existing := findVariant(tc.hinted[ref.key], ref.variant.sizeHints, ref.variant.maxSizeHints, ref.variant.typeHints); existing != nil {
+			if existing := findVariant(tc.hinted[ref.key], ref.variant.sizeHints, ref.variant.maxSizeHints, ref.variant.typeHints, tc.publishSeq); existing != nil {
 				desc = existing
 				break
 			}
+			ref.variant.seq = tc.publishSeq
 			tc.hinted[ref.key] = append(tc.hinted[ref.key], ref.variant)
 		case ref.key.runtime == ref.key.schema:
 			entry := tc.entryFor(ref.key.runtime)
+			desc.publishSeq = tc.publishSeq
 			if !entry.plain.CompareAndSwap(nil, desc) {
 				desc = entry.plain.Load()
 			}
 		default:
 			entry := tc.entryFor(ref.key.runtime)
+			desc.publishSeq = tc.publishSeq
 			if actual, loaded := entry.views.LoadOrStore(TypeWord(ref.key.schema), desc); loaded {
 				desc, _ = actual.(*TypeDescriptor)
 			}
