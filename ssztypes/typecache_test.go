@@ -6066,7 +6066,10 @@ func (tc *TypeCache) hintedLen(key typeKey) int {
 func (tc *TypeCache) plainCount() int {
 	n := 0
 	tc.published.Range(func(_, e any) bool {
-		entry, _ := e.(*typeEntry)
+		entry, ok := e.(*typeEntry)
+		if !ok {
+			return true
+		}
 		if entry.plain.Load() != nil {
 			n++
 		}
