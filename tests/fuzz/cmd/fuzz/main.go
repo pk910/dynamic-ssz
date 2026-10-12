@@ -59,7 +59,7 @@ func main() {
 	}
 	defer func() { _ = reporter.Close() }()
 
-	// Create shared DynSsz instances (TypeCache is thread-safe via RWMutex).
+	// Create shared DynSsz instances (TypeCache is thread-safe: lock-free lookups, serialised builds).
 	// Sharing avoids duplicating large type caches across workers.
 	//
 	// WithNoDelegation forces the type cache to fully describe every corpus type

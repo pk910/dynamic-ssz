@@ -139,6 +139,17 @@ engine when it describes the type, by generated code where it needs the
 width. A static type's size does not depend on its value, so its sizer must
 not either. Such a width never packs.
 
+The sizer may call back into the instance it is given for other types, the
+way a wrapper sizes its payload with `ds.SizeSSZ(&inner)`: the reflection
+engine runs it outside the type cache's build lock, so the call describes the
+inner type and returns. It must not depend, through the instance, on the type
+being sized (A's sizer sizing a B that holds a static A). That type is
+infinitely sized, and the sizer recurses until the stack overflows.
+
+While another build waits on a sizer, a second build may describe the same
+type, so the sizer may run more than once and concurrently. It must be safe
+to call concurrently, which a pure sizer is.
+
 Being opaque also exempts it from the rule that a method promoted from an
 embedded field never stands for the outer type. A custom type whose surface is
 entirely promoted delegates to it, so the embedded value is what gets encoded

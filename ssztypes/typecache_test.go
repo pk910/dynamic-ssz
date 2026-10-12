@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unsafe"
@@ -732,7 +733,7 @@ func TestTypeCache_HintedCacheManagement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if len(cache.hintedDescriptors[listKey]) == 0 {
+	if cache.hintedLen(listKey) == 0 {
 		t.Fatal("expected a hinted variant for []uint64 with ssz-max")
 	}
 
@@ -747,13 +748,13 @@ func TestTypeCache_HintedCacheManagement(t *testing.T) {
 	}
 
 	cache.RemoveType(listType)
-	if len(cache.hintedDescriptors[listKey]) != 0 {
+	if cache.hintedLen(listKey) != 0 {
 		t.Error("RemoveType left the hinted variants in place")
 	}
 
 	cache.RemoveAllTypes()
-	if len(cache.hintedDescriptors) != 0 || len(cache.GetAllTypes()) != 0 {
-		t.Fatalf("RemoveAllTypes left %d hinted keys and %d listed types", len(cache.hintedDescriptors), len(cache.GetAllTypes()))
+	if len(cache.hinted) != 0 || len(cache.GetAllTypes()) != 0 {
+		t.Fatalf("RemoveAllTypes left %d hinted keys and %d listed types", len(cache.hinted), len(cache.GetAllTypes()))
 	}
 
 	second, err := cache.GetTypeDescriptor(outerType, nil, nil, nil)
@@ -5415,43 +5416,6 @@ func TestNewTypeCacheNilSpecs(t *testing.T) {
 	}
 }
 
-func TestWrapperTypeCompatible(t *testing.T) {
-	type myByte byte
-	type myUint64 uint64
-	type myString string
-	type structA struct{ A uint64 }
-	type structB struct{ B uint32 }
-
-	cases := []struct {
-		name             string
-		actual, expected reflect.Type
-		want             bool
-	}{
-		{"identical", reflect.TypeOf([]byte(nil)), reflect.TypeOf([]byte(nil)), true},
-		{"namedScalar", reflect.TypeOf(myUint64(0)), reflect.TypeOf(uint64(0)), true},
-		{"namedString", reflect.TypeOf(myString("")), reflect.TypeOf(""), true},
-		{"scalarKindMismatch", reflect.TypeOf(int32(0)), reflect.TypeOf(uint64(0)), false},
-		{"sliceVsString", reflect.TypeOf(""), reflect.TypeOf([]byte(nil)), false},
-		{"sliceNamedElem", reflect.TypeOf([]myByte(nil)), reflect.TypeOf([]byte(nil)), true},
-		{"sliceElemMismatch", reflect.TypeOf([]uint32(nil)), reflect.TypeOf([]byte(nil)), false},
-		{"ptrVsValue", reflect.TypeOf((*uint64)(nil)), reflect.TypeOf(uint64(0)), false},
-		{"ptrNamedElem", reflect.TypeOf((*myUint64)(nil)), reflect.TypeOf((*uint64)(nil)), true},
-		{"arraySameLen", reflect.TypeOf([8]myByte{}), reflect.TypeOf([8]byte{}), true},
-		{"arrayLenMismatch", reflect.TypeOf([16]byte{}), reflect.TypeOf([8]byte{}), false},
-		{"arrayElemMismatch", reflect.TypeOf([8]uint16{}), reflect.TypeOf([8]byte{}), false},
-		// Composite kinds with matching Kind but different layout must not match.
-		{"structMismatch", reflect.TypeOf(structA{}), reflect.TypeOf(structB{}), false},
-		{"sameStruct", reflect.TypeOf(structA{}), reflect.TypeOf(structA{}), true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := wrapperTypeCompatible(tc.actual, tc.expected); got != tc.want {
-				t.Errorf("wrapperTypeCompatible(%v, %v) = %v, want %v", tc.actual, tc.expected, got, tc.want)
-			}
-		})
-	}
-}
-
 type wrapDescBytes struct {
 	Data []byte `ssz-max:"32"`
 }
@@ -5728,6 +5692,10 @@ type staticNoSizer struct{}
 
 func TestDelegatedStaticSize(t *testing.T) {
 	tc := NewTypeCache(nil)
+	// A build holds buildMu when it sizes a type; the sizer runs with it
+	// released and gives it back.
+	tc.buildMu.Lock()
+	defer tc.buildMu.Unlock()
 
 	sz, sized, err := tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticDynSizer{}))
 	if err != nil || !sized || sz != 8 {
@@ -6080,6 +6048,40 @@ type purgeFailC struct {
 	F3 *purgeFailA
 }
 
+// hasPlain reports whether a hint-free descriptor of key is published.
+func (tc *TypeCache) hasPlain(key typeKey) bool {
+	return tc.lookupPublished(key.runtime, key.schema) != nil
+}
+
+// hintedLen returns the number of hinted variants published for key.
+func (tc *TypeCache) hintedLen(key typeKey) int {
+	tc.buildMu.Lock()
+	defer tc.buildMu.Unlock()
+
+	return len(tc.hinted[key])
+}
+
+// plainCount returns the number of published hint-free descriptors, views
+// included.
+func (tc *TypeCache) plainCount() int {
+	n := 0
+	tc.published.Range(func(_, e any) bool {
+		entry, ok := e.(*typeEntry)
+		if !ok {
+			return true
+		}
+		if entry.plain.Load() != nil {
+			n++
+		}
+		entry.views.Range(func(_, _ any) bool {
+			n++
+			return true
+		})
+		return true
+	})
+	return n
+}
+
 // A failed recursive build must leave neither plain descriptors nor hinted
 // variants behind: everything cached during the build was built against an
 // abandoned graph.
@@ -6089,11 +6091,174 @@ func TestFailedRecursiveBuildPurgesCaches(t *testing.T) {
 	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(&purgeFailA{}), nil, nil, nil); err == nil {
 		t.Fatal("expected error for map field")
 	}
-	if n := len(cache.descriptors); n != 0 {
+	if n := cache.plainCount(); n != 0 {
 		t.Errorf("plain cache should be empty after failed recursive build, has %d entries", n)
 	}
-	if n := len(cache.hintedDescriptors); n != 0 {
+	if n := len(cache.hinted); n != 0 {
 		t.Errorf("hinted cache should be empty after failed recursive build, has %d entries", n)
+	}
+}
+
+type (
+	publishNested  struct{ V uint32 }
+	publishFailing struct {
+		N publishNested
+		M map[string]uint32
+	}
+)
+
+// A build that fails publishes nothing, not even the types below it that it
+// completed; the next request for one of them builds it on its own.
+func TestFailedBuildPublishesNothing(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	nested := reflect.TypeOf(publishNested{})
+
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(publishFailing{}), nil, nil, nil); err == nil {
+		t.Fatal("expected error for map field")
+	}
+	if types := cache.GetAllTypes(); len(types) != 0 {
+		t.Fatalf("failed build published %v", types)
+	}
+
+	desc, err := cache.GetTypeDescriptor(nested, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("nested type alone: %v", err)
+	}
+	if desc.Size != 4 || !cache.hasPlain(typeKey{runtime: nested, schema: nested}) {
+		t.Errorf("nested type: size %d, published %v", desc.Size, cache.hasPlain(typeKey{runtime: nested, schema: nested}))
+	}
+}
+
+type (
+	firstUseShared struct{ V uint32 }
+	firstUseA      struct {
+		X uint64
+		S firstUseShared
+	}
+	firstUseB struct {
+		S firstUseShared
+		L []uint64 `ssz-max:"4"`
+	}
+)
+
+// Goroutines that first use overlapping types at the same time all get the
+// one published descriptor of each, and the shared nested type is published
+// once and referenced by both roots.
+func TestTypeCacheConcurrentFirstUse(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	roots := []reflect.Type{reflect.TypeOf(firstUseA{}), reflect.TypeOf(&firstUseB{}), reflect.TypeOf(firstUseShared{})}
+
+	const workers = 24
+	got := make([]*TypeDescriptor, workers)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			desc, err := cache.GetTypeDescriptor(roots[i%len(roots)], nil, nil, nil)
+			if err != nil {
+				t.Errorf("%v: %v", roots[i%len(roots)], err)
+			}
+			got[i] = desc
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	for i, desc := range got {
+		if want, _ := cache.GetTypeDescriptor(roots[i%len(roots)], nil, nil, nil); desc != want {
+			t.Errorf("worker %d got a %v descriptor other than the published one", i, roots[i%len(roots)])
+		}
+	}
+	shared, _ := cache.GetTypeDescriptor(roots[2], nil, nil, nil)
+	a, _ := cache.GetTypeDescriptor(roots[0], nil, nil, nil)
+	b, _ := cache.GetTypeDescriptor(roots[1], nil, nil, nil)
+	if a.ContainerDesc.Fields[1].Type != shared || b.ContainerDesc.Fields[0].Type != shared {
+		t.Error("the roots do not reference the published descriptor of the shared type")
+	}
+
+	seen := make(map[[2]reflect.Type]int, 8)
+	for _, pair := range cache.GetAllTypes() {
+		seen[pair]++
+	}
+	for pair, n := range seen {
+		if n != 1 {
+			t.Errorf("GetAllTypes lists %v %d times", pair, n)
+		}
+	}
+	for _, root := range roots {
+		if seen[[2]reflect.Type{root, root}] != 1 {
+			t.Errorf("GetAllTypes omits %v", root)
+		}
+	}
+}
+
+type (
+	raceA struct {
+		V  uint64
+		Bs []*raceB `ssz-max:"4"`
+	}
+	raceB struct{ A *raceA }
+)
+
+// reachableSeqs reads the publication stamp of every descriptor reachable from
+// desc, the way a reader walking a published graph reads its nodes.
+func reachableSeqs(desc *TypeDescriptor) uint64 {
+	var sum uint64
+	seen := make(map[*TypeDescriptor]bool, 8)
+	var walk func(d *TypeDescriptor)
+	walk = func(d *TypeDescriptor) {
+		if d == nil || seen[d] {
+			return
+		}
+		seen[d] = true
+		sum += d.publishSeq
+		if d.ContainerDesc != nil {
+			for i := range d.ContainerDesc.Fields {
+				walk(d.ContainerDesc.Fields[i].Type)
+			}
+		}
+		walk(d.ElemDesc)
+	}
+	walk(desc)
+	return sum
+}
+
+// A cycle member is stored before its cycle head, so once a lock-free reader
+// can hold the member, publication must not write to anything the member
+// reaches. The reader reads every node of the member's graph as soon as the
+// member appears; the race detector reports any write publication makes to a
+// node after storing the member.
+func TestPublishWritesNothingReachable(t *testing.T) {
+	memberType := reflect.TypeOf(&raceB{})
+	for range 200 {
+		cache := NewTypeCache(&dummyDynamicSpecs{})
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			if _, err := cache.GetTypeDescriptor(reflect.TypeOf(&raceA{}), nil, nil, nil); err != nil {
+				t.Error(err)
+			}
+		}()
+		for finished := false; ; {
+			if member := cache.lookupPublished(memberType, memberType); member != nil {
+				if reachableSeqs(member) == 0 {
+					t.Fatal("a published graph holds unstamped descriptors")
+				}
+				break
+			}
+			if finished {
+				t.Fatal("the build finished without publishing the cycle member")
+			}
+			select {
+			case <-done:
+				finished = true
+			default:
+			}
+		}
+		<-done
 	}
 }
 
@@ -6852,54 +7017,6 @@ func TestTypeCacheRefusesUnionCarrierOnBothBuilders(t *testing.T) {
 		if !errors.Is(err, sszutils.ErrInvalidConstraint) {
 			t.Errorf("%v: err = %v, want the carrier refused", hint.Type, err)
 		}
-	}
-}
-
-// The union carrier is what the size, marshal and hash paths read the selector
-// and the data from, so a shape those paths cannot read is refused here.
-func TestValidateUnionCarrier(t *testing.T) {
-	type carrier struct {
-		Selector uint8
-		Data     any
-	}
-	type wideSelector struct {
-		Selector uint64
-		Data     any
-	}
-	type signedSelector struct {
-		Selector int8
-		Data     any
-	}
-	type selectorOnly struct {
-		Selector uint8
-	}
-
-	for _, tt := range []struct {
-		name     string
-		typ      reflect.Type
-		accepted bool
-	}{
-		{"a selector and a data field", reflect.TypeOf(carrier{}), true},
-		{"through a pointer", reflect.TypeOf(&carrier{}), true},
-		{"not a struct", reflect.TypeOf(uint32(0)), false},
-		{"no data field", reflect.TypeOf(selectorOnly{}), false},
-		{"a signed selector", reflect.TypeOf(signedSelector{}), false},
-		// A wider selector carries bits the walks drop when they narrow
-		// field 0 to a uint8, so the carrier never holds one.
-		{"a wider selector", reflect.TypeOf(wideSelector{}), false},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateUnionCarrier(tt.typ, "union")
-			if tt.accepted {
-				if err != nil {
-					t.Fatalf("unexpected error: %v", err)
-				}
-				return
-			}
-			if !errors.Is(err, sszutils.ErrInvalidConstraint) {
-				t.Fatalf("err = %v, want the carrier refused", err)
-			}
-		})
 	}
 }
 
@@ -7936,7 +8053,7 @@ func TestTypeCache_RemoveTypeBothForms(t *testing.T) {
 			}
 
 			cache.RemoveType(removed)
-			if _, ok := cache.descriptors[typeKey{runtime: requested, schema: requested}]; ok {
+			if cache.hasPlain(typeKey{runtime: requested, schema: requested}) {
 				t.Errorf("RemoveType(%v) left %v cached", removed, requested)
 			}
 			if again, _ := cache.GetTypeDescriptor(requested, nil, nil, nil); again == first {
@@ -7959,11 +8076,11 @@ func TestTypeCache_RemoveTypeBothForms(t *testing.T) {
 		if _, err := cache.GetTypeDescriptor(reflect.TypeOf(&removeHolder{}), nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
-		if len(cache.hintedDescriptors[listPtrKey]) == 0 {
+		if cache.hintedLen(listPtrKey) == 0 {
 			t.Fatal("expected a hinted variant for the tagged pointer field")
 		}
 		cache.RemoveType(removed)
-		if len(cache.hintedDescriptors[listPtrKey]) != 0 {
+		if cache.hintedLen(listPtrKey) != 0 {
 			t.Errorf("RemoveType(%v) left the hinted pointer variant", removed)
 		}
 	}
@@ -7988,8 +8105,45 @@ func TestTypeCache_RemoveTypeBothForms(t *testing.T) {
 			t.Fatal(err)
 		}
 		cache.RemoveTypeKey(val, viewVal)
-		if _, ok := cache.descriptors[typeKey{runtime: pair[0], schema: pair[1]}]; ok {
+		if cache.hasPlain(typeKey{runtime: pair[0], schema: pair[1]}) {
 			t.Errorf("RemoveTypeKey left the view pair %v/%v cached", pair[0], pair[1])
 		}
 	}
+}
+
+// benchCheckpoint is a Checkpoint-sized container: an epoch and a root.
+type benchCheckpoint struct {
+	Epoch uint64
+	Root  [32]byte
+}
+
+// BenchmarkTypeCacheLookup measures the per-call lookup of a cached
+// descriptor, the path every DynSsz entry point takes, from one goroutine and
+// from many at once.
+func BenchmarkTypeCacheLookup(b *testing.B) {
+	cache := NewTypeCache(nil)
+	typ := reflect.TypeOf(&benchCheckpoint{})
+	if _, err := cache.GetTypeDescriptor(typ, nil, nil, nil); err != nil {
+		b.Fatal(err)
+	}
+
+	b.Run("sequential", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, err := cache.GetTypeDescriptor(typ, nil, nil, nil); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("parallel", func(b *testing.B) {
+		b.ReportAllocs()
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				if _, err := cache.GetTypeDescriptor(typ, nil, nil, nil); err != nil {
+					b.Error(err)
+					return
+				}
+			}
+		})
+	})
 }

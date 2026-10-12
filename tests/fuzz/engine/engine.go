@@ -73,8 +73,9 @@ func (e *Engine) SetOracles(enabled, reference bool, native, nativeExtended *dyn
 }
 
 // NewEngine creates a new fuzz engine with its own RNG but shared DynSsz
-// instances. The DynSsz TypeCache is thread-safe (uses sync.RWMutex),
-// so sharing avoids duplicating large type caches across workers.
+// instances. The DynSsz TypeCache is thread-safe (lock-free lookups,
+// serialised builds), so sharing avoids duplicating large type caches across
+// workers.
 func NewEngine(reporter *Reporter, stats *Stats, ds, dsExtended *dynssz.DynSsz, seed int64, maxDataLen int, dsUnknown ...*dynssz.DynSsz) *Engine {
 	rng := rand.New(rand.NewSource(seed))
 

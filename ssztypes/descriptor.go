@@ -117,6 +117,11 @@ type TypeDescriptor struct {
 	SizeExpression         *string                   `json:"size_expr,omitempty"`     // The dynamic expression used to calculate the size of the type
 	MaxExpression          *string                   `json:"max_expr,omitempty"`      // The dynamic expression used to calculate the max size of the type
 	SchemaType             reflect.Type              `json:"-"`                       // Schema type that defines SSZ layout (may differ from Type for view descriptors)
+
+	// publishSeq is the publication sequence the type cache stored the
+	// descriptor under, 0 while it is unpublished. It is read and written only
+	// under the cache's build mutex, and is not part of the descriptor's hash.
+	publishSeq uint64
 }
 
 // ContainerDescriptor holds the field descriptors of a struct.

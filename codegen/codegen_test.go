@@ -2552,7 +2552,7 @@ func TestGenerateLeavesCallerCacheUntouched(t *testing.T) {
 	if _, err = cg.GenerateToMap(); err != nil {
 		t.Fatalf("extended types inherited from the cache: %v", err)
 	}
-	if n := len(extDs.GetTypeCache().GetAllTypes()); n != 0 {
+	if n := len(extDs.GetTypeCache().GetAllTypes()); n != 0 { //nolint:staticcheck // debugging aid under test
 		t.Fatalf("generation registered %d descriptors in the instance cache", n)
 	}
 }
