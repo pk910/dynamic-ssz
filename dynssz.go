@@ -172,8 +172,11 @@ func NewDynSsz(specs map[string]any, options ...DynSszOption) *DynSsz {
 // Type descriptors contain optimized information about how to serialize/deserialize specific types,
 // including field offsets, size information, and whether fastssz can be used.
 //
-// This method is primarily useful for debugging, performance analysis, or advanced use cases
-// where you need to inspect or manage the cached type information.
+// The cache is an internal component that is exposed for debugging and
+// performance analysis. GetTypeDescriptor is its supported surface; the
+// inspection and removal methods (GetAllTypes, RemoveType, RemoveTypeKey,
+// RemoveAllTypes) are deprecated debugging aids and must not be relied on by
+// program logic.
 //
 // Returns:
 //   - *TypeCache: The type cache instance containing all cached type descriptors
@@ -183,9 +186,8 @@ func NewDynSsz(specs map[string]any, options ...DynSszOption) *DynSsz {
 //	ds := dynssz.NewDynSsz(specs)
 //	cache := ds.GetTypeCache()
 //
-//	// Inspect cached types
-//	types := cache.GetAllTypes()
-//	fmt.Printf("Cache contains %d types\n", len(types))
+//	// Inspect the descriptor of one type
+//	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(myStruct), nil, nil, nil)
 func (d *DynSsz) GetTypeCache() *ssztypes.TypeCache {
 	return d.typeCache
 }

@@ -9953,7 +9953,7 @@ func TestRemoveTypeThroughDynSsz(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tc.RemoveType(reflect.TypeOf(removeItem{}))
+	tc.RemoveType(reflect.TypeOf(removeItem{})) //nolint:staticcheck // debugging aid under test
 	if again, _ := tc.GetTypeDescriptor(ptr, nil, nil, nil); again == first {
 		t.Fatal("RemoveType did not evict the descriptor cached for the pointer")
 	}
@@ -9971,9 +9971,9 @@ func TestRemoveTypeThroughDynSsz(t *testing.T) {
 			case <-stop:
 				return
 			default:
-				tc.RemoveType(ptr)
-				tc.RemoveType(reflect.TypeOf(removeItem{}))
-				tc.RemoveAllTypes()
+				tc.RemoveType(ptr)                          //nolint:staticcheck // debugging aid under test
+				tc.RemoveType(reflect.TypeOf(removeItem{})) //nolint:staticcheck // debugging aid under test
+				tc.RemoveAllTypes()                         //nolint:staticcheck // debugging aid under test
 			}
 		}
 	}()

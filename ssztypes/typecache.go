@@ -664,12 +664,14 @@ func NoSszRootError(desc *TypeDescriptor) error {
 
 // GetAllTypes returns a slice of all type keys currently cached in the TypeCache.
 //
-// This method is useful for cache inspection, debugging, and understanding which types
-// have been processed and cached during the application's lifetime. The returned slice
-// contains pairs of (runtime, schema) types in no particular order.
+// Deprecated: GetAllTypes is a debugging aid only. It is not part of the
+// supported API, is not needed by any encoding path, and may be removed in a
+// future release. Do not build program logic on it.
 //
-// When runtime == schema (normal usage), these represent standard type descriptors.
-// When they differ, the pair represents a view descriptor for fork-dependent SSZ.
+// The returned slice contains pairs of (runtime, schema) types in no particular
+// order. When runtime == schema (normal usage), these represent standard type
+// descriptors. When they differ, the pair represents a view descriptor for
+// fork-dependent SSZ.
 //
 // The method holds the build mutex, so it never sees a build half published.
 //
@@ -717,9 +719,12 @@ func (tc *TypeCache) GetAllTypes() [][2]reflect.Type {
 // RemoveType removes a specific type (with runtime == schema) from the cache,
 // in both its value and pointer form.
 //
-// This method is useful for cache management scenarios where you need to force
-// recomputation of a type descriptor, such as after configuration changes or
-// when testing different type configurations.
+// Deprecated: RemoveType is a debugging aid only. It is not part of the
+// supported API and may be removed in a future release. A descriptor is a pure
+// function of the type and the cache configuration, so a running program never
+// needs to evict one; descriptors already handed out, and descriptors of other
+// types that embed the removed one, are not affected. Use a new DynSsz instance
+// for a different configuration or spec set instead.
 //
 // The method holds the build mutex, so it never overlaps a publication. A
 // build waiting on a static type's sizer while the type is removed publishes
@@ -742,6 +747,9 @@ func (tc *TypeCache) RemoveType(t reflect.Type) {
 }
 
 // RemoveTypeKey removes a specific (runtime, schema) type pair from the cache.
+//
+// Deprecated: RemoveTypeKey is a debugging aid only, like RemoveType. It is not
+// part of the supported API and may be removed in a future release.
 //
 // This method supports removing view descriptor entries where runtime differs from schema.
 // Like RemoveType, it does not stop a build waiting on a static type's sizer from
@@ -784,9 +792,11 @@ func (tc *TypeCache) RemoveTypeKey(runtimeType, schemaType reflect.Type) {
 // RemoveAllTypes clears all cached type descriptors from the cache, both the
 // plain entries and the hint-carrying variants.
 //
-// This method is useful for:
-//   - Memory management in long-running applications
-//   - Testing scenarios requiring a clean cache state
+// Deprecated: RemoveAllTypes is a debugging aid only, for tests that want a
+// cold cache. It is not part of the supported API and may be removed in a
+// future release. It is not a memory-management tool: every evicted descriptor
+// is rebuilt on the next use of its type, and descriptors already handed out
+// stay alive.
 //
 // The method holds the build mutex, so it never overlaps a publication. After
 // calling this method, all subsequent type descriptor requests will trigger
