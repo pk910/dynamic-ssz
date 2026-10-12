@@ -138,6 +138,9 @@ type DynamicViewHashRoot interface {
 // ResolveSpecValue returns whether the named value exists, its uint64 value,
 // and any error. The name may be a simple identifier or a mathematical
 // expression referencing other spec values.
+//
+// Implementations must be safe for concurrent use: the type cache resolves
+// values from several goroutines at once while types are being described.
 type DynamicSpecs interface {
 	ResolveSpecValue(name string) (bool, uint64, error)
 }

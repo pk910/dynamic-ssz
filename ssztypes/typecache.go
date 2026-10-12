@@ -138,7 +138,8 @@ type emptySpecs struct{}
 
 func (emptySpecs) ResolveSpecValue(string) (bool, uint64, error) { return false, 0, nil }
 
-// NewTypeCache creates a new type cache
+// NewTypeCache creates a new type cache. specs must be safe for concurrent
+// use; DynSsz is.
 func NewTypeCache(specs sszutils.DynamicSpecs) *TypeCache {
 	if specs == nil {
 		specs = emptySpecs{}
