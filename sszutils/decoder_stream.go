@@ -450,7 +450,7 @@ func (e *StreamDecoder) readMore() error {
 	emptyReads := 0
 	for {
 		nr, err := e.reader.Read(e.buffer[e.bufferLen : e.bufferLen+toRead])
-		if nr < 0 {
+		if nr < 0 || nr > toRead {
 			return ErrNegativeRead
 		}
 		e.bufferLen += nr
@@ -585,7 +585,7 @@ func (e *StreamDecoder) readBytes(buf []byte) error {
 		toRead := remaining - totalRead
 
 		nr, err := e.reader.Read(buf[available+totalRead : available+totalRead+toRead])
-		if nr < 0 {
+		if nr < 0 || nr > toRead {
 			return ErrNegativeRead
 		}
 		totalRead += nr

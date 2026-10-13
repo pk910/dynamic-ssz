@@ -648,7 +648,7 @@ var (
     ErrMaxDepthExceeded    = fmt.Errorf("maximum nesting depth exceeded")
     ErrStreamTooLarge      = fmt.Errorf("ssz stream exceeds maximum size")
     ErrPayloadTooLarge     = fmt.Errorf("%w", ErrStreamTooLarge)
-    ErrNegativeRead        = fmt.Errorf("reader returned negative byte count")
+    ErrNegativeRead        = fmt.Errorf("reader returned an invalid byte count")
 
     // The type cannot be described
     ErrUnsupportedType     = fmt.Errorf("unsupported type")
