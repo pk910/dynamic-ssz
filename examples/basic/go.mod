@@ -3,7 +3,7 @@ module basic-example
 go 1.26.0
 
 require (
-	github.com/attestantio/go-eth2-client v0.29.0
+	github.com/attestantio/go-eth2-client v0.30.1
 	github.com/pk910/dynamic-ssz v1.4.0
 )
 
