@@ -2195,7 +2195,7 @@ func TestBufferSince(t *testing.T) {
 	region := h.BufferSince(idx)
 	if len(region) != 64 || region[0] != 7 || region[32] != 9 {
 		t.Fatalf("BufferSince = %x", region)
-  }
+	}
 }
 
 // A packed run whose length is not a multiple of a chunk is padded before the

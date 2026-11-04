@@ -5,7 +5,7 @@
 package treeproof
 
 import (
-	"bytes"
+	"crypto/sha256"
 
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
@@ -25,45 +25,66 @@ var _ sszutils.HashWalker = (*ProofHasher)(nil)
 // schedule) are captured whole through a tree wrapper fed in parallel.
 // Async hashing is supported: the buffer reads drain any background
 // reduction overlapping the region.
+//
+// Scopes are matched to their reductions by buffer index, as the hasher
+// matches its layers, so a legacy walker that reduces a closed region again
+// (the fastssz mix-in pattern) folds the region's captured children into the
+// node the reduction produces instead of confusing the scope stack.
 type ProofHasher struct {
 	*hasher.Hasher
 
 	scopes []proofHasherScope
 
-	// mute counts scope nesting inside an off-path subtree: the stream is
-	// forwarded untouched, and the subtree's root lands in the enclosing
-	// scope's buffer region by itself.
-	mute int
+	// muted holds the start indices of the open scopes inside an off-path
+	// subtree: the stream is forwarded untouched, and the subtree's root
+	// lands in the enclosing scope's buffer region by itself.
+	muted []int
 
 	// retain captures a retainAll subtree through a tree wrapper fed in
-	// parallel with the hasher. retainIdx maps the wrapper's scope indices
-	// to the nesting, retainOrdinal is the subtree's child ordinal in the
-	// enclosing scheduled scope.
+	// parallel with the hasher. retainIdx pairs the hasher's open scope
+	// indices with the wrapper's, retainLast is the pair closed last, and
+	// retainOrdinal is the subtree's child ordinal in the enclosing scheduled
+	// scope.
 	retain        *Wrapper
-	retainIdx     []int
+	retainIdx     []retainScope
+	retainLast    retainScope
 	retainOrdinal uint64
 
 	hashFn  hasher.HashFn
 	scratch []byte
+
+	// captureErr records the first failure of the capture itself: a shape
+	// mismatch in a scheduled scope, or a hash backend refusing a captured
+	// subtree. The hasher records its own failures; both refuse the root.
+	captureErr error
 }
 
 // proofHasherScope is one open scheduled scope: its start position in the
-// hasher's buffer, its child ordinal in the enclosing scope, the schedule
-// that applies to its children, and the pruned nodes of children that were
-// themselves scheduled.
+// hasher's buffer, its child ordinal in the enclosing scope, the tree type it
+// was opened with, the schedule that applies to its children, and the pruned
+// nodes of children that were themselves scheduled.
 type proofHasherScope struct {
 	sched      *ProofSchedule
 	start      int
 	ordinal    uint64
+	treeType   sszutils.TreeType
 	childNodes map[uint64]*Node
 	slots      []uint64
 }
 
+// retainScope pairs a scope index of the hasher's stream with the index the
+// retained subtree's wrapper returned for the same scope.
+type retainScope struct {
+	hIdx int
+	wIdx int
+}
+
 // NewProofHasher creates a HashWalker that computes the hash tree root on
 // the given hasher while capturing a pruned proof tree for the given
-// retention schedule. The hasher must be freshly reset. hashFn is used for
-// the capture's own sibling-range reductions and must be safe for
-// concurrent use; nil selects the fast hashing backend.
+// retention schedule. The hasher must be freshly reset. hashFn compresses
+// the capture's own nodes — sibling-range reductions, pruned branches and
+// retained subtrees — and must be safe for concurrent use; nil selects the
+// function hasher.FastHasherPool currently hands out.
 func NewProofHasher(sched *ProofSchedule, hh *hasher.Hasher, hashFn hasher.HashFn) *ProofHasher {
 	// The base scope hands the root schedule to the value's own top-level
 	// scope, which opens as its first child.
@@ -88,20 +109,50 @@ func (ph *ProofHasher) ProofTree() (*Node, error) {
 
 	tree := ph.scopes[0].childNodes[0]
 	if tree == nil {
-		tree = newOwnedLeaf(bytes.Clone(root[:]))
+		tree = newLeaf(root[:])
 	}
 
-	if !bytes.Equal(tree.value, root[:]) {
+	if !tree.hasValue || tree.value != root {
 		return nil, sszutils.NewSszError(sszutils.ErrInvalidValueRange, "proof tree root diverges from hash tree root")
 	}
 
 	return tree, nil
 }
 
+// HashErr reports the first failure of the walk: the hasher's, or failing
+// that the capture's own.
+func (ph *ProofHasher) HashErr() error {
+	if err := ph.Hasher.HashErr(); err != nil {
+		return err
+	}
+	return ph.captureErr
+}
+
+// HashRoot returns the hasher's root, refused when the capture recorded a
+// failure the hasher did not see itself.
+func (ph *ProofHasher) HashRoot() ([32]byte, error) {
+	root, err := ph.Hasher.HashRoot()
+	if err != nil {
+		return [32]byte{}, err
+	}
+	if ph.captureErr != nil {
+		return [32]byte{}, ph.captureErr
+	}
+	return root, nil
+}
+
+// setCaptureErr records the first failure of the capture. Later ones are
+// dropped: the first is the failure the caller has to act on.
+func (ph *ProofHasher) setCaptureErr(err error) {
+	if err != nil && ph.captureErr == nil {
+		ph.captureErr = err
+	}
+}
+
 // scheduledScope returns the scheduled scope receiving current children,
 // nil while the stream is inside a muted or retained subtree.
 func (ph *ProofHasher) scheduledScope() *proofHasherScope {
-	if ph.mute > 0 || ph.retain != nil {
+	if len(ph.muted) > 0 || ph.retain != nil {
 		return nil
 	}
 	return &ph.scopes[len(ph.scopes)-1]
@@ -112,6 +163,41 @@ func (ph *ProofHasher) scheduledScope() *proofHasherScope {
 // hasher's buffer.
 func (ph *ProofHasher) childOrdinal(scope *proofHasherScope) uint64 {
 	return uint64(ph.CurrentIndex()-scope.start) / 32
+}
+
+// hashFunc returns the function the capture compresses with: the one the
+// caller gave, else the one hasher.FastHasherPool currently hands out, so
+// the capture compresses as the root does.
+func (ph *ProofHasher) hashFunc() hasher.HashFn {
+	if ph.hashFn != nil {
+		return ph.hashFn
+	}
+	return hasher.FastHasherPool.CurrentHashFn()
+}
+
+// pairRoot compresses one sibling pair through the capture's hash function.
+// The backend rejects only malformed buffer sizes, which a pair is not; a
+// refusal falls back to the built-in compression so the node still holds a
+// root.
+func (ph *ProofHasher) pairRoot(left, right []byte) [32]byte {
+	var pair [64]byte
+	copy(pair[:32], left)
+	copy(pair[32:], right)
+	if err := ph.hashFunc()(pair[:32], pair[:]); err != nil {
+		copy(pair[:32], left)
+		return sha256.Sum256(pair[:])
+	}
+	return [32]byte(pair[:32])
+}
+
+// newBranch builds a finalized branch over two finalized children.
+func (ph *ProofHasher) newBranch(left, right *Node) *Node {
+	return &Node{
+		left:     left,
+		right:    right,
+		value:    ph.pairRoot(left.value[:], right.value[:]),
+		hasValue: true,
+	}
 }
 
 // --- retained-subtree stream mirroring ---
@@ -216,10 +302,12 @@ func (ph *ProofHasher) WithTemp(fn func(tmp []byte) []byte) {
 // --- subtree-valued put calls ---
 
 // putScheduled looks up the schedule of the child the next Put-style
-// subtree call produces. Must be called before forwarding the call.
+// subtree call produces. Must be called before forwarding the call. Inside a
+// packed scope the call appends packed bytes, not a child of its own, so the
+// chunk slots are read from the buffer and nothing is scheduled here.
 func (ph *ProofHasher) putScheduled() (uint64, *ProofSchedule) {
 	scope := ph.scheduledScope()
-	if scope == nil {
+	if scope == nil || scope.treeType&sszutils.TreeTypePacked != 0 {
 		return 0, nil
 	}
 	ordinal := ph.childOrdinal(scope)
@@ -228,16 +316,33 @@ func (ph *ProofHasher) putScheduled() (uint64, *ProofSchedule) {
 
 // putSubtree finishes a Put-style call that nets one child subtree: a child
 // the schedule descends into rebuilds its structure through a tree wrapper,
-// matching the full tree's shape for these calls.
+// matching the full tree's shape for these calls. A call that contributed
+// no chunk (an empty value) registers nothing.
 func (ph *ProofHasher) putSubtree(ordinal uint64, sched *ProofSchedule, replay func(w *Wrapper)) {
 	if sched == nil {
 		return
 	}
-	w := NewWrapper()
+	w := NewWrapperWithHashFn(ph.hashFn)
 	replay(w)
-	node := w.Node()
-	node.Hash()
-	ph.registerChild(ordinal, node)
+	if w.CurrentIndex() == 0 {
+		return
+	}
+	ph.registerChild(ordinal, ph.wrapperNode(w))
+}
+
+// wrapperNode takes the finished tree of a capture wrapper, finalized
+// through the capture's hash function. A refusal is recorded and leaves the
+// child unregistered; the root is then refused with that error.
+func (ph *ProofHasher) wrapperNode(w *Wrapper) *Node {
+	node, err := w.Root()
+	if err == nil {
+		err = node.Finalize(WithHashFn(ph.hashFn))
+	}
+	if err != nil {
+		ph.setCaptureErr(err)
+		return nil
+	}
+	return node
 }
 
 func (ph *ProofHasher) PutBytes(b []byte) {
@@ -312,23 +417,45 @@ func (ph *ProofHasher) PutRootVector(b [][]byte, maxCapacity ...uint64) error {
 // --- scope tracking ---
 
 func (ph *ProofHasher) StartTree(treeType sszutils.TreeType) int {
-	return ph.startScope(treeType)
+	return ph.startScope(treeType, false)
 }
 
 // Index opens a scope like StartTree; legacy generated code uses it as its
-// scope-open call.
+// scope-open call. It is forwarded as the hasher's Index, which reduces the
+// scope in place and never defers it, so a caller may reduce the region
+// again.
 func (ph *ProofHasher) Index() int {
-	return ph.startScope(sszutils.TreeTypeNone)
+	return ph.startScope(sszutils.TreeTypeNone, true)
 }
 
-func (ph *ProofHasher) startScope(treeType sszutils.TreeType) int {
-	if ph.retain != nil {
-		ph.retainIdx = append(ph.retainIdx, ph.retain.StartTree(treeType))
-		return ph.Hasher.StartTree(treeType)
+// openHasherScope opens a scope on the hasher with the given tree type, or
+// through Index for a legacy caller.
+func (ph *ProofHasher) openHasherScope(treeType sszutils.TreeType, legacy bool) int {
+	if legacy {
+		return ph.Hasher.Index()
 	}
-	if ph.mute > 0 {
-		ph.mute++
-		return ph.Hasher.StartTree(treeType)
+	return ph.Hasher.StartTree(treeType)
+}
+
+// openRetainScope opens the same scope on the retained subtree's wrapper.
+func (ph *ProofHasher) openRetainScope(treeType sszutils.TreeType, legacy bool) int {
+	if legacy {
+		return ph.retain.Index()
+	}
+	return ph.retain.StartTree(treeType)
+}
+
+func (ph *ProofHasher) startScope(treeType sszutils.TreeType, legacy bool) int {
+	if ph.retain != nil {
+		wIdx := ph.openRetainScope(treeType, legacy)
+		hIdx := ph.openHasherScope(treeType, legacy)
+		ph.retainIdx = append(ph.retainIdx, retainScope{hIdx: hIdx, wIdx: wIdx})
+		return hIdx
+	}
+	if len(ph.muted) > 0 {
+		idx := ph.openHasherScope(treeType, legacy)
+		ph.muted = append(ph.muted, idx)
+		return idx
 	}
 
 	parent := &ph.scopes[len(ph.scopes)-1]
@@ -337,19 +464,29 @@ func (ph *ProofHasher) startScope(treeType sszutils.TreeType) int {
 	child := parent.sched.child(ordinal)
 	switch {
 	case child == nil:
-		ph.mute = 1
-		return ph.Hasher.StartTree(treeType)
+		idx := ph.openHasherScope(treeType, legacy)
+		ph.muted = append(ph.muted, idx)
+		return idx
 	case child.retainAll:
-		ph.retain = NewWrapper()
+		ph.retain = NewWrapperWithHashFn(ph.hashFn)
 		ph.retainOrdinal = ordinal
-		ph.retainIdx = append(ph.retainIdx[:0], ph.retain.StartTree(treeType))
-		return ph.Hasher.StartTree(treeType)
+		wIdx := ph.openRetainScope(treeType, legacy)
+		hIdx := ph.openHasherScope(treeType, legacy)
+		ph.retainIdx = append(ph.retainIdx[:0], retainScope{hIdx: hIdx, wIdx: wIdx})
+		return hIdx
 	default:
 		// Scheduled scopes run non-incrementally, so their completed
 		// children stay a plain chunk sequence in the hasher's buffer until
-		// this scope's own merkleization.
-		idx := ph.Hasher.StartTree(sszutils.TreeTypeNone)
-		ph.scopes = append(ph.scopes, proofHasherScope{sched: child, start: idx, ordinal: ordinal})
+		// this scope's own merkleization. The packed flag travels on: it
+		// decides how the scope's basic values are laid out, not how the
+		// scope reduces. The declared shape is checked here at close.
+		idx := ph.openHasherScope(sszutils.TreeTypeNone|treeType&sszutils.TreeTypePacked, legacy)
+		ph.scopes = append(ph.scopes, proofHasherScope{
+			sched:    child,
+			start:    idx,
+			ordinal:  ordinal,
+			treeType: treeType,
+		})
 		return idx
 	}
 }
@@ -364,75 +501,168 @@ type proofClose struct {
 	activeFields []byte
 }
 
+// progressive reports whether the variant reduces to the progressive shape.
+func (pc proofClose) progressive() bool {
+	return pc.kind == sszutils.TreeTypeProgressive
+}
+
+// closeWrapperScope reduces the wrapper scope at idx with the variant.
+func closeWrapperScope(w *Wrapper, idx int, pc proofClose) {
+	switch {
+	case pc.progressive() && pc.activeFields != nil:
+		w.MerkleizeProgressiveWithActiveFields(idx, pc.activeFields)
+	case pc.progressive() && pc.mixin:
+		w.MerkleizeProgressiveWithMixin(idx, pc.num)
+	case pc.progressive():
+		w.MerkleizeProgressive(idx)
+	case pc.mixin:
+		w.MerkleizeWithMixin(idx, pc.num, pc.limit)
+	default:
+		w.Merkleize(idx)
+	}
+}
+
 func (ph *ProofHasher) Merkleize(indx int) {
-	ph.closeScope(proofClose{kind: sszutils.TreeTypeNone},
-		func() { ph.Hasher.Merkleize(indx) },
-		func(w *Wrapper, wIdx int) { w.Merkleize(wIdx) })
+	ph.closeScope(indx, proofClose{kind: sszutils.TreeTypeNone},
+		func() { ph.Hasher.Merkleize(indx) })
 }
 
 func (ph *ProofHasher) MerkleizeWithMixin(indx int, num, limit uint64) {
-	ph.closeScope(proofClose{kind: sszutils.TreeTypeNone, mixin: true, num: num, limit: limit},
-		func() { ph.Hasher.MerkleizeWithMixin(indx, num, limit) },
-		func(w *Wrapper, wIdx int) { w.MerkleizeWithMixin(wIdx, num, limit) })
+	ph.closeScope(indx, proofClose{kind: sszutils.TreeTypeNone, mixin: true, num: num, limit: limit},
+		func() { ph.Hasher.MerkleizeWithMixin(indx, num, limit) })
 }
 
 func (ph *ProofHasher) MerkleizeProgressive(indx int) {
-	ph.closeScope(proofClose{kind: sszutils.TreeTypeProgressive},
-		func() { ph.Hasher.MerkleizeProgressive(indx) },
-		func(w *Wrapper, wIdx int) { w.MerkleizeProgressive(wIdx) })
+	ph.closeScope(indx, proofClose{kind: sszutils.TreeTypeProgressive},
+		func() { ph.Hasher.MerkleizeProgressive(indx) })
 }
 
 func (ph *ProofHasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
-	ph.closeScope(proofClose{kind: sszutils.TreeTypeProgressive, mixin: true, num: num},
-		func() { ph.Hasher.MerkleizeProgressiveWithMixin(indx, num) },
-		func(w *Wrapper, wIdx int) { w.MerkleizeProgressiveWithMixin(wIdx, num) })
+	ph.closeScope(indx, proofClose{kind: sszutils.TreeTypeProgressive, mixin: true, num: num},
+		func() { ph.Hasher.MerkleizeProgressiveWithMixin(indx, num) })
 }
 
 func (ph *ProofHasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []byte) {
-	ph.closeScope(proofClose{kind: sszutils.TreeTypeProgressive, mixin: true, activeFields: activeFields},
-		func() { ph.Hasher.MerkleizeProgressiveWithActiveFields(indx, activeFields) },
-		func(w *Wrapper, wIdx int) { w.MerkleizeProgressiveWithActiveFields(wIdx, activeFields) })
+	ph.closeScope(indx, proofClose{kind: sszutils.TreeTypeProgressive, mixin: true, activeFields: activeFields},
+		func() { ph.Hasher.MerkleizeProgressiveWithActiveFields(indx, activeFields) })
+}
+
+// clampIndex bounds a caller-supplied scope index to the hasher's buffer, as
+// the hasher does before matching it against its layers.
+func (ph *ProofHasher) clampIndex(indx int) int {
+	if indx < 0 {
+		return 0
+	}
+	if end := ph.CurrentIndex(); indx > end {
+		return end
+	}
+	return indx
 }
 
 // closeScope routes a Merkleize variant through the capture bookkeeping:
 // retained subtrees mirror the call into their wrapper, muted subtrees just
 // unwind, and a closing scheduled scope assembles its pruned node from its
-// buffer region before the forwarded call collapses it.
-func (ph *ProofHasher) closeScope(pc proofClose, fwd func(), retainFn func(w *Wrapper, wIdx int)) {
+// buffer region before the forwarded call collapses it. A reduction that
+// matches no open scope but falls inside the current scheduled scope folds
+// the captured children of its region into the node it produces, keeping
+// the capture consistent with the buffer for legacy walkers that reduce a
+// region twice.
+func (ph *ProofHasher) closeScope(indx int, pc proofClose, fwd func()) {
+	indx = ph.clampIndex(indx)
 	switch {
 	case ph.retain != nil:
 		fwd()
-		wIdx := ph.retainIdx[len(ph.retainIdx)-1]
-		ph.retainIdx = ph.retainIdx[:len(ph.retainIdx)-1]
-		retainFn(ph.retain, wIdx)
+		closeWrapperScope(ph.retain, ph.retainIndex(indx), pc)
 		if len(ph.retainIdx) == 0 {
-			node := ph.retain.Node()
-			node.Hash()
+			node := ph.wrapperNode(ph.retain)
 			ph.retain = nil
 			ph.registerChild(ph.retainOrdinal, node)
 		}
-	case ph.mute > 0:
+	case len(ph.muted) > 0:
 		fwd()
-		ph.mute--
-	case len(ph.scopes) > 1:
+		if ph.muted[len(ph.muted)-1] == indx {
+			ph.muted = ph.muted[:len(ph.muted)-1]
+		}
+	case len(ph.scopes) > 1 && ph.scopes[len(ph.scopes)-1].start == indx:
 		scope := ph.scopes[len(ph.scopes)-1]
 		ph.scopes = ph.scopes[:len(ph.scopes)-1]
+		ph.checkShape(&scope, pc)
 		// The chunk region is only readable until the forwarded call
 		// collapses it.
 		node := ph.assemble(&scope, ph.BufferSince(scope.start), pc)
 		fwd()
 		ph.registerChild(scope.ordinal, node)
+	case indx >= ph.scopes[len(ph.scopes)-1].start && indx < ph.CurrentIndex():
+		scope := &ph.scopes[len(ph.scopes)-1]
+		first := uint64(indx-scope.start) / 32
+		node := ph.assembleViaWrapper(ph.foldChildren(scope, first), ph.BufferSince(indx), pc)
+		fwd()
+		ph.registerChild(first, node)
 	default:
-		// A Merkleize without a tracked scope (a stream bypassing StartTree)
-		// has nothing to capture.
+		// A reduction of an empty region, or one reaching below the current
+		// scope: nothing of the capture is affected.
 		fwd()
 	}
 }
 
+// retainIndex maps a reduction inside the retained subtree to the wrapper's
+// index for it: the innermost open scope when it matches, the scope closed
+// last for a legacy walker reducing it again, and otherwise the position
+// relative to the innermost open scope.
+func (ph *ProofHasher) retainIndex(indx int) int {
+	if n := len(ph.retainIdx); n > 0 && ph.retainIdx[n-1].hIdx == indx {
+		ph.retainLast = ph.retainIdx[n-1]
+		ph.retainIdx = ph.retainIdx[:n-1]
+		return ph.retainLast.wIdx
+	}
+	if ph.retainLast.hIdx == indx {
+		return ph.retainLast.wIdx
+	}
+	base := retainScope{}
+	if n := len(ph.retainIdx); n > 0 {
+		base = ph.retainIdx[n-1]
+	}
+	return base.wIdx + indx - base.hIdx
+}
+
+// checkShape records a scheduled scope reduced in a shape it was not opened
+// for. The hasher runs the scope undeclared, so the check it would have made
+// is made here; a scope that declared no shape accepts either reduction.
+func (ph *ProofHasher) checkShape(scope *proofHasherScope, pc proofClose) {
+	declared := scope.treeType &^ sszutils.TreeTypePacked
+	if declared == sszutils.TreeTypeNone {
+		return
+	}
+	if (declared == sszutils.TreeTypeProgressive) != pc.progressive() {
+		ph.setCaptureErr(sszutils.ErrScopeShapeMismatch)
+	}
+}
+
+// foldChildren removes the captured children at ordinal first and beyond
+// from the scope and returns them keyed by their slot in the folded region.
+func (ph *ProofHasher) foldChildren(scope *proofHasherScope, first uint64) map[uint64]*Node {
+	var folded map[uint64]*Node
+	for ordinal, node := range scope.childNodes {
+		if ordinal < first {
+			continue
+		}
+		if folded == nil {
+			folded = make(map[uint64]*Node, len(scope.childNodes))
+		}
+		folded[ordinal-first] = node
+		delete(scope.childNodes, ordinal)
+	}
+	return folded
+}
+
 // registerChild records a completed child subtree's pruned node in the
 // innermost scheduled scope. Its root chunk lands in the hasher's buffer
-// through the forwarded stream itself.
+// through the forwarded stream itself. A nil node (a refused capture) is
+// not recorded; the slot then reads from the buffer.
 func (ph *ProofHasher) registerChild(ordinal uint64, node *Node) {
+	if node == nil {
+		return
+	}
 	scope := &ph.scopes[len(ph.scopes)-1]
 	if scope.childNodes == nil {
 		scope.childNodes = make(map[uint64]*Node, 1)
@@ -463,15 +693,14 @@ func (ph *ProofHasher) alignRegion(region []byte) []byte {
 // buffer region, its scheduled children's nodes, and the merkleization
 // variant that closed it.
 func (ph *ProofHasher) assemble(scope *proofHasherScope, region []byte, pc proofClose) *Node {
-	region = ph.alignRegion(region)
-
-	if pc.kind == sszutils.TreeTypeProgressive {
+	if pc.progressive() {
 		// A schedule never descends into progressive shapes, so a scheduled
 		// scope closing progressively means the stream and the descriptor
 		// disagree; replaying the children through a tree wrapper stays
 		// correct either way.
-		return ph.assembleViaWrapper(scope, region, pc)
+		return ph.assembleViaWrapper(scope.childNodes, region, pc)
 	}
+	region = ph.alignRegion(region)
 
 	for slot := range scope.sched.children {
 		scope.slots = append(scope.slots, slot)
@@ -487,35 +716,28 @@ func (ph *ProofHasher) assemble(scope *proofHasherScope, region []byte, pc proof
 	if pc.mixin {
 		var lengthChunk [32]byte
 		sszutils.MarshalUint64(lengthChunk[:0], pc.num)
-		root := hashPair(node.value, lengthChunk[:])
-		node = &Node{left: node, right: newOwnedLeaf(bytes.Clone(lengthChunk[:])), value: root}
+		node = ph.newBranch(node, newLeaf(lengthChunk[:]))
 	}
 	return node
 }
 
-// assembleViaWrapper rebuilds a scope through the tree wrapper, used when
-// the closing variant has no static shape.
-func (ph *ProofHasher) assembleViaWrapper(scope *proofHasherScope, region []byte, pc proofClose) *Node {
-	w := NewWrapper()
+// assembleViaWrapper rebuilds a region through the tree wrapper, each chunk
+// slot a leaf or the captured node of the child that produced it, and
+// closes it with the given variant. It serves the closes that have no static
+// shape and the reductions that match no open scope.
+func (ph *ProofHasher) assembleViaWrapper(childNodes map[uint64]*Node, region []byte, pc proofClose) *Node {
+	region = ph.alignRegion(region)
+	w := NewWrapperWithHashFn(ph.hashFn)
 	idx := w.StartTree(sszutils.TreeTypeNone)
 	for slot := uint64(0); slot < uint64(len(region))/32; slot++ {
-		if node := scope.childNodes[slot]; node != nil {
+		if node := childNodes[slot]; node != nil {
 			w.AddNode(node)
 		} else {
-			w.AddNode(newOwnedLeaf(bytes.Clone(region[slot*32 : slot*32+32])))
+			w.AddNode(newLeaf(region[slot*32 : slot*32+32]))
 		}
 	}
-	switch {
-	case pc.activeFields != nil:
-		w.MerkleizeProgressiveWithActiveFields(idx, pc.activeFields)
-	case pc.mixin:
-		w.MerkleizeProgressiveWithMixin(idx, pc.num)
-	default:
-		w.MerkleizeProgressive(idx)
-	}
-	node := w.Node()
-	node.Hash()
-	return node
+	closeWrapperScope(w, idx, pc)
+	return ph.wrapperNode(w)
 }
 
 // buildPruned builds the pruned subtree of the given height starting at leaf
@@ -538,7 +760,7 @@ func (ph *ProofHasher) buildPruned(scope *proofHasherScope, region []byte, level
 			return getEmptyNode(level)
 		}
 		root := ph.rangeRoot(region, base, level, chunkCount)
-		return newOwnedLeaf(bytes.Clone(root[:]))
+		return newLeaf(root[:])
 	}
 	if level == 0 {
 		if node := scope.childNodes[base]; node != nil {
@@ -547,12 +769,12 @@ func (ph *ProofHasher) buildPruned(scope *proofHasherScope, region []byte, level
 		if base >= chunkCount {
 			return getEmptyNode(0)
 		}
-		return newOwnedLeaf(bytes.Clone(region[base*32 : base*32+32]))
+		return newLeaf(region[base*32 : base*32+32])
 	}
 
 	left := ph.buildPruned(scope, region, level-1, base)
 	right := ph.buildPruned(scope, region, level-1, base+uint64(1)<<(level-1))
-	return &Node{left: left, right: right, value: hashPair(left.value, right.value)}
+	return ph.newBranch(left, right)
 }
 
 // rangeRoot reduces a fully off-path chunk range to its root in batched
@@ -575,14 +797,11 @@ func (ph *ProofHasher) rangeRoot(region []byte, base uint64, level int, chunkCou
 	buf := ph.scratch[:count*32]
 	copy(buf, region[base*32:])
 
-	hashFn := ph.hashFn
-	if hashFn == nil {
-		hashFn = hasher.FastHasherPool.HashFn
-	}
+	hashFn := ph.hashFunc()
 	for l := 0; l < level; l++ {
 		if count == 1 {
-			root := hashPair(buf[:32], hasher.GetZeroHash(l))
-			copy(buf[:32], root)
+			root := ph.pairRoot(buf[:32], hasher.GetZeroHash(l))
+			copy(buf[:32], root[:])
 			continue
 		}
 		if count%2 == 1 {

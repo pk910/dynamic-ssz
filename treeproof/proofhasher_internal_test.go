@@ -388,7 +388,9 @@ func TestProofHasherAlignRegion(t *testing.T) {
 	}
 }
 
-// A Merkleize on the base level without a tracked scope forwards untouched.
+// A Merkleize on the base level without a tracked scope folds the region
+// into the node the reduction produces: the capture stays consistent with
+// the buffer, and the tree keeps the chunks the reduction consumed.
 func TestProofHasherBaseMerkleize(t *testing.T) {
 	hh := hasher.FastHasherPool.Get()
 	defer hasher.FastHasherPool.Put(hh)
@@ -400,7 +402,417 @@ func TestProofHasherBaseMerkleize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProofTree: %v", err)
 	}
-	if !tree.IsLeaf() {
-		t.Fatal("expected leaf tree")
+	if tree.IsLeaf() {
+		t.Fatal("expected the folded chunks below the root")
 	}
+	want := hashPair(LeafFromUint64(1).Value(), LeafFromUint64(2).Value())
+	if !bytes.Equal(tree.Hash(), want) {
+		t.Fatalf("root = %x, want %x", tree.Hash(), want)
+	}
+	if proof, proveErr := tree.Prove(3); proveErr != nil || !bytes.Equal(proof.Leaf, LeafFromUint64(2).Value()) {
+		t.Fatalf("Prove(3) = %v, %v", proof, proveErr)
+	}
+}
+
+// proveSubtree checks that the pruned tree serves the same proof as the
+// reference for every generalized index the reference holds below gindex.
+func proveSubtree(t *testing.T, ref, pruned *Node, gindex int) {
+	t.Helper()
+	sub, err := ref.Get(gindex)
+	if err != nil {
+		t.Fatalf("reference Get(%d): %v", gindex, err)
+	}
+	var gindices []int
+	collectStreamGindices(sub, gindex, &gindices)
+	for _, g := range gindices {
+		want, refErr := ref.Prove(g)
+		got, err := pruned.Prove(g)
+		if refErr != nil {
+			if err == nil {
+				t.Fatalf("gindex %d: reference errored (%v), pruned did not", g, refErr)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("pruned Prove(%d): %v", g, err)
+		}
+		assertSameProof(t, g, want, got)
+	}
+}
+
+// A scheduled scope keeps the packed flag it was opened with: its basic
+// values lay out as packed bytes, and the chunk slots the schedule names are
+// read from the buffer rather than captured as children of their own.
+func TestProofHasherPackedScope(t *testing.T) {
+	stream := func(hh sszutils.HashWalker) {
+		root := hh.StartTree(sszutils.TreeTypeBinary)
+		list := hh.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+		for i := range 5 {
+			hh.PutUint64(uint64(i + 1))
+		}
+		hh.PutBytes(bytes.Repeat([]byte{9}, 16))
+		hh.MerkleizeWithMixin(list, 6, 4)
+		hh.PutUint64(7)
+		hh.Merkleize(root)
+	}
+
+	ref := NewWrapper()
+	stream(ref)
+	refTree := ref.Node()
+
+	hh := hasher.FastHasherPool.Get()
+	defer hasher.FastHasherPool.Put(hh)
+	// Root child 0 (the list) -> chunks side -> chunk slot 1.
+	sched := &ProofSchedule{children: map[uint64]*ProofSchedule{0: {children: map[uint64]*ProofSchedule{0: {children: map[uint64]*ProofSchedule{1: {}}}}}}}
+	ph := NewProofHasher(sched, hh, nil)
+	stream(ph)
+	tree, err := ph.ProofTree()
+	if err != nil {
+		t.Fatalf("ProofTree: %v", err)
+	}
+	if !bytes.Equal(tree.Hash(), refTree.Hash()) {
+		t.Fatalf("root = %x, want %x", tree.Hash(), refTree.Hash())
+	}
+	// Two root slots: list at 2, its chunk tree at 4 (limit 4 chunks, depth
+	// 2), slot 1 at 17.
+	for _, g := range []int{1, 2, 3, 4, 5, 17} {
+		want, refErr := refTree.Prove(g)
+		if refErr != nil {
+			t.Fatalf("reference Prove(%d): %v", g, refErr)
+		}
+		got, err := tree.Prove(g)
+		if err != nil {
+			t.Fatalf("pruned Prove(%d): %v", g, err)
+		}
+		assertSameProof(t, g, want, got)
+	}
+}
+
+// A scheduled scope runs undeclared on the hasher, so the shape check the
+// hasher would have made is made by the capture: a scope reduced in a shape
+// it was not opened for refuses the root, as the plain hasher does.
+func TestProofHasherShapeMismatch(t *testing.T) {
+	tests := []struct {
+		name  string
+		open  sszutils.TreeType
+		close func(hh sszutils.HashWalker, idx int)
+	}{
+		{"binary closed progressive", sszutils.TreeTypeBinary, func(hh sszutils.HashWalker, idx int) { hh.MerkleizeProgressive(idx) }},
+		{"progressive closed binary", sszutils.TreeTypeProgressive, func(hh sszutils.HashWalker, idx int) { hh.Merkleize(idx) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stream := func(hh sszutils.HashWalker) {
+				idx := hh.StartTree(tt.open)
+				hh.PutUint64(1)
+				hh.PutUint64(2)
+				tt.close(hh, idx)
+			}
+
+			plain := hasher.FastHasherPool.Get()
+			defer hasher.FastHasherPool.Put(plain)
+			stream(plain)
+			if !errors.Is(plain.HashErr(), sszutils.ErrScopeShapeMismatch) {
+				t.Fatalf("plain hasher HashErr = %v", plain.HashErr())
+			}
+
+			hh := hasher.FastHasherPool.Get()
+			defer hasher.FastHasherPool.Put(hh)
+			ph := NewProofHasher(&ProofSchedule{children: map[uint64]*ProofSchedule{0: {}}}, hh, nil)
+			stream(ph)
+			if !errors.Is(ph.HashErr(), sszutils.ErrScopeShapeMismatch) {
+				t.Fatalf("HashErr = %v, want shape mismatch", ph.HashErr())
+			}
+			if _, err := ph.ProofTree(); !errors.Is(err, sszutils.ErrScopeShapeMismatch) {
+				t.Fatalf("ProofTree error = %v, want shape mismatch", err)
+			}
+		})
+	}
+}
+
+// A legacy walker reduces a region, mixes a chunk into it and reduces the
+// same index again. Scopes are matched by index, so the second reduction
+// folds the captured children into the node it produces in every capture
+// state: a scheduled scope, a retained subtree and a muted subtree.
+func TestProofHasherLegacyReduceAgain(t *testing.T) {
+	// Every legacy scope sits behind a chunk of its enclosing scope: a scope
+	// opened at its parent's own offset would match the parent on the second
+	// reduction, on the hasher as on the wrapper.
+	stream := func(hh sszutils.HashWalker) {
+		root := hh.StartTree(sszutils.TreeTypeNone)
+		hh.PutUint64(0)
+
+		// child 1: a hand-rolled list, length mixed in by hand
+		list := hh.Index()
+		hh.PutUint64(1)
+		hh.PutUint64(2)
+		hh.PutUint64(3)
+		hh.Merkleize(list)
+		hh.PutUint64(3)
+		hh.Merkleize(list)
+
+		// child 2: the same pattern inside a progressive scope
+		prog := hh.StartTree(sszutils.TreeTypeProgressive)
+		hh.PutUint64(40)
+		inner := hh.Index()
+		hh.PutUint64(4)
+		hh.PutUint64(5)
+		hh.Merkleize(inner)
+		hh.PutUint64(2)
+		hh.Merkleize(inner)
+		hh.MerkleizeProgressive(prog)
+
+		// child 3: the same pattern inside a plain container
+		cont := hh.StartTree(sszutils.TreeTypeNone)
+		hh.PutUint64(60)
+		legacy := hh.Index()
+		hh.PutUint64(6)
+		hh.Merkleize(legacy)
+		hh.PutUint64(1)
+		hh.Merkleize(legacy)
+		hh.PutUint64(8)
+		hh.Merkleize(cont)
+
+		hh.Merkleize(root)
+	}
+
+	ref := NewWrapper()
+	stream(ref)
+	refTree := ref.Node()
+	refRoot := refTree.Hash()
+
+	// Four root children in four slots: child n sits at 4+n. A pruned tree
+	// serves the scheduled paths; everything beside them collapses.
+	tests := []struct {
+		name     string
+		sched    *ProofSchedule
+		gindices []int
+		subtree  int
+	}{
+		// The list's chunk slot 0: the mixin pair, the chunk tree and the
+		// slot's own pair.
+		{"scheduled", &ProofSchedule{children: map[uint64]*ProofSchedule{1: {children: map[uint64]*ProofSchedule{0: {}}}}}, []int{5, 10, 11, 40, 41}, 0},
+		// The progressive scope whole, the muted container beside it as a
+		// leaf.
+		{"retained", &ProofSchedule{children: map[uint64]*ProofSchedule{2: {retainAll: true}}}, []int{7}, 6},
+		{"everything", retainAllSchedule, nil, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hh := hasher.FastHasherPool.Get()
+			defer hasher.FastHasherPool.Put(hh)
+			ph := NewProofHasher(tt.sched, hh, nil)
+			stream(ph)
+			tree, err := ph.ProofTree()
+			if err != nil {
+				t.Fatalf("ProofTree: %v", err)
+			}
+			if !bytes.Equal(tree.Hash(), refRoot) {
+				t.Fatalf("root = %x, want %x", tree.Hash(), refRoot)
+			}
+			for _, g := range tt.gindices {
+				want, refErr := refTree.Prove(g)
+				if refErr != nil {
+					t.Fatalf("reference Prove(%d): %v", g, refErr)
+				}
+				got, err := tree.Prove(g)
+				if err != nil {
+					t.Fatalf("pruned Prove(%d): %v", g, err)
+				}
+				assertSameProof(t, g, want, got)
+			}
+			if tt.subtree != 0 {
+				proveSubtree(t, refTree, tree, tt.subtree)
+			}
+		})
+	}
+}
+
+// proofHasherRefRoot runs the stream through a plain wrapper and returns the
+// reference tree.
+func proofHasherRefTree(t *testing.T, stream func(hh sszutils.HashWalker)) *Node {
+	t.Helper()
+	ref := NewWrapper()
+	stream(ref)
+	tree, err := ref.Root()
+	if err != nil {
+		t.Fatalf("reference Root: %v", err)
+	}
+	return tree
+}
+
+// The capture's edges: a hasher failure reported through the capture, a
+// backend refusing the capture's own nodes, a Put that contributes no chunk,
+// out-of-range and empty-region reductions, an unscoped reduction inside a
+// retained subtree, and a fold behind captured children.
+func TestProofHasherCaptureEdges(t *testing.T) {
+	t.Run("hasher error", func(t *testing.T) {
+		hh := hasher.FastHasherPool.Get()
+		defer hasher.FastHasherPool.Put(hh)
+		// The child is muted, so the hasher sees its declared shape itself.
+		ph := NewProofHasher(&ProofSchedule{}, hh, nil)
+		root := ph.StartTree(sszutils.TreeTypeNone)
+		child := ph.StartTree(sszutils.TreeTypeBinary)
+		ph.PutUint64(1)
+		ph.MerkleizeProgressive(child)
+		ph.Merkleize(root)
+		if !errors.Is(ph.HashErr(), sszutils.ErrScopeShapeMismatch) {
+			t.Fatalf("HashErr = %v", ph.HashErr())
+		}
+		if _, err := ph.ProofTree(); !errors.Is(err, sszutils.ErrScopeShapeMismatch) {
+			t.Fatalf("ProofTree error = %v", err)
+		}
+	})
+
+	t.Run("capture backend refusal", func(t *testing.T) {
+		refused := errors.New("backend refused")
+		failing := func(_, _ []byte) error { return refused }
+		hh := hasher.FastHasherPool.Get()
+		defer hasher.FastHasherPool.Put(hh)
+		// The progressive child is retained and finalized through the
+		// refusing function; the root's pruned branch falls back to the
+		// built-in compression, and the root is refused with the error.
+		ph := NewProofHasher(&ProofSchedule{children: map[uint64]*ProofSchedule{0: {retainAll: true}}}, hh, failing)
+		root := ph.StartTree(sszutils.TreeTypeNone)
+		prog := ph.StartTree(sszutils.TreeTypeProgressive)
+		ph.PutUint64(1)
+		ph.PutUint64(2)
+		ph.MerkleizeProgressive(prog)
+		ph.PutUint64(3)
+		ph.Merkleize(root)
+		if err := ph.Hasher.HashErr(); err != nil {
+			t.Fatalf("hasher HashErr = %v", err)
+		}
+		if !errors.Is(ph.HashErr(), refused) {
+			t.Fatalf("HashErr = %v, want the refusal", ph.HashErr())
+		}
+		if _, err := ph.HashRoot(); !errors.Is(err, refused) {
+			t.Fatalf("HashRoot error = %v, want the refusal", err)
+		}
+		if _, err := ph.ProofTree(); !errors.Is(err, refused) {
+			t.Fatalf("ProofTree error = %v, want the refusal", err)
+		}
+	})
+
+	t.Run("empty put", func(t *testing.T) {
+		stream := func(hh sszutils.HashWalker) {
+			root := hh.StartTree(sszutils.TreeTypeNone)
+			hh.PutBytes(nil)
+			hh.PutUint64(1)
+			hh.Merkleize(root)
+		}
+		refTree := proofHasherRefTree(t, stream)
+		hh := hasher.FastHasherPool.Get()
+		defer hasher.FastHasherPool.Put(hh)
+		ph := NewProofHasher(&ProofSchedule{children: map[uint64]*ProofSchedule{0: {children: map[uint64]*ProofSchedule{0: {}}}}}, hh, nil)
+		stream(ph)
+		tree, err := ph.ProofTree()
+		if err != nil {
+			t.Fatalf("ProofTree: %v", err)
+		}
+		if !bytes.Equal(tree.Hash(), refTree.Hash()) || !tree.IsLeaf() {
+			t.Fatalf("tree = %x (leaf %v), want leaf %x", tree.Hash(), tree.IsLeaf(), refTree.Hash())
+		}
+	})
+
+	t.Run("clamped and empty reductions", func(t *testing.T) {
+		stream := func(hh sszutils.HashWalker) {
+			root := hh.StartTree(sszutils.TreeTypeNone)
+			hh.PutUint64(1)
+			// An empty list without a scope of its own: the region is empty.
+			hh.MerkleizeWithMixin(hh.CurrentIndex()+1000, 0, 8)
+			hh.Merkleize(root)
+			hh.PutUint64(2)
+			// Below the buffer start: clamped to a fold of the whole buffer.
+			hh.Merkleize(-5)
+		}
+		refTree := proofHasherRefTree(t, stream)
+		hh := hasher.FastHasherPool.Get()
+		defer hasher.FastHasherPool.Put(hh)
+		ph := NewProofHasher(&ProofSchedule{children: map[uint64]*ProofSchedule{1: {}}}, hh, nil)
+		stream(ph)
+		tree, err := ph.ProofTree()
+		if err != nil {
+			t.Fatalf("ProofTree: %v", err)
+		}
+		if !bytes.Equal(tree.Hash(), refTree.Hash()) {
+			t.Fatalf("root = %x, want %x", tree.Hash(), refTree.Hash())
+		}
+		// The empty region's root is a chunk the hasher produced on its own,
+		// so slot 1 is served as a leaf; the fold keeps the appended chunk.
+		for _, g := range []int{2, 4, 5} {
+			want, refErr := refTree.Prove(g)
+			if refErr != nil {
+				t.Fatalf("reference Prove(%d): %v", g, refErr)
+			}
+			got, err := tree.Prove(g)
+			if err != nil {
+				t.Fatalf("pruned Prove(%d): %v", g, err)
+			}
+			assertSameProof(t, g, want, got)
+		}
+		proveSubtree(t, refTree, tree, 3)
+	})
+
+	t.Run("unscoped reduction in retained subtree", func(t *testing.T) {
+		stream := func(hh sszutils.HashWalker) {
+			root := hh.StartTree(sszutils.TreeTypeNone)
+			prog := hh.StartTree(sszutils.TreeTypeProgressive)
+			hh.PutUint64(1)
+			mid := hh.CurrentIndex()
+			hh.PutUint64(2)
+			hh.PutUint64(3)
+			hh.Merkleize(mid)
+			hh.MerkleizeProgressive(prog)
+			hh.PutUint64(4)
+			hh.Merkleize(root)
+		}
+		refTree := proofHasherRefTree(t, stream)
+		hh := hasher.FastHasherPool.Get()
+		defer hasher.FastHasherPool.Put(hh)
+		ph := NewProofHasher(&ProofSchedule{children: map[uint64]*ProofSchedule{0: {retainAll: true}}}, hh, nil)
+		stream(ph)
+		tree, err := ph.ProofTree()
+		if err != nil {
+			t.Fatalf("ProofTree: %v", err)
+		}
+		if !bytes.Equal(tree.Hash(), refTree.Hash()) {
+			t.Fatalf("root = %x, want %x", tree.Hash(), refTree.Hash())
+		}
+		proveSubtree(t, refTree, tree, 2)
+	})
+
+	t.Run("fold behind captured children", func(t *testing.T) {
+		stream := func(hh sszutils.HashWalker) {
+			root := hh.StartTree(sszutils.TreeTypeNone)
+			first := hh.StartTree(sszutils.TreeTypeNone)
+			hh.PutUint64(9)
+			hh.PutUint64(8)
+			hh.Merkleize(first)
+			list := hh.Index()
+			hh.PutUint64(1)
+			hh.PutUint64(2)
+			hh.Merkleize(list)
+			hh.PutUint64(2)
+			hh.Merkleize(list)
+			hh.Merkleize(root)
+		}
+		refTree := proofHasherRefTree(t, stream)
+		hh := hasher.FastHasherPool.Get()
+		defer hasher.FastHasherPool.Put(hh)
+		ph := NewProofHasher(&ProofSchedule{children: map[uint64]*ProofSchedule{
+			0: {children: map[uint64]*ProofSchedule{1: {}}},
+			1: {children: map[uint64]*ProofSchedule{0: {}}},
+		}}, hh, nil)
+		stream(ph)
+		tree, err := ph.ProofTree()
+		if err != nil {
+			t.Fatalf("ProofTree: %v", err)
+		}
+		if !bytes.Equal(tree.Hash(), refTree.Hash()) {
+			t.Fatalf("root = %x, want %x", tree.Hash(), refTree.Hash())
+		}
+		proveSubtree(t, refTree, tree, 2)
+		proveSubtree(t, refTree, tree, 3)
+	})
 }

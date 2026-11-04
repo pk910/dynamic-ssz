@@ -6,7 +6,6 @@
 package dynssz
 
 import (
-	"crypto/sha256"
 	"cmp"
 	"fmt"
 	"io"
@@ -1411,10 +1410,6 @@ func (d *DynSsz) hasherPool() *hasher.HasherPool {
 	return &hasher.FastHasherPool
 }
 
-// nativeBatchHashFn hashes with the standard library sha256, serving tree
-// finalization for instances configured with WithNoFastHash.
-var nativeBatchHashFn = hasher.NativeHashWrapperFactory(sha256.New)
-
 // ValidateType validates whether a given type is compatible with SSZ encoding/decoding.
 //
 // This method performs a comprehensive analysis of the provided type to determine if it can be
@@ -1518,26 +1513,17 @@ func (d *DynSsz) GetProofs(source any, gindices []int, opts ...CallOption) ([]*t
 		return nil, err
 	}
 
-	var pool *hasher.HasherPool
-	if d.options.NoFastHash {
-		pool = &hasher.DefaultHasherPool
-	} else {
-		pool = &hasher.FastHasherPool
-	}
+	// The hasher and the capture compress with the function this instance
+	// hashes with, so the pruned tree answers with the root every other entry
+	// point gives, and NoFastHash keeps its promise for the capture too.
+	pool := d.hasherPool()
 	hh := pool.Get()
 	defer pool.Put(hh)
 	if d.options.AsyncHashing {
 		hh.SetAsyncHashing(true)
 	}
 
-	// NoFastHash keeps its promise for the proof capture too: sibling-range
-	// reduction then runs on the native Go sha256 implementation.
-	var proofHashFn hasher.HashFn
-	if d.options.NoFastHash {
-		proofHashFn = nativeBatchHashFn
-	}
-
-	w := treeproof.NewProofHasher(sched, hh, proofHashFn)
+	w := treeproof.NewProofHasher(sched, hh, pool.CurrentHashFn())
 	err = d.HashTreeRootWith(source, w, opts...)
 	if err != nil {
 		return nil, err
