@@ -29,12 +29,18 @@ updates:
   # Go modules for sub-modules (no version caps)
   - package-ecosystem: "gomod"
     directories:
-      - "/spectests"
-      - "/spectests/consensus-spec-tests"
+      - "/tests/spectests"
+      - "/tests/spectests/consensus-spec-tests"
+      - "/tests/perftests"
       - "/examples/basic"
+      - "/examples/chain-specs"
       - "/examples/codegen"
       - "/examples/custom-types"
+      - "/examples/fork-views"
+      - "/examples/htr-caching"
+      - "/examples/merkle-proofs"
       - "/examples/progressive-merkleization"
+      - "/examples/streaming"
       - "/examples/versioned-blocks"
     schedule:
       interval: "weekly"

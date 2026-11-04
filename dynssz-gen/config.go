@@ -33,6 +33,7 @@ type FileConfig struct {
 	WithoutFastSsz            *bool `yaml:"without-fastssz"`
 	WithStreaming             *bool `yaml:"with-streaming"`
 	WithExtendedTypes         *bool `yaml:"with-extended-types"`
+	RecursionDepth            *int  `yaml:"recursion-depth"`
 
 	SkipMarshal      *bool `yaml:"skip-marshal"`
 	SkipUnmarshal    *bool `yaml:"skip-unmarshal"`
@@ -67,6 +68,7 @@ type TypeEntry struct {
 	WithoutFastSsz            *bool `yaml:"without-fastssz"`
 	WithStreaming             *bool `yaml:"with-streaming"`
 	WithExtendedTypes         *bool `yaml:"with-extended-types"`
+	RecursionDepth            *int  `yaml:"recursion-depth"`
 
 	SkipMarshal      *bool `yaml:"skip-marshal"`
 	SkipUnmarshal    *bool `yaml:"skip-unmarshal"`
@@ -108,6 +110,7 @@ func (t *TypeEntry) UnmarshalYAML(node *yaml.Node) error {
 		"without-fastssz":             true,
 		"with-streaming":              true,
 		"with-extended-types":         true,
+		"recursion-depth":             true,
 		"skip-marshal":                true,
 		"skip-unmarshal":              true,
 		"skip-size":                   true,
@@ -182,6 +185,9 @@ func (fc *FileConfig) applyToConfig(cfg *Config, cliProvided map[string]bool, ba
 	applyBool(&cfg.WithoutFastSsz, fc.WithoutFastSsz, cliProvided["without-fastssz"])
 	applyBool(&cfg.WithStreaming, fc.WithStreaming, cliProvided["with-streaming"])
 	applyBool(&cfg.WithExtendedTypes, fc.WithExtendedTypes, cliProvided["with-extended-types"])
+	if !cliProvided["recursion-depth"] && fc.RecursionDepth != nil {
+		cfg.RecursionDepth = *fc.RecursionDepth
+	}
 
 	// The skip-* method exclusions have no CLI flag counterparts; they are
 	// config-file only.
@@ -239,6 +245,10 @@ func (fc *FileConfig) applyToConfig(cfg *Config, cliProvided map[string]bool, ba
 		spec.WithoutFastSsz = resolveBool(entry.WithoutFastSsz, cfg.WithoutFastSsz)
 		spec.WithStreaming = resolveBool(entry.WithStreaming, cfg.WithStreaming)
 		spec.WithExtendedTypes = resolveBool(entry.WithExtendedTypes, cfg.WithExtendedTypes)
+		spec.RecursionDepth = cfg.RecursionDepth
+		if entry.RecursionDepth != nil {
+			spec.RecursionDepth = *entry.RecursionDepth
+		}
 		spec.SkipMarshal = resolveBool(entry.SkipMarshal, cfg.SkipMarshal)
 		spec.SkipUnmarshal = resolveBool(entry.SkipUnmarshal, cfg.SkipUnmarshal)
 		spec.SkipSize = resolveBool(entry.SkipSize, cfg.SkipSize)
@@ -278,8 +288,11 @@ func resolveBool(override *bool, fallback bool) bool {
 // resolvePath returns path if absolute, otherwise joined against baseDir.
 // An empty baseDir means paths are used as-is.
 func resolvePath(path, baseDir string) string {
-	if path == "" || baseDir == "" || filepath.IsAbs(path) {
+	if path == "" {
 		return path
+	}
+	if baseDir == "" || filepath.IsAbs(path) {
+		return filepath.Clean(path)
 	}
 	return filepath.Join(baseDir, path)
 }
@@ -344,6 +357,9 @@ func codegenFlagOptions(spec *typeSpec) []codegen.CodeGeneratorOption {
 	}
 	if spec.WithExtendedTypes {
 		opts = append(opts, codegen.WithExtendedTypes())
+	}
+	if spec.RecursionDepth > 0 {
+		opts = append(opts, codegen.WithRecursionDepth(spec.RecursionDepth))
 	}
 	if spec.SkipMarshal {
 		opts = append(opts, codegen.WithNoMarshalSSZ())

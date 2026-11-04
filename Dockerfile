@@ -1,5 +1,5 @@
 # Build stage - use xx for cross-compilation
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine@sha256:8e02eb337d9e0ea459e041f1ee5eece41cbb61f1d83e7d883a3e2fb4862063fa AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25.11-alpine@sha256:523c3effe300580ed375e43f43b1c9b091b68e935a7c3a92bfcc4e7ed55b18c2 AS builder
 
 ARG TARGETPLATFORM
 ARG TARGETOS

@@ -19,20 +19,25 @@ var wellKnownExternalTypes = map[string]SszType{
 	"github.com/OffchainLabs/go-bitfield.Bitlist":  SszBitlistType,
 }
 
-// getWellKnownExternalType returns the SSZ type for a well-known external type
-func getWellKnownExternalType(pkgPath, name string) SszType {
+// WellKnownExternalType returns the SSZ type a well-known external type
+// resolves to without a tag, or SszUnspecifiedType. The name is the type's
+// declared name, with or without the type arguments reflect appends to an
+// instantiated generic.
+func WellKnownExternalType(pkgPath, name string) SszType {
 	if t, ok := wellKnownExternalTypes[pkgPath+"."+name]; ok {
 		return t
 	}
 
 	if pkgPath == dynsszPkgPath {
-		if strings.HasPrefix(name, "CompatibleUnion[") {
+		if i := strings.IndexByte(name, '['); i >= 0 {
+			name = name[:i]
+		}
+		switch name {
+		case "CompatibleUnion":
 			return SszCompatibleUnionType
-		}
-		if strings.HasPrefix(name, "Union[") {
+		case "Union":
 			return SszUnionType
-		}
-		if strings.HasPrefix(name, "TypeWrapper[") {
+		case "TypeWrapper":
 			return SszTypeWrapperType
 		}
 	}

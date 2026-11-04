@@ -1018,3 +1018,50 @@ types:
 		t.Errorf("expected per-type skips set, got %+v", override)
 	}
 }
+
+// recursion-depth applies to every type, a per-type value overrides it, and a
+// CLI value wins over the file's top-level value.
+func TestLoadConfig_RecursionDepth(t *testing.T) {
+	path := writeTempConfig(t, `
+package: github.com/pk910/dynamic-ssz/codegen/tests
+output: gen.go
+recursion-depth: 64
+
+types:
+  - name: Shallow
+    recursion-depth: 8
+  - Deep
+`)
+	fc, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if fc.RecursionDepth == nil || *fc.RecursionDepth != 64 {
+		t.Fatalf("RecursionDepth = %v, want 64", fc.RecursionDepth)
+	}
+
+	cfg := &Config{}
+	specs, err := fc.applyToConfig(cfg, map[string]bool{}, "")
+	if err != nil {
+		t.Fatalf("applyToConfig: %v", err)
+	}
+	if cfg.RecursionDepth != 64 || specs[0].RecursionDepth != 8 || specs[1].RecursionDepth != 64 {
+		t.Fatalf("depths = %d / %d / %d, want 64 / 8 / 64", cfg.RecursionDepth, specs[0].RecursionDepth, specs[1].RecursionDepth)
+	}
+	var opts codegen.CodeGeneratorOptions
+	for _, opt := range codegenFlagOptions(&specs[0]) {
+		opt(&opts)
+	}
+	if opts.RecursionDepth != 8 {
+		t.Fatalf("generator option depth = %d, want 8", opts.RecursionDepth)
+	}
+
+	cli := &Config{RecursionDepth: 32}
+	specs, err = fc.applyToConfig(cli, map[string]bool{"recursion-depth": true}, "")
+	if err != nil {
+		t.Fatalf("applyToConfig with CLI depth: %v", err)
+	}
+	if cli.RecursionDepth != 32 || specs[0].RecursionDepth != 8 || specs[1].RecursionDepth != 32 {
+		t.Fatalf("depths with CLI value = %d / %d / %d, want 32 / 8 / 32", cli.RecursionDepth, specs[0].RecursionDepth, specs[1].RecursionDepth)
+	}
+}

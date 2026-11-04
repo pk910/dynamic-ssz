@@ -29,9 +29,14 @@ func (p *offsetSlicePool) Get() []uint32 {
 	return (*item)[:0]
 }
 
+// maxPooledOffsetSlice is the largest offset slice the pool keeps, in
+// entries (64 KiB). A table sized by one oversized input would otherwise
+// stay resident for every later decode.
+const maxPooledOffsetSlice = 64 << 10 / 4
+
 // Put returns an int slice to the pool
 func (p *offsetSlicePool) Put(slice []uint32) {
-	if cap(slice) > 0 {
+	if cap(slice) > 0 && cap(slice) <= maxPooledOffsetSlice {
 		p.pool.Put(&slice)
 	}
 }

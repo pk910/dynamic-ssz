@@ -8,7 +8,11 @@ import (
 	"encoding/json"
 	"math"
 	"math/big"
+	"reflect"
+	"sync"
 	"testing"
+
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 // TestEvalIntSpecExpression exercises the rational spec-expression evaluator
@@ -18,12 +22,13 @@ import (
 func TestEvalIntSpecExpression(t *testing.T) {
 	type namedCarrierF float64
 	specs := map[string]any{
-		"A":   uint64(10),
-		"B":   uint64(3),
-		"BIG": uint64(1) << 40,
-		"MAX": ^uint64(0),
-		"NEG": int(-5),
-		"F":   3.5, // float rounds up to 4
+		"A":    uint64(10),
+		"B":    uint64(3),
+		"ZERO": uint64(0),
+		"BIG":  uint64(1) << 40,
+		"MAX":  ^uint64(0),
+		"NEG":  int(-5),
+		"F":    3.5, // float rounds up to 4
 		// Fractional operands stay exact until the single final rounding; JSON
 		// spec files decode every number as float64, so this is the common shape.
 		"HALF": 0.5,
@@ -58,6 +63,21 @@ func TestEvalIntSpecExpression(t *testing.T) {
 		// 12 and 4 respectively).
 		{"div_mul_evaluate_once", "9 / 4 * 4", true, true, 9, false},
 		{"div_mul_half", "3 / 2 * 2", true, true, 3, false},
+		// A :N fallback resolves its operand on its own: the value rounded up
+		// to a whole unit, or N when undefined or zero; it binds tighter than
+		// the arithmetic around it.
+		{"fallback_undefined", "X:8", true, true, 8, false},
+		{"fallback_defined", "A:8", true, true, 10, false},
+		{"fallback_zero", "ZERO:8", true, true, 8, false},
+		{"fallback_group", "(A/B):3", true, true, 4, false},
+		{"fallback_group_undefined", "(A/X):3", true, true, 3, false},
+		{"fallback_binds_tighter", "X:8*B", true, true, 24, false},
+		{"fallback_nested", "(X:5)*((Y:4)*8+4)", true, true, 180, false},
+		{"fallback_rounds_each_operand", "(A/B):1+(A/B):1", true, true, 8, false},
+		{"fallback_undefined_zero", "X:0+4", true, true, 4, false},
+		{"fallback_missing", "X:", false, false, 0, false},
+		{"fallback_overflow", "X:99999999999999999999999", true, false, 0, true},
+		{"fallback_negative_operand", "(B-A):1", true, false, 0, true},
 		// A chained division agrees with per-division ceil (10/3/2 -> ceil 2).
 		{"chained_div", "A / B / 2", true, true, 2, false},
 		// The exact value is negative -> rejected (a size cannot be negative).
@@ -213,5 +233,71 @@ func TestSpecDirectKeyWhitespace(t *testing.T) {
 		if err != nil || !resolved || got != 99 {
 			t.Errorf("%q: resolved=%v got=%d err=%v, want the direct 99", name, resolved, got, err)
 		}
+	}
+}
+
+type specSetTypeA struct{}
+type specSetTypeB struct{}
+
+func TestSpecSetCache(t *testing.T) {
+	ds := NewDynSsz(map[string]any{"MAX": uint64(9)})
+	keyA := reflect.TypeFor[specSetTypeA]()
+	keyB := reflect.TypeFor[specSetTypeB]()
+
+	if got := ds.LoadSpecSet(keyA); got != nil {
+		t.Fatalf("empty cache returned %v", got)
+	}
+
+	setA := []uint64{1}
+	if got := ds.StoreSpecSet(keyA, setA); &got[0] != &setA[0] {
+		t.Fatal("first store did not return the stored set")
+	}
+	other := []uint64{2}
+	if got := ds.StoreSpecSet(keyA, other); &got[0] != &setA[0] {
+		t.Fatal("second store replaced the cached set")
+	}
+	if got := ds.LoadSpecSet(keyA); &got[0] != &setA[0] {
+		t.Fatal("load did not return the cached set")
+	}
+
+	// Concurrent stores of different keys keep every set.
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ds.StoreSpecSet(keyB, []uint64{3})
+			ds.LoadSpecSet(keyA)
+		}()
+	}
+	wg.Wait()
+	if got := ds.LoadSpecSet(keyB); len(got) != 1 || got[0] != 3 {
+		t.Fatalf("load B returned %v", got)
+	}
+	if got := ds.LoadSpecSet(keyA); &got[0] != &setA[0] {
+		t.Fatal("store of another key dropped the cached set")
+	}
+
+	// Through the generic entry point, one build per type and instance.
+	builds := 0
+	build := func(specs sszutils.DynamicSpecs) ([]uint64, error) {
+		builds++
+		v, err := sszutils.ResolveSpecValueWithDefault(specs, "MAX", 4)
+		if err != nil {
+			return nil, err
+		}
+		return []uint64{v}, nil
+	}
+	for i := 0; i < 3; i++ {
+		set, err := sszutils.GetCachedSpecSet[DynSsz](ds, build)
+		if err != nil || len(set) != 1 || set[0] != 9 {
+			t.Fatalf("call %d: set %v, err %v", i, set, err)
+		}
+	}
+	if builds != 1 {
+		t.Fatalf("built %d times, want 1", builds)
+	}
+	if _, err := sszutils.GetCachedSpecSet[DynSsz](NewDynSsz(nil), build); err != nil || builds != 2 {
+		t.Fatalf("another instance: err %v, builds %d, want 2", err, builds)
 	}
 }

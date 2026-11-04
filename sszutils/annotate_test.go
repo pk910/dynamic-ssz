@@ -7,6 +7,7 @@ package sszutils
 import (
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -141,5 +142,59 @@ func TestLookupAnnotation_Nil(t *testing.T) {
 	tag, ok := LookupAnnotation(nil)
 	if ok || tag != "" {
 		t.Errorf("LookupAnnotation(nil) = (%q, %v), want (\"\", false)", tag, ok)
+	}
+}
+
+// Registrations that alternate between tags used to grow the entry without
+// bound, since only the whole merged string was compared.
+func TestAnnotateAlternatingRegistrationsDoNotGrow(t *testing.T) {
+	type alternatingType []uint32
+
+	first := `ssz-max:"8"`
+	second := `ssz-static:"false"`
+
+	Annotate[alternatingType](first)
+	Annotate[alternatingType](second)
+
+	merged, ok := LookupAnnotation(reflect.TypeFor[alternatingType]())
+	if !ok {
+		t.Fatal("expected the annotation to be found")
+	}
+
+	for range 5 {
+		Annotate[alternatingType](first)
+		Annotate[alternatingType](second)
+	}
+
+	if again, _ := LookupAnnotation(reflect.TypeFor[alternatingType]()); again != merged {
+		t.Errorf("repeated registrations grew the annotation: %q -> %q", merged, again)
+	}
+}
+
+// Registration is one step, so concurrent callers cannot lose one another's
+// tags.
+func TestAnnotateConcurrentRegistrations(t *testing.T) {
+	type concurrentType []uint32
+
+	tags := []string{`ssz-max:"8"`, `ssz-static:"false"`, `ssz-type:"list"`}
+
+	var wg sync.WaitGroup
+	for _, tag := range tags {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			Annotate[concurrentType](tag)
+		}()
+	}
+	wg.Wait()
+
+	merged, ok := LookupAnnotation(reflect.TypeFor[concurrentType]())
+	if !ok {
+		t.Fatal("expected the annotation to be found")
+	}
+	for _, tag := range tags {
+		if !strings.Contains(merged, tag) {
+			t.Errorf("%q is missing from %q", tag, merged)
+		}
 	}
 }

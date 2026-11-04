@@ -12,3 +12,11 @@ type Base struct {
 	F1 uint64
 	F2 uint64
 }
+
+// Data is served through sub.DataView, whose field types carry the
+// annotations; its own field types have none.
+type Data struct {
+	Roots [][32]byte
+	Nums  []uint32
+	C     uint8
+}

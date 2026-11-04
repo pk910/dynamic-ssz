@@ -35,7 +35,11 @@ func WithNoFastSsz() DynSszOption {
 // WithNoDelegation disables delegation to a type's own generated Dynamic* SSZ
 // methods (MarshalSSZDyn, UnmarshalSSZDyn, HashTreeRootWith and friends,
 // including their DynamicView* variants). Fastssz-style methods are governed
-// separately by WithNoFastSsz.
+// separately by WithNoFastSsz for a type without a dynamic surface. A type
+// that carries the complete dynamic surface is walked by reflection even when
+// it also has static methods: a -legacy generation's static methods forward to
+// the global instance's specs, and only the method set tells them from real
+// static bodies.
 //
 // This differs from WithNoFastSsz, which only disables the legacy fastssz
 // fallback: WithNoFastSsz leaves generated dynamic methods in charge, whereas
@@ -126,14 +130,18 @@ func WithStreamReaderBufferSize(size int) DynSszOption {
 }
 
 // WithMaxStreamSize sets the upper bound on the total size of an SSZ payload
-// decoded by UnmarshalSSZReader without a known length (size < 0). Defaults to
+// decoded by UnmarshalSSZReader without a size (size < 0): the decode stops at
+// the bound. A declared size is its own bound and is not subject to it: the
+// decode sizes its allocations from that declaration before the bytes arrive,
+// so setting this alongside a declared size does nothing. Pass a negative size
+// to put the decode under this bound instead. Defaults to
 // sszutils.DefaultMaxStreamSize (512 MiB) if not set or set to a non-positive
-// value.
+// value. WithStreamSizeLimit overrides it for a single call.
 //
-// Unknown-length decoding is always byte-bounded, and deliberately so: the
-// allowance prevents an endless input from driving unbounded wire buffering and
+// The bound is deliberate and cannot be disabled: an unknown-length decode
+// would otherwise let an endless input drive unbounded wire buffering. It also
 // doubles as the remaining-length estimate reported to decode paths that have
-// not been taught about regions of unknown extent. It cannot be disabled.
+// not been taught about regions of unknown extent.
 //
 // This is not a deadline, cancellation mechanism, or decoded-object heap limit.
 // Network callers must impose their own lifetime bound, and should choose the
@@ -187,6 +195,9 @@ type callConfig struct {
 	// When set, this defines the SSZ schema for the operation, allowing the same
 	// runtime type to be serialized with different SSZ layouts (fork views).
 	viewDescriptor any
+	// maxStreamSize overrides DynSszOptions.MaxStreamSize for one
+	// UnmarshalSSZReader call; zero keeps the instance value.
+	maxStreamSize int
 }
 
 // applyCallOptions applies all provided CallOptions to a callConfig and returns it.
@@ -240,5 +251,15 @@ func applyCallOptions(opts []CallOption) *callConfig {
 func WithViewDescriptor(view any) CallOption {
 	return func(cfg *callConfig) {
 		cfg.viewDescriptor = view
+	}
+}
+
+// WithStreamSizeLimit bounds one unknown-length UnmarshalSSZReader decode
+// (size < 0). It overrides WithMaxStreamSize for that call; a non-positive
+// value keeps the instance default. A declared size is its own bound and is
+// not affected. The other operations ignore this option.
+func WithStreamSizeLimit(size int) CallOption {
+	return func(cfg *callConfig) {
+		cfg.maxStreamSize = size
 	}
 }

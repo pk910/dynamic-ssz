@@ -46,7 +46,8 @@ type viewMarshalWrapperViewUnknown struct {
 }
 
 // TestViewMarshalReflectionEncoder exercises the MarshalSSZEncoderView path
-// in reflection/marshal.go tryMarshalView via a seekable (buffer) encoder.
+// in reflection/marshal.go tryMarshalView via a non-seekable (stream) encoder,
+// which prefers the encoder form so the view keeps streaming.
 func TestViewMarshalReflectionEncoder(t *testing.T) {
 	ds := NewDynSsz(nil)
 
@@ -81,9 +82,8 @@ func TestViewMarshalReflectionEncoder(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			// MarshalSSZ uses a seekable (buffer) encoder which prefers
-			// MarshalSSZEncoderView
-			data, err := ds.MarshalSSZ(&wrapper, WithViewDescriptor(tc.view))
+			var buf bytes.Buffer
+			err := ds.MarshalSSZWriter(&wrapper, &buf, WithViewDescriptor(tc.view))
 
 			if tc.expectError != "" {
 				if err == nil {
@@ -98,15 +98,16 @@ func TestViewMarshalReflectionEncoder(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if !bytes.Equal(data, expectedSSZ) {
-				t.Fatalf("expected SSZ %x, got %x", expectedSSZ, data)
+			if !bytes.Equal(buf.Bytes(), expectedSSZ) {
+				t.Fatalf("expected SSZ %x, got %x", expectedSSZ, buf.Bytes())
 			}
 		})
 	}
 }
 
 // TestViewMarshalReflectionMarshaler exercises the MarshalSSZDynView path
-// in reflection/marshal.go tryMarshalView via a non-seekable (stream) encoder.
+// in reflection/marshal.go tryMarshalView via a seekable (buffer) encoder,
+// which prefers the marshaler form.
 func TestViewMarshalReflectionMarshaler(t *testing.T) {
 	ds := NewDynSsz(nil)
 
@@ -139,10 +140,7 @@ func TestViewMarshalReflectionMarshaler(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			// MarshalSSZWriter uses a non-seekable (stream) encoder which
-			// prefers MarshalSSZDynView over MarshalSSZEncoderView
-			var buf bytes.Buffer
-			err := ds.MarshalSSZWriter(&wrapper, &buf, WithViewDescriptor(tc.view))
+			data, err := ds.MarshalSSZ(&wrapper, WithViewDescriptor(tc.view))
 
 			if tc.expectError != "" {
 				if err == nil {
@@ -157,8 +155,8 @@ func TestViewMarshalReflectionMarshaler(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if !bytes.Equal(buf.Bytes(), expectedSSZ) {
-				t.Fatalf("expected SSZ %x, got %x", expectedSSZ, buf.Bytes())
+			if !bytes.Equal(data, expectedSSZ) {
+				t.Fatalf("expected SSZ %x, got %x", expectedSSZ, data)
 			}
 		})
 	}

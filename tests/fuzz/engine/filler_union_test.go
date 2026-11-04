@@ -23,6 +23,21 @@ type fillerUnion3 struct {
 	}]
 }
 
+type fillerExplicitUnion struct {
+	U dynssz.CompatibleUnion[struct {
+		Low  uint16 `ssz-index:"2"`
+		High uint32 `ssz-index:"127"`
+	}]
+}
+
+type fillerClassicUnion struct {
+	U dynssz.Union[struct {
+		None dynssz.None
+		One  uint16
+		Two  [4]byte
+	}]
+}
+
 // TestFillerUnionSelectorsAreMarshalable pins that filled unions carry a
 // selector the engines accept and that addresses the descriptor field the data
 // was built from. A filler that numbers variants from 0 produces values that
@@ -37,6 +52,8 @@ func TestFillerUnionSelectorsAreMarshalable(t *testing.T) {
 	}{
 		{"two-variants", func() any { return &fillerUnion2{} }},
 		{"three-variants", func() any { return &fillerUnion3{} }},
+		{"explicit-compatible-selectors", func() any { return &fillerExplicitUnion{} }},
+		{"classic-with-none", func() any { return &fillerClassicUnion{} }},
 	}
 
 	for _, tc := range cases {

@@ -8,7 +8,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/attestantio/go-eth2-client/spec/phase0"
+	"github.com/ethpandaops/go-eth2-client/spec/phase0"
 	"github.com/pk910/dynamic-ssz/spectests/codegen"
 	codegen_views "github.com/pk910/dynamic-ssz/spectests/codegen-views"
 )

@@ -25,7 +25,7 @@ func TestGenerateEncoderUnsupportedType(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateEncoderFn: true}
 
-	err := generateEncoder(desc, codeBuilder, typePrinter, "", options)
+	err := generateEncoder(desc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for unsupported SSZ type, got nil")
 	}
@@ -45,7 +45,7 @@ func TestGenerateEncoderBigIntType(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateEncoderFn: true, ExtendedTypes: true}
 
-	err := generateEncoder(bigIntDesc, codeBuilder, typePrinter, "", options)
+	err := generateEncoder(bigIntDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestGenerateEncoderOptionalError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateEncoderFn: true, ExtendedTypes: true}
 
-	err := generateEncoder(optionalDesc, codeBuilder, typePrinter, "", options)
+	err := generateEncoder(optionalDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for optional with unsupported inner type")
 	}
@@ -101,7 +101,7 @@ func TestGenerateEncoderContainerError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateEncoderFn: true}
 
-	err := generateEncoder(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateEncoder(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for container with unsupported field type")
 	}
@@ -127,7 +127,7 @@ func TestGenerateEncoderVectorError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateEncoderFn: true}
 
-	err := generateEncoder(vectorDesc, codeBuilder, typePrinter, "", options)
+	err := generateEncoder(vectorDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for vector with unsupported element type")
 	}
@@ -154,7 +154,7 @@ func TestGenerateEncoderListError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateEncoderFn: true}
 
-	err := generateEncoder(listDesc, codeBuilder, typePrinter, "", options)
+	err := generateEncoder(listDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for list with unsupported element type")
 	}
@@ -182,7 +182,7 @@ func TestGenerateEncoderUnionError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateEncoderFn: true}
 
-	err := generateEncoder(unionDesc, codeBuilder, typePrinter, "", options)
+	err := generateEncoder(unionDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for union with unsupported variant type")
 	}
@@ -205,7 +205,7 @@ func TestGenerateEncoderWithoutDynamicExpressions(t *testing.T) {
 		WithoutDynamicExpressions: true, // should be overridden for encoder
 	}
 
-	err := generateEncoder(desc, codeBuilder, typePrinter, "", options)
+	err := generateEncoder(desc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestEncoderVectorWithUnsupportedElement(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateEncoderFn: true}
 
-	err := generateEncoder(vectorDesc, codeBuilder, typePrinter, "", options)
+	err := generateEncoder(vectorDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for vector with unsupported element type")
 	}
@@ -260,7 +260,7 @@ func TestEncoderListWithUnsupportedElement(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateEncoderFn: true}
 
-	err := generateEncoder(listDesc, codeBuilder, typePrinter, "", options)
+	err := generateEncoder(listDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for list with unsupported element type")
 	}
@@ -296,7 +296,7 @@ func TestEncoderOptionalWithUnsupportedInner(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateEncoderFn: true, ExtendedTypes: true}
 
-	err := generateEncoder(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateEncoder(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for optional with unsupported inner type")
 	}
@@ -324,7 +324,7 @@ func TestEncoderUnionWithUnsupportedVariant(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateEncoderFn: true}
 
-	err := generateEncoder(unionDesc, codeBuilder, typePrinter, "", options)
+	err := generateEncoder(unionDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for union with unsupported variant type")
 	}
@@ -361,7 +361,7 @@ func TestEncoderTypeWrapperWithUnsupportedInner(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateEncoderFn: true}
 
-	err := generateEncoder(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateEncoder(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for wrapper with unsupported inner type")
 	}
@@ -400,7 +400,7 @@ func TestEncoderContainerWithVectorOfUnsupported(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateEncoderFn: true}
 
-	err := generateEncoder(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateEncoder(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for container with vector of unsupported elements")
 	}
@@ -440,7 +440,7 @@ func TestEncoderContainerWithListOfUnsupported(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateEncoderFn: true}
 
-	err := generateEncoder(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateEncoder(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for container with list of unsupported elements")
 	}
@@ -470,7 +470,7 @@ func TestEncoderProgressiveContainerError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateEncoderFn: true}
 
-	err := generateEncoder(desc, codeBuilder, typePrinter, "", options)
+	err := generateEncoder(desc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for progressive container with unsupported field")
 	}
@@ -498,7 +498,7 @@ func TestEncoderProgressiveListError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateEncoderFn: true}
 
-	err := generateEncoder(listDesc, codeBuilder, typePrinter, "", options)
+	err := generateEncoder(listDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for progressive list with unsupported element type")
 	}
@@ -539,7 +539,7 @@ func TestEncoderNestedContainerUnsupportedField(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateEncoderFn: true}
 
-	err := generateEncoder(outerContainer, codeBuilder, typePrinter, "", options)
+	err := generateEncoder(outerContainer, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for nested container with unsupported field")
 	}
@@ -579,7 +579,7 @@ func TestEncoderContainerStaticPlusDynamicError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{CreateEncoderFn: true}
 
-	err := generateEncoder(desc, codeBuilder, typePrinter, "", options)
+	err := generateEncoder(desc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for container with static + dynamic unsupported field")
 	}

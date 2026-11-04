@@ -562,6 +562,11 @@ var getRequiredIndicesFn = getRequiredIndices
 
 const requiredIndicesCacheSize = 32
 
+// requiredIndicesCacheMaxInts bounds the ints the cache holds over all entries
+// (index sets plus results), 2 MiB on 64-bit. The oldest entries are evicted
+// to make room; a set larger than the whole budget is not stored.
+const requiredIndicesCacheMaxInts = 1 << 18
+
 // requiredIndicesCacheEntry stores one cached mapping from a leaf index set to
 // the proof indices needed to verify it.
 type requiredIndicesCacheEntry struct {
@@ -573,6 +578,7 @@ type requiredIndicesCacheEntry struct {
 var requiredIndicesCache struct {
 	mu      sync.RWMutex
 	next    int // ring-buffer write position for the next cached result
+	ints    int // ints held over all entries
 	entries [requiredIndicesCacheSize]requiredIndicesCacheEntry
 }
 
@@ -604,19 +610,35 @@ func getRequiredIndices(leafIndices []int) []int {
 
 	// Cache miss: compute the required proof nodes from scratch, then store a
 	// copy so future calls with the same indices can reuse it safely.
-	required := computeRequiredIndices(leafIndices)
+	return storeRequiredIndices(indicesKeyHash, leafIndices, computeRequiredIndices(leafIndices))
+}
+
+// storeRequiredIndices caches a copy of a computed result and returns it. The
+// oldest entries are evicted until it fits the budget; a result that cannot
+// fit at all is returned uncached.
+func storeRequiredIndices(hash uint64, leafIndices, required []int) []int {
+	size := len(leafIndices) + len(required)
+	if size > requiredIndicesCacheMaxInts {
+		return required
+	}
 	indicesCopy := append([]int(nil), leafIndices...)
 	requiredCopy := append([]int(nil), required...)
 
 	requiredIndicesCache.mu.Lock()
+	defer requiredIndicesCache.mu.Unlock()
+	// Evict the entry being replaced, then the next oldest until this one fits.
+	for i := 0; i < requiredIndicesCacheSize && (i == 0 || requiredIndicesCache.ints+size > requiredIndicesCacheMaxInts); i++ {
+		evicted := &requiredIndicesCache.entries[(requiredIndicesCache.next+i)%requiredIndicesCacheSize]
+		requiredIndicesCache.ints -= len(evicted.indices) + len(evicted.required)
+		*evicted = requiredIndicesCacheEntry{}
+	}
 	requiredIndicesCache.entries[requiredIndicesCache.next] = requiredIndicesCacheEntry{
-		hash:     indicesKeyHash,
+		hash:     hash,
 		indices:  indicesCopy,
 		required: requiredCopy,
 	}
+	requiredIndicesCache.ints += size
 	requiredIndicesCache.next = (requiredIndicesCache.next + 1) % requiredIndicesCacheSize
-	requiredIndicesCache.mu.Unlock()
-
 	return requiredCopy
 }
 

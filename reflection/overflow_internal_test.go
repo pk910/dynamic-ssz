@@ -6,6 +6,7 @@ package reflection
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"math"
 	"reflect"
@@ -114,6 +115,31 @@ func TestMarshalDynamicVectorLenOverflow(t *testing.T) {
 	}
 }
 
+// --- getSszValueSize dynamic-vector overflow test ---
+
+func TestSizeDynamicVectorLenOverflow(t *testing.T) {
+	skipUnless32Bit(t)
+	ctx := newCtx()
+	elemDesc := &ssztypes.TypeDescriptor{
+		Size:         0,
+		Kind:         reflect.Slice,
+		SszType:      ssztypes.SszListType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+	}
+	td := &ssztypes.TypeDescriptor{
+		SszType:  ssztypes.SszVectorType,
+		Kind:     reflect.Slice,
+		Len:      overflowLen,
+		ElemDesc: elemDesc,
+	}
+	val := reflect.ValueOf(make([][]byte, 0))
+
+	_, err := ctx.getSszValueSize(td, val, reflectionDepth{})
+	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
+		t.Fatalf("expected overflow error, got: %v", err)
+	}
+}
+
 // --- unmarshalType fastssz path overflow test ---
 
 func TestUnmarshalTypeFastsszSizeOverflow(t *testing.T) {
@@ -123,7 +149,7 @@ func TestUnmarshalTypeFastsszSizeOverflow(t *testing.T) {
 		SszType:        ssztypes.SszCustomType,
 		Kind:           reflect.Struct,
 		Size:           overflowLen,
-		SszCompatFlags: ssztypes.SszCompatFlagFastSSZMarshaler,
+		SszCompatFlags: ssztypes.SszCompatFlagFastsszSurface,
 		Type:           reflect.TypeOf(stubFastsszUnmarshaler{}),
 	}
 	val := reflect.New(td.Type).Elem()
@@ -206,6 +232,36 @@ func TestUnmarshalDynamicVectorLenOverflow(t *testing.T) {
 	err := ctx.unmarshalType(td, val, dec, reflectionDepth{})
 	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
 		t.Fatalf("expected overflow error for dynamic vector Len, got: %v", err)
+	}
+}
+
+// The offset table of a dynamic vector holds four bytes per element, so a
+// length whose table would not fit the platform int is refused on every
+// width, before the table is sized.
+func TestUnmarshalDynamicVectorTableOverflow(t *testing.T) {
+	ctx := newCtx()
+	elemDesc := &ssztypes.TypeDescriptor{
+		Kind:         reflect.Slice,
+		SszType:      ssztypes.SszListType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+		Type:         reflect.TypeOf([]byte{}),
+	}
+	td := &ssztypes.TypeDescriptor{
+		SszType:  ssztypes.SszVectorType,
+		Kind:     reflect.Slice,
+		Len:      math.MaxInt/4 + 1,
+		Type:     reflect.TypeOf([][]byte{}),
+		ElemDesc: elemDesc,
+	}
+	dec := sszutils.NewBufferDecoder(make([]byte, 1000))
+	val := reflect.New(td.Type).Elem()
+
+	// Which limit the length passes depends on the target: it is past the
+	// platform's int on both, and past the SSZ offset width only where the int
+	// is the wider of the two.
+	err := ctx.unmarshalType(td, val, dec, reflectionDepth{})
+	if want := sszutils.SizeLimitSentinel(uint64(td.Len)); !errors.Is(err, want) {
+		t.Fatalf("offset table length: err = %v, want %v", err, want)
 	}
 }
 

@@ -14,6 +14,7 @@
 - **[SSZ Views](views.md)** - Multiple SSZ schemas for fork handling
 - **[Merkle Proofs](merkle-proofs.md)** - Tree construction and proof generation
 - **[Streaming Support](streaming.md)** - Memory-efficient encoding/decoding via `io.Reader`/`io.Writer`
+- **[Method Delegation](delegation.md)** - Which SSZ method a handler calls on a nested type, in both engines
 
 ## Advanced Topics
 

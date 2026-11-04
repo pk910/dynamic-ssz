@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"unsafe"
 
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
@@ -33,6 +34,12 @@ type cachedSpecValue struct {
 // up to the next whole unit once at the end, since partial bytes/bits cannot be
 // serialized. Modulo requires integer operands. A negative or out-of-range
 // result, division/modulo by zero, or anything beyond this subset is an error.
+//
+// An identifier or parenthesized group followed by :N resolves on its own the
+// way a size tag resolves against its static fallback: it takes its value
+// rounded up to a whole unit, or N when it is undefined or zero (with :0 it
+// is simply zero then). It binds tighter than the arithmetic operators, so
+// "(A/8):4*8+B:2" is ((A/8):4)*8+(B:2).
 //
 // Returns whether the value was resolved, the uint64 value, and any parse error.
 // If the name references undefined spec values, resolved will be false with no error.
@@ -316,7 +323,7 @@ func evalIntSpecExpression(expr string, specs map[string]any) (handled, resolved
 // alphabet (identifiers, integer literals, + - * / %, parentheses, spaces).
 func isIntExprChar(c byte) bool {
 	return isIdentChar(c) || c == '+' || c == '-' || c == '*' || c == '/' ||
-		c == '%' || c == '(' || c == ')' || c == ' ' || c == '\t'
+		c == '%' || c == '(' || c == ')' || c == ':' || c == ' ' || c == '\t'
 }
 
 // errIntExprUnsupported marks constructs outside the integer arithmetic
@@ -420,7 +427,52 @@ func (p *intSpecExprParser) parseTerm() (*big.Rat, error) {
 	}
 }
 
+// parseFactor parses a primary and its optional :N fallback. With the
+// fallback the primary resolves on its own: undefined or zero takes N (zero
+// for :0, where a size tag would refuse), as ResolveSpecValueWithDefault does
+// for a size tag, and any other value is rounded up to a whole unit, as the
+// tag's expression would be.
 func (p *intSpecExprParser) parseFactor() (*big.Rat, error) {
+	outerUnresolved := p.unresolved
+	p.unresolved = false
+	value, err := p.parsePrimary()
+	if err != nil {
+		p.unresolved = p.unresolved || outerUnresolved
+		return nil, err
+	}
+	primaryUnresolved := p.unresolved
+	p.skipSpaces()
+	if p.pos >= len(p.input) || p.input[p.pos] != ':' {
+		p.unresolved = primaryUnresolved || outerUnresolved
+		return value, nil
+	}
+	p.pos++
+	p.skipSpaces()
+	start := p.pos
+	for p.pos < len(p.input) && p.input[p.pos] >= '0' && p.input[p.pos] <= '9' {
+		p.pos++
+	}
+	if start == p.pos {
+		return nil, errIntExprUnsupported
+	}
+	fallback, err := strconv.ParseUint(p.input[start:p.pos], 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid fallback %q", p.input[start:p.pos])
+	}
+	p.unresolved = outerUnresolved
+	if primaryUnresolved || value.Sign() == 0 {
+		return new(big.Rat).SetUint64(fallback), nil
+	}
+	rounded, err := ratCeilToUint64(value)
+	if err != nil {
+		return nil, err
+	}
+	return new(big.Rat).SetUint64(rounded), nil
+}
+
+// parsePrimary parses a parenthesized group, an integer literal or a spec
+// identifier.
+func (p *intSpecExprParser) parsePrimary() (*big.Rat, error) {
 	p.skipSpaces()
 	if p.pos >= len(p.input) {
 		return nil, errIntExprUnsupported
@@ -510,4 +562,50 @@ func stripSpecSpaces(name string) string {
 		}
 		return r
 	}, name)
+}
+
+// specSetKeyWord returns the identity of a spec set key: the type pointer a
+// reflect.Type holds. Two keys are the same type exactly when they hold the
+// same pointer, and a map over the pointer is looked up without hashing an
+// interface, which is most of what a lookup by reflect.Type costs.
+func specSetKeyWord(key reflect.Type) unsafe.Pointer {
+	return (*[2]unsafe.Pointer)(unsafe.Pointer(&key))[1]
+}
+
+// LoadSpecSet returns the spec set cached for the generated type key, or nil
+// when no method of that type has resolved one under this instance yet.
+func (d *DynSsz) LoadSpecSet(key reflect.Type) []uint64 {
+	if sets := d.specSets.Load(); sets != nil {
+		return (*sets)[specSetKeyWord(key)]
+	}
+	return nil
+}
+
+// StoreSpecSet caches set for the generated type key. The spec values of an
+// instance never change, so two callers that resolved the set at the same time
+// hold equal sets; the first one stored is the one every caller shares.
+func (d *DynSsz) StoreSpecSet(key reflect.Type, set []uint64) []uint64 {
+	word := specSetKeyWord(key)
+
+	d.specCacheMutex.Lock()
+	defer d.specCacheMutex.Unlock()
+
+	var current map[unsafe.Pointer][]uint64
+	if sets := d.specSets.Load(); sets != nil {
+		current = *sets
+	}
+	if cached, ok := current[word]; ok {
+		return cached
+	}
+
+	// Readers hold the published map without a lock, so it is never written:
+	// a store publishes a copy. Stores happen once per generated type.
+	next := make(map[unsafe.Pointer][]uint64, len(current)+1)
+	for k, v := range current {
+		next[k] = v
+	}
+	next[word] = set
+	d.specSets.Store(&next)
+
+	return set
 }

@@ -7,8 +7,10 @@ package sszutils
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"math"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -212,6 +214,146 @@ func TestStreamEncoder_SetBuffer(t *testing.T) {
 	}
 	if enc.GetWriteError() != nil {
 		t.Errorf("unexpected error: %v", enc.GetWriteError())
+	}
+}
+
+func TestStreamEncoder_Reset(t *testing.T) {
+	testErr := errors.New("write error")
+	enc := NewStreamEncoder(&errWriter{errAfter: 0, err: testErr}, 0)
+	enc.SetBuffer(make([]byte, 100))
+	enc.Flush()
+	if !errors.Is(enc.GetWriteError(), testErr) {
+		t.Fatalf("expected error %v, got %v", testErr, enc.GetWriteError())
+	}
+
+	// A reset encoder writes to the new writer from position zero, without
+	// the error of the previous one, and keeps the grown scratch buffer.
+	var buf bytes.Buffer
+	enc.Reset(&buf)
+	if enc.GetPosition() != 0 || enc.GetWriteError() != nil {
+		t.Fatalf("reset left position %d, error %v", enc.GetPosition(), enc.GetWriteError())
+	}
+	if cap(enc.GetBuffer()) < 100 {
+		t.Errorf("reset dropped the scratch buffer (cap %d)", cap(enc.GetBuffer()))
+	}
+	enc.EncodeUint8(7)
+	enc.Flush()
+	if !bytes.Equal(buf.Bytes(), []byte{7}) || enc.GetWriteError() != nil {
+		t.Errorf("unexpected output %v, error %v", buf.Bytes(), enc.GetWriteError())
+	}
+
+	// An outsized scratch buffer is not kept.
+	enc.SetBuffer(make([]byte, maxRetainedScratch+1))
+	enc.Reset(&buf)
+	if cap(enc.GetBuffer()) > maxRetainedScratch {
+		t.Errorf("reset kept a scratch buffer of %d bytes", cap(enc.GetBuffer()))
+	}
+}
+
+func TestBufferEncoder_Reset(t *testing.T) {
+	enc := NewBufferEncoder(make([]byte, 0, 4))
+	enc.EncodeUint32(1)
+
+	next := make([]byte, 1, 8)
+	next[0] = 9
+	enc.Reset(next)
+	if enc.GetPosition() != 1 {
+		t.Fatalf("reset left position %d, want 1", enc.GetPosition())
+	}
+	enc.EncodeUint8(7)
+	if got := enc.GetBuffer(); !bytes.Equal(got, []byte{9, 7}) || &got[0] != &next[0] {
+		t.Errorf("unexpected output %v", got)
+	}
+
+	enc.Reset(nil)
+	if len(enc.GetBuffer()) != 0 {
+		t.Errorf("reset to nil left %d bytes", len(enc.GetBuffer()))
+	}
+}
+
+func TestBufferDecoder_Reset(t *testing.T) {
+	dec := NewBufferDecoder([]byte{1, 2})
+	dec.PushLimit(1)
+	if _, err := dec.DecodeUint64(); err == nil {
+		t.Fatal("expected a read past the limit to fail")
+	}
+
+	// A reset decoder reads the new buffer from its start, without the
+	// regions or the failure of the previous one.
+	dec.Reset([]byte{5, 0, 0, 0})
+	if dec.GetPosition() != 0 || dec.GetLength() != 4 {
+		t.Fatalf("reset left position %d, length %d", dec.GetPosition(), dec.GetLength())
+	}
+	dec.PushLimit(4)
+	if v, err := dec.DecodeUint32(); err != nil || v != 5 {
+		t.Errorf("DecodeUint32 = %d, %v", v, err)
+	}
+	if diff := dec.PopLimit(); diff != 0 {
+		t.Errorf("PopLimit = %d, want 0", diff)
+	}
+}
+
+func TestStreamDecoder_Reset(t *testing.T) {
+	first := make([]byte, 64)
+	for i := range first {
+		first[i] = byte(i)
+	}
+	dec := NewStreamDecoder(bytes.NewReader(first), len(first), 16)
+	dec.PushLimit(len(first))
+
+	// A delegate region larger than the read buffer grows it.
+	buf, err := dec.DecodeBytesBuf(48)
+	if err != nil || !bytes.Equal(buf, first[:48]) {
+		t.Fatalf("DecodeBytesBuf = %v, %v", buf, err)
+	}
+	grown := cap(dec.buffer)
+	if grown < 48 {
+		t.Fatalf("read buffer has capacity %d after a 48 byte region", grown)
+	}
+
+	// A reset decoder reads the next stream from its start, in a buffer of
+	// the length a new decoder would have, and grows within the capacity it
+	// kept.
+	second := []byte{7, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24}
+	dec.Reset(bytes.NewReader(second), len(second), 16)
+	if len(dec.buffer) != 16 || cap(dec.buffer) != grown {
+		t.Fatalf("reset left a buffer of length %d, capacity %d", len(dec.buffer), cap(dec.buffer))
+	}
+	dec.PushLimit(len(second))
+	v, err := dec.DecodeUint64()
+	if err != nil || v != 7 {
+		t.Fatalf("DecodeUint64 = %d, %v", v, err)
+	}
+	buf, err = dec.DecodeBytesBuf(24)
+	if err != nil || !bytes.Equal(buf, second[8:]) {
+		t.Fatalf("DecodeBytesBuf = %v, %v", buf, err)
+	}
+	if cap(dec.buffer) != grown {
+		t.Errorf("growing within the kept capacity allocated a buffer of %d bytes", cap(dec.buffer))
+	}
+	if diff := dec.PopLimit(); diff != 0 {
+		t.Errorf("PopLimit = %d, want 0", diff)
+	}
+
+	// A negative length resets to an unknown-length stream.
+	dec.Reset(bytes.NewReader([]byte{1, 2, 3}), -1, 16)
+	if dec.LengthKnown() {
+		t.Fatal("reset with a negative length left the length known")
+	}
+	dec.PushOpenLimit()
+	if rest, err := dec.DecodeRemaining(-1); err != nil || !bytes.Equal(rest, []byte{1, 2, 3}) {
+		t.Errorf("DecodeRemaining = %v, %v", rest, err)
+	}
+	dec.ResetUnknown(bytes.NewReader(nil), 16, maxAllowance+1)
+	if dec.maxSize != maxAllowance {
+		t.Errorf("ResetUnknown left an allowance of %d", dec.maxSize)
+	}
+
+	// An outsized read buffer is not kept.
+	dec.buffer = make([]byte, maxRetainedStreamBuffer+1)
+	dec.Reset(bytes.NewReader(nil), 0, 16)
+	if cap(dec.buffer) > maxRetainedStreamBuffer {
+		t.Errorf("reset kept a read buffer of %d bytes", cap(dec.buffer))
 	}
 }
 
@@ -741,6 +883,24 @@ func TestStreamDecoder_DecodeBytesBuf_LengthExceedsLimit(t *testing.T) {
 	}
 }
 
+// A length that would overflow the sum of position and request is measured
+// against the region remainder, so it overruns the region rather than wrapping
+// negative and reaching the buffer growth with an impossible allocation.
+func TestStreamDecoder_DecodeBytesBuf_LengthOverflowsPosition(t *testing.T) {
+	reader := bytes.NewReader([]byte{0x01, 0x02, 0x03})
+	dec := NewStreamDecoder(reader, 3, 0)
+
+	if _, err := dec.DecodeBytesBuf(1); err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+
+	_, err := dec.DecodeBytesBuf(math.MaxInt)
+
+	if !errors.Is(err, ErrUnexpectedEOF) {
+		t.Errorf("expected ErrUnexpectedEOF, got %v", err)
+	}
+}
+
 func TestStreamDecoder_DecodeBytesBuf_NegativeLength(t *testing.T) {
 	reader := bytes.NewReader([]byte{0x01, 0x02, 0x03})
 	dec := NewStreamDecoder(reader, 3, 0)
@@ -857,16 +1017,65 @@ func TestStreamDecoder_SkipBytes_NotSupported(t *testing.T) {
 	}
 }
 
-func TestStreamDecoder_PushLimit_ClampToLastLimit(t *testing.T) {
-	reader := bytes.NewReader(make([]byte, 10))
-	dec := NewStreamDecoder(reader, 10, 0)
+// An established bound is the extent of the input itself, so a region declared
+// past it cannot be what it says it is. It is refused: the region holds
+// nothing, and the input stays marked so no later read succeeds either. This
+// is what BufferDecoder does with the same declaration, which it can always
+// prove impossible.
+func TestStreamDecoder_PushLimit_PastEstablishedBound(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mk   func() *StreamDecoder
+	}{
+		{"known length", func() *StreamDecoder { return NewStreamDecoder(bytes.NewReader(make([]byte, 10)), 10, 0) }},
+		{"unknown length after EOF", func() *StreamDecoder {
+			dec := NewUnknownStreamDecoder(bytes.NewReader(make([]byte, 10)), 64, 0)
+			if err := dec.Prefill(); err != nil {
+				t.Fatal(err)
+			}
+			return dec
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dec := tc.mk()
+			dec.PushLimit(20)
+			if got := dec.GetLength(); got != 0 {
+				t.Fatalf("length inside a refused region = %d, want 0", got)
+			}
+			if _, err := dec.More(); !errors.Is(err, ErrUnexpectedEOF) {
+				t.Fatalf("More err = %v, want ErrUnexpectedEOF", err)
+			}
+			if _, err := dec.DecodeUint32(); !errors.Is(err, ErrUnexpectedEOF) {
+				t.Fatalf("DecodeUint32 err = %v, want ErrUnexpectedEOF", err)
+			}
+			if _, err := dec.DecodeRemaining(-1); !errors.Is(err, ErrUnexpectedEOF) {
+				t.Fatalf("DecodeRemaining err = %v, want ErrUnexpectedEOF", err)
+			}
+			if err := dec.FinishRegion(); !errors.Is(err, ErrUnexpectedEOF) {
+				t.Fatalf("FinishRegion err = %v, want ErrUnexpectedEOF", err)
+			}
+			if _, err := dec.DecodeUint8(); !errors.Is(err, ErrUnexpectedEOF) {
+				t.Fatalf("DecodeUint8 err = %v, want ErrUnexpectedEOF", err)
+			}
+			if _, err := dec.DecodeBool(); !errors.Is(err, ErrUnexpectedEOF) {
+				t.Fatalf("DecodeBool err = %v, want ErrUnexpectedEOF", err)
+			}
+			// A read wider than the buffer takes the slow path.
+			if _, err := dec.DecodeBytes(make([]byte, 4096)); !errors.Is(err, ErrUnexpectedEOF) {
+				t.Fatalf("DecodeBytes err = %v, want ErrUnexpectedEOF", err)
+			}
+		})
+	}
 
-	// Push a limit that exceeds the stream length
-	dec.PushLimit(20)
-
-	// The limit should be clamped to the stream length
-	if dec.GetLength() != 10 {
-		t.Errorf("expected length 10, got %d", dec.GetLength())
+	// Against the open allowance the child is still clamped: its bytes may
+	// yet arrive, and the allowance is what bounds the whole stream.
+	open := NewUnknownStreamDecoder(bytes.NewReader(make([]byte, 100)), 8, 64)
+	open.PushLimit(80)
+	if open.GetLength() != 64 {
+		t.Fatalf("length within the allowance = %d, want 64", open.GetLength())
+	}
+	if _, err := open.DecodeUint32(); err != nil {
+		t.Fatalf("read within the allowance: %v", err)
 	}
 }
 
@@ -2746,5 +2955,81 @@ func TestStreamEncoderFlushBeforeBoolAndOffset(t *testing.T) {
 	want = []byte{8, 7, 6, 5, 4, 3, 2, 1, 0x44, 0x33, 0x22, 0x11}
 	if !bytes.Equal(buf.Bytes(), want) {
 		t.Fatalf("encoded % x, want % x", buf.Bytes(), want)
+	}
+}
+
+// A region an offset declared inside a stream of unknown extent states how much
+// it holds; only the sender's bytes prove it. Reading its remainder must cost
+// what arrives, not what it claims.
+func TestStreamDecoderRemainderOfAnUnverifiedRegion(t *testing.T) {
+	const declared = 256 << 20
+
+	dec := NewUnknownStreamDecoder(bytes.NewReader([]byte{1, 2, 3, 4}), 1<<10, 0)
+	dec.PushLimit(declared)
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	buf, err := dec.DecodeBytesBuf(-1)
+	runtime.ReadMemStats(&after)
+
+	if err == nil && len(buf) == declared {
+		t.Fatalf("four bytes satisfied a %d byte region", declared)
+	}
+	if reserved := after.TotalAlloc - before.TotalAlloc; reserved > 8<<20 {
+		t.Errorf("reserved %d bytes for four delivered bytes", reserved)
+	}
+}
+
+// A region declaring its end past the bytes the input holds cannot be the
+// region it says it is, so both decoders refuse it and stay refused. They have
+// to say so through every method that answers for a region, not only through a
+// sized read: one reporting "nothing left, no error" where the other reports
+// the truncation lets a caller close a value the decoder already rejected, and
+// lets the two engines accept different inputs.
+func TestRefusedRegionAnswersAlikeOnBothDecoders(t *testing.T) {
+	const declared = 32
+	payload := []byte{1, 2, 3, 4, 5, 6} // fewer bytes than the region declares
+
+	probe := func(d Decoder) []string {
+		d.PushLimit(declared)
+
+		errText := func(err error) string {
+			if err == nil {
+				return "<nil>"
+			}
+			return err.Error()
+		}
+
+		out := make([]string, 0, 6)
+		rest, err := d.DecodeRemaining(-1)
+		out = append(out, fmt.Sprintf("DecodeRemaining=%x,%s", rest, errText(err)))
+
+		more, err := d.More()
+		out = append(out, fmt.Sprintf("More=%v,%s", more, errText(err)))
+
+		buf, err := d.DecodeBytesBuf(-1)
+		out = append(out, fmt.Sprintf("DecodeBytesBuf=%x,%s", buf, errText(err)))
+
+		into := make([]byte, 2)
+		read, err := d.DecodeBytes(into)
+		out = append(out,
+			fmt.Sprintf("DecodeBytes=%x,%s", read, errText(err)),
+			fmt.Sprintf("GetLength=%d", d.GetLength()),
+			fmt.Sprintf("FinishRegion=%s", errText(d.FinishRegion())),
+		)
+		return out
+	}
+
+	buffer := probe(NewBufferDecoder(payload))
+	stream := probe(NewStreamDecoder(bytes.NewReader(payload), len(payload), 0))
+
+	for i := range buffer {
+		if buffer[i] != stream[i] {
+			t.Errorf("after a refused region the decoders disagree:\n  buffer %s\n  stream %s", buffer[i], stream[i])
+		}
+	}
+	if buffer[len(buffer)-1] == "FinishRegion=<nil>" {
+		t.Error("FinishRegion reported success on a region the decoder itself refused")
 	}
 }

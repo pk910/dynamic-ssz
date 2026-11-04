@@ -35,7 +35,7 @@ func TestGenerateHashTreeRootUnsupportedType(t *testing.T) {
 			typePrinter := NewTypePrinter("test/package")
 			options := &CodeGeneratorOptions{}
 
-			err := generateHashTreeRoot(desc, codeBuilder, typePrinter, "", options)
+			err := generateHashTreeRoot(desc, codeBuilder, typePrinter, "", options, testSpecSet())
 			if err == nil {
 				t.Error("expected error for unsupported SSZ type, got nil")
 			}
@@ -73,7 +73,7 @@ func TestHashTreeRootContainerWithNestedUnsupportedType(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateHashTreeRoot(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateHashTreeRoot(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for nested unsupported type, got nil")
 	}
@@ -110,7 +110,7 @@ func TestHashTreeRootProgressiveContainerError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateHashTreeRoot(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateHashTreeRoot(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for progressive container with unsupported field, got nil")
 	}
@@ -140,7 +140,7 @@ func TestHashTreeRootVectorWithNestedUnsupportedType(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateHashTreeRoot(vectorDesc, codeBuilder, typePrinter, "", options)
+	err := generateHashTreeRoot(vectorDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for nested unsupported element type in vector, got nil")
 	}
@@ -171,7 +171,7 @@ func TestHashTreeRootListWithNestedUnsupportedType(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateHashTreeRoot(listDesc, codeBuilder, typePrinter, "", options)
+	err := generateHashTreeRoot(listDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for nested unsupported element type in list, got nil")
 	}
@@ -201,7 +201,7 @@ func TestHashTreeRootProgressiveListError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateHashTreeRoot(listDesc, codeBuilder, typePrinter, "", options)
+	err := generateHashTreeRoot(listDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for progressive list with unsupported element type, got nil")
 	}
@@ -233,7 +233,7 @@ func TestHashTreeRootUnionWithNestedUnsupportedType(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateHashTreeRoot(unionDesc, codeBuilder, typePrinter, "", options)
+	err := generateHashTreeRoot(unionDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for nested unsupported variant type in union, got nil")
 	}
@@ -263,7 +263,7 @@ func TestHashTreeRootOptionalError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{ExtendedTypes: true}
 
-	err := generateHashTreeRoot(optionalDesc, codeBuilder, typePrinter, "", options)
+	err := generateHashTreeRoot(optionalDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for optional with unsupported inner type")
 	}
@@ -283,7 +283,7 @@ func TestHashTreeRootBigIntType(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{ExtendedTypes: true}
 
-	err := generateHashTreeRoot(bigIntDesc, codeBuilder, typePrinter, "", options)
+	err := generateHashTreeRoot(bigIntDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestHashTreeRootTypeWrapperWithNestedUnsupportedType(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateHashTreeRoot(wrapperDesc, codeBuilder, typePrinter, "", options)
+	err := generateHashTreeRoot(wrapperDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for nested unsupported type in TypeWrapper, got nil")
 	}
@@ -339,7 +339,7 @@ func TestHashTreeRootVectorWithUnsupportedElement(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateHashTreeRoot(vectorDesc, codeBuilder, typePrinter, "", options)
+	err := generateHashTreeRoot(vectorDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for vector with unsupported element type")
 	}
@@ -367,7 +367,7 @@ func TestHashTreeRootListWithUnsupportedElement(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateHashTreeRoot(listDesc, codeBuilder, typePrinter, "", options)
+	err := generateHashTreeRoot(listDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for list with unsupported element type")
 	}
@@ -403,7 +403,7 @@ func TestHashTreeRootOptionalWithUnsupportedInner(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{ExtendedTypes: true}
 
-	err := generateHashTreeRoot(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateHashTreeRoot(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for optional with unsupported inner type")
 	}
@@ -431,7 +431,7 @@ func TestHashTreeRootUnionWithUnsupportedVariant(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateHashTreeRoot(unionDesc, codeBuilder, typePrinter, "", options)
+	err := generateHashTreeRoot(unionDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for union with unsupported variant type")
 	}
@@ -468,7 +468,7 @@ func TestHashTreeRootTypeWrapperWithUnsupportedInner(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateHashTreeRoot(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateHashTreeRoot(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for wrapper with unsupported inner type")
 	}
@@ -507,7 +507,7 @@ func TestHashTreeRootContainerWithVectorOfUnsupported(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateHashTreeRoot(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateHashTreeRoot(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for container with vector of unsupported elements")
 	}
@@ -547,7 +547,7 @@ func TestHashTreeRootContainerWithListOfUnsupported(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateHashTreeRoot(containerDesc, codeBuilder, typePrinter, "", options)
+	err := generateHashTreeRoot(containerDesc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for container with list of unsupported elements")
 	}
@@ -589,7 +589,7 @@ func TestHashTreeRootNestedContainerUnsupportedField(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateHashTreeRoot(outerContainer, codeBuilder, typePrinter, "", options)
+	err := generateHashTreeRoot(outerContainer, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for nested container with unsupported field")
 	}
@@ -629,7 +629,7 @@ func TestHashTreeRootContainerStaticPlusDynamicError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateHashTreeRoot(desc, codeBuilder, typePrinter, "", options)
+	err := generateHashTreeRoot(desc, codeBuilder, typePrinter, "", options, testSpecSet())
 	if err == nil {
 		t.Error("expected error for container with static + dynamic unsupported field")
 	}
@@ -659,7 +659,7 @@ func TestGenerateHashTreeRootBitlistTerminatorCheck(t *testing.T) {
 			typePrinter := NewTypePrinter("test/package")
 			options := &CodeGeneratorOptions{}
 
-			if err := generateHashTreeRoot(desc, codeBuilder, typePrinter, "", options); err != nil {
+			if err := generateHashTreeRoot(desc, codeBuilder, typePrinter, "", options, testSpecSet()); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 

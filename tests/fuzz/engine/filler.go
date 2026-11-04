@@ -177,13 +177,26 @@ func (f *Filler) fillUnion(v reflect.Value) {
 	variantIdx := f.rng.Intn(descType.NumField())
 	variantType := descType.Field(variantIdx).Type
 
+	// None is the classic union's empty option: selector zero and nil Data.
+	if variantType.PkgPath() == "github.com/pk910/dynamic-ssz" && variantType.Name() == "None" {
+		v.FieldByName("Variant").SetUint(0)
+		v.FieldByName("Data").Set(reflect.Zero(v.FieldByName("Data").Type()))
+		return
+	}
+
 	// Create and fill the variant value
 	variantVal := reflect.New(variantType).Elem()
 	f.fillValue(variantVal, "")
 
 	// Set Variant and Data. The selector must address the same descriptor field
 	// the data was built from, or the union rejects the value as a type mismatch.
-	v.FieldByName("Variant").SetUint(unionSelectorBase(v.Type()) + uint64(variantIdx))
+	selector := unionSelectorBase(v.Type()) + uint64(variantIdx)
+	if explicit := descType.Field(variantIdx).Tag.Get("ssz-index"); explicit != "" {
+		if parsed, err := strconv.ParseUint(explicit, 10, 8); err == nil {
+			selector = parsed
+		}
+	}
+	v.FieldByName("Variant").SetUint(selector)
 	v.FieldByName("Data").Set(variantVal)
 }
 

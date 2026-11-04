@@ -358,6 +358,28 @@ func (p *TypePrinter) ViewTypeString(t *ssztypes.TypeDescriptor, ensurePointer b
 	return fmt.Sprintf("%s%s", ptrPrefix, p.reflectTypeString(t.Type, true))
 }
 
+// InnerViewTypeString returns the qualified string representation of the view
+// (schema) type of t, dereferenced: the type the view is declared as, without
+// the pointer a view is referenced through.
+func (p *TypePrinter) InnerViewTypeString(t *ssztypes.TypeDescriptor) string {
+	if t.CodegenInfo != nil {
+		if codegenInfo, ok := (*t.CodegenInfo).(*CodegenInfo); ok && codegenInfo.SchemaType != nil {
+			schemaType := codegenInfo.SchemaType
+			if ptr, ok := schemaType.(*types.Pointer); ok {
+				schemaType = ptr.Elem()
+			}
+			return p.packageQualify(schemaType, true)
+		}
+	}
+	if t.SchemaType != nil {
+		if t.SchemaType.Kind() == reflect.Pointer {
+			return p.reflectTypeString(t.SchemaType.Elem(), true)
+		}
+		return p.reflectTypeString(t.SchemaType, true)
+	}
+	return p.InnerTypeString(t)
+}
+
 // InnerTypeString returns the qualified string representation of the inner (dereferenced) type.
 //
 // This method is similar to TypeString but automatically dereferences pointer types

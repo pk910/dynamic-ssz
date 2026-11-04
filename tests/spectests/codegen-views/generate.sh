@@ -33,7 +33,7 @@ done
 
 # Build the types argument with view specifications
 type_args=()
-for base in "${!base_types[@]}"; do
+for base in $(printf '%s\n' "${!base_types[@]}" | sort); do
     views="${base_types[${base}]}"
     type_args+=("${base}:gen_ssz.go:viewonly:views=${views}")
 done

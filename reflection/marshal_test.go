@@ -1002,6 +1002,47 @@ func TestSizeSSZListDynamicElements(t *testing.T) {
 	}
 }
 
+func TestSizeSSZListOfByteLists(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type byteLists struct {
+		Data [][]byte `ssz-max:"10,4"`
+	}
+
+	input := byteLists{[][]byte{{1, 2}, {}, {3, 4, 5, 6}}}
+	size, err := dynssz.SizeSSZ(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Container offset (4) + 3 item offsets (12) + 2 + 0 + 4 bytes
+	if size != 22 {
+		t.Errorf("expected size 22, got %d", size)
+	}
+
+	// The streamed form sizes the items for its offsets and must agree with
+	// the buffered form.
+	bufResult, err := dynssz.MarshalSSZ(input)
+	if err != nil {
+		t.Fatalf("MarshalSSZ error: %v", err)
+	}
+	memWriter := bytes.NewBuffer(nil)
+	if err := dynssz.MarshalSSZWriter(input, memWriter); err != nil {
+		t.Fatalf("MarshalSSZWriter error: %v", err)
+	}
+	if len(bufResult) != size || !bytes.Equal(bufResult, memWriter.Bytes()) {
+		t.Errorf("encoding mismatch: size %d, buffer %x, writer %x", size, bufResult, memWriter.Bytes())
+	}
+
+	// An item past its limit is refused with the item's path, as by the walk.
+	tooLong := byteLists{[][]byte{{1}, {1, 2, 3, 4, 5}}}
+	if _, err := dynssz.SizeSSZ(tooLong); err == nil || !strings.Contains(err.Error(), "Data[1]") {
+		t.Errorf("expected a list length error at Data[1], got %v", err)
+	}
+	if err := dynssz.MarshalSSZWriter(tooLong, bytes.NewBuffer(nil)); err == nil {
+		t.Error("expected MarshalSSZWriter to refuse an item past its limit")
+	}
+}
+
 func TestSizeSSZListStaticElements(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
@@ -1053,7 +1094,7 @@ func TestSizeSSZFastSszFallback(t *testing.T) {
 	dynssz.GetTypeCache().RemoveAllTypes()
 
 	// Set compat flag for a type that doesn't actually implement FastSSZ
-	dynssz.GetTypeCache().CompatFlags["struct { Field0 uint64 }"] = ssztypes.SszCompatFlagFastSSZMarshaler
+	dynssz.GetTypeCache().CompatFlags["struct { Field0 uint64 }"] = ssztypes.SszCompatFlagFastsszSurface
 
 	// Test with type that has CompatFlag but doesn't implement the interface
 	input := struct {
@@ -2099,5 +2140,85 @@ func TestMarshalDirectValidationErrors(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected big.Int limit error")
 		}
+	})
+}
+
+// TestOversizedArrayOfDynamicElements serializes a Go array that is longer
+// than the declared vector length and holds variable-size elements. Only the
+// declared length is encoded, sized and hashed, on the buffer and the stream
+// path alike, and the encoding decodes back.
+func TestOversizedArrayOfDynamicElements(t *testing.T) {
+	type elem struct {
+		L []uint64 `ssz-max:"4"`
+	}
+	type pointers struct {
+		F [8]*elem `ssz-size:"4"`
+	}
+	type values struct {
+		F [8]elem `ssz-size:"4"`
+	}
+
+	ds := NewDynSsz(nil)
+
+	check := func(t *testing.T, value any, fresh any) {
+		t.Helper()
+		data, err := ds.MarshalSSZ(value)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		// container offset + 4 element offsets + 4 elements of (offset + uint64)
+		if want := 4 + 4*4 + 4*12; len(data) != want {
+			t.Fatalf("encoded %d bytes, want %d", len(data), want)
+		}
+		size, err := ds.SizeSSZ(value)
+		if err != nil {
+			t.Fatalf("size: %v", err)
+		}
+		if size != len(data) {
+			t.Fatalf("SizeSSZ = %d, len = %d", size, len(data))
+		}
+		var streamed bytes.Buffer
+		if err = ds.MarshalSSZWriter(value, &streamed); err != nil {
+			t.Fatalf("marshal writer: %v", err)
+		}
+		if !bytes.Equal(streamed.Bytes(), data) {
+			t.Fatalf("writer bytes differ: %x != %x", streamed.Bytes(), data)
+		}
+		if err = ds.UnmarshalSSZ(fresh, data); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		again, err := ds.MarshalSSZ(fresh)
+		if err != nil {
+			t.Fatalf("re-marshal: %v", err)
+		}
+		if !bytes.Equal(again, data) {
+			t.Fatalf("round trip differs: %x != %x", again, data)
+		}
+		root, err := ds.HashTreeRoot(value)
+		if err != nil {
+			t.Fatalf("hash: %v", err)
+		}
+		tree, err := ds.GetTree(value)
+		if err != nil {
+			t.Fatalf("tree: %v", err)
+		}
+		if treeRoot := tree.Hash(); !bytes.Equal(treeRoot, root[:]) {
+			t.Fatalf("tree root %x != hash %x", treeRoot, root)
+		}
+	}
+
+	t.Run("pointer elements", func(t *testing.T) {
+		var v pointers
+		for i := range v.F {
+			v.F[i] = &elem{L: []uint64{uint64(i)}}
+		}
+		check(t, &v, &pointers{})
+	})
+	t.Run("value elements", func(t *testing.T) {
+		var v values
+		for i := range v.F {
+			v.F[i] = elem{L: []uint64{uint64(i)}}
+		}
+		check(t, &v, &values{})
 	})
 }

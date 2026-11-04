@@ -21,7 +21,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
-        go-version: '1.25'
+        go-version: '1.25.11'
 
     - name: Extract version
       id: version
@@ -60,6 +60,7 @@ jobs:
         GOOS=darwin GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o ../dynssz-gen-darwin-arm64 .
 
     - name: Generate artifact attestations
+      id: attest
       uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v2
       with:
         subject-path: |
@@ -76,12 +77,19 @@ jobs:
         version="${{ steps.version.outputs.version }}"
         tag="${{ steps.version.outputs.tag }}"
 
+        # The attestation bundle is one Sigstore bundle covering all five binaries.
+        # Attaching it to the release (not just the attestation store) is what lets
+        # `gh attestation verify --bundle` work offline and what Scorecard's
+        # Signed-Releases check inspects (asset name must end in .sigstore.json).
+        cp "${{ steps.attest.outputs.bundle-path }}" "dynssz-gen-${version}.sigstore.json"
+
         gh release upload "$tag" \
           "dynssz-gen-linux-amd64#dynssz-gen-${version}-linux-amd64" \
           "dynssz-gen-linux-arm64#dynssz-gen-${version}-linux-arm64" \
           "dynssz-gen-windows-amd64.exe#dynssz-gen-${version}-windows-amd64.exe" \
           "dynssz-gen-darwin-amd64#dynssz-gen-${version}-darwin-amd64" \
-          "dynssz-gen-darwin-arm64#dynssz-gen-${version}-darwin-arm64"
+          "dynssz-gen-darwin-arm64#dynssz-gen-${version}-darwin-arm64" \
+          "dynssz-gen-${version}.sigstore.json"
 
   changelog:
     runs-on: ubuntu-latest
@@ -123,7 +131,7 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
 
     - name: Login to Docker Hub
       uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -144,7 +152,7 @@ jobs:
         fi
 
     - name: Build and push Docker image
-      uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
       with:
         context: .
         push: true

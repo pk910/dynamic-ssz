@@ -24,6 +24,7 @@ jobs:
           - merkle-proofs
           - fork-views
           - htr-caching
+          - codegen
 
     steps:
     - name: Checkout code
@@ -33,12 +34,6 @@ jobs:
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version: '1.26.x'
-
-    - name: Cache Go modules
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ~/go/pkg/mod
-        key: ${{ runner.os }}-go-1.26.x-examples-${{ hashFiles('**/go.sum') }}
 
     - name: Download main module dependencies
       run: go mod download

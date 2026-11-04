@@ -6,3 +6,10 @@ without-dynamic-expressions: true
 
 types:
   - NoDynExprTypes
+  - NoDynWrapped
+  - NoDynWrappedHolder
+  - NoDynCustomHolder
+  - NoDynStreamCustomHolder
+  - NoDynStreamSpecChild
+  - NoDynStreamSpecParent
+  - NoDynStreamSpecCustomHolder

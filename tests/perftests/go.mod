@@ -6,14 +6,13 @@ tool github.com/pk910/dynamic-ssz/dynssz-gen
 
 require (
 	github.com/OffchainLabs/go-bitfield v0.0.0-20260316135939-ffb3947a62a5
-	github.com/pk910/dynamic-ssz v1.3.2
+	github.com/pk910/dynamic-ssz v1.4.0
 	gopkg.in/yaml.v2 v2.4.0
 )
 
 require (
-	github.com/casbin/govaluate v1.10.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
-	github.com/pk910/hashtree-bindings v0.2.5 // indirect
+	github.com/pk910/hashtree-bindings v0.2.6 // indirect
 	golang.org/x/mod v0.23.0 // indirect
 	golang.org/x/sync v0.11.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect

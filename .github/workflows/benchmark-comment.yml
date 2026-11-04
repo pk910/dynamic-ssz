@@ -129,7 +129,6 @@ jobs:
 
           echo ''
 
-          render_benchstat_section "Performance Benchmarks" results/perf-stat.txt results/pr-perf.txt
 
           echo 'EOF'
         } >> "$GITHUB_OUTPUT"

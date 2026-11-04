@@ -4,13 +4,13 @@ go 1.25.8
 
 require (
 	github.com/goccy/go-yaml v1.18.0
-	github.com/pk910/dynamic-ssz v1.3.2
+	github.com/pk910/dynamic-ssz v1.4.0
 )
 
 require (
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
-	github.com/pk910/hashtree-bindings v0.2.5 // indirect
-	golang.org/x/sys v0.30.0 // indirect
+	github.com/pk910/hashtree-bindings v0.2.6 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 )
 
 replace github.com/pk910/dynamic-ssz => ../../

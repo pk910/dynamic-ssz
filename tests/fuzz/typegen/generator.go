@@ -69,13 +69,58 @@ func NewGenerator(cfg Config) *Generator {
 // Generate creates the configured number of random types.
 // Returns the generated type definitions.
 func (g *Generator) Generate() []TypeDef {
-	for range g.cfg.NumTypes {
-		td := g.generateType(0)
+	for i := range g.cfg.NumTypes {
+		var td TypeDef
+		if i%5 == 0 {
+			// Keep a measurable slice of every corpus within the independent
+			// oracle's domain. Without this, one progressive/union/wrapper field
+			// makes an otherwise useful random container ineligible and a rich
+			// corpus can accidentally produce zero reference checks.
+			td = g.generateOracleType(0)
+		} else {
+			td = g.generateType(0)
+		}
 		g.types = append(g.types, td)
 		g.refTypes = append(g.refTypes, td.Name)
 	}
 
 	return g.types
+}
+
+// generateOracleType produces only ordinary SSZ containers, basic values,
+// vectors and bounded lists: the subset independently modeled by the fuzzer's
+// reference implementation. It remains randomized and may nest containers.
+func (g *Generator) generateOracleType(depth int) TypeDef {
+	name := fmt.Sprintf("FuzzType%d", g.nextID)
+	g.nextID++
+	numFields := 1 + g.rng.Intn(g.cfg.MaxFields)
+	fields := make([]FieldDef, 0, numFields)
+	for i := range numFields {
+		fieldName := fmt.Sprintf("Field%d", i)
+		roll := g.rng.Intn(100)
+		switch {
+		case roll < 25:
+			fields = append(fields, g.generateBasicField(fieldName))
+		case roll < 40:
+			fields = append(fields, g.generateByteArrayField(fieldName))
+		case roll < 55:
+			arrayLen := 1 + g.rng.Intn(g.cfg.MaxArrayLen)
+			basics := []string{"uint8", "uint16", "uint32", "uint64"}
+			fields = append(fields, FieldDef{Name: fieldName, GoType: fmt.Sprintf("[%d]%s", arrayLen, basics[g.rng.Intn(len(basics))])})
+		case roll < 70:
+			fields = append(fields, g.generateListField(fieldName, g.cfg.MaxDepth))
+		case roll < 82:
+			fields = append(fields, g.generateFixedSizeSliceField(fieldName))
+		case roll < 92 || depth >= g.cfg.MaxDepth:
+			fields = append(fields, g.generateByteListField(fieldName))
+		default:
+			helper := g.generateOracleType(depth + 1)
+			g.types = append(g.types, helper)
+			g.refTypes = append(g.refTypes, helper.Name)
+			fields = append(fields, FieldDef{Name: fieldName, GoType: "*" + helper.Name})
+		}
+	}
+	return TypeDef{Name: name, Fields: fields}
 }
 
 // WriteGoSource writes all generated types as valid Go source code.
@@ -245,7 +290,7 @@ func (g *Generator) generateField(depth, index int) FieldDef {
 	}
 
 	// Choose field category with weighted distribution
-	roll := g.rng.Intn(155)
+	roll := g.rng.Intn(163)
 
 	switch {
 	case roll < 25:
@@ -294,6 +339,10 @@ func (g *Generator) generateField(depth, index int) FieldDef {
 		return g.generateUint256Field(name)
 	case roll < 144:
 		return g.generateTimeField(name)
+	case roll < 148:
+		return g.generateClassicUnionField(name)
+	case roll < 152:
+		return g.generateProgressiveCompositeListField(name, depth)
 	default:
 		if g.cfg.Extended {
 			return g.generateExtendedField(name)
@@ -638,6 +687,20 @@ func (g *Generator) generateProgressiveListField(name string) FieldDef {
 	}
 }
 
+// generateProgressiveCompositeListField covers the variable-size composite
+// branch of EIP-7916, including its offset table. Scalar-only progressive lists
+// do not reach that code.
+func (g *Generator) generateProgressiveCompositeListField(name string, depth int) FieldDef {
+	helperType := g.generateType(depth + 1)
+	g.types = append(g.types, helperType)
+	g.refTypes = append(g.refTypes, helperType.Name)
+	return FieldDef{
+		Name:   name,
+		GoType: "[]*" + helperType.Name,
+		Tags:   "`ssz-type:\"progressive-list\"`",
+	}
+}
+
 // generateExplicitListField generates a slice with explicit ssz-type:"list" annotation.
 // Lists use ssz-max (not ssz-size) to specify the maximum length.
 func (g *Generator) generateExplicitListField(name string) FieldDef {
@@ -731,11 +794,17 @@ func (g *Generator) generateProgressiveContainerField(name string, depth int) Fi
 // generateUnionField generates a CompatibleUnion field.
 func (g *Generator) generateUnionField(name string) FieldDef {
 	numVariants := 2 + g.rng.Intn(3) // 2-4 variants
+	explicitSelectors := g.rng.Intn(2) == 0
+	selectors := []int{1, 2, 42, 127}
 
 	variants := make([]string, 0, numVariants)
 	for i := range numVariants {
 		variantType := g.randomBasicOrByteType()
-		variants = append(variants, fmt.Sprintf("\t\tVariant%d %s", i, variantType))
+		tag := ""
+		if explicitSelectors {
+			tag = fmt.Sprintf(" `ssz-index:\"%d\"`", selectors[i+4-numVariants])
+		}
+		variants = append(variants, fmt.Sprintf("\t\tVariant%d %s%s", i, variantType, tag))
 	}
 
 	descriptorStruct := fmt.Sprintf("struct {\n%s\n\t}", strings.Join(variants, "\n"))
@@ -743,6 +812,26 @@ func (g *Generator) generateUnionField(name string) FieldDef {
 	return FieldDef{
 		Name:    name,
 		GoType:  fmt.Sprintf("dynssz.CompatibleUnion[%s]", descriptorStruct),
+		Imports: []string{"github.com/pk910/dynamic-ssz"},
+	}
+}
+
+// generateClassicUnionField exercises the original SSZ Union rules rather
+// than only EIP-8016 CompatibleUnion. Some descriptors include the None option
+// at selector zero.
+func (g *Generator) generateClassicUnionField(name string) FieldDef {
+	numValues := 1 + g.rng.Intn(3)
+	variants := make([]string, 0, numValues+1)
+	if g.rng.Intn(2) == 0 {
+		variants = append(variants, "\t\tNone dynssz.None")
+	}
+	for i := range numValues {
+		variants = append(variants, fmt.Sprintf("\t\tVariant%d %s", i, g.randomBasicOrByteType()))
+	}
+	descriptorStruct := fmt.Sprintf("struct {\n%s\n\t}", strings.Join(variants, "\n"))
+	return FieldDef{
+		Name:    name,
+		GoType:  fmt.Sprintf("dynssz.Union[%s]", descriptorStruct),
 		Imports: []string{"github.com/pk910/dynamic-ssz"},
 	}
 }

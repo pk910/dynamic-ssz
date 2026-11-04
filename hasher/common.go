@@ -9,6 +9,7 @@
 package hasher
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
 	"hash"
@@ -76,8 +77,9 @@ func GetZeroHashLevelBytes(hash []byte) (int, bool) {
 	return level, ok
 }
 
-// GetZeroHash returns the precomputed zero hash at the given merkle tree depth.
-// Depths outside the supported range are clamped to the nearest valid level.
+// GetZeroHash returns a copy of the precomputed zero hash at the given merkle
+// tree depth; the caller owns it. Depths outside the supported range are
+// clamped to the nearest valid level.
 func GetZeroHash(depth int) []byte {
 	initHasher()
 	if depth < 0 {
@@ -85,7 +87,7 @@ func GetZeroHash(depth int) []byte {
 	} else if depth >= len(zeroHashes) {
 		depth = len(zeroHashes) - 1
 	}
-	return zeroHashes[depth][:]
+	return bytes.Clone(zeroHashes[depth][:])
 }
 
 // GetZeroHashes returns the full array of precomputed zero hashes for all 65
@@ -161,17 +163,24 @@ type HasherPool struct {
 	pool   sync.Pool
 }
 
+// CurrentHashFn reports the function the pool hands its hashers, which is the
+// built-in when none was installed. Callers that hash outside a pooled Hasher
+// use it so they compress with the same function a root does.
+func (hh *HasherPool) CurrentHashFn() HashFn {
+	if hh.HashFn != nil {
+		return hh.HashFn
+	}
+	return defaultHashFn()
+}
+
 // Get acquires a Hasher from the pool.
 func (hh *HasherPool) Get() *Hasher {
 	h := hh.pool.Get()
 	if h == nil {
-		if hh.HashFn == nil {
-			return NewHasher()
-		} else {
-			return NewHasherWithHashFn(hh.HashFn)
-		}
+		return NewHasherWithHashFn(hh.CurrentHashFn())
 	}
 	hasher, _ := h.(*Hasher)
+	hasher.hash = hh.CurrentHashFn()
 	return hasher
 }
 
@@ -207,7 +216,7 @@ func ParseBitlist(dst, buf []byte) ([]byte, uint64) {
 		return dst, 0
 	}
 	msb := uint8(msbLen) - 1
-	size := uint64(8*(len(buf)-1) + int(msb))
+	size := uint64(len(buf)-1)*8 + uint64(msb)
 
 	dstlen := len(dst)
 	dst = append(dst, buf...)

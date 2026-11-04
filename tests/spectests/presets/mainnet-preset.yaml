@@ -28,28 +28,28 @@ EFFECTIVE_BALANCE_INCREMENT: 1000000000
 
 # Time parameters
 # ---------------------------------------------------------------
-# 2**0 (= 1) slots, 12 seconds
+# 2**0 (= 1) slots
 MIN_ATTESTATION_INCLUSION_DELAY: 1
-# 2**5 (= 32) slots, 6.4 minutes
+# 2**5 (= 32) slots
 SLOTS_PER_EPOCH: 32
-# 2**0 (= 1) epochs, 6.4 minutes
+# 2**0 (= 1) epochs
 MIN_SEED_LOOKAHEAD: 1
-# 2**2 (= 4) epochs, 25.6 minutes
+# 2**2 (= 4) epochs
 MAX_SEED_LOOKAHEAD: 4
-# 2**6 (= 64) epochs, ~6.8 hours
+# 2**6 (= 64) epochs
 EPOCHS_PER_ETH1_VOTING_PERIOD: 64
-# 2**13 (= 8,192) slots, ~27 hours
+# 2**13 (= 8,192) slots
 SLOTS_PER_HISTORICAL_ROOT: 8192
-# 2**2 (= 4) epochs, 25.6 minutes
+# 2**2 (= 4) epochs
 MIN_EPOCHS_TO_INACTIVITY_PENALTY: 4
 
 # State list lengths
 # ---------------------------------------------------------------
-# 2**16 (= 65,536) epochs, ~0.8 years
+# 2**16 (= 65,536) epochs
 EPOCHS_PER_HISTORICAL_VECTOR: 65536
-# 2**13 (= 8,192) epochs, ~36 days
+# 2**13 (= 8,192) epochs
 EPOCHS_PER_SLASHINGS_VECTOR: 8192
-# 2**24 (= 16,777,216) historical roots, ~52,262 years
+# 2**24 (= 16,777,216) historical roots
 HISTORICAL_ROOTS_LIMIT: 16777216
 # 2**40 (= 1,099,511,627,776) validator spots
 VALIDATOR_REGISTRY_LIMIT: 1099511627776
@@ -143,14 +143,14 @@ MAX_WITHDRAWALS_PER_PAYLOAD: 16
 
 # Withdrawals processing
 # ---------------------------------------------------------------
-# 2**14 (= 16384) validators
+# 2**14 (= 16,384) validators
 MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP: 16384
 
 # Mainnet preset - Deneb
 
 # Execution
 # ---------------------------------------------------------------
-# 2**12 (= 4,096) blob commitments
+# 2**12 (= 4,096) commitments
 MAX_BLOB_COMMITMENTS_PER_BLOCK: 4096
 
 # Networking
@@ -231,3 +231,40 @@ FIELD_ELEMENTS_PER_EXT_BLOB: 8192
 CELLS_PER_EXT_BLOB: 128
 # CELLS_PER_EXT_BLOB (= 128) columns
 NUMBER_OF_COLUMNS: 128
+
+# Mainnet preset - Gloas
+
+# Misc
+# ---------------------------------------------------------------
+# 2**9 (= 512) validators
+PTC_SIZE: 512
+
+# Max operations per block
+# ---------------------------------------------------------------
+# 2**2 (= 4) attestations
+MAX_PAYLOAD_ATTESTATIONS: 4
+
+# Execution
+# ---------------------------------------------------------------
+# 2**6 (= 64) builder deposit requests
+MAX_BUILDER_DEPOSIT_REQUESTS_PER_PAYLOAD: 64
+# 2**4 (= 16) builder exit requests
+MAX_BUILDER_EXIT_REQUESTS_PER_PAYLOAD: 16
+
+# Withdrawals processing
+# ---------------------------------------------------------------
+# 2**14 (= 16,384) builders
+MAX_BUILDERS_PER_WITHDRAWALS_SWEEP: 16384
+
+# Type-specific SSZ bounds
+# ---------------------------------------------------------------
+# 16,829 bytes, ~16 KiB
+MAX_SIGNED_AGGREGATE_AND_PROOF_SIZE: 16829
+# 2,097,616 bytes, ~2 MiB
+MAX_ATTESTER_SLASHING_SIZE: 2097616
+# 8,585,272 bytes, ~8 MiB
+MAX_DATA_COLUMN_SIDECAR_SIZE: 8585272
+# 8,585,741 bytes, ~8 MiB
+MAX_PARTIAL_DATA_COLUMN_SIDECAR_SIZE: 8585741
+# 196,932 bytes, ~192 KiB
+MAX_SIGNED_EXECUTION_PAYLOAD_BID_SIZE: 196932

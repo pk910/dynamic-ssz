@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"os/signal"
 	"runtime"
@@ -19,6 +20,7 @@ import (
 	dynssz "github.com/pk910/dynamic-ssz"
 	"github.com/pk910/dynamic-ssz/tests/fuzz/corpus"
 	"github.com/pk910/dynamic-ssz/tests/fuzz/engine"
+	"github.com/pk910/dynamic-ssz/tests/fuzz/walker"
 )
 
 func main() {
@@ -30,6 +32,8 @@ func main() {
 		duration   = flag.Duration("duration", 0, "Maximum run duration (0 = infinite)")
 		statsEvery = flag.Duration("stats-every", 5*time.Second, "Stats print interval")
 		workers    = flag.Int("workers", runtime.NumCPU(), "Number of parallel workers")
+		oracles    = flag.Bool("oracles", true, "Run independent and invariant checks on valid values")
+		reference  = flag.Bool("reference", true, "Run the independent classic-SSZ reference oracle")
 	)
 	flag.Parse()
 
@@ -74,6 +78,8 @@ func main() {
 	// exercises the generated decoders against open regions.
 	dsUnknown := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithStreamReaderBufferSize(8))
 	dsUnknownExt := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithExtendedTypes(), dynssz.WithStreamReaderBufferSize(8))
+	dsNative := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation(), dynssz.WithNoFastHash())
+	dsNativeExt := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation(), dynssz.WithExtendedTypes(), dynssz.WithNoFastHash())
 
 	// Warm up type caches by doing one marshal per type.
 	// This populates the cache before workers start, avoiding write contention.
@@ -114,6 +120,7 @@ func main() {
 		go func() {
 			defer wg.Done()
 			eng := engine.NewEngine(reporter, stats, ds, dsExt, workerSeed, *maxData, dsUnknown, dsUnknownExt)
+			eng.SetOracles(*oracles, *reference, dsNative, dsNativeExt)
 			typeIdx := i // stagger starting positions
 			for {
 				select {
@@ -127,6 +134,33 @@ func main() {
 			}
 		}()
 	}
+
+	// One worker drives the two hash walkers over generated call sequences,
+	// comparing the tree they build. It is the same grammar the walker package
+	// runs deterministically in its own test, continued here for as long as the
+	// campaign lasts.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		rng := rand.New(rand.NewSource(*seed ^ 0x5eed))
+		for {
+			select {
+			case <-stopCh:
+				return
+			default:
+				prog := walker.Generate(rng)
+				stats.WalkerPrograms.Add(1)
+				if err := walker.Compare(prog); err != nil {
+					stats.WalkerMismatches.Add(1)
+					reporter.Report(&engine.Issue{
+						Type:     engine.IssueHTRMismatch,
+						TypeName: "hash-walker-parity",
+						Details:  fmt.Sprintf("%v\nprogram:\n%s", err, walker.String(prog)),
+					})
+				}
+			}
+		}
+	}()
 
 	log.Println("Fuzzing...")
 

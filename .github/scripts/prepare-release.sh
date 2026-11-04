@@ -64,4 +64,9 @@ rm -f dynssz-gen-release
 rm -f codegen/tests/gen_*.go
 
 echo "Created codegen/compat-tests/codegen_v${new_version}.tar.gz"
+
+# The archive is run by every later release; make sure it passes from a
+# version-named directory and stays within its time budget before it is
+# committed.
+.github/scripts/check-compat-harness.sh "codegen/compat-tests/codegen_v${new_version}.tar.gz" "v${new_version}"
 echo "Release preparation completed for version $new_version"

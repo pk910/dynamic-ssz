@@ -6,12 +6,25 @@ package sszutils
 
 import (
 	"reflect"
+	"slices"
+	"strings"
 	"sync"
 )
 
-// typeAnnotations is a global registry mapping reflect.Type to raw SSZ tag
-// strings. Populated by Annotate[T]() calls, typically at package init time.
-var typeAnnotations sync.Map // map[reflect.Type]string
+// annotationEntry holds the tags registered for one type, newest first, and
+// the single tag string they merge into.
+type annotationEntry struct {
+	tags   []string
+	merged string
+}
+
+// typeAnnotations is a global registry mapping reflect.Type to the SSZ tags
+// registered for it. Populated by Annotate[T]() calls, typically at package
+// init time; annotationMutex serializes the registrations.
+var (
+	typeAnnotations sync.Map // map[reflect.Type]annotationEntry
+	annotationMutex sync.Mutex
+)
 
 // Annotate registers SSZ annotations for a named (non-struct) type T.
 // The tag string uses the same format as Go struct field tags:
@@ -36,16 +49,28 @@ func Annotate[T any](tag string) bool {
 	// annotation plus a generated ssz-static declaration) are merged into a
 	// single space-separated tag rather than overwriting one another. The new tag
 	// is prepended so that for a duplicated key the most recent registration wins
-	// (reflect.StructTag.Lookup returns the first occurrence), preserving the
-	// previous last-write-wins behavior. Calls run at package-init time, so the
-	// load-then-store is not racy in practice.
+	// (reflect.StructTag.Lookup returns the first occurrence). A tag already
+	// registered is not added again, so repeated calls -- a package initialised
+	// twice in one test binary, say -- leave the entry as it is instead of
+	// growing it. The lock makes the read-modify-write one step: registrations
+	// run at package-init time, but nothing stops a caller from registering
+	// later.
+	annotationMutex.Lock()
+	defer annotationMutex.Unlock()
+
+	merged := []string{tag}
 	if existing, ok := typeAnnotations.Load(t); ok {
-		if existingTag, _ := existing.(string); existingTag != "" && existingTag != tag {
-			tag = tag + " " + existingTag
+		if entry, _ := existing.(annotationEntry); len(entry.tags) > 0 {
+			// Nothing is added twice, whether it comes back as the tag that was
+			// registered or as the whole string the registrations merged into.
+			if tag == entry.merged || slices.Contains(entry.tags, tag) {
+				return true
+			}
+			merged = append(merged, entry.tags...)
 		}
 	}
 
-	typeAnnotations.Store(t, tag)
+	typeAnnotations.Store(t, annotationEntry{tags: merged, merged: strings.Join(merged, " ")})
 
 	return true // allows use in var _ = Annotate[T](...)
 }
@@ -65,10 +90,10 @@ func LookupAnnotation(t reflect.Type) (string, bool) {
 		return "", false
 	}
 
-	tag, ok := v.(string)
-	if !ok {
+	entry, ok := v.(annotationEntry)
+	if !ok || entry.merged == "" {
 		return "", false
 	}
 
-	return tag, true
+	return entry.merged, true
 }

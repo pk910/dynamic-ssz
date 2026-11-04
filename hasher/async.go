@@ -168,6 +168,14 @@ type asyncJob struct {
 	dstOff  int
 	outLen  int
 	tokened bool
+	// panicked carries a panic raised by fn inside the runner to the hasher
+	// that drains the job, where it is raised again on the caller's
+	// goroutine as a synchronous reduction would have raised it.
+	panicked any
+	// err carries an error fn returned inside the runner to the hasher that
+	// drains the job, where it becomes that hasher's hash error as a
+	// synchronous reduction's would have.
+	err error
 }
 
 // asyncHandoff passes fully-prepared job slots to the persistent runner
@@ -217,13 +225,30 @@ func asyncJobRunner() {
 		slot := <-asyncHandoff
 		asyncIdle.Add(-1)
 
-		in := slot.in
-		outChunks := slot.outLen / 32
-		for w := len(in) / 32; w > outChunks; w /= 2 {
-			_ = slot.fn(in[:w/2*32], in[:w*32])
-		}
+		reduceAsyncJob(slot)
 		<-slot.st.sem
 		slot.done <- struct{}{}
+	}
+}
+
+// reduceAsyncJob runs one job's reductions. A panic in the hash function is
+// recovered and recorded on the slot so the runner survives and the waiting
+// hasher can raise it on its own goroutine; an error it returns is recorded
+// the same way and ends the job, since every further level would reduce
+// bytes the hash function never produced.
+func reduceAsyncJob(slot *asyncJob) {
+	defer func() {
+		if r := recover(); r != nil {
+			slot.panicked = r
+		}
+	}()
+	in := slot.in
+	outChunks := slot.outLen / 32
+	for w := len(in) / 32; w > outChunks; w /= 2 {
+		if err := slot.fn(in[:w/2*32], in[:w*32]); err != nil {
+			slot.err = err
+			return
+		}
 	}
 }
 
@@ -277,14 +302,21 @@ func (h *Hasher) claimJobSlot(st *asyncShared) *asyncJob {
 }
 
 // finishOldestJob waits for the ring's oldest job, optionally copies its
-// result into the hole it was carved from, and restores the job's free-list
-// token if it holds one: pre-sized buffers are returned for reuse, anything
+// result into the hole it was carved from, takes over a hash error it
+// recorded, and restores the job's free-list token if it holds one: pre-sized buffers are returned for reuse, anything
 // else becomes a nil token. Tokenless buffers (taken when every token was
 // held by other hashers) are simply dropped.
 func (h *Hasher) finishOldestJob(copyResult bool) {
 	slot := &h.jobRing[h.jobHead]
 	<-slot.done
+	panicked := slot.panicked
+	slot.panicked = nil
+	jobErr := slot.err
+	slot.err = nil
 	if copyResult {
+		h.setHashErr(jobErr)
+	}
+	if copyResult && panicked == nil {
 		// The destination is expected to exist: every path that shrinks the
 		// buffer below a hole drains or discards first, so an out-of-range
 		// copy is an invariant violation and panics via the bounds check
@@ -303,6 +335,9 @@ func (h *Hasher) finishOldestJob(copyResult bool) {
 	slot.in = nil
 	h.jobHead = (h.jobHead + 1) % len(h.jobRing)
 	h.jobCount--
+	if panicked != nil && copyResult {
+		panic(panicked)
+	}
 }
 
 // drainOldestJob waits for the ring's oldest job and writes its result into
@@ -321,8 +356,9 @@ func (h *Hasher) drainJobs() {
 	h.jobMaxEnd = 0
 }
 
-// discardJobs awaits outstanding reductions and drops their results. This is
-// for abandoning a computation (Reset): the buffer regions the jobs were
+// discardJobs awaits outstanding reductions and drops their results, and
+// with them the panic of a job whose hash function failed. This is for
+// abandoning a computation (Reset): the buffer regions the jobs were
 // destined for no longer exist.
 func (h *Hasher) discardJobs() {
 	for h.jobCount > 0 {
@@ -336,8 +372,21 @@ func (h *Hasher) discardJobs() {
 // hole end, so scopes that operate entirely above it — every child scope
 // opened after its parents' flushes — skip the wait and keep the background
 // reductions overlapped with the walk.
+//
+// The overlap test is split out to keep this inlinable: it runs at every scope
+// boundary, and a hash that never went async has no jobs to wait for.
 func (h *Hasher) drainJobsFor(indx int) {
-	if h.jobCount > 0 && indx < h.jobMaxEnd {
+	if h.jobCount > 0 {
+		h.drainJobsOverlapping(indx)
+	}
+}
+
+// drainJobsOverlapping drains when the region starting at indx reaches below the
+// highest outstanding hole end. Kept out of line to keep drainJobsFor inlinable.
+//
+//go:noinline
+func (h *Hasher) drainJobsOverlapping(indx int) {
+	if indx < h.jobMaxEnd {
 		h.drainJobs()
 	}
 }
@@ -370,10 +419,10 @@ func (h *Hasher) asyncRootCompatible(layer *treeLayer, pendStart, nodeDepth int)
 // job matches the pre-sized input buffers exactly. A binary layer gets one
 // completed subtree node per job, recorded at depth log2(elements-per-cap) —
 // the layer's leaves are element roots, so the intra-element levels do not
-// count. A progressive layer gets one root per element instead: group
-// boundaries are not aligned to run boundaries, so completed subtrees cannot
-// span them. Reports whether at least one job was emitted; if not (a binary
-// run whose node would not be compatible with what precedes it), the caller
+// count. A progressive layer gets one root per element instead: progressive
+// group boundaries are not aligned to run boundaries, so completed subtrees
+// cannot span them. Reports whether at least one job was emitted; if not (a binary run
+// whose node would not be compatible with what precedes it), the caller
 // reduces synchronously.
 func (h *Hasher) flushPendingAsync(st *asyncShared, layer *treeLayer) bool {
 	elem := layer.pendElemChunks
@@ -385,6 +434,8 @@ func (h *Hasher) flushPendingAsync(st *asyncShared, layer *treeLayer) bool {
 	emitted := false
 	for layer.pendCount >= batchElems {
 		start := layer.pendStart
+		// A progressive layer gets element roots; a subtree node would be
+		// taken for a leaf by its close.
 		if layer.progressive {
 			h.enqueueReduce(st, start, lazyFlushChunks, batchElems, start)
 			h.compactAsyncRun(start, lazyFlushChunks, batchElems)

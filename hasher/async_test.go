@@ -5,9 +5,13 @@ package hasher
 
 import (
 	"bytes"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/rand"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	hashtree "github.com/pk910/hashtree-bindings"
 
@@ -33,14 +37,26 @@ func (s asyncSequence) String() string {
 		s.progressive, s.activeFields, s.rawPrefix, s.elemChunks, s.n, s.cadence, s.limit)
 }
 
-// runAsyncSequence drives hh through the sequence and returns the root. The
-// hasher is gated into async hashing; whether reductions actually run in the
-// background is controlled by the process-wide Enable/Disable toggle.
-func runAsyncSequence(t *testing.T, hh *Hasher, s asyncSequence, seed int64) [32]byte {
+// seqFiller returns a deterministic chunk filler for a sequence seed. The
+// content only has to be reproducible and distinct per chunk; drawing it from
+// math/rand cost a third of the async comparison's run time.
+func seqFiller(seed int64, chunk []byte) func() {
+	counter := uint64(seed) << 40
+	return func() {
+		counter++
+		binary.LittleEndian.PutUint64(chunk, counter)
+		binary.LittleEndian.PutUint64(chunk[24:], ^counter)
+	}
+}
+
+// runAsyncSequence drives hh through the sequence and returns the root. async
+// gates this hasher into background reduction; whether reductions actually run
+// there also depends on the process-wide Enable/Disable toggle.
+func runAsyncSequence(t *testing.T, hh *Hasher, s asyncSequence, seed int64, async bool) [32]byte {
 	t.Helper()
-	hh.SetAsyncHashing(true)
-	rng := rand.New(rand.NewSource(seed))
+	hh.SetAsyncHashing(async)
 	chunk := make([]byte, 32)
+	fill := seqFiller(seed, chunk)
 
 	treeType := sszutils.TreeTypeBinary
 	if s.progressive || s.activeFields {
@@ -49,7 +65,7 @@ func runAsyncSequence(t *testing.T, hh *Hasher, s asyncSequence, seed int64) [32
 	idx := hh.StartTree(treeType)
 
 	for i := 0; i < s.rawPrefix; i++ {
-		rng.Read(chunk)
+		fill()
 		hh.Append(chunk)
 		if s.cadence > 0 && (i+1)%s.cadence == 0 {
 			hh.Collapse()
@@ -57,12 +73,12 @@ func runAsyncSequence(t *testing.T, hh *Hasher, s asyncSequence, seed int64) [32
 	}
 	for i := 0; i < s.n; i++ {
 		if s.elemChunks == 0 {
-			rng.Read(chunk)
+			fill()
 			hh.Append(chunk)
 		} else {
 			ci := hh.StartTree(sszutils.TreeTypeNone)
 			for c := 0; c < s.elemChunks; c++ {
-				rng.Read(chunk)
+				fill()
 				hh.Append(chunk)
 			}
 			hh.Merkleize(ci)
@@ -92,8 +108,10 @@ func runAsyncSequence(t *testing.T, hh *Hasher, s asyncSequence, seed int64) [32
 // TestAsyncMatchesSync verifies that background reduction produces exactly
 // the roots the synchronous path produces, across list kinds, element
 // widths, batch and progressive-group boundaries, and collapse cadences.
-func TestAsyncMatchesSync(t *testing.T) {
-	defer DisableAsyncHashing()
+func TestAsyncMatchesSync(t *testing.T) { //nolint:tparallel // async hashing is a process-wide switch; a test running beside this one could flip it
+	// Cleanup, not defer: the cases below run in parallel, so they start after
+	// this function returns and must still find async hashing enabled.
+	t.Cleanup(DisableAsyncHashing)
 
 	cases := make([]asyncSequence, 0, 170)
 	for _, prog := range []bool{false, true} {
@@ -157,19 +175,26 @@ func TestAsyncMatchesSync(t *testing.T) {
 		asyncSequence{rawPrefix: 33024, elemChunks: 8, n: 4200, cadence: 256, limit: 1 << 40},
 	)
 
+	// Async hashing is a process-wide switch, so it is turned on once and each
+	// hasher decides for itself. That keeps the two runs of a case independent
+	// of every other case, which lets the cases run concurrently: each builds
+	// its own hasher over its own sequence.
+	EnableAsyncHashing(4)
+
 	for i, s := range cases {
 		seed := int64(i + 1)
-
-		DisableAsyncHashing()
-		hh := NewHasherWithHashFn(hashtree.HashByteSlice)
-		want := runAsyncSequence(t, hh, s, seed)
-
-		EnableAsyncHashing(4)
-		got := runAsyncSequence(t, hh, s, seed)
-
-		if got != want {
-			t.Errorf("%s: async root %x != sync root %x", s, got, want)
-		}
+		t.Run(s.String(), func(t *testing.T) {
+			t.Parallel()
+			hh := NewHasherWithHashFn(hashtree.HashByteSlice)
+			want := runAsyncSequence(t, hh, s, seed, false)
+			got := runAsyncSequence(t, hh, s, seed, true)
+			if asyncState.Load() == nil {
+				t.Fatal("async hashing was disabled while the cases ran")
+			}
+			if got != want {
+				t.Errorf("%s: async root %x != sync root %x", s, got, want)
+			}
+		})
 	}
 }
 
@@ -245,13 +270,60 @@ func TestAsyncResetInFlight(t *testing.T) {
 	}
 
 	s := asyncSequence{elemChunks: 8, n: 8192, cadence: 256, limit: 1 << 40}
-	got := runAsyncSequence(t, hh, s, 42)
+	got := runAsyncSequence(t, hh, s, 42, true)
 
 	DisableAsyncHashing()
-	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 42)
+	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 42, false)
 	if got != want {
 		t.Errorf("root after in-flight Reset %x != sync root %x", got, want)
 	}
+}
+
+// A hash function that panics inside a background reduction panics the
+// hasher's caller, as a synchronous reduction would, instead of leaving the
+// caller waiting for a job that never completes.
+func TestAsyncPanicReachesCaller(t *testing.T) {
+	EnableAsyncHashing(2)
+	defer DisableAsyncHashing()
+
+	var calls atomic.Int64
+	hh := NewHasherWithHashFn(func(dst, src []byte) error {
+		// Small reductions run synchronously on the caller; only a job-sized
+		// reduction panics, so the panic originates in a runner.
+		if len(src) >= 1024*32 {
+			calls.Add(1)
+			panic("hash function failed")
+		}
+		return hashtree.HashByteSlice(dst, src)
+	})
+	hh.SetAsyncHashing(true)
+
+	result := make(chan any, 1)
+	go func() {
+		defer func() { result <- recover() }()
+		runAsyncSequence(t, hh, asyncSequence{elemChunks: 8, n: 8192, cadence: 256, limit: 1 << 40}, 42, true)
+		result <- nil
+	}()
+	select {
+	case r := <-result:
+		if r != "hash function failed" {
+			t.Fatalf("caller got %v, want the hash function's panic", r)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the caller is still waiting on a job whose hash function panicked")
+	}
+	if calls.Load() == 0 {
+		t.Fatal("no job-sized reduction ran; the sequence did not exercise the runner")
+	}
+
+	// The jobs still outstanding failed the same way; abandoning them drops
+	// their panics with their results.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Reset raised an abandoned job's panic: %v", r)
+		}
+	}()
+	hh.Reset()
 }
 
 // TestAsyncGate verifies the two-level gating: the process-wide toggle and
@@ -286,10 +358,10 @@ func TestAsyncGate(t *testing.T) {
 	// An ungated hasher hashes synchronously while async is enabled, with
 	// identical roots.
 	s := asyncSequence{elemChunks: 8, n: 5000, cadence: 256, limit: 1 << 40}
-	got := runAsyncSequence(t, hh, s, 9)
+	got := runAsyncSequence(t, hh, s, 9, false)
 
 	DisableAsyncHashing()
-	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 9)
+	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 9, false)
 	if got != want {
 		t.Errorf("root %x != reference root %x", got, want)
 	}
@@ -359,10 +431,11 @@ func TestAsyncEnableDisable(t *testing.T) {
 func TestAsyncCollapseSubCapRemainder(t *testing.T) {
 	defer DisableAsyncHashing()
 
-	registerRun := func(hh *Hasher, rng *rand.Rand, idx, elemChunks, n int) {
+	registerRun := func(hh *Hasher, seed int64, idx, elemChunks, n int) {
 		chunk := make([]byte, 32)
+		fill := seqFiller(seed, chunk)
 		for i := 0; i < n*elemChunks; i++ {
-			rng.Read(chunk)
+			fill()
 			hh.Append(chunk)
 		}
 		layer := &hh.layers[hh.layerCount]
@@ -375,13 +448,13 @@ func TestAsyncCollapseSubCapRemainder(t *testing.T) {
 		const n = 4100 // one cap-sized job of 4096 elements plus a remainder of 4
 		s := asyncSequence{elemChunks: 8, n: n, limit: 1 << 40}
 		DisableAsyncHashing()
-		want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 83)
+		want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 83, false)
 
 		EnableAsyncHashing(4)
 		hh := NewHasherWithHashFn(hashtree.HashByteSlice)
 		hh.SetAsyncHashing(true)
 		idx := hh.StartTree(sszutils.TreeTypeBinary)
-		registerRun(hh, rand.New(rand.NewSource(83)), idx, 8, n)
+		registerRun(hh, 83, idx, 8, n)
 		hh.Collapse()
 		if pend := hh.layers[hh.layerCount].pendCount; pend != 4 {
 			t.Fatalf("remainder not kept pending after Collapse: %d != 4", pend)
@@ -405,13 +478,13 @@ func TestAsyncCollapseSubCapRemainder(t *testing.T) {
 		const n = 8*16384 + 4
 		s := asyncSequence{progressive: true, elemChunks: 2, n: n}
 		DisableAsyncHashing()
-		want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 89)
+		want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 89, false)
 
 		EnableAsyncHashing(4)
 		hh := NewHasherWithHashFn(hashtree.HashByteSlice)
 		hh.SetAsyncHashing(true)
 		idx := hh.StartTree(sszutils.TreeTypeProgressive)
-		registerRun(hh, rand.New(rand.NewSource(89)), idx, 2, n)
+		registerRun(hh, 89, idx, 2, n)
 		hh.Collapse()
 		if pend := hh.layers[hh.layerCount].pendCount; pend != 0 {
 			t.Fatalf("remainder not reduced before finalization: %d != 0", pend)
@@ -435,11 +508,11 @@ func TestAsyncRingFull(t *testing.T) {
 	s := asyncSequence{elemChunks: 8, n: 40960, cadence: 256, limit: 1 << 40}
 
 	DisableAsyncHashing()
-	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 21)
+	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 21, false)
 
 	EnableAsyncHashing(1)
 	hh := NewHasherWithHashFn(hashtree.HashByteSlice)
-	got := runAsyncSequence(t, hh, s, 21)
+	got := runAsyncSequence(t, hh, s, 21, true)
 	if got != want {
 		t.Errorf("ring-full async root %x != sync root %x", got, want)
 	}
@@ -454,15 +527,15 @@ func TestAsyncReconfigure(t *testing.T) {
 	s := asyncSequence{elemChunks: 8, n: 40960, cadence: 256, limit: 1 << 40}
 
 	DisableAsyncHashing()
-	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 33)
+	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 33, false)
 
 	EnableAsyncHashing(8)
 	hh := NewHasherWithHashFn(hashtree.HashByteSlice)
-	if got := runAsyncSequence(t, hh, s, 33); got != want {
+	if got := runAsyncSequence(t, hh, s, 33, true); got != want {
 		t.Errorf("root with 8 workers %x != sync root %x", got, want)
 	}
 	EnableAsyncHashing(1)
-	if got := runAsyncSequence(t, hh, s, 33); got != want {
+	if got := runAsyncSequence(t, hh, s, 33, true); got != want {
 		t.Errorf("root after shrink to 1 worker %x != sync root %x", got, want)
 	}
 }
@@ -537,14 +610,14 @@ func TestAsyncLargeWorkerCount(t *testing.T) {
 	s := asyncSequence{elemChunks: 8, n: 40960, cadence: 256, limit: 1 << 40}
 
 	DisableAsyncHashing()
-	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 61)
+	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 61, false)
 
 	EnableAsyncHashing(9) // ring size 18 > asyncRingInline
 	hh := NewHasherWithHashFn(hashtree.HashByteSlice)
 	if len(hh.jobRingBuf) >= 18 {
 		t.Fatal("test requires ring larger than the inline backing")
 	}
-	got := runAsyncSequence(t, hh, s, 61)
+	got := runAsyncSequence(t, hh, s, 61, true)
 	if got != want {
 		t.Errorf("large-worker async root %x != sync root %x", got, want)
 	}
@@ -621,10 +694,12 @@ func TestAsyncAccessorsDrain(t *testing.T) {
 	rng := rand.New(rand.NewSource(37))
 	chunk := make([]byte, 32)
 
+	// A declared binary scope is what compacts a run to one node; an
+	// undeclared one keeps element roots, as either closer may follow.
 	elems := make([][]byte, 4096)
-	idx := hh.Index()
+	idx := hh.StartTree(sszutils.TreeTypeBinary)
 	for i := range elems {
-		ci := hh.Index()
+		ci := hh.StartTree(sszutils.TreeTypeNone)
 		elems[i] = make([]byte, 0, 8*32)
 		for c := 0; c < 8; c++ {
 			rng.Read(chunk)
@@ -669,9 +744,8 @@ func TestAsyncAccessorsDrain(t *testing.T) {
 }
 
 // TestAsyncLegacyIndexDriven drives scopes the way fastssz-generated code
-// does — Index/Merkleize with no Collapse hints — and verifies the deferral
-// path batches and self-flushes those runs with identical roots in both
-// modes, matching the StartTree-driven root.
+// does — Index/Merkleize with no Collapse hints — and verifies those scopes,
+// which are reduced in place, give the StartTree-driven root in both modes.
 func TestAsyncLegacyIndexDriven(t *testing.T) {
 	defer DisableAsyncHashing()
 
@@ -679,14 +753,14 @@ func TestAsyncLegacyIndexDriven(t *testing.T) {
 	legacy := func() [32]byte {
 		hh := NewHasherWithHashFn(hashtree.HashByteSlice)
 		hh.SetAsyncHashing(true)
-		rng := rand.New(rand.NewSource(29))
 		chunk := make([]byte, 32)
+		fill := seqFiller(29, chunk)
 
 		idx := hh.Index()
 		for i := 0; i < n; i++ {
 			ci := hh.Index()
 			for c := 0; c < 8; c++ {
-				rng.Read(chunk)
+				fill()
 				hh.Append(chunk)
 			}
 			hh.Merkleize(ci)
@@ -702,7 +776,7 @@ func TestAsyncLegacyIndexDriven(t *testing.T) {
 	DisableAsyncHashing()
 	want := legacy()
 	s := asyncSequence{elemChunks: 8, n: n, cadence: 256, limit: 1 << 40}
-	if ref := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 29); ref != want {
+	if ref := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 29, false); ref != want {
 		t.Errorf("legacy sync root %x != StartTree-driven root %x", want, ref)
 	}
 
@@ -721,16 +795,16 @@ func TestAsyncNativeFactory(t *testing.T) {
 	s := asyncSequence{elemChunks: 8, n: 12288, cadence: 256, limit: 1 << 40}
 
 	DisableAsyncHashing()
-	want := runAsyncSequence(t, NewHasher(), s, 13)
+	want := runAsyncSequence(t, NewHasher(), s, 13, false)
 
 	EnableAsyncHashing(4)
-	got := runAsyncSequence(t, NewHasher(), s, 13)
+	got := runAsyncSequence(t, NewHasher(), s, 13, false)
 	if got != want {
 		t.Errorf("native async root %x != sync root %x", got, want)
 	}
 
 	DisableAsyncHashing()
-	if ref := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 13); ref != want {
+	if ref := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 13, false); ref != want {
 		t.Errorf("native root %x != fast root %x", want, ref)
 	}
 }
@@ -787,7 +861,7 @@ func TestAsyncConcurrentHashers(t *testing.T) {
 	s := asyncSequence{progressive: true, elemChunks: 8, n: 21845, cadence: 256}
 
 	DisableAsyncHashing()
-	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 5)
+	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 5, false)
 	EnableAsyncHashing(4)
 
 	done := make(chan [32]byte, 8)
@@ -795,7 +869,7 @@ func TestAsyncConcurrentHashers(t *testing.T) {
 		go func() {
 			hh := FastHasherPool.Get()
 			defer FastHasherPool.Put(hh)
-			done <- runAsyncSequence(t, hh, s, 5)
+			done <- runAsyncSequence(t, hh, s, 5, true)
 		}()
 	}
 	for i := 0; i < 8; i++ {
@@ -984,5 +1058,153 @@ func TestAsyncHashSkipsDrainBelowTail(t *testing.T) {
 	hh.MerkleizeWithMixin(listIdx, uint64(batchElems)+1, 1<<40)
 	if _, err := hh.HashRoot(); err != nil {
 		t.Fatalf("HashRoot: %v", err)
+	}
+}
+
+// A hash function that fails inside a background reduction fails the hasher's
+// caller, as a synchronous reduction would, instead of handing back a root
+// built from bytes the hash function never produced. Reset clears the failure
+// so a pooled hasher does not carry it to its next user.
+func TestAsyncHashErrorReachesCaller(t *testing.T) {
+	EnableAsyncHashing(2)
+	defer DisableAsyncHashing()
+
+	errBackend := errors.New("hash backend unavailable")
+	var failing atomic.Bool
+	var jobs atomic.Int64
+	hh := NewHasherWithHashFn(func(dst, src []byte) error {
+		// Small reductions run synchronously on the caller; only a job-sized
+		// reduction fails, so the error originates in a runner.
+		if failing.Load() && len(src) >= 1024*32 {
+			jobs.Add(1)
+			return errBackend
+		}
+		return hashtree.HashByteSlice(dst, src)
+	})
+	failing.Store(true)
+
+	seq := asyncSequence{elemChunks: 8, n: 8192, cadence: 256, limit: 1 << 40}
+	drive := func() ([32]byte, error) {
+		hh.SetAsyncHashing(true)
+		chunk := make([]byte, 32)
+		fill := seqFiller(42, chunk)
+		idx := hh.StartTree(sszutils.TreeTypeBinary)
+		for i := 0; i < seq.n; i++ {
+			ci := hh.StartTree(sszutils.TreeTypeNone)
+			for c := 0; c < seq.elemChunks; c++ {
+				fill()
+				hh.Append(chunk)
+			}
+			hh.Merkleize(ci)
+			if (i+1)%seq.cadence == 0 {
+				hh.Collapse()
+			}
+		}
+		hh.MerkleizeWithMixin(idx, uint64(seq.n), seq.limit)
+		return hh.HashRoot()
+	}
+
+	if _, err := drive(); !errors.Is(err, errBackend) {
+		t.Fatalf("HashRoot err = %v, want %v", err, errBackend)
+	}
+	if jobs.Load() == 0 {
+		t.Fatal("no job-sized reduction ran; the sequence did not exercise the runner")
+	}
+
+	failing.Store(false)
+	hh.Reset()
+
+	got, err := drive()
+	if err != nil {
+		t.Fatalf("HashRoot after Reset: %v", err)
+	}
+	hh.Reset()
+
+	want := runAsyncSequence(t, NewHasher(), seq, 42, false)
+	if got != want {
+		t.Errorf("root after Reset %x, want %x", got, want)
+	}
+}
+
+// TestAsyncUndeclaredScopeHolesNotDeferred closes Index-opened (fastssz-style)
+// vectors of Index-opened elements: every such scope is reduced in place and
+// hands no run to a background job, so async and sync agree on shapes on both
+// sides of the run cap.
+func TestAsyncUndeclaredScopeHolesNotDeferred(t *testing.T) {
+	defer DisableAsyncHashing()
+
+	walk := func(hh *Hasher, elems, fields int) [32]byte {
+		outer := hh.Index()
+		vec := hh.Index()
+		for i := 0; i < elems; i++ {
+			e := hh.Index()
+			for f := 0; f < fields; f++ {
+				hh.PutUint64(uint64(i*1000 + f))
+			}
+			hh.Merkleize(e)
+		}
+		hh.Merkleize(vec)
+		hh.PutUint64(7)
+		hh.Merkleize(outer)
+		root, err := hh.HashRoot()
+		if err != nil {
+			t.Fatalf("%d x %d: HashRoot: %v", elems, fields, err)
+		}
+		return root
+	}
+
+	for _, shape := range [][2]int{{256, 65}, {256, 128}, {128, 129}, {128, 256}, {256, 64}, {128, 128}, {384, 200}, {512, 128}} {
+		DisableAsyncHashing()
+		want := walk(NewHasher(), shape[0], shape[1])
+
+		EnableAsyncHashing(4)
+		hh := NewHasher()
+		hh.SetAsyncHashing(true)
+		if got := walk(hh, shape[0], shape[1]); got != want {
+			t.Errorf("%d elements of %d chunks: async root %x != sync root %x", shape[0], shape[1], got, want)
+		}
+	}
+}
+
+// TestAsyncCollapseHintOnUndeclaredScope hints a scope opened through Index:
+// the hint is a no-op on a non-incremental scope, so the root is the
+// synchronous hint-free root past the job cap as well as below it.
+func TestAsyncCollapseHintOnUndeclaredScope(t *testing.T) {
+	defer DisableAsyncHashing()
+
+	walk := func(hh *Hasher, n int, hint bool) [32]byte {
+		chunk := make([]byte, 32)
+		idx := hh.Index()
+		for i := 0; i < n; i++ {
+			ci := hh.Index()
+			for c := 0; c < 8; c++ {
+				chunk[0] = byte(i)
+				chunk[1] = byte(i >> 8)
+				chunk[2] = byte(c)
+				hh.Append(chunk)
+			}
+			hh.Merkleize(ci)
+			if hint && (i+1)%256 == 0 {
+				hh.Collapse()
+			}
+		}
+		hh.MerkleizeWithMixin(idx, uint64(n), 1<<40)
+		root, err := hh.HashRoot()
+		if err != nil {
+			t.Fatalf("%d elements: HashRoot: %v", n, err)
+		}
+		return root
+	}
+
+	for _, n := range []int{4096, 33000} {
+		DisableAsyncHashing()
+		want := walk(NewHasher(), n, false)
+
+		EnableAsyncHashing(4)
+		hh := NewHasher()
+		hh.SetAsyncHashing(true)
+		if got := walk(hh, n, true); got != want {
+			t.Errorf("%d elements: async root with hints %x != sync root %x", n, got, want)
+		}
 	}
 }
