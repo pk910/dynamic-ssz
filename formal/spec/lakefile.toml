@@ -1,0 +1,24 @@
+name = "SszSpec"
+defaultTargets = ["SszSpec", "ssz-spec-oracle"]
+
+# The official Lean specification of SSZ (executable spec + machine-checked
+# proofs), at the revision ethereum/ssz-specs pins for its conformance harness.
+[[require]]
+name = "EthLib"
+git = "https://github.com/ethereum/EthLib"
+rev = "6b87b0d4951766864af432455c44344fd12b5cdc"
+
+[leanOptions]
+autoImplicit = false
+
+[[lean_lib]]
+name = "SszSpec"
+
+# Per-type theorem instances; pulls EthLib's proof library (Mathlib-backed).
+[[lean_lib]]
+name = "SszSpecTheorems"
+roots = ["SszSpec.Theorems"]
+
+[[lean_exe]]
+name = "ssz-spec-oracle"
+root = "Main"

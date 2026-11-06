@@ -30,6 +30,8 @@ func main() {
 		packagePath = flag.String("package", ".", "Go package to load")
 		typeNames   = flag.String("types", "", "comma-separated type names to certify")
 		outputFile  = flag.String("output", "Certified.lean", "output Lean file")
+		specOutput  = flag.String("spec-output", "", "also emit EthLib `Desc` declarations to this Lean file")
+		specThms    = flag.String("spec-theorems", "", "also emit per-type EthLib theorem instances to this Lean file (needs -spec-output)")
 		verbose     = flag.Bool("v", false, "verbose output")
 	)
 	flag.Parse()
@@ -43,12 +45,12 @@ func main() {
 		names[i] = strings.TrimSpace(names[i])
 	}
 
-	if err := run(*packagePath, names, *outputFile, *verbose); err != nil {
+	if err := run(*packagePath, names, *outputFile, *specOutput, *specThms, *verbose); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(packagePath string, names []string, outputFile string, verbose bool) error {
+func run(packagePath string, names []string, outputFile, specOutput, specThms string, verbose bool) error {
 	cfg := &packages.Config{
 		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax |
 			packages.NeedName | packages.NeedImports | packages.NeedDeps,
@@ -106,6 +108,7 @@ func run(packagePath string, names []string, outputFile string, verbose bool) er
 	out.WriteString("namespace Ssz\n\n")
 
 	var registry []string
+	var spec []specEntry
 	for _, name := range names {
 		obj := scope.Lookup(name)
 		if obj == nil {
@@ -134,6 +137,14 @@ func run(packagePath string, names []string, outputFile string, verbose bool) er
 		expr, err := leanExpr(desc)
 		if err != nil {
 			return fmt.Errorf("type %s: %w", name, err)
+		}
+
+		if specOutput != "" {
+			sexpr, err := specDescExpr(desc)
+			if err != nil {
+				return fmt.Errorf("type %s (spec): %w", name, err)
+			}
+			spec = append(spec, specEntry{pkgName: pkg.Name, name: name, expr: sexpr})
 		}
 
 		if verbose {
@@ -169,6 +180,12 @@ func run(packagePath string, names []string, outputFile string, verbose bool) er
 		return fmt.Errorf("failed to write %s: %w", outputFile, err)
 	}
 	fmt.Printf("wrote %d certificates to %s\n", len(names), outputFile)
+	if specOutput != "" {
+		if err := writeSpecFiles(spec, specOutput, specThms); err != nil {
+			return err
+		}
+		fmt.Printf("wrote %d EthLib declarations to %s\n", len(spec), specOutput)
+	}
 	return nil
 }
 
