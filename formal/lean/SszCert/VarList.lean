@@ -45,12 +45,16 @@ def serializeList (vs : Values) : List UInt8 :=
   Sch.serialize (schemaOf vs.length) vs
 
 /-- Strict SSZ decoding of a list of variable-size elements with limit
-    `limit`. The element count is derived from the first offset. -/
+    `limit`. The element count is derived from the first offset. The offset
+    is checked against the buffer before the derived schema is built: that
+    check is redundant for the result (`parseFixed` needs `4 * count` bytes
+    anyway) but keeps a hostile offset from materializing a huge schema. -/
 def decodeList (limit : Nat) (bs : List UInt8) : Option Values :=
   if bs = [] then
     some []
   else if 4 ≤ bs.length then
-    if decodeLE (bs.take 4) % 4 = 0 ∧ decodeLE (bs.take 4) / 4 ≤ limit then
+    if decodeLE (bs.take 4) % 4 = 0 ∧ decodeLE (bs.take 4) / 4 ≤ limit
+        ∧ decodeLE (bs.take 4) ≤ bs.length then
       Sch.decode (schemaOf (decodeLE (bs.take 4) / 4)) bs
     else
       none
@@ -148,7 +152,7 @@ theorem decodeList_serializeList (vs : Values) (limit : Nat)
       exact hrep
     unfold decodeList
     rw [if_neg hne, if_pos h4, ho,
-      if_pos ⟨by omega, by omega⟩, hdiv]
+      if_pos ⟨by omega, by omega, by simp only [List.length_cons] at hlen ⊢; omega⟩, hdiv]
     exact hdec
 
 /-! ## Canonicity -/
@@ -174,7 +178,7 @@ theorem serializeList_decodeList {limit : Nat} {bs : List UInt8} {vs : Values}
     by_cases h4 : 4 ≤ bs.length
     · rw [if_pos h4] at h
       by_cases hcond : decodeLE (bs.take 4) % 4 = 0
-          ∧ decodeLE (bs.take 4) / 4 ≤ limit
+          ∧ decodeLE (bs.take 4) / 4 ≤ limit ∧ decodeLE (bs.take 4) ≤ bs.length
       · rw [if_pos hcond] at h
         obtain ⟨hwt, hser⟩ := Sch.serialize_decode h
         have hlen : vs.length = decodeLE (bs.take 4) / 4 :=
@@ -183,7 +187,7 @@ theorem serializeList_decodeList {limit : Nat} {bs : List UInt8} {vs : Values}
         · rw [serializeList, hlen]
           exact hser
         · rw [hlen]
-          exact hcond.2
+          exact hcond.2.1
       · rw [if_neg hcond] at h
         exact absurd h (by simp)
     · rw [if_neg h4] at h
