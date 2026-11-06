@@ -3,19 +3,31 @@
 # if any goes beyond Lean's three standard axioms (propext, Classical.choice,
 # Quot.sound) — in particular `Lean.ofReduceBool` (native_decide) and `sorryAx`.
 # Usage (from the package directory): ../audit-axioms.sh <Module> <Namespace>
-set -euo pipefail
-module="$1"; ns="$2"
-file="$(grep -o '^theorem [A-Za-z0-9_]*' "${module//.//}.lean" | awk '{print $2}')"
+set -u
+module="${1:?module}"; ns="${2:?namespace}"
+source="${module//.//}.lean"
+[ -f "$source" ] || { echo "audit: no such module file: $source (run from the package directory)" >&2; exit 1; }
+mapfile -t names < <(grep -o '^theorem [A-Za-z0-9_]*' "$source" | awk '{print $2}')
+[ "${#names[@]}" -gt 0 ] || { echo "audit: no theorems found in $source" >&2; exit 1; }
 {
   echo "import $module"
-  for name in $file; do echo "#print axioms $ns.$name"; done
+  for name in "${names[@]}"; do echo "#print axioms $ns.$name"; done
 } > AxiomAudit.lean
 trap 'rm -f AxiomAudit.lean' EXIT
-out="$(lake env lean AxiomAudit.lean 2>&1 | grep -v '^trace')"
-echo "$out" | sed 's/.*depends on axioms: //' | sort | uniq -c
-if echo "$out" | grep -v -E "depends on axioms: \[(propext|Classical\.choice|Quot\.sound)(, (propext|Classical\.choice|Quot\.sound))*\]$" | grep -q "."; then
-  echo "non-standard axioms or errors found:" >&2
-  echo "$out" | grep -v -E "depends on axioms: \[(propext|Classical\.choice|Quot\.sound)(, (propext|Classical\.choice|Quot\.sound))*\]$" >&2
+out="$(lake env lean AxiomAudit.lean 2>&1)"; status=$?
+out="$(printf '%s\n' "$out" | grep -v '^trace' || true)"
+if [ "$status" -ne 0 ]; then
+  echo "audit: lean failed (exit $status):" >&2; printf '%s\n' "$out" >&2; exit 1
+fi
+printf '%s\n' "$out" | sed 's/.*depends on axioms: //' | sort | uniq -c
+standard='depends on axioms: \[(propext|Classical\.choice|Quot\.sound)(, (propext|Classical\.choice|Quot\.sound))*\]$'
+audited="$(printf '%s\n' "$out" | grep -c 'depends on axioms' || true)"
+if [ "$audited" -ne "${#names[@]}" ]; then
+  echo "audit: expected ${#names[@]} theorems, lean reported $audited:" >&2; printf '%s\n' "$out" >&2; exit 1
+fi
+if printf '%s\n' "$out" | grep -v -E "$standard" | grep -q '.'; then
+  echo "audit: non-standard axioms found:" >&2
+  printf '%s\n' "$out" | grep -v -E "$standard" >&2
   exit 1
 fi
-echo "axiom audit passed: $(echo "$out" | grep -c 'depends on axioms') theorems on standard axioms only"
+echo "axiom audit passed: $audited theorems on standard axioms only"

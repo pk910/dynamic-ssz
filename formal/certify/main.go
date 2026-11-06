@@ -168,7 +168,7 @@ func run(packagePath string, names []string, outputFile, specOutput, specThms st
 		fmt.Fprintf(&out, "    (C_%s.tree v).root = C_%s.htr v :=\n", name, name)
 		fmt.Fprintf(&out, "  C_%s.htr_tree hwt\n\n", name)
 
-		registry = append(registry, fmt.Sprintf("  (\"%s\", C_%s)", name, name))
+		registry = append(registry, fmt.Sprintf("  (%q, C_%s)", name, name))
 	}
 
 	out.WriteString("/-- Name-indexed certificate registry (for the oracle CLI). -/\n")
@@ -176,7 +176,7 @@ func run(packagePath string, names []string, outputFile, specOutput, specThms st
 	out.WriteString(strings.Join(registry, ",\n"))
 	out.WriteString("]\n\nend Ssz\n")
 
-	if err := os.WriteFile(outputFile, []byte(out.String()), 0o644); err != nil {
+	if err := os.WriteFile(outputFile, []byte(out.String()), 0o600); err != nil {
 		return fmt.Errorf("failed to write %s: %w", outputFile, err)
 	}
 	fmt.Printf("wrote %d certificates to %s\n", len(names), outputFile)
@@ -350,6 +350,10 @@ func leanExpr(desc *ssztypes.TypeDescriptor) (string, error) {
 			variants = append(variants, fmt.Sprintf("(%d, %s)", sel, e))
 		}
 		return "(unionCodec [" + strings.Join(variants, ", ") + "])", nil
+	default:
+		// Extended and legacy kinds (classic unions, optionals, signed ints,
+		// floats, big ints, custom types, wrappers) have no specification
+		// to certify against; see formal/README.md "Gaps".
 	}
 
 	return "", fmt.Errorf("unsupported SSZ type %v (certificates cover the spec-defined SSZ surface)", desc.SszType)
@@ -363,8 +367,9 @@ func isBasic(d *ssztypes.TypeDescriptor) bool {
 		ssztypes.SszUint32Type, ssztypes.SszUint64Type,
 		ssztypes.SszUint128Type, ssztypes.SszUint256Type:
 		return true
+	default:
+		return false
 	}
-	return false
 }
 
 // isFixedSize reports whether a descriptor denotes a fixed-size SSZ type
