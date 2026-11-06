@@ -1,6 +1,6 @@
 name = "ssz-cert"
 version = "0.1.0"
-defaultTargets = ["SszCert"]
+defaultTargets = ["SszCert", "ssz-oracle"]
 
 [[lean_lib]]
 name = "SszCert"
