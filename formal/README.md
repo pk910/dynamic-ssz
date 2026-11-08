@@ -36,6 +36,7 @@ formal/
     SszCert/Eth.lean       generated: the Ethereum types, per preset (204)
     SszCert/Hasher/Model.lean  executable model of hasher.go/async.go
     SszCert/Hasher/Spec.lean   merkleization generic in the hash + laws
+    SszCert/Hasher/*.lean      the hasher proofs, ending in Tree.lean (run_stree)
     Main.lean              ssz-oracle (verdicts, canonical re-encoding, roots)
     HasherModel.lean       hasher-model (replays hasher calls, prints state)
   spec/                    anchoring on ethereum/EthLib (Mathlib-backed proofs)
@@ -86,25 +87,39 @@ of `hasher.go`/`async.go` that the Go hasher is held to call by call):
 * `Spec.lean`: the bounded Merkle root and its laws (pairing, zero
   expansion, zero padding, chunk levels, exact reductions, `getDepth`,
   `merkleizeImpl` = bounded root at the depth of its limit).
-* `run_tree` (`Nested.lean`): for every tree of calls the engines make for
-  a value — binary and non-incremental (`TreeTypeNone`) scopes nested to
-  any depth; leaves; `Collapse` hints anywhere, each synchronous or
-  asynchronous; children closed with `Merkleize` (parked in an incremental
-  parent's deferred run exactly when Go defers them) or
-  `MerkleizeWithMixin` — `HashRoot` returns the root the SSZ
-  specification assigns, and none of the model's protocol checks fires: no
-  hole is read or moved before its drain, no scratch write lands on a live
-  chunk, no impossible state is reached. This covers batch collapse,
-  `precollapseCapRun` (background cap jobs, ring-full drains), deferral
-  (`pendStart/pendCount`), `flushPending` synchronous and asynchronous
-  (`flushPendingAsync` jobs per cap-wide block), `collapseAllDepths`, the
-  drains before every close, and padding to the subtree width
-  (`deferrableElemChunks`, including its bit trick). The proof holds for any
-  hash function and any thresholds with `ParamsOK` (both Go's production
-  constants and the `dynssz_smallhash` ones are shown to satisfy it).
-* Not yet proved (held to Go by the trace link only): progressive scopes
-  (`TreeTypeProgressive`, `MerkleizeProgressive*`), `Index`/legacy scopes,
-  and misuse paths (shape mismatch errors).
+* `run_stree` (`Tree.lean`): for every tree of calls the engines make for a
+  value — binary, non-incremental (`TreeTypeNone`), `Index` and progressive
+  (EIP-7916) scopes nested to any depth; leaves; `Collapse` hints anywhere,
+  each synchronous or asynchronous; children closed with `Merkleize`
+  (parked in an incremental or progressive parent's deferred run exactly
+  when Go defers them), `MerkleizeWithMixin`, `MerkleizeProgressive`,
+  `MerkleizeProgressiveWithMixin` or `MerkleizeProgressiveWithActiveFields`
+  — `HashRoot` returns the root the SSZ specification assigns (bounded,
+  mixed-in, or progressive merkleization: `progRoot` in `Spec.lean`), and
+  none of the model's protocol checks fires: no hole is read or moved before
+  its drain, no scratch write lands on a live chunk, no impossible state is
+  reached. Covered: batch collapse, `precollapseCapRun` (background cap
+  jobs, ring-full drains), deferral (`pendStart/pendCount`, padding to the
+  subtree width including its bit trick), `flushPending` synchronous and
+  asynchronous (binary and progressive rounds), `collapseAllDepths`, the
+  progressive rounds (Go's depth-greedy group count, background group
+  jobs, compaction, the pre-collapse at high levels), the drains before
+  every close, and `collapseProgressiveLayer`. Generic in the hash, for any
+  thresholds with `ParamsOK` (Go's production constants and the
+  `dynssz_smallhash` ones are shown to satisfy it).
+* Structure: `Binary`/`Async`/`Close`/`Walk` (one binary scope), `Defer`/
+  `Flush`/`Scope`/`Nested` (deferred runs, nesting), `Sim` (a progressive
+  scope's roots moved into a passive scope below, so the binary lemmas
+  apply to its region), `Prog`/`ProgOps` (progressive scopes), `Tree` (the
+  grammar with every scope kind).
+* Model restatements: to make the model provable, several functions were
+  restated as top-level definitions (`flushPending`, the progressive
+  collapse and close, the cap rounds, the batch rounds); each restatement
+  was re-validated against the Go hasher with the trace test. One changed
+  behaviour: a progressive round now re-reads the scope after its group
+  job's enqueue, as Go (which updates its buffer in place) does.
+* Not covered: misuse (a close that does not fit the scope, chunks beyond a
+  mix-in's limit), which Go reports as an error.
 
 ## What is linked
 
@@ -155,8 +170,8 @@ copy of the tree and requires the links to kill it.
 ## Results (2026-11-08, dynamic-ssz v1.4.0 + this branch)
 
 * Proofs: 213 in-house per-type theorems (harness) + 612 (Ethereum), 441 +
-  1428 EthLib instances, 598 cross-check theorems, 26 hasher-spec
-  theorems; all on standard axioms.
+  1428 EthLib instances, 598 cross-check theorems, 459 hasher theorems
+  (17 modules, ending in `run_stree`); all on standard axioms.
 * Harness link: 70 types × every path, both models — zero divergences.
 * Hasher trace: 3 seeds × 3000 walks (2.3 M calls) with small thresholds and
   30 walks (268 k calls) at production thresholds — zero divergences.
@@ -190,7 +205,9 @@ copy of the tree and requires the links to kill it.
 
 The descriptor → term translation in `certify/certlib` (cross-checked: both
 descriptor builders, and the Ethereum layouts against EthLib); the link's
-coverage (measured by mutation testing); SHA-256 and the SIMD backend
+coverage (measured by mutation testing); the hasher model's fidelity to
+`hasher.go`/`async.go` (held by the call-by-call trace link, which also
+re-validated every restatement made for the proofs); SHA-256 and the SIMD backend
 (exercised by every root comparison, never verified); Lean's kernel and
 compiler; the Go toolchain.
 

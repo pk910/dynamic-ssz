@@ -24,8 +24,9 @@ every public API path (buffers, streams, sizes, sync and async hashing,
 both hash backends, trees and proofs). The Ethereum consensus types are
 certified per preset and their layouts are proved equal to EthLib's own
 consensus containers. The incremental/async hasher has an executable Lean
-model that the Go hasher is compared with state for state after every
-call, and the strength of all links is measured by mutation testing.
+model, proved to compute the specified root for every call sequence the
+engines make, and the Go hasher is compared with that model state for state
+after every call. The strength of all links is measured by mutation testing.
 
 ## What is proved, per certified type
 
@@ -43,6 +44,35 @@ call, and the strength of all links is measured by mutation testing.
 
 All theorems are `sorry`-free and rest on Lean's three standard axioms;
 `formal/audit-axioms.sh` enforces that in CI.
+
+## What is proved about the hasher
+
+`hasher.go`/`async.go` keep a reduction machine: chunks are batch-collapsed
+by depth, small child scopes are parked in their parent's deferred run and
+flushed later, cap-wide blocks and large progressive groups are reduced by
+background workers whose results land in reserved holes of the buffer, and
+drains synchronize. Its Lean model (`formal/lean/SszCert/Hasher/Model.lean`)
+is held to the Go hasher call by call. On that model,
+`run_stree` (`Hasher/Tree.lean`) proves:
+
+> For every tree of calls the engines make — binary, non-incremental,
+> `Index` and progressive (EIP-7916) scopes nested to any depth; leaves;
+> `Collapse` hints anywhere, each synchronous or asynchronous; children
+> closed with `Merkleize` (deferred into an incremental or progressive
+> parent exactly when Go defers them), `MerkleizeWithMixin`,
+> `MerkleizeProgressive`, `MerkleizeProgressiveWithMixin` or
+> `MerkleizeProgressiveWithActiveFields` — `HashRoot` returns the root the
+> SSZ specification assigns, and none of the model's protocol checks fires:
+> no hole is read or moved before its drain, no scratch write lands on a
+> live chunk, no impossible state is reached.
+
+The theorem is generic in the hash function and holds for any thresholds
+satisfying `ParamsOK` (Go's production constants and the `dynssz_smallhash`
+test constants are both shown to). It covers batch collapse,
+`precollapseCapRun` and its ring-full drains, deferral and its padding
+(including the `c&(c-1)` width trick), `flushPending` in both modes,
+`collapseAllDepths`, the progressive rounds with Go's depth-greedy group
+count, background group jobs, compaction, and `collapseProgressiveLayer`.
 
 ## What the link checks
 
@@ -89,9 +119,15 @@ certified from the runtime descriptors under each preset; see
   floats, `big.Int`) are certified against the in-house model only: EthLib
   defines no such types. `custom` types and recursive types are not
   certifiable (the latter could be, as their depth-bounded unrolling).
-* The hasher's model is checked against the Go hasher call by call; the
-  merkleization laws it relies on are proved, the theorem that the model
-  as a whole always computes the specified root is in progress.
+* The hasher proof is about its model. That the model matches
+  `hasher.go`/`async.go` rests on the call-by-call trace comparison
+  (millions of calls at small thresholds, a production-threshold pass):
+  linked, not proved. The model abstracts what does not affect the
+  reduction: partial packed chunks (a chunk enters once complete), worker
+  scheduling (a job's result is fixed at enqueue; drains are the
+  synchronization points), and the multi-hasher pool. Misuse (a close that
+  does not fit the scope, or more chunks than a mix-in's limit) is outside
+  the theorem; Go reports it as an error.
 * `treeproof` proof compression is outside the oracles' surface.
 
 See [`formal/README.md`](../formal/README.md) for the full account, including
