@@ -1160,4 +1160,96 @@ theorem progInit_ok (cx : Ctx C) (d : St C) (l : Layer C) (ls : List (Layer C)) 
   intro n hn; apply hr; simp only [Layer.cells, List.mem_append, nodeCells, List.mem_map]
   exact Or.inl (Or.inl (Or.inr ⟨n, hn, rfl⟩))
 
+/-! ## More shape facts -/
+
+theorem collapseBinaryCore_top (cx : Ctx C) (t : St C) :
+    TopShape (fun l => l.collapsed = true) (t.collapseBinaryCore cx) := by
+  intro l2 ls2 h2
+  unfold St.collapseBinaryCore at h2
+  cases ht : t.stack with
+  | nil => rw [ht] at h2; simp only at h2; rw [ht] at h2; cases h2
+  | cons l ls =>
+    rw [ht] at h2
+    simp only at h2
+    obtain ⟨_, _, u3, _⟩ := uncollapsedAsLeaves_sim t l
+    obtain ⟨_, _, b3⟩ := batchLoop_sim cx 64 0 (t.uncollapsedAsLeaves l).1 (t.uncollapsedAsLeaves l).2.nodes
+    rw [St.setTop_stack _ l _ ls (by rw [b3, u3, ht])] at h2
+    obtain ⟨rfl, rfl⟩ := List.cons.inj h2
+    rfl
+
+/-- Batch collapse keeps a collapsed scope collapsed. -/
+theorem collapseBinary_top (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C)) (h : s.stack = l :: ls)
+    (hc : l.collapsed = true) : TopShape (fun l => l.collapsed = true) (s.collapseBinary cx) := by
+  unfold St.collapseBinary
+  rw [h]
+  simp only
+  split
+  · intro l2 ls2 h2; rw [St.fail_stack, h] at h2; obtain ⟨rfl, rfl⟩ := List.cons.inj h2; exact hc
+  split
+  · intro l2 ls2 h2; rw [h] at h2; obtain ⟨rfl, rfl⟩ := List.cons.inj h2; exact hc
+  · exact collapseBinaryCore_top cx _
+
+theorem setTop_self (s : St C) (l : Layer C) (ls : List (Layer C)) (h : s.stack = l :: ls) : s.setTop l = s := by
+  apply St.ext_fields <;> simp [St.setTop, h]
+
+/-- A deepest-first list of cap-depth nodes and leaves leads with the cap nodes. -/
+theorem caps_then_leaves (P : Params) (l : Layer C) (hni : NonInc l.nodes) (hcd : 0 < P.capDepth)
+    (hd : ∀ n ∈ l.nodes, n.depth = 0 ∨ n.depth = P.capDepth) :
+    ((l.nodes.take (capCount P l)).all (·.depth == P.capDepth) &&
+      (l.nodes.drop (capCount P l)).all (·.depth == 0)) = true := by
+  have hsplit := nonInc_split3 P.capDepth l.nodes hni
+  have hA : l.nodes.filter (·.depth > P.capDepth) = [] := List.filter_eq_nil_iff.mpr (fun n hn => by
+    rcases hd n hn with h | h <;> simp [h])
+  rw [hA, List.nil_append] at hsplit
+  have hcc : capCount P l = (l.nodes.filter (·.depth == P.capDepth)).length := rfl
+  have hM : ∀ n ∈ l.nodes.filter (·.depth == P.capDepth), n.depth = P.capDepth := fun n hn => by
+    simpa using (List.mem_filter.mp hn).2
+  have hB : ∀ n ∈ l.nodes.filter (·.depth < P.capDepth), n.depth = 0 := fun n hn => by
+    have h1 := (List.mem_filter.mp hn).2; have h2 := hd n (List.mem_filter.mp hn).1; simp at h1; omega
+  rw [hcc]
+  generalize l.nodes.filter (·.depth == P.capDepth) = M at hsplit hM ⊢
+  generalize l.nodes.filter (·.depth < P.capDepth) = B at hsplit hB
+  rw [hsplit, List.take_left' rfl, List.drop_left' rfl]
+  simp only [Bool.and_eq_true, List.all_eq_true]
+  exact ⟨fun n hn => by simp [hM n hn], fun n hn => by simp [hB n hn]⟩
+
+/-- **A pre-collapse that emits no job changes nothing** on a scope whose
+    counts are fresh and whose region is ready. -/
+theorem precollapse_false (cx : Ctx C) (p : St C) (l : Layer C) (ls : List (Layer C)) (h : p.stack = l :: ls)
+    (hcd : 0 < cx.P.capDepth) (hni : NonInc l.nodes) (hcnt : l.counted = l.nodes.length)
+    (hd0 : l.collapsed = false → ∀ n ∈ l.nodes, n.depth = 0) (hf : (p.precollapse cx).2 = false) :
+    (p.precollapse cx).1 = p := by
+  have hlay : (p.uncollapsedAsLeaves l).2 = l ∧ (p.uncollapsedAsLeaves l).1 = p := by
+    unfold St.uncollapsedAsLeaves
+    cases hc : l.collapsed
+    · have hd := hd0 hc
+      simp only [Bool.false_eq_true, if_false]
+      rw [if_neg (by intro hany; obtain ⟨n, hn, hdn⟩ := List.any_eq_true.mp hany; simp [hd n hn] at hdn),
+        map_depth_zero l.nodes hd, ← hcnt]
+      refine ⟨?_, rfl⟩
+      cases l; simp_all
+    · simp only [if_true]; rw [← hcnt]
+      refine ⟨?_, trivial⟩
+      cases l; simp_all
+  have hn : p.normTop = p := by
+    unfold St.normTop; rw [h]; simp only; rw [hlay.1, hlay.2, setTop_self p l ls h]
+  unfold St.precollapse at hf ⊢
+  rw [hn, h] at hf ⊢
+  simp only at hf ⊢
+  split
+  · rfl
+  · rename_i hany
+    rw [if_neg hany] at hf
+    simp only [decide_eq_false_iff_not, Nat.not_le] at hf
+    have hd : ∀ n ∈ l.nodes, n.depth = 0 ∨ n.depth = cx.P.capDepth := by
+      intro n hn'
+      by_cases h0 : n.depth = 0
+      · exact Or.inl h0
+      by_cases h1 : n.depth = cx.P.capDepth
+      · exact Or.inr h1
+      exfalso; apply hany; rw [List.any_eq_true]; exact ⟨n, hn', by simp [h0, h1]⟩
+    rw [caps_then_leaves cx.P l hni hcd hd]
+    simp only [St.failUnless, if_true, precollapseLoop, h]
+    rw [if_pos hf]
+
 end Ssz.Hasher
