@@ -603,74 +603,98 @@ def St.flush (cx : Ctx C) (s : St C) (allowAsync async : Bool) : St C :=
       if emitted then s' else s.flushSync cx
     else s.flushSync cx
 
+/-- Take nodes of depth `d` while they fit `base` (`avail` of them at most). -/
+def takeFit (base d : Nat) : Nat → Nat → Nat → Nat × Nat
+  | 0, c, k => (c, k)
+  | f + 1, c, k => if c + 2 ^ d ≤ base then takeFit base d f (c + 2 ^ d) (k + 1) else (c, k)
+
+/-- Go's depth-greedy count, deepest depth first. -/
+def byDepth (ns : List (Node C)) (base : Nat) : Nat → Nat → Nat → Nat × Nat
+  | 0, consumed, k => (consumed, k)
+  | fuel + 1, consumed, k =>
+    if (takeFit base fuel (ns.filter (·.depth == fuel)).length consumed k).1 = base
+    then takeFit base fuel (ns.filter (·.depth == fuel)).length consumed k
+    else byDepth ns base fuel (takeFit base fuel (ns.filter (·.depth == fuel)).length consumed k).1
+      (takeFit base fuel (ns.filter (·.depth == fuel)).length consumed k).2
+
 /-- Consume exactly `base` leaves from the front of the node list, by Go's
     depth-greedy count: returns the number of nodes taken. -/
-def consumeCount (ns : List (Node C)) (base : Nat) : Nat :=
-  let md := maxDepthOf ns
-  let rec byDepth : Nat → Nat → Nat → Nat × Nat
-    | 0, consumed, k => (consumed, k)
-    | fuel + 1, consumed, k =>
-      let d := fuel
-      let avail := (ns.filter (·.depth == d)).length
-      let rec take : Nat → Nat → Nat → Nat × Nat
-        | 0, c, k => (c, k)
-        | f + 1, c, k => if c + 2 ^ d ≤ base then take f (c + 2 ^ d) (k + 1) else (c, k)
-      let (c', k') := take avail consumed k
-      if c' = base then (c', k') else byDepth fuel c' k'
-  (byDepth (md + 1) 0 0).2
+def consumeCount (ns : List (Node C)) (base : Nat) : Nat := (byDepth ns base (maxDepthOf ns + 1) 0 0).2
+
+/-- The root of a progressive group: a background job when the group is a
+    plain run of leaves of a size the async path takes, else reduced here. -/
+def St.groupRoot (cx : Ctx C) (async : Bool) (s : St C) (l : Layer C) (k : Nat) : St C × Cell C :=
+  if async ∧ (l.nodes.take k).all (·.depth == 0) ∧ leavesOf (l.nodes.take k) = 4 ^ l.level ∧
+      4 ^ l.level ≥ cx.P.asyncMin ∧ 4 ^ l.level ≤ cx.P.cap then
+    ((s.enqueue cx (nodeCells (l.nodes.take k)) 1 (s.topStart + l.prog.length)).1,
+     ((s.enqueue cx (nodeCells (l.nodes.take k)) 1 (s.topStart + l.prog.length)).2.head?.getD (.ready cx.z0)))
+  else s.collapseAll cx (l.nodes.take k) (4 ^ l.level) (decide (l.nodes.length > k))
+
+/-- The scope after a round: the group's root joins the progressive roots. -/
+def roundLayer (l : Layer C) (k : Nat) (root : Cell C) : Layer C :=
+  { l with prog := l.prog ++ [root], level := l.level + 1, nodes := l.nodes.drop k, counted := l.counted - k }
+
+/-- The rounds of `maybeCollapseProgressive`: every complete group becomes a
+    progressive root. Go updates the scope in place, so a round re-reads it
+    after its enqueue (a ring-full drain may have readied cells). -/
+def progRounds (cx : Ctx C) (async : Bool) : Nat → St C → Layer C → Bool → St C × Layer C × Bool
+  | 0, s, l, f => (s, l, f)
+  | fuel + 1, s, l, f =>
+    if leavesOf (l.nodes.take l.counted) < 4 ^ l.level then (s, l, f) else
+    if consumeCount (l.nodes.take l.counted) (4 ^ l.level) = 0 then (s, l, f) else
+    progRounds cx async fuel
+      ((s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).1.setTop
+        (roundLayer ((s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).1.topLayer l)
+          (consumeCount (l.nodes.take l.counted) (4 ^ l.level))
+          (s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).2))
+      (roundLayer ((s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).1.topLayer l)
+          (consumeCount (l.nodes.take l.counted) (4 ^ l.level))
+          (s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).2)
+      true
+
+/-- Step 2 of a synchronous progressive collapse: pair the nodes depth by
+    depth, deepest first (the odd one kept). -/
+def progCompact (cx : Ctx C) : Nat → St C → List (Node C) → St C × List (Node C)
+  | 0, s, _ => (s, [])
+  | fuel + 1, s, ns =>
+    ((progCompact cx fuel (s.pairNodes cx ((ns.filter (·.depth == fuel)).take
+        (2 * ((ns.filter (·.depth == fuel)).length / 2)))).1 ns).1,
+     (s.pairNodes cx ((ns.filter (·.depth == fuel)).take (2 * ((ns.filter (·.depth == fuel)).length / 2)))).2 ++
+       (ns.filter (·.depth == fuel)).drop (2 * ((ns.filter (·.depth == fuel)).length / 2)) ++
+       (progCompact cx fuel (s.pairNodes cx ((ns.filter (·.depth == fuel)).take
+        (2 * ((ns.filter (·.depth == fuel)).length / 2)))).1 ns).2)
+
+/-- After the rounds. -/
+def progFinish (cx : Ctx C) (async : Bool) (r : St C × Layer C × Bool) : St C :=
+  if !r.2.2 then (if !async then r.1.collapseBinary cx else r.1)
+  else if async then r.1.setTop { r.2.1 with collapsed := true }
+  else
+    ((progCompact cx (maxDepthOf r.2.1.nodes + 1) r.1 r.2.1.nodes).1.setTop
+      { r.2.1 with nodes := (progCompact cx (maxDepthOf r.2.1.nodes + 1) r.1 r.2.1.nodes).2,
+                   counted := (progCompact cx (maxDepthOf r.2.1.nodes + 1) r.1 r.2.1.nodes).2.length,
+                   collapsed := true }).collapseBinary cx
+
+/-- (Re)initialize a progressive scope's counts. -/
+def St.progInit (s : St C) (l : Layer C) : St C :=
+  ((if !l.collapsed ∧ (l.prog ≠ [] ∨ l.level ≠ 0) then s.fail "uncollapsed progressive scope with roots" else s).uncollapsedAsLeaves l).1.setTop
+    ((if !l.collapsed ∧ (l.prog ≠ [] ∨ l.level ≠ 0) then s.fail "uncollapsed progressive scope with roots" else s).uncollapsedAsLeaves l).2
+
+/-- The rounds and their finish, on the (re)initialized scope. -/
+def St.progCore (cx : Ctx C) (async : Bool) (s : St C) : St C :=
+  match s.stack with
+  | [] => s
+  | l :: _ => progFinish cx async (progRounds cx async (l.nodes.length + 1) s l false)
 
 /-- `maybeCollapseProgressive` on the innermost scope. -/
 def St.collapseProgressive (cx : Ctx C) (s : St C) (async : Bool) : St C :=
-  let s := s.drainFor s.topStart
-  match s.stack with
-  | [] => s
+  match (s.drainFor s.topStart).stack with
+  | [] => s.drainFor s.topStart
   | l :: _ =>
-    -- Go resets progressiveCount/Level of an uncollapsed scope: it must have none.
-    let s := if !l.collapsed ∧ (l.prog ≠ [] ∨ l.level ≠ 0) then s.fail "uncollapsed progressive scope with roots" else s
-    let (s, l) := s.uncollapsedAsLeaves l
-    let s := s.setTop l
-    let (s, pre) := if async ∧ l.level ≥ cx.P.precollapseLevel then s.precollapse cx else (s, false)
-    if pre then s else
-    match s.stack with
-    | [] => s
-    | l :: _ =>
-    let rec rounds : Nat → St C → Layer C → Bool → St C × Layer C × Bool
-      | 0, s, l, f => (s, l, f)
-      | fuel + 1, s, l, f =>
-        let base := 4 ^ l.level
-        if leavesOf (l.nodes.take l.counted) < base then (s, l, f) else
-        let k := consumeCount (l.nodes.take l.counted) base
-        if k = 0 then (s, l, f) else
-        let grp := l.nodes.take k
-        let grpStart := s.topStart + l.prog.length
-        let (s, root) :=
-          if async ∧ grp.all (·.depth == 0) ∧ leavesOf grp = base ∧ base ≥ cx.P.asyncMin ∧ base ≤ cx.P.cap then
-            let (s, holes) := s.enqueue cx (nodeCells grp) 1 grpStart
-            (s, holes.head?.getD (.ready cx.z0))
-          else s.collapseAll cx grp base (live := decide (l.nodes.length > k))
-        let l := { l with prog := l.prog ++ [root], level := l.level + 1,
-                          nodes := l.nodes.drop k, counted := l.counted - k }
-        rounds fuel (s.setTop l) l true
-    let (s, l, finalized) := rounds (l.nodes.length + 1) s l false
-    if !finalized then
-      if !async then s.collapseBinary cx else s
-    else if async then
-      s.setTop { l with collapsed := true }
-    else
-      -- Step 2: compact the remainder depth by depth (pairs hashed, odd kept).
-      let md := maxDepthOf l.nodes
-      let rec compact : Nat → St C → List (Node C) → St C × List (Node C)
-        | 0, s, _ => (s, [])
-        | fuel + 1, s, ns =>
-          let d := fuel
-          let grp := ns.filter (·.depth == d)
-          let (s, paired) := s.pairNodes cx (grp.take (2 * (grp.length / 2)))
-          let odd := grp.drop (2 * (grp.length / 2))
-          let (s, rest) := compact fuel s ns
-          (s, paired ++ odd ++ rest)
-      let (s, ns) := compact (md + 1) s l.nodes
-      let s := s.setTop { l with nodes := ns, counted := ns.length, collapsed := true }
-      s.collapseBinary cx
+    if async ∧ l.level ≥ cx.P.precollapseLevel then
+      (if (((s.drainFor s.topStart).progInit l).precollapse cx).2 then
+        (((s.drainFor s.topStart).progInit l).precollapse cx).1
+       else (((s.drainFor s.topStart).progInit l).precollapse cx).1.progCore cx async)
+    else ((s.drainFor s.topStart).progInit l).progCore cx async
 
 /-- `collapseProgressiveLayer`: finalize all groups, the partial remainder,
     and fold the roots right to left. Returns the root cell. -/
