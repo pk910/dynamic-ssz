@@ -1507,4 +1507,111 @@ theorem progBin_ok (cx : Ctx C) (hP : ParamsOK cx.P) (t : St C) (l : Layer C) (l
     obtain ⟨h0, _⟩ := hlf hc0
     exact ⟨by rw [hlv']; exact h0, hb'.leaves hc⟩
 
+/-! ## The finish of a progressive collapse -/
+
+/-- The result shape of a progressive collapse. -/
+def ProgResult (cx : Ctx C) (s s' : St C) (ls : List (Layer C)) (G : List (List C)) (Lb : List C) : Prop :=
+  ∃ l' ls' G' Lb', s'.stack = l' :: ls' ∧ ProgOK cx l' G' Lb' ∧ G.flatten ++ Lb = G'.flatten ++ Lb' ∧
+    l'.pend = [] ∧ TopOK s' ∧ ls'.map Layer.erase = ls.map Layer.erase ∧
+    s'.base.map Cell.erase = s.base.map Cell.erase ∧ s'.hashErr = s.hashErr ∧ s'.below.length = s.below.length ∧
+    HolesSub s.below s'.below
+
+theorem progFinish_ok (cx : Ctx C) (hP : ParamsOK cx.P) (async : Bool) (p : St C) (l : Layer C) (ls : List (Layer C))
+    (G : List (List C)) (Lb : List C) (h : p.stack = l :: ls) (hr : RoundP cx l G Lb)
+    (hlf : l.collapsed = false → l.level = 0 ∧ ∀ n ∈ l.nodes, n.depth = 0) (ht : TopOK p)
+    (hLt : (G.flatten ++ Lb).length < 2 ^ 40) :
+    ProgResult cx p (progFinish cx async (progRounds cx async (l.nodes.length + 1) p l false)) ls G Lb ∧
+    (∃ l' ls' Lb', (progFinish cx async (progRounds cx async (l.nodes.length + 1) p l false)).stack = l' :: ls' ∧
+      (∃ G', ProgOK cx l' G' Lb') ∧ Lb'.length < 4 ^ l'.level) := by
+  have hL : Lb.length < 2 ^ 40 := by simp only [List.length_append] at hLt; omega
+  obtain ⟨G', Lb', ls', hs', hr', hfl, hlt, ht', hle', hba', hh', hbl', hsub', hfalse, _, hco'⟩ :=
+    progRounds_ok cx async (l.nodes.length + 1) p l ls G Lb false h hr ht hL (by omega)
+  generalize hR : progRounds cx async (l.nodes.length + 1) p l false = R at hs' hr' hlt ht' hba' hh' hbl' hsub' hfalse hco'
+  have hLb' : Lb'.length < 2 ^ 40 := by
+    have := congrArg List.length hfl; simp only [List.length_append] at this hLt; omega
+  -- the rounds' scope after Step 1, for the finishes that keep it
+  have hkeep : ∀ (x : Layer C) (hx : x = R.2.1) (hxc : x.collapsed = false → x.level = 0 ∧ ∀ n ∈ x.nodes, n.depth = 0),
+      ProgOK cx x G' Lb' := by
+    intro x hx hxc; subst hx
+    exact ⟨hr'.prog, hr'.inc, hr'.nolegacy, hr'.groups, hr'.level, hr'.cov, hr'.narrow, hr'.shallow, hxc,
+      ⟨fun _ => hr'.tail, by simp [hr'.pend], by simp [hr'.tail], by simp [hr'.pend], fun h => absurd hr'.pend h⟩⟩
+  unfold progFinish
+  cases hf : R.2.2
+  · -- no round: the scope as initialized
+    have hRe := hfalse hf
+    have hl : R.2.1 = l := by rw [hRe]
+    have hst : R.1 = p := by rw [hRe]
+    simp only [Bool.not_false, if_true]
+    cases async
+    · simp only [Bool.not_false, if_true]
+      rw [hst]
+      rw [hl] at hr' hlt
+      obtain ⟨l2, ls2, h2, hp2, hpe2, ht2, hle2, hba2, hh2, hbl2, hsub2⟩ :=
+        progBin_ok cx hP p l ls G' Lb' h hr'.prog hr'.inc hr'.nolegacy hr'.pend hr'.tail hr'.groups hr'.level hr'.cov
+          hr'.ready hr'.shallow hlf ht hlt hLb'
+      have hlv2 : l2.level = l.level := by
+        rw [hp2.level, ← hr'.level]
+      refine ⟨⟨l2, ls2, G', Lb', h2, hp2, hfl, hpe2, ht2, hle2, hba2, hh2, hbl2, hsub2⟩, l2, ls2, Lb', h2, ⟨G', hp2⟩,
+        by rw [hlv2]; exact hlt⟩
+    · simp only [Bool.not_true, Bool.false_eq_true, if_false]
+      have hp2 := hkeep R.2.1 rfl (by rw [hl]; exact hlf)
+      refine ⟨⟨R.2.1, ls', G', Lb', hs', hp2, hfl, hr'.pend, ht', hle', hba', hh', hbl', hsub'⟩, R.2.1, ls', Lb', hs',
+        ⟨G', hp2⟩, hlt⟩
+  · simp only [Bool.not_true, Bool.false_eq_true, if_false]
+    cases async
+    · -- Step 2: compaction, then batch collapse
+      simp only [Bool.false_eq_true, if_false]
+      have hmd := foldl_max_spec R.2.1.nodes 0
+      obtain ⟨c1, c2, c3, c4⟩ := progCompact_ok cx (maxDepthOf R.2.1.nodes + 1) R.1 R.2.1.nodes Lb'
+        (nonInc_of_cov _ _ hr'.cov) (fun n hn => by have := hmd.2 n hn; simp [maxDepthOf]; omega) hr'.cov hr'.ready
+      rw [c1]
+      generalize hns : (progCompact cx (maxDepthOf R.2.1.nodes + 1) R.1 R.2.1.nodes).2 = ns at c2 c3 c4
+      let lc : Layer C := { R.2.1 with nodes := ns, counted := ns.length, collapsed := true }
+      have hlc : lc.cells = R.2.1.prog ++ nodeCells ns := by simp [lc, Layer.cells, hr'.pend, hr'.tail]
+      have hlc0 : R.2.1.cells = R.2.1.prog ++ nodeCells R.2.1.nodes := by simp [Layer.cells, hr'.pend, hr'.tail]
+      have htc : TopOK (R.1.setTop lc) := by
+        refine ⟨?_, by rw [St.setTop_err]; exact ht'.err, fun j hj => by rw [St.setTop_jobs] at hj; exact ht'.jobsne j hj,
+          fun j hj => by rw [St.setTop_jobs] at hj; rw [St.setTop_nextJob]; exact ht'.ids j hj⟩
+        apply holesOK_setTop R.1 R.2.1 lc ls' hs' ht'.holes R.2.1.prog.length (by rw [hlc0]; simp)
+          (by rw [hlc0, hlc, List.take_left' rfl, List.take_left' rfl]) (by rw [hlc]; simp)
+        · intro i hi hi'
+          have hm : lc.cells[i]'hi' ∈ nodeCells ns := by
+            simp only [hlc]; rw [List.getElem_append_right hi]; exact List.getElem_mem _
+          simp only [nodeCells, List.mem_map] at hm
+          obtain ⟨n, hn, he⟩ := hm
+          rw [← he]; exact c3 n hn
+        · have := jobs_end_of_ready R.1 ht' (R.1.below ++ R.2.1.prog) (nodeCells R.2.1.nodes)
+            (by rw [St.cells_top _ _ _ hs', hlc0, List.append_assoc]) (by
+              intro c hc; simp only [nodeCells, List.mem_map] at hc; obtain ⟨n, hn, he⟩ := hc; rw [← he]
+              exact hr'.ready n hn)
+          intro j hj; have := this j hj; simp only [List.length_append] at this; omega
+      have hsc := St.setTop_stack R.1 R.2.1 lc ls' hs'
+      obtain ⟨l2, ls2, h2, hp2, hpe2, ht2, hle2, hba2, hh2, hbl2, hsub2⟩ :=
+        progBin_ok cx hP (R.1.setTop lc) lc ls' G' Lb' hsc hr'.prog hr'.inc hr'.nolegacy hr'.pend hr'.tail
+          hr'.groups hr'.level c2 c3 (fun n hn => by
+            have := cov_node_le cx.H cx.z0 c2 n hn
+            have h40 : 2 ^ n.depth < 2 ^ 40 := by omega
+            exact (Nat.pow_lt_pow_iff_right (by decide : 1 < 2)).mp h40)
+          (fun hc => by cases hc) htc hlt hLb'
+      have hlv2 : l2.level = R.2.1.level := by rw [hp2.level, ← hr'.level]
+      refine ⟨⟨l2, ls2, G', Lb', h2, hp2, hfl, hpe2, ht2, by rw [hle2, hle'], ?_, ?_, ?_, ?_⟩, l2, ls2, Lb', h2,
+        ⟨G', hp2⟩, by rw [hlv2]; exact hlt⟩
+      · rw [hba2, St.setTop_base]; exact hba'
+      · rw [hh2, St.setTop_hashErr]; exact hh'
+      · rw [hbl2, St.setTop_below R.1 R.2.1 lc ls' hs']; exact hbl'
+      · rw [St.setTop_below R.1 R.2.1 lc ls' hs'] at hsub2; exact HolesSub.trans hsub' hsub2
+    · -- the region left for the background jobs, marked collapsed
+      simp only [if_true]
+      let lc : Layer C := { R.2.1 with collapsed := true }
+      have hp2 : ProgOK cx lc G' Lb' :=
+        ⟨hr'.prog, hr'.inc, hr'.nolegacy, hr'.groups, hr'.level, hr'.cov, hr'.narrow, hr'.shallow,
+          (fun hc => by cases hc),
+          ⟨fun _ => hr'.tail, by simp [lc, hr'.pend], by simp [lc, hr'.tail], by simp [lc, hr'.pend],
+            fun h => absurd hr'.pend h⟩⟩
+      have hsc := St.setTop_stack R.1 R.2.1 lc ls' hs'
+      refine ⟨⟨lc, ls', G', Lb', hsc, hp2, hfl, hr'.pend, topOK_setTop_same R.1 R.2.1 lc ls' hs' ht' rfl, hle',
+        by rw [St.setTop_base]; exact hba', by rw [St.setTop_hashErr]; exact hh',
+        by rw [St.setTop_below R.1 R.2.1 lc ls' hs']; exact hbl',
+        by rw [St.setTop_below R.1 R.2.1 lc ls' hs']; exact hsub'⟩, lc, ls', Lb', hsc, ⟨G', hp2⟩, hlt⟩
+
 end Ssz.Hasher
