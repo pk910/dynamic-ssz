@@ -73,7 +73,7 @@ jobs:
         ../audit-axioms.sh SszCert.Eth Ssz
         ../audit-axioms.sh SszCert.Hasher.Spec Ssz.Hasher
         ../audit-axioms.sh SszCert.Hasher.Nodes Ssz.Hasher
-        ../audit-axioms.sh SszCert.Hasher.State Ssz.Hasher
+        for m in State Batch Top Binary Async Close Walk; do ../audit-axioms.sh SszCert.Hasher.$m Ssz.Hasher; done
 
     - name: Upload oracle
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
