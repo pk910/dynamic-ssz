@@ -9,6 +9,7 @@ import SszCert.FixedSeq
 import SszCert.Codec
 import SszCert.Extended
 import SszCert.Hasher.Model
+import SszCert.Hasher.Spec
 import SszCert.Sha256
 import SszCert.Merkle
 import SszCert.Certified

@@ -15,13 +15,14 @@ mapfile -t names < <(grep -o '^theorem [A-Za-z0-9_]*' "$source" | awk '{print $2
 } > AxiomAudit.lean
 trap 'rm -f AxiomAudit.lean' EXIT
 out="$(lake env lean AxiomAudit.lean 2>&1)"; status=$?
-out="$(printf '%s\n' "$out" | grep -v '^trace' || true)"
+# Long theorem names wrap the axiom list over several lines: join them.
+out="$(printf '%s\n' "$out" | grep -v '^trace' | awk 'NR > 1 && /^ / { sub(/^ +/, " "); buf = buf $0; next } { if (NR > 1) print buf; buf = $0 } END { print buf }' || true)"
 if [ "$status" -ne 0 ]; then
   echo "audit: lean failed (exit $status):" >&2; printf '%s\n' "$out" >&2; exit 1
 fi
-printf '%s\n' "$out" | sed 's/.*depends on axioms: //' | sort | uniq -c
-standard='depends on axioms: \[(propext|Classical\.choice|Quot\.sound)(, (propext|Classical\.choice|Quot\.sound))*\]$'
-audited="$(printf '%s\n' "$out" | grep -c 'depends on axioms' || true)"
+printf '%s\n' "$out" | sed 's/.*depends on axioms: //; s/.*does not depend on any axioms/[]/' | sort | uniq -c
+standard='(depends on axioms: \[(propext|Classical\.choice|Quot\.sound)(, (propext|Classical\.choice|Quot\.sound))*\]|does not depend on any axioms)$'
+audited="$(printf '%s\n' "$out" | grep -c -E 'depends on axioms|does not depend on any axioms' || true)"
 if [ "$audited" -ne "${#names[@]}" ]; then
   echo "audit: expected ${#names[@]} theorems, lean reported $audited:" >&2; printf '%s\n' "$out" >&2; exit 1
 fi

@@ -103,7 +103,14 @@ func TestEthLink(t *testing.T) {
 						oracleChecked++
 					}
 				}
-				// Phase 2: generated values and mutations.
+				// Phase 2: generated values and mutations. Types whose smallest
+				// encoding is huge (mainnet states: 65536-entry vectors) are
+				// covered by the replay; generating them would only time the
+				// oracles.
+				if desc := runtimeDescriptor(t, eng.refl, et.New); desc.MinSize > maxGenBytes {
+					t.Logf("%s: generation skipped (minimum encoding %d bytes)", name, desc.MinSize)
+					continue
+				}
 				sub := subject{name: name, newFn: et.New, spec: true}
 				t.Run(ctx2(preset, fork.Fork, et.SpecName), func(t *testing.T) {
 					cert.t, spec.t = t, t
@@ -150,6 +157,9 @@ func TestEthLink(t *testing.T) {
 }
 
 func ctx2(preset, fork, typ string) string { return preset + "/" + fork + "/" + typ }
+
+// maxGenBytes bounds the types whose values are generated (see Phase 2).
+const maxGenBytes = 256 << 10
 
 // ethGen bounds generated Ethereum values (limits reach 2^40).
 var ethGen = GenConfig{MaxElems: 24, MaxBytes: 3000, MaxDepth: 5, Boundary: true}

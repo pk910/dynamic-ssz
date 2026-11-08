@@ -33,6 +33,14 @@ jobs:
     - name: Certificates and generated methods are up to date
       run: git diff --exit-code -- formal/
 
+    # The Ethereum certificates, written from the reflection engine's runtime
+    # descriptors per preset, and the EthLib cross-check theorems must be
+    # fresh; every harness certificate must also come out identical from the
+    # runtime descriptor (the two descriptor builders agree).
+    - name: Runtime certificates are fresh and agree with dynssz-gen's descriptors
+      working-directory: formal/harness
+      run: go test -count=1 -run 'TestRuntimeCertificatesAgree|TestEthCertificatesFresh|TestEthCrossCheckFresh' .
+
   # The in-house model: per-type canonicity, roundtrip and tree/root theorems
   # (core Lean, no Mathlib), plus the executable decision oracle.
   lean-certificates:
@@ -60,13 +68,22 @@ jobs:
 
     - name: Audit axioms
       working-directory: formal/lean
-      run: ../audit-axioms.sh SszCert.Certified Ssz
+      run: |
+        ../audit-axioms.sh SszCert.Certified Ssz
+        ../audit-axioms.sh SszCert.Eth Ssz
+        ../audit-axioms.sh SszCert.Hasher.Spec Ssz.Hasher
 
     - name: Upload oracle
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: ssz-oracle
         path: formal/lean/.lake/build/bin/ssz-oracle
+
+    - name: Upload hasher model
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: hasher-model
+        path: formal/lean/.lake/build/bin/hasher-model
 
   # The official specification: EthLib's Desc per type, well-formedness by
   # evaluation, and EthLib's generic theorems instantiated per type (Mathlib).
@@ -105,7 +122,10 @@ jobs:
 
     - name: Audit axioms
       working-directory: formal/spec
-      run: ../audit-axioms.sh SszSpec.Theorems SszSpec
+      run: |
+        ../audit-axioms.sh SszSpec.Theorems SszSpec
+        ../audit-axioms.sh SszSpec.EthTheorems SszSpec
+        ../audit-axioms.sh SszSpec.EthCross SszSpec
 
     - name: Upload oracle
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -138,8 +158,122 @@ jobs:
       working-directory: formal/harness
       run: |
         chmod +x ../../oracles/ssz-oracle/ssz-oracle ../../oracles/ssz-spec-oracle/ssz-spec-oracle
-        go test -count=1 -v -run 'TestProp|TestOracleLink|TestSpecLink' ./... | grep -v -e '^=== ' -e '^    --- PASS'
+        go test -count=1 -v -run 'TestProp|TestOracleLink|TestSpecLink|TestExtendedEdgeCases|TestHasherAPILink' ./... | grep -v -e '^=== ' -e '^    --- PASS'
       shell: bash -o pipefail {0}
       env:
         SSZ_ORACLE: ${{ github.workspace }}/oracles/ssz-oracle/ssz-oracle
         SSZ_SPEC_ORACLE: ${{ github.workspace }}/oracles/ssz-spec-oracle/ssz-spec-oracle
+
+  # The hasher against its executable model, call by call: random walks with
+  # the small thresholds (every batching and async path), then a pass at the
+  # production thresholds.
+  hasher-trace:
+    runs-on: ubuntu-latest
+    needs: [lean-certificates]
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: '1.25.11'
+
+    - name: Download hasher model
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: hasher-model
+        path: oracles/hasher-model
+
+    - name: Trace the hasher against the model
+      run: |
+        chmod +x oracles/hasher-model/hasher-model
+        HASHER_TRACE_WALKS=3000 go test -tags dynssz_smallhash -count=1 -timeout 30m -v -run TestFormalTrace ./hasher/
+        go test -count=1 -timeout 30m -v -run TestFormalTrace ./hasher/
+      env:
+        HASHER_MODEL: ${{ github.workspace }}/oracles/hasher-model/hasher-model
+
+  # The Ethereum consensus types: every consensus-spec-tests ssz_static case
+  # through every API path and both models against pyspec's roots, plus
+  # generated values and mutations.
+  eth-link:
+    runs-on: ubuntu-latest
+    needs: [lean-certificates, lean-spec]
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [mainnet, minimal]
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: '1.25.11'
+
+    - name: Download oracles
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        path: oracles
+
+    - name: Get spec tests version
+      id: spec-version
+      run: |
+        # As ci-tests.yml: the latest non-draft release (pre-releases included).
+        VERSION=$(curl -s https://api.github.com/repos/ethereum/consensus-specs/releases | \
+          jq -r '.[] | select(.draft == false) | .tag_name' | head -1)
+        echo "version=${VERSION:-v1.7.0-beta.0}" >> $GITHUB_OUTPUT
+
+    - name: Cache consensus spec test data
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: tests/spectests/consensus-spec-tests
+        key: consensus-spec-tests-${{ matrix.preset }}-${{ steps.spec-version.outputs.version }}
+
+    - name: Set up consensus spec test data
+      run: |
+        cd tests/spectests
+        ./setup_test_data.sh setup ${{ matrix.preset }}
+        # No preset argument: the link appends the preset itself.
+        echo "CONSENSUS_SPEC_TESTS_DIR=$(./setup_test_data.sh export)" >> $GITHUB_ENV
+
+    - name: Run the Ethereum link
+      working-directory: formal/harness
+      run: |
+        chmod +x ../../oracles/ssz-oracle/ssz-oracle ../../oracles/ssz-spec-oracle/ssz-spec-oracle
+        go test -count=1 -timeout 150m -v -run TestEthLink . -args -rapid.checks=25 | grep -v -e '^=== ' -e '^    --- PASS' -e 'OK, passed'
+      shell: bash -o pipefail {0}
+      env:
+        ETH_LINK_PRESETS: ${{ matrix.preset }}
+        SSZ_ORACLE: ${{ github.workspace }}/oracles/ssz-oracle/ssz-oracle
+        SSZ_SPEC_ORACLE: ${{ github.workspace }}/oracles/ssz-spec-oracle/ssz-spec-oracle
+
+  # Mutation testing of the link itself: every planted bug of
+  # formal/mutation/mutants.json must be killed (or, if documented as
+  # equivalent, survive).
+  mutation:
+    runs-on: ubuntu-latest
+    needs: [lean-certificates, lean-spec]
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: '1.25.11'
+
+    - name: Download oracles
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        path: oracles
+
+    - name: Run the mutants
+      run: |
+        chmod +x oracles/ssz-oracle/ssz-oracle oracles/ssz-spec-oracle/ssz-spec-oracle oracles/hasher-model/hasher-model
+        python3 formal/mutation/run.py
+      env:
+        SSZ_ORACLE: ${{ github.workspace }}/oracles/ssz-oracle/ssz-oracle
+        SSZ_SPEC_ORACLE: ${{ github.workspace }}/oracles/ssz-spec-oracle/ssz-spec-oracle
+        HASHER_MODEL: ${{ github.workspace }}/oracles/hasher-model/hasher-model

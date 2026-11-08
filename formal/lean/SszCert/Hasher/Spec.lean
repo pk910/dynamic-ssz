@@ -123,7 +123,7 @@ theorem levelUp_single (z a : C) : levelUp H z [a] = [H a z] := by simp [levelUp
 
 theorem levelUp_pair (z a b : C) : levelUp H z [a, b] = [H a b] := by simp [levelUp, pairUp]
 
-theorem two_pow_succ' (i : Nat) : 2 ^ (i + 1) = 2 ^ i + 2 ^ i := by rw [Nat.pow_succ]; omega
+theorem two_pow_succ_eq (i : Nat) : 2 ^ (i + 1) = 2 ^ i + 2 ^ i := by rw [Nat.pow_succ]; omega
 
 /-- **One reduction level**: padding an odd level with the zero hash of that
     level and pairing turns the roots of `2^i`-pieces into the roots of
@@ -141,7 +141,7 @@ theorem levelUp_chunks (i : Nat) (L : List C) :
     subst this; simp [levelUp_nil]
   | succ n ih =>
     intro L hL
-    have hp := two_pow_succ' i
+    have hp := two_pow_succ_eq i
     have hpos := Nat.one_le_two_pow (n := i)
     by_cases h0 : L = []
     · subst h0; simp [levelUp_nil]
