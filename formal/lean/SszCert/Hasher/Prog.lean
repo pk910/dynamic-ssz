@@ -1681,4 +1681,133 @@ theorem precollapse_jobs (cx : Ctx C) (t : St C) (h : (t.precollapse cx).2 = tru
       simp only [decide_eq_true_eq] at h
       exact precollapseLoop_jobs' cx _ _ _ l _ (by rw [failUnless_stack]; exact hst) h
 
+/-! ## `maybeCollapseProgressive` -/
+
+theorem capsRest_of_depths (P : Params) {l l' : Layer C} (hd : l'.nodes.map (·.depth) = l.nodes.map (·.depth))
+    (hc : CapsRest P l) : CapsRest P l' := by
+  have hcc : capCount P l' = capCount P l := by
+    unfold capCount
+    have := congrArg (fun xs => (xs.filter (· == P.capDepth)).length) hd
+    simpa [List.filter_map, Function.comp_def] using this
+  have hlen : l'.nodes.length = l.nodes.length := by have := congrArg List.length hd; simpa using this
+  rcases hc with hc | hc
+  · left
+    obtain ⟨n, hn, hb⟩ := List.any_eq_true.mp hc
+    have : n.depth ∈ l'.nodes.map (·.depth) := by rw [hd]; exact List.mem_map_of_mem hn
+    obtain ⟨m, hm, he⟩ := List.mem_map.mp this
+    exact List.any_eq_true.mpr ⟨m, hm, by rw [he]; exact hb⟩
+  · right; rw [List.length_drop, hcc, hlen]; rw [List.length_drop] at hc; exact hc
+
+/-- **`maybeCollapseProgressive`** keeps a progressive scope's invariant over
+    the same leaves; it takes every complete group unless it leaves the
+    work to background cap jobs, in which case a second call takes them. -/
+theorem collapseProgressive_ok (cx : Ctx C) (hP : ParamsOK cx.P) (s : St C) (l : Layer C) (ls : List (Layer C))
+    (G : List (List C)) (Lb : List C) (async : Bool) (h : s.stack = l :: ls) (hp : ProgOK cx l G Lb)
+    (hpend : l.pend = []) (ht : TopOK s) (hLt : (G.flatten ++ Lb).length < 2 ^ 40) :
+    ∃ l' ls' G' Lb', (s.collapseProgressive cx async).stack = l' :: ls' ∧ ProgOK cx l' G' Lb' ∧
+      G.flatten ++ Lb = G'.flatten ++ Lb' ∧ l'.pend = [] ∧ TopOK (s.collapseProgressive cx async) ∧
+      ls'.map Layer.erase = ls.map Layer.erase ∧
+      (s.collapseProgressive cx async).base.map Cell.erase = s.base.map Cell.erase ∧
+      (s.collapseProgressive cx async).hashErr = s.hashErr ∧
+      (s.collapseProgressive cx async).below.length = s.below.length ∧
+      HolesSub s.below (s.collapseProgressive cx async).below ∧
+      (Lb'.length < 4 ^ l'.level ∨ (G' = G ∧ Lb' = Lb ∧ l'.level = l.level ∧ CapsRest cx.P l' ∧
+        (s.collapseProgressive cx async).jobs ≠ [])) ∧
+      (Lb.length < 4 ^ l.level → Lb'.length < 4 ^ l'.level) ∧ (CapsRest cx.P l → Lb'.length < 4 ^ l'.level) := by
+  obtain ⟨l1, ls1, hd, hle1, hr1, htd, hls1, hbad, hhd, hbld, hsubd⟩ := drainTop_any s l ls h ht
+  have hp1 : ProgOK cx l1 G Lb := hle1.progOK cx hp
+  have hpe1 : l1.pend = [] := by have := hle1.pend_map; rw [hpend] at this; simpa using this
+  have hlv1 : l1.level = l.level := by have := congrArg Layer.level hle1.erase; exact this
+  have hdep1 : l1.nodes.map (·.depth) = l.nodes.map (·.depth) := by
+    have := congrArg (List.map (·.depth)) hle1.nodes_map; simpa [Node.erase, List.map_map, Function.comp_def] using this
+  obtain ⟨hps, hrp, htp, hbp, hbsp, hhp⟩ := progInit_ok cx _ l1 ls1 G Lb hd hp1 hr1 hpe1 htd
+  have hlf2 : ({ l1 with counted := l1.nodes.length } : Layer C).collapsed = false →
+      ({ l1 with counted := l1.nodes.length } : Layer C).level = 0 ∧
+      ∀ n ∈ ({ l1 with counted := l1.nodes.length } : Layer C).nodes, n.depth = 0 := hp1.leaves
+  -- the rounds and their finish, from the reinitialized scope
+  have hcore : ∀ q : St C, q = (s.drainFor s.topStart).progInit l1 →
+      ∃ l' ls' G' Lb', (q.progCore cx async).stack = l' :: ls' ∧ ProgOK cx l' G' Lb' ∧
+        G.flatten ++ Lb = G'.flatten ++ Lb' ∧ l'.pend = [] ∧ TopOK (q.progCore cx async) ∧
+        ls'.map Layer.erase = ls.map Layer.erase ∧ (q.progCore cx async).base.map Cell.erase = s.base.map Cell.erase ∧
+        (q.progCore cx async).hashErr = s.hashErr ∧ (q.progCore cx async).below.length = s.below.length ∧
+        HolesSub s.below (q.progCore cx async).below ∧ Lb'.length < 4 ^ l'.level := by
+    intro q hq
+    subst hq
+    have hpc : ((s.drainFor s.topStart).progInit l1).progCore cx async =
+        progFinish cx async (progRounds cx async (({ l1 with counted := l1.nodes.length } : Layer C).nodes.length + 1)
+          ((s.drainFor s.topStart).progInit l1) { l1 with counted := l1.nodes.length } false) := by
+      unfold St.progCore; rw [hps]
+    rw [hpc]
+    obtain ⟨⟨l', ls', G', Lb', h', hp', hfl, hpe', ht', hle', hba', hh', hbl', hsub'⟩, l'', ls'', Lb'', h'', ⟨G'', hp''⟩, hlt⟩ :=
+      progFinish_ok cx hP async _ _ ls1 G Lb hps hrp hlf2 htp hLt
+    rw [h'] at h''
+    obtain ⟨rfl, rfl⟩ := List.cons.inj h''
+    have hLb : Lb'.length = Lb''.length := by
+      rw [cov_full_length cx.H cx.z0 hp'.cov, cov_full_length cx.H cx.z0 hp''.cov]
+    refine ⟨l', ls', G', Lb', h', hp', hfl, hpe', ht', by rw [hle', hls1], by rw [hba', hbsp, hbad],
+      by rw [hh', hhp, hhd], by rw [hbl', hbp, hbld], by rw [hbp] at hsub'; exact HolesSub.trans hsubd hsub',
+      by rw [hLb]; exact hlt⟩
+  have hL : Lb.length < 2 ^ 40 := by simp only [List.length_append] at hLt; omega
+  have hcd := hP.capDepth_pos
+  have hni2 : NonInc ({ l1 with counted := l1.nodes.length } : Layer C).nodes := nonInc_of_cov _ _ hp1.cov
+  have hd02 : ({ l1 with counted := l1.nodes.length } : Layer C).collapsed = false →
+      ∀ n ∈ ({ l1 with counted := l1.nodes.length } : Layer C).nodes, n.depth = 0 := fun hc => (hlf2 hc).2
+  unfold St.collapseProgressive
+  rw [hd]
+  simp only
+  split
+  · rename_i hA
+    split
+    · -- the background cap jobs take the work; the rounds wait for the next call
+      rename_i hpre
+      have hne : l1.nodes ≠ [] := by
+        intro e
+        have hcr : CapsRest cx.P ({ l1 with counted := l1.nodes.length } : Layer C) := by
+          right; show (l1.nodes.drop _).length < _; rw [e]; simp; rw [hP.cap]; exact Nat.two_pow_pos _
+        rw [capsRest_precollapse cx _ _ ls1 hps hcr hd02] at hpre; cases hpre
+      have hb : BinOK cx ({ l1 with counted := l1.nodes.length } : Layer C).flat Lb :=
+        ⟨(fun hi => absurd (hi.symm.trans hp1.inc) (by decide)), rfl,
+          (fun hl => by have : l1.legacy = true := hl; rw [hp1.nolegacy] at this; cases this), rfl, hpe1,
+          hp1.pendOK.tail hpe1, hp1.cov, hd02, hp1.shallow, (fun n hn hr => by rw [hrp.ready n hn] at hr; cases hr),
+          (fun _ => hne)⟩
+      have hst := collapseBin_prog cx hP _ _ ls1 Lb hps hb hp1.inc htp hL true
+      simp only [if_true] at hst
+      obtain ⟨l', ls', h', hsc', hi', hpr', hlv', hpm', _, ht', hle', hba', hh', hbl', hsub'⟩ := hst
+      have hpcl : 1 ≤ cx.P.precollapseLevel := by have := hP.cap_le_level; omega
+      have hcol : l1.collapsed = true := by
+        cases hc : l1.collapsed
+        · have := (hp1.leaves hc).1; omega
+        · rfl
+      obtain ⟨hnar', hcol', hpe'⟩ := precollapse_top cx _ _ ls1 hps (2 * l1.level) hp1.narrow
+        (by have := hP.cap_le_level; omega) hcol hpe1 l' ls' h'
+      have hcr' := precollapse_rest cx hP.cap hcd _ _ ls1 hps hni2 hd02 l' ls' h'
+      have hjobs := precollapse_jobs cx _ hpre
+      obtain ⟨L1, hLb, hb', hpo'⟩ := hsc'
+      have htl' : l'.tail = [] := hpo'.tail hpe'
+      have hL1 : L1 = Lb := by rw [hLb]; simp [pendLeaves, Layer.flat, hpe', htl']
+      subst hL1
+      have hnl' : l'.legacy = false := by
+        cases hlg : l'.legacy
+        · rfl
+        · have h1 : l'.incremental = false := hb'.nolegacy hlg
+          have h2 : l'.incremental = true := hi'.trans hp1.inc
+          rw [h2] at h1; cases h1
+      have hpo : ProgOK cx l' G L1 :=
+        ⟨hpr'.trans hp1.prog, hi'.trans hp1.inc, hnl', groupsOK_erase cx hp1.groups hpm', by rw [hlv']; exact hp1.level, hb'.cov,
+          by rw [hlv']; exact hnar', hb'.shallow, (fun hc => by rw [hcol'] at hc; cases hc),
+          ⟨fun _ => htl', by simp [hpe'], by simp [htl'], by simp [hpe'], fun h => absurd hpe' h⟩⟩
+      refine ⟨l', ls', G, L1, h', hpo, rfl, hpe', ht', by rw [hle', hls1], by rw [hba', hbsp, hbad],
+        by rw [hh', hhp, hhd], by rw [hbl', hbp, hbld], by rw [hbp] at hsub'; exact HolesSub.trans hsubd hsub',
+        Or.inr ⟨rfl, rfl, by rw [hlv', hlv1], hcr', hjobs⟩, fun hs => by rw [hlv', hlv1]; exact hs, ?_⟩
+      intro hcl
+      have hcr2 : CapsRest cx.P ({ l1 with counted := l1.nodes.length } : Layer C) := capsRest_of_depths cx.P hdep1 hcl
+      rw [capsRest_precollapse cx _ _ ls1 hps hcr2 hd02] at hpre; cases hpre
+    · -- no cap job: the rounds
+      rename_i hpre
+      rw [precollapse_false cx _ _ ls1 hps hcd hni2 rfl hd02 (by simpa using hpre)]
+      obtain ⟨l', ls', G', Lb', h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11⟩ := hcore _ rfl
+      exact ⟨l', ls', G', Lb', h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, Or.inl h11, fun _ => h11, fun _ => h11⟩
+  · obtain ⟨l', ls', G', Lb', h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11⟩ := hcore _ rfl
+    exact ⟨l', ls', G', Lb', h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, Or.inl h11, fun _ => h11, fun _ => h11⟩
+
 end Ssz.Hasher
