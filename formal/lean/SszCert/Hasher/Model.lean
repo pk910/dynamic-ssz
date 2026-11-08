@@ -458,38 +458,60 @@ def St.collapseBinary (cx : Ctx C) (s : St C) : St C :=
     else if d0Chunks l < cx.P.batch then s
     else (s.drainFor s.activeStart).collapseBinaryCore cx
 
+/-- Go (re)initializes counts from the buffer when a scope has not collapsed
+    yet: the innermost scope with its nodes treated as leaves. -/
+def St.normTop (s : St C) : St C :=
+  match s.stack with
+  | [] => s
+  | l :: _ => (s.uncollapsedAsLeaves l).1.setTop (s.uncollapsedAsLeaves l).2
+
+/-- The innermost scope, or `dflt`. -/
+def St.topLayer (s : St C) (dflt : Layer C) : Layer C := (s.stack.head?).getD dflt
+
+/-- The cap-depth nodes of a scope (they lead it in a deepest-first region). -/
+def capCount (P : Params) (l : Layer C) : Nat := (l.nodes.filter (·.depth == P.capDepth)).length
+
+/-- Replace the cap block after the first `ncap` nodes by its hole. -/
+def capCompact (P : Params) (l : Layer C) (ncap : Nat) (holes : List (Cell C)) : Layer C :=
+  { l with
+    nodes := l.nodes.take ncap ++ holes.map (fun c => ⟨P.capDepth, c⟩) ++ (l.nodes.drop ncap).drop P.cap,
+    counted := (l.nodes.take ncap ++ holes.map (fun c => (⟨P.capDepth, c⟩ : Node C)) ++
+      (l.nodes.drop ncap).drop P.cap).length,
+    collapsed := true }
+
+/-- The job of one cap block of `precollapseCapRun`: the block after the
+    first `ncap` nodes, reduced to one node. -/
+def St.capJob (cx : Ctx C) (s : St C) (l : Layer C) (ncap : Nat) : St C × List (Cell C) :=
+  s.enqueue cx (nodeCells ((l.nodes.drop ncap).take cx.P.cap)) 1 (s.activeStart + ncap)
+
+/-- The rounds of `precollapseCapRun`. Go compacts after every job, so a
+    drain triggered by the next enqueue (ring full) finds the earlier holes
+    in place. -/
+def precollapseLoop (cx : Ctx C) : Nat → St C → Nat → St C
+  | 0, s, _ => s
+  | fuel + 1, s, ncap =>
+    match s.stack with
+    | [] => s
+    | l :: _ =>
+      if (l.nodes.drop ncap).length < cx.P.cap then s
+      else precollapseLoop cx fuel
+        ((s.capJob cx l ncap).1.setTop (capCompact cx.P ((s.capJob cx l ncap).1.topLayer l) ncap (s.capJob cx l ncap).2))
+        (ncap + 1)
+
 /-- `precollapseCapRun`: turn cap-wide spans of the trailing depth-0 run
     into cap-depth nodes reduced in the background. Returns whether jobs
     were emitted. -/
 def St.precollapse (cx : Ctx C) (s : St C) : St C × Bool :=
-  match s.stack with
-  | [] => (s, false)
+  match s.normTop.stack with
+  | [] => (s.normTop, false)
   | l :: _ =>
-    let (s, l) := s.uncollapsedAsLeaves l
-    let s := s.setTop l
-    if l.nodes.any (fun n => n.depth ≠ 0 ∧ n.depth ≠ cx.P.capDepth) then (s, false) else
-    let ncap := (l.nodes.filter (·.depth == cx.P.capDepth)).length
-    let caps := l.nodes.take ncap
-    let rest := l.nodes.drop ncap
-    let s := if caps.all (·.depth == cx.P.capDepth) ∧ rest.all (·.depth == 0) then s
-             else s.fail "precollapse: cap nodes not where the counts place them"
-    -- Go compacts after every job, so a drain triggered by the next enqueue
-    -- (ring full) finds the earlier holes in place: update per job.
-    let rec go : Nat → St C → Layer C → Nat → Nat → St C × Bool
-      | 0, s, _, _, _ => (s, false)
-      | fuel + 1, s, l, ncap, pos =>
-        let rest := l.nodes.drop ncap
-        if rest.length < cx.P.cap then (s, false) else
-        let (s, holes) := s.enqueue cx (nodeCells (rest.take cx.P.cap)) 1 pos
-        -- the enqueue may have drained: re-read the layer
-        let l := (s.stack.head?).getD l
-        let caps := (l.nodes.take ncap) ++ holes.map (fun c => ⟨cx.P.capDepth, c⟩)
-        let nodes := caps ++ (l.nodes.drop ncap).drop cx.P.cap
-        let l := { l with nodes := nodes, counted := nodes.length, collapsed := true }
-        let s := s.setTop l
-        let (s, _) := go fuel s l (ncap + 1) (pos + 1)
-        (s, true)
-    go (rest.length + 1) s l ncap (s.activeStart + ncap)
+    if l.nodes.any (fun n => n.depth ≠ 0 ∧ n.depth ≠ cx.P.capDepth) then (s.normTop, false)
+    else (precollapseLoop cx ((l.nodes.drop (capCount cx.P l)).length + 1)
+            (s.normTop.failUnless ((l.nodes.take (capCount cx.P l)).all (·.depth == cx.P.capDepth) &&
+              (l.nodes.drop (capCount cx.P l)).all (·.depth == 0))
+              "precollapse: cap nodes not where the counts place them")
+            (capCount cx.P l),
+          decide ((l.nodes.drop (capCount cx.P l)).length ≥ cx.P.cap))
 
 /-- Reduce a deferred element (a power-of-two run of chunks) to its root. -/
 def reduceElem (H : C → C → C) (z0 : C) (xs : List C) : C :=
