@@ -783,4 +783,118 @@ theorem progRounds_ok (cx : Ctx C) (async : Bool) : ∀ fuel (s : St C) (l : Lay
     · rw [← hsp'', List.flatten_append, List.flatten_singleton, List.append_assoc, List.take_append_drop]
     · intro hfalse; rw [hft'' rfl] at hfalse; cases hfalse
 
+/-! ## Step 2: compaction -/
+
+theorem cov_join' (H : C → C → C) (z0 : C) {A B : List (Node C)} {L1 L2 : List C} (h1 : Cov H z0 true A L1)
+    (h2 : Cov H z0 true B L2) (hseam : ∀ a b, A.getLast? = some a → B.head? = some b → b.depth ≤ a.depth) :
+    Cov H z0 true (A ++ B) (L1 ++ L2) := by
+  by_cases hA : A = []
+  · subst hA; have : L1 = [] := h1; subst this; simpa using h2
+  by_cases hB : B = []
+  · subst hB; have : L2 = [] := h2; subst this; simpa using h1
+  apply cov_join H z0 hA hB h1 h2
+  apply hseam
+  · exact List.getLast?_eq_getLast hA
+  · exact List.head?_eq_head hB
+
+theorem progCompact_filter (cx : Ctx C) : ∀ f (s : St C) (ns : List (Node C)),
+    progCompact cx f s ns = progCompact cx f s (ns.filter (·.depth < f)) := by
+  intro f
+  induction f with
+  | zero => intro s ns; rfl
+  | succ f ih =>
+    intro s ns
+    have hf : (ns.filter (·.depth < f + 1)).filter (·.depth == f) = ns.filter (·.depth == f) := by
+      rw [List.filter_filter]; congr 1; funext n; by_cases h : n.depth = f <;> simp [h]
+    have hg : (ns.filter (·.depth < f + 1)).filter (·.depth < f) = ns.filter (·.depth < f) := by
+      rw [List.filter_filter]; congr 1; funext n; by_cases h : n.depth < f <;> simp [h] <;> omega
+    simp only [progCompact, hf]
+    rw [ih _ ns, ih _ (ns.filter (·.depth < f + 1)), hg]
+
+/-- **Compaction keeps the cover**: pairs of a depth become one node a level
+    up, the odd one stays; nothing is read but ready nodes. -/
+theorem progCompact_ok (cx : Ctx C) : ∀ f (s : St C) (ns : List (Node C)) (L : List C), NonInc ns →
+    (∀ n ∈ ns, n.depth < f) → Cov cx.H cx.z0 true ns L → (∀ n ∈ ns, n.cell.isReady = true) →
+    (progCompact cx f s ns).1 = s ∧ Cov cx.H cx.z0 true (progCompact cx f s ns).2 L ∧
+      (∀ n ∈ (progCompact cx f s ns).2, n.cell.isReady = true) ∧ (∀ n ∈ (progCompact cx f s ns).2, n.depth ≤ f) := by
+  intro f
+  induction f with
+  | zero =>
+    intro s ns L _ hd hc _
+    have : ns = [] := by
+      cases ns with
+      | nil => rfl
+      | cons n _ => have := hd n (by simp); omega
+    subst this
+    exact ⟨rfl, hc, by simp [progCompact], by simp [progCompact]⟩
+  | succ f ih =>
+    intro s ns L hni hd hc hr
+    have hsplit := nonInc_split3 f ns hni
+    have hA0 : ns.filter (·.depth > f) = [] := List.filter_eq_nil_iff.mpr (fun n hn => by
+      have := hd n hn; simp; omega)
+    rw [hA0, List.nil_append] at hsplit
+    generalize hAe : ns.filter (·.depth == f) = A at hsplit
+    generalize hBe : ns.filter (·.depth < f) = B at hsplit
+    have hAd : ∀ n ∈ A, n.depth = f := fun n hn => by rw [← hAe] at hn; simpa using (List.mem_filter.mp hn).2
+    have hBd : ∀ n ∈ B, n.depth < f := fun n hn => by rw [← hBe] at hn; simpa using (List.mem_filter.mp hn).2
+    have hAr : ∀ n ∈ A, n.cell.isReady = true := fun n hn => hr n (by rw [hsplit]; simp [hn])
+    have hBr : ∀ n ∈ B, n.cell.isReady = true := fun n hn => hr n (by rw [hsplit]; simp [hn])
+    -- the leaves of each part
+    have hcs := cov_take_drop cx.H cx.z0 A.length hc
+    rw [hsplit, List.take_left' rfl, List.drop_left' rfl] at hcs
+    obtain ⟨hcA, hcB⟩ := hcs
+    generalize hL1 : L.take (leavesOf A) = L1 at hcA
+    generalize hL2 : L.drop (leavesOf A) = L2 at hcB
+    have hL : L = L1 ++ L2 := by rw [← hL1, ← hL2, List.take_append_drop]
+    -- the depth's pairs and its odd node
+    generalize hm : 2 * (A.length / 2) = m
+    have hpair := cov_take_drop cx.H cx.z0 m hcA
+    obtain ⟨hcE, hcO⟩ := hpair
+    have hEd : ∀ n ∈ A.take m, n.depth = f := fun n hn => hAd n (List.mem_of_mem_take hn)
+    have hEr : ∀ n ∈ A.take m, n.cell.isReady = true := fun n hn => hAr n (List.mem_of_mem_take hn)
+    have hEev : (A.take m).length % 2 = 0 := by simp; omega
+    have hst : (s.pairNodes cx (A.take m)).1 = s := by
+      simp only [St.pairNodes, St.vals]
+      rw [if_pos (List.all_eq_true.mpr (fun c hc => by
+        simp only [nodeCells, List.mem_map] at hc; obtain ⟨n, hn, rfl⟩ := hc; exact hEr n hn))]
+    have hP : Cov cx.H cx.z0 true (s.pairNodes cx (A.take m)).2 (L1.take (leavesOf (A.take m))) ∧
+        (∀ n ∈ (s.pairNodes cx (A.take m)).2, n.depth = f + 1 ∧ n.cell.isReady = true) := by
+      by_cases hE : A.take m = []
+      · rw [hE]; simp [St.pairNodes, St.vals, pairUp, leavesOf, nodeCells]; rfl
+      · rw [pairNodes_group cx s hE hEd]
+        refine ⟨pair_full_group cx.H cx.z0 hEd hE hEev hcE, ?_⟩
+        intro n hn; simp only [List.mem_map] at hn; obtain ⟨_, _, rfl⟩ := hn; exact ⟨rfl, rfl⟩
+    -- the lower depths
+    have hrec : progCompact cx f s ns = progCompact cx f s B := by
+      rw [progCompact_filter cx f s ns, hBe]
+    obtain ⟨i1, i2, i3, i4⟩ := ih s B L2 (nonInc_of_cov _ _ hcB) hBd hcB hBr
+    simp only [progCompact]
+    rw [hAe, hm, hst, hrec]
+    refine ⟨i1, ?_, ?_, ?_⟩
+    · rw [hL, List.append_assoc]
+      have hL1' : L1 = L1.take (leavesOf (A.take m)) ++ L1.drop (leavesOf (A.take m)) := (List.take_append_drop _ _).symm
+      rw [hL1', List.append_assoc]
+      apply cov_join' cx.H cx.z0 hP.1
+      · apply cov_join' cx.H cx.z0 hcO i2
+        intro a b ha hb
+        have := i4 b (List.mem_of_mem_head? hb)
+        have := hAd a (List.mem_of_mem_drop (List.mem_of_mem_getLast? ha)); omega
+      · intro a b ha hb
+        have hadep := (hP.2 a (List.mem_of_mem_getLast? ha)).1
+        rcases List.mem_append.mp (List.mem_of_mem_head? hb) with hb' | hb'
+        · have := hAd b (List.mem_of_mem_drop hb'); omega
+        · have := i4 b hb'; omega
+    · intro n hn
+      rcases List.mem_append.mp hn with hn | hn
+      · rcases List.mem_append.mp hn with hn | hn
+        · exact (hP.2 n hn).2
+        · exact hAr n (List.mem_of_mem_drop hn)
+      · exact i3 n hn
+    · intro n hn
+      rcases List.mem_append.mp hn with hn | hn
+      · rcases List.mem_append.mp hn with hn | hn
+        · rw [(hP.2 n hn).1]; exact Nat.le_refl _
+        · have := hAd n (List.mem_of_mem_drop hn); omega
+      · have := i4 n hn; omega
+
 end Ssz.Hasher
