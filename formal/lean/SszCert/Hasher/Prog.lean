@@ -897,4 +897,88 @@ theorem progCompact_ok (cx : Ctx C) : ∀ f (s : St C) (ns : List (Node C)) (L :
         · have := hAd n (List.mem_of_mem_drop hn); omega
       · have := i4 n hn; omega
 
+/-! ## The progressive scope invariant -/
+
+/-- **A progressive scope** between calls: its roots stand for the complete
+    groups `G`, its region covers the leaves `Lb` that follow them (no node
+    wider than the current group), a deferred run may follow. An
+    uncollapsed scope has no roots and only leaves (Go's precondition for
+    reinitializing its counts). -/
+structure ProgOK (cx : Ctx C) (l : Layer C) (G : List (List C)) (Lb : List C) : Prop where
+  prog : l.progressive = true
+  inc : l.incremental = true
+  nolegacy : l.legacy = false
+  groups : GroupsOK cx l.prog G
+  level : l.level = G.length
+  cov : Cov cx.H cx.z0 true l.nodes Lb
+  narrow : ∀ n ∈ l.nodes, n.depth ≤ 2 * l.level
+  shallow : ∀ n ∈ l.nodes, n.depth < 40
+  leaves : l.collapsed = false → l.level = 0 ∧ ∀ n ∈ l.nodes, n.depth = 0
+  pendOK : PendOK cx l
+
+/-- The leaves a progressive scope stands for. -/
+def ProgScope (cx : Ctx C) (l : Layer C) (L : List C) : Prop :=
+  ∃ G Lb, L = G.flatten ++ Lb ++ pendLeaves cx l ∧ ProgOK cx l G Lb
+
+theorem LayerLE.pendOK' (cx : Ctx C) {l l' : Layer C} (h : LayerLE l l') (hpo : PendOK cx l) : PendOK cx l' := by
+  have hpe : l'.pend = [] ↔ l.pend = [] := by
+    have := h.pend_map
+    constructor
+    · intro e; rw [e] at this; simpa using this.symm
+    · intro e; rw [e] at this; simpa using this
+  have hlens : l'.pend.map List.length = l.pend.map List.length := by
+    have := congrArg (List.map List.length) h.pend_map
+    simpa [List.map_map, Function.comp_def] using this
+  have hall : ∀ c ∈ l'.pend.flatten ++ l'.tail, c.isReady = true := by
+    intro c hc
+    cases hcr : c.isReady with
+    | true => rfl
+    | false =>
+      exfalso
+      obtain ⟨i, hi, rfl⟩ := List.getElem_of_mem hc
+      obtain ⟨c0, h0, h0r⟩ := h.parts.2.2 i _ (List.getElem?_eq_getElem hi) hcr
+      have hm := List.mem_of_getElem? h0
+      have : c0.isReady = true := by
+        rcases List.mem_append.mp hm with hm | hm
+        · obtain ⟨e, he, hce⟩ := List.mem_flatten.mp hm; exact hpo.ready e he c0 hce
+        · exact hpo.tready c0 hm
+      rw [this] at h0r; cases h0r
+  refine ⟨?_, ?_, ?_, ?_, ?_⟩
+  · intro e
+    have := h.tail_map; rw [hpo.tail (hpe.mp e)] at this; simpa using this
+  · intro e he c hc; exact hall c (List.mem_append_left _ (List.mem_flatten.mpr ⟨e, he, hc⟩))
+  · intro c hc; exact hall c (List.mem_append_right _ hc)
+  · intro e he
+    rw [h.pendC]
+    obtain ⟨i, hi, rfl⟩ := List.getElem_of_mem he
+    have hi0 : i < l.pend.length := by have := congrArg List.length hlens; simp at this; omega
+    have := congrArg (fun xs => xs[i]?) hlens
+    simp only [List.getElem?_map, List.getElem?_eq_getElem hi, List.getElem?_eq_getElem hi0, Option.map_some,
+      Option.some.injEq] at this
+    rw [this]; exact hpo.width _ (List.getElem_mem _)
+  · intro hne; rw [h.pendC]; exact hpo.pow (fun e => hne (hpe.mpr e))
+
+/-- **A progressive scope's invariant survives drains.** -/
+theorem LayerLE.progOK (cx : Ctx C) {l l' : Layer C} (h : LayerLE l l') {G : List (List C)} {Lb : List C}
+    (hp : ProgOK cx l G Lb) : ProgOK cx l' G Lb := by
+  have hdep : ∀ n ∈ l'.nodes, ∃ m ∈ l.nodes, m.depth = n.depth := by
+    intro n hn
+    have : n.erase ∈ l.nodes.map Node.erase := by rw [← h.nodes_map]; exact List.mem_map_of_mem hn
+    obtain ⟨m, hm, he'⟩ := List.mem_map.mp this
+    exact ⟨m, hm, by have := congrArg Node.depth he'; exact this⟩
+  have hlv : l'.level = l.level := by have := congrArg Layer.level h.erase; exact this
+  refine ⟨by rw [h.flag_progressive]; exact hp.prog, by rw [h.flag_incremental]; exact hp.inc,
+    by rw [h.flag_legacy]; exact hp.nolegacy, groupsOK_erase cx hp.groups h.prog_map, by rw [hlv]; exact hp.level,
+    cov_of_erase_eq cx.H cx.z0 h.nodes_map hp.cov, ?_, ?_, ?_, h.pendOK' cx hp.pendOK⟩
+  · intro n hn; obtain ⟨m, hm, hmd⟩ := hdep n hn; rw [← hmd, hlv]; exact hp.narrow m hm
+  · intro n hn; obtain ⟨m, hm, hmd⟩ := hdep n hn; rw [← hmd]; exact hp.shallow m hm
+  · intro hc
+    obtain ⟨h1, h2⟩ := hp.leaves (by rw [← h.flag_collapsed]; exact hc)
+    exact ⟨by rw [hlv]; exact h1, fun n hn => by obtain ⟨m, hm, hmd⟩ := hdep n hn; rw [← hmd]; exact h2 m hm⟩
+
+theorem LayerLE.progScope (cx : Ctx C) {l l' : Layer C} (h : LayerLE l l') {L : List C} (hp : ProgScope cx l L) :
+    ProgScope cx l' L := by
+  obtain ⟨G, Lb, hL, hpo⟩ := hp
+  exact ⟨G, Lb, by rw [h.pendLeaves cx]; exact hL, h.progOK cx hpo⟩
+
 end Ssz.Hasher
