@@ -1,4 +1,4 @@
-package main
+package certlib
 
 import (
 	"fmt"
@@ -16,7 +16,7 @@ import (
 // EthLib's generic theorems (codec canonicality, roundtrip, injectivity,
 // root totality, proof correctness), so a certified type needs only the
 // `wellFormed` fact to instantiate them.
-func specDescExpr(desc *ssztypes.TypeDescriptor) (string, error) {
+func SpecExpr(desc *ssztypes.TypeDescriptor) (string, error) {
 	switch desc.SszType {
 	case ssztypes.SszBoolType:
 		return ".bool", nil
@@ -42,7 +42,7 @@ func specDescExpr(desc *ssztypes.TypeDescriptor) (string, error) {
 		maxIdx := -1
 		for i := range desc.ContainerDesc.Fields {
 			f := &desc.ContainerDesc.Fields[i]
-			e, err := specDescExpr(f.Type)
+			e, err := SpecExpr(f.Type)
 			if err != nil {
 				return "", fmt.Errorf("field %s: %w", f.Name, err)
 			}
@@ -75,7 +75,7 @@ func specDescExpr(desc *ssztypes.TypeDescriptor) (string, error) {
 		if desc.ElemDesc.SszType == ssztypes.SszUint8Type {
 			return fmt.Sprintf("(.byteVector %d)", desc.Len), nil
 		}
-		e, err := specDescExpr(desc.ElemDesc)
+		e, err := SpecExpr(desc.ElemDesc)
 		if err != nil {
 			return "", err
 		}
@@ -91,7 +91,7 @@ func specDescExpr(desc *ssztypes.TypeDescriptor) (string, error) {
 		if desc.ElemDesc.SszType == ssztypes.SszUint8Type {
 			return fmt.Sprintf("(.byteList %d)", desc.Limit), nil
 		}
-		e, err := specDescExpr(desc.ElemDesc)
+		e, err := SpecExpr(desc.ElemDesc)
 		if err != nil {
 			return "", err
 		}
@@ -101,7 +101,7 @@ func specDescExpr(desc *ssztypes.TypeDescriptor) (string, error) {
 		if desc.ElemDesc == nil {
 			return "", fmt.Errorf("progressive list without element descriptor")
 		}
-		e, err := specDescExpr(desc.ElemDesc)
+		e, err := SpecExpr(desc.ElemDesc)
 		if err != nil {
 			return "", err
 		}
@@ -138,7 +138,7 @@ func specDescExpr(desc *ssztypes.TypeDescriptor) (string, error) {
 		sels := make([]string, 0, len(selectors))
 		opts := make([]string, 0, len(selectors))
 		for _, sel := range selectors {
-			e, err := specDescExpr(desc.UnionVariants[uint8(sel)])
+			e, err := SpecExpr(desc.UnionVariants[uint8(sel)])
 			if err != nil {
 				return "", fmt.Errorf("union variant %d: %w", sel, err)
 			}
@@ -160,15 +160,17 @@ func optLimitExpr(desc *ssztypes.TypeDescriptor) string {
 	return "none"
 }
 
-type specEntry struct {
-	pkgName, name, expr string
+// SpecEntry is one certified declaration: the Go package and type name and
+// its EthLib `Desc` term.
+type SpecEntry struct {
+	PkgName, Name, Expr string
 }
 
 // writeSpecFiles emits the EthLib-anchored certificate files: the `Desc`
 // declarations with a name-indexed registry (consumed by the executable
 // oracle; depends only on the executable spec) and the per-type theorem
 // instances (depend on EthLib's proof library).
-func writeSpecFiles(entries []specEntry, descFile, theoremFile string) error {
+func WriteSpecFiles(entries []SpecEntry, descFile, theoremFile string) error {
 	var out strings.Builder
 	out.WriteString("import EthLib.Consensus.Ssz\n\n")
 	out.WriteString("/-! SSZ declarations of certified Go types, in the official Lean specification's\n")
@@ -176,9 +178,9 @@ func writeSpecFiles(entries []specEntry, descFile, theoremFile string) error {
 	out.WriteString("namespace SszSpec\n\nopen EthLib.Consensus.Ssz\n\n")
 	registry := make([]string, 0, len(entries))
 	for _, e := range entries {
-		fmt.Fprintf(&out, "/-- SSZ declaration of `%s.%s`. -/\n", e.pkgName, e.name)
-		fmt.Fprintf(&out, "def D_%s : Desc :=\n  %s\n\n", e.name, e.expr)
-		registry = append(registry, fmt.Sprintf("  (%q, D_%s)", e.name, e.name))
+		fmt.Fprintf(&out, "/-- SSZ declaration of `%s.%s`. -/\n", e.PkgName, e.Name)
+		fmt.Fprintf(&out, "def D_%s : Desc :=\n  %s\n\n", e.Name, e.Expr)
+		registry = append(registry, fmt.Sprintf("  (%q, D_%s)", e.Name, e.Name))
 	}
 	out.WriteString("/-- Name-indexed declaration registry (for the oracle CLI). -/\n")
 	out.WriteString("def declared : List (String × Desc) := [\n")
@@ -209,7 +211,7 @@ func writeSpecFiles(entries []specEntry, descFile, theoremFile string) error {
 	th.WriteString("set_option linter.unusedTactic false\n\n")
 	th.WriteString("namespace SszSpec\n\nopen EthLib.Consensus.Ssz\n\n")
 	for _, e := range entries {
-		n := e.name
+		n := e.Name
 		fmt.Fprintf(&th, "/-- `%s` is a well-formed SSZ declaration (checked by evaluation; union\n", n)
 		fmt.Fprintf(&th, "    compatibility is well-founded recursion, evaluated through its equations). -/\n")
 		fmt.Fprintf(&th, "theorem D_%s_wf : D_%s.wellFormed = .ok () := ok_of_isOk (by\n", n, n)
