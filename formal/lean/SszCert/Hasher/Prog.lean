@@ -205,4 +205,175 @@ theorem consumeCount_spec (ns : List (Node C)) (D : Nat) (hni : NonInc ns) (hD :
   exact byDepth_spec ns D hni hD hL (maxDepthOf ns) hmd 0 0 (by rw [hA]; rfl) (by rw [hA]; rfl)
     (Nat.two_pow_pos D)
 
+/-! ## A complete group reduces without padding -/
+
+theorem collapseLoop_exact (cx : Ctx C) (live : Bool) (D : Nat) :
+    ∀ fuel (s : St C) (ns : List (Node C)), NonInc ns → ns ≠ [] → (∀ n ∈ ns, n.cell.isReady = true) →
+      leavesOf ns = 2 ^ D → (∀ n ∈ ns, n.depth ≤ D) →
+      collapseMeasure ns ≤ fuel → (collapseLoop cx live fuel s ns).1 = s ∧
+        ∀ n ∈ (collapseLoop cx live fuel s ns).2, n.cell.isReady = true := by
+  intro fuel
+  induction fuel with
+  | zero =>
+    intro s ns _ hne _ _ _ hm
+    have : ns.length = 0 := by unfold collapseMeasure at hm; omega
+    exact absurd (List.eq_nil_of_length_eq_zero this) hne
+  | succ fuel ih =>
+    intro s ns hni hne hr hex hdD hm
+    obtain ⟨keep, grp, low, rfl, hg, hgd, hkd⟩ := nonInc_split hni hne
+    have hm0 : collapseMeasure (keep ++ grp) ≤ fuel + 1 := hm
+    simp only [collapseLoop, min_depth_split hg hgd hkd, count_low_split hgd hkd, all_low_split hgd hkd]
+    by_cases hstop : grp.length = 1 ∧ keep.isEmpty = true
+    · rw [if_pos hstop]; exact ⟨rfl, hr⟩
+    rw [if_neg hstop]
+    -- an exact power-of-two cover pairs without padding
+    have hgpos : 0 < grp.length := List.length_pos_iff.mpr hg
+    have hlex : leavesOf keep + grp.length * 2 ^ low = 2 ^ D := by
+      rw [← hex, leavesOf_append, leavesOf_uniform' (d := low) grp hgd]
+    have hlowD : low < D := by
+      obtain ⟨g0, hg0⟩ := List.exists_mem_of_ne_nil grp hg
+      have h1 := hdD g0 (List.mem_append_right _ hg0); rw [hgd g0 hg0] at h1
+      rcases Nat.lt_or_ge low D with h2 | h2
+      · exact h2
+      · exfalso
+        have hk : keep = [] := by
+          cases keep with
+          | nil => rfl
+          | cons k0 ks => have := hkd k0 (by simp); have := hdD k0 (by simp); omega
+        subst hk
+        have hl : low = D := by omega
+        subst hl
+        simp [leavesOf] at hlex
+        have : grp.length = 1 := by
+          have hp := Nat.two_pow_pos low
+          rcases Nat.lt_or_ge grp.length 2 with h3 | h3
+          · omega
+          · have : 2 * 2 ^ low ≤ grp.length * 2 ^ low := Nat.mul_le_mul_right _ h3
+            omega
+        exact hstop ⟨this, rfl⟩
+    have heven : grp.length % 2 = 0 := by
+      have hd1 : 2 ^ (low + 1) ∣ leavesOf keep := dvd_leavesOf keep (fun n hn => hkd n hn)
+      have hd2 : 2 ^ (low + 1) ∣ 2 ^ D := Nat.pow_dvd_pow 2 hlowD
+      have hd3 : 2 ^ (low + 1) ∣ grp.length * 2 ^ low := by
+        have := Nat.dvd_sub hd2 hd1
+        rwa [show 2 ^ D - leavesOf keep = grp.length * 2 ^ low by omega] at this
+      rw [Nat.pow_succ, Nat.mul_comm] at hd3
+      have := Nat.dvd_of_mul_dvd_mul_right (Nat.two_pow_pos low) hd3
+      omega
+    have hno : ¬ (grp.length % 2 = 1 ∧ live = true) := fun h => by omega
+    let pad : List (Node C) := if grp.length % 2 = 1 then [⟨low, .ready (zeroH cx.H cx.z0 low)⟩] else []
+    have hns2 : (if grp.length % 2 = 1 then keep ++ grp ++ [⟨low, .ready (zeroH cx.H cx.z0 low)⟩]
+        else keep ++ grp) = keep ++ (grp ++ pad) := by simp only [pad]; split <;> simp
+    have hcnt2 : (if grp.length % 2 = 1 then grp.length + 1 else grp.length) = (grp ++ pad).length := by
+      simp only [pad]; split <;> simp
+    simp only [hns2, hcnt2, hno, if_false]
+    have hlen : (keep ++ (grp ++ pad)).length - (grp ++ pad).length = keep.length := by simp
+    rw [hlen, List.take_left' rfl, List.drop_left' rfl]
+    have hpadd : ∀ n ∈ pad, n.depth = low := by
+      intro n hn; simp only [pad] at hn; split at hn
+      · simp at hn; rw [hn]
+      · simp at hn
+    have hpd : ∀ n ∈ grp ++ pad, n.depth = low := by
+      intro n hn; rcases List.mem_append.mp hn with hn | hn
+      · exact hgd n hn
+      · exact hpadd n hn
+    have hall : (grp ++ pad).all (·.depth == low) = true := by
+      rw [List.all_eq_true]; intro n hn; simp [hpd n hn]
+    rw [if_pos hall]
+    have hpg : grp ++ pad ≠ [] := by simp [hg]
+    have hpr : ∀ n ∈ grp ++ pad, n.cell.isReady = true := by
+      intro n hn; rcases List.mem_append.mp hn with hn | hn
+      · exact hr n (List.mem_append_right _ hn)
+      · simp only [pad] at hn; split at hn
+        · simp at hn; rw [hn]; rfl
+        · simp at hn
+    have hst : (s.pairNodes cx (grp ++ pad)).1 = s := by
+      simp only [St.pairNodes, St.vals]
+      rw [if_pos (List.all_eq_true.mpr (fun c hc => by
+        simp only [nodeCells, List.mem_map] at hc; obtain ⟨n, hn, rfl⟩ := hc; exact hpr n hn))]
+    rw [hst, pairNodes_group cx _ hpg hpd]
+    let paired : List (Node C) :=
+      (pairUp cx.H ((grp ++ pad).map (·.cell.val))).map (fun v => ⟨low + 1, .ready v⟩)
+    have hpdep : ∀ n ∈ paired, n.depth = low + 1 := by
+      intro n hn; simp only [paired, List.mem_map] at hn; obtain ⟨_, _, rfl⟩ := hn; rfl
+    have hgp : (grp ++ pad).length = if grp.length % 2 = 1 then grp.length + 1 else grp.length := by
+      simp only [pad]; split <;> simp
+    have hplen : paired.length = (grp.length + 1) / 2 := by
+      simp only [paired, List.length_map, pairUp_length, hgp]
+      split <;> omega
+    have hpne : paired ≠ [] := by
+      intro e; have h1 := congrArg List.length e; rw [hplen] at h1
+      have h2 := List.length_pos_iff.mpr hg; simp only [List.length_nil] at h1; omega
+    have hkni : NonInc keep := nonInc_append_left hni
+    have hpad0 : pad = [] := by simp only [pad]; rw [if_neg (by omega)]
+    apply ih _ _ (nonInc_of_split hkni hkd hpdep hpne) (fun e => hpne (List.append_eq_nil_iff.mp e).2)
+    · intro n hn
+      rcases List.mem_append.mp hn with hn | hn
+      · exact hr n (List.mem_append_left _ hn)
+      · simp only [paired, List.mem_map] at hn; obtain ⟨_, _, rfl⟩ := hn; rfl
+    · rw [leavesOf_append, leavesOf_uniform' (d := low + 1) paired hpdep, hplen, ← hlex, Nat.pow_succ]
+      have : (grp.length + 1) / 2 * 2 = grp.length := by omega
+      have e : (grp.length + 1) / 2 * (2 ^ low * 2) = ((grp.length + 1) / 2 * 2) * 2 ^ low := by
+        rw [Nat.mul_comm (2 ^ low) 2, ← Nat.mul_assoc]
+      rw [e, this]
+    · intro n hn
+      rcases List.mem_append.mp hn with hn | hn
+      · exact hdD n (List.mem_append_left _ hn)
+      · rw [hpdep n hn]; omega
+    · unfold collapseMeasure at hm0 ⊢
+      rw [lastDepth_append hg, lastDepth_uniform hg hgd] at hm0
+      rw [lastDepth_append hpne, lastDepth_uniform hpne hpdep]
+      simp only [List.length_append, hplen] at hm0 ⊢
+      by_cases hke : keep = []
+      · subst hke
+        rw [headDepth_nil_append, headDepth_uniform hg hgd] at hm0
+        rw [headDepth_nil_append, headDepth_uniform hpne hpdep]
+        have : 2 ≤ grp.length := by
+          cases grp with
+          | nil => exact absurd rfl hg
+          | cons a r => cases r with
+            | nil => simp at hstop
+            | cons _ _ => simp
+        simp only [List.length_nil] at hm0 ⊢
+        omega
+      · rw [headDepth_append hke] at hm0 ⊢
+        have : low < headDepth keep := by
+          obtain ⟨k0, ks, rfl⟩ := List.exists_cons_of_ne_nil hke
+          exact hkd k0 (by simp)
+        have : (grp.length + 1) / 2 ≤ grp.length := by omega
+        omega
+
+
+/-- **A complete group** (exactly `2^D` leaves, no node deeper) reduces to
+    its bounded root without padding or expansion, even when more of the
+    region follows it (`live`). -/
+theorem collapseAll_exact (cx : Ctx C) (s : St C) (ns : List (Node C)) (L : List C) (D : Nat) (live : Bool)
+    (hcov : Cov cx.H cx.z0 true ns L) (hne : ns ≠ []) (hr : ∀ n ∈ ns, n.cell.isReady = true)
+    (hL : L.length = 2 ^ D) (hdD : ∀ n ∈ ns, n.depth ≤ D) (hD : D < 64) :
+    (s.collapseAll cx ns (2 ^ D) live).1 = s ∧ (s.collapseAll cx ns (2 ^ D) live).2 = .ready (mroot cx.H cx.z0 D L) := by
+  have hgood : ∀ m, ns = [m] → m.depth = depthOf L.length := by
+    intro m hm; subst hm
+    obtain ⟨_, hlen, _⟩ := hcov
+    simp at hlen; rw [hlen, depthOf_two_pow]
+  have hd : headDepth ns < 64 := by
+    obtain ⟨n0, ns0, rfl⟩ := List.exists_cons_of_ne_nil hne
+    have := hdD n0 (by simp); simp [headDepth]; omega
+  have hmeas : collapseMeasure ns ≤ 2 * ns.length + 64 := by unfold collapseMeasure; omega
+  have hlv : leavesOf ns = 2 ^ D := by rw [← cov_full_length cx.H cx.z0 hcov, hL]
+  have hchunks : ¬ (2 ^ D > 0 ∧ leavesOf ns > 2 ^ D) := by omega
+  obtain ⟨n, hloop, _, hnd⟩ := collapseLoop_cov cx live _ s ns L (cov_of_full _ _ hcov) hne hmeas hgood
+  obtain ⟨hst, hrd⟩ := collapseLoop_exact cx live D _ s ns (nonInc_of_cov _ _ hcov) hne hr hlv hdD hmeas
+  have hnr : n.cell.isReady = true := hrd n (by rw [hloop]; simp)
+  have hv := collapseAll_val cx s ns (2 ^ D) live L hcov hne hd (Or.inr (by omega))
+  rw [if_neg (by have := Nat.two_pow_pos D; omega), depthOf_two_pow] at hv
+  have hnD : n.depth = D := by rw [hnd, hL, depthOf_two_pow]
+  unfold St.collapseAll at hv ⊢
+  rw [if_neg hchunks] at hv ⊢
+  rw [hloop, hst] at hv ⊢
+  have hp : 2 ^ D > 0 := Nat.two_pow_pos D
+  simp only [collapseFinish, if_pos hp, depthOf_two_pow, hnD, Nat.lt_irrefl, false_and, if_false, St.vals,
+    List.all_cons, List.all_nil, hnr, Bool.and_true, if_true] at hv ⊢
+  refine ⟨trivial, ?_⟩
+  rw [← hv]; rfl
+
 end Ssz.Hasher
