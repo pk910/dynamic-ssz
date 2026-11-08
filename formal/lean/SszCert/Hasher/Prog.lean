@@ -1392,4 +1392,119 @@ theorem precollapse_rest (cx : Ctx C) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) (hcd
     simp only [Bool.and_eq_true, List.all_eq_true] at hok
     refine ⟨fun n hn' => by simpa using hok.1 n hn', fun n hn' => by simpa using hok.2 n hn', by omega⟩
 
+/-! ## Batch collapse of a progressive scope's region -/
+
+theorem SameShape.refl' (l : Layer C) : Layer.SameShape l l := ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+
+theorem SameShape.trans' {a b c : Layer C} (h1 : Layer.SameShape a b) (h2 : Layer.SameShape b c) : Layer.SameShape a c :=
+  ⟨h2.incremental.trans h1.incremental, h2.legacy.trans h1.legacy, h2.progressive.trans h1.progressive,
+    h2.packed.trans h1.packed, h2.collapsed.trans h1.collapsed, h2.level.trans h1.level, h2.counted.trans h1.counted,
+    h2.pendC.trans h1.pendC, h2.prog.trans h1.prog, h2.depths.trans h1.depths, h2.pend.trans h1.pend,
+    h2.tail.trans h1.tail⟩
+
+theorem drainFor_top (s : St C) (p : Nat) (l : Layer C) (ls : List (Layer C)) (h : s.stack = l :: ls) :
+    ∃ l' ls', (s.drainFor p).stack = l' :: ls' ∧ Layer.SameShape l l' := by
+  have key : ∀ n (t : St C) (l : Layer C) (ls : List (Layer C)), t.stack = l :: ls →
+      ∃ l' ls', (St.drainAll.go n t).stack = l' :: ls' ∧ Layer.SameShape l l' := by
+    intro n
+    induction n with
+    | zero => intro t l ls h; exact ⟨l, ls, h, SameShape.refl' l⟩
+    | succ n ih =>
+      intro t l ls h
+      obtain ⟨l1, ls1, h1, hs1⟩ := drainOldest_top t l ls h
+      obtain ⟨l2, ls2, h2, hs2⟩ := ih t.drainOldest l1 ls1 h1
+      exact ⟨l2, ls2, h2, SameShape.trans' hs1 hs2⟩
+  unfold St.drainFor; split
+  · obtain ⟨l', ls', h', hs⟩ := key s.jobs.length s l ls h
+    exact ⟨l', ls', h', hs⟩
+  · exact ⟨l, ls, h, SameShape.refl' l⟩
+
+/-- Batch collapse keeps a scope without deferred run, and collapsed. -/
+theorem collapseBinary_top2 (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C)) (h : s.stack = l :: ls)
+    (hp : l.pend = []) :
+    TopShape (fun l' => (l.collapsed = true → l'.collapsed = true) ∧ l'.pend = [] ∧ l'.level = l.level) (s.collapseBinary cx) := by
+  unfold St.collapseBinary
+  rw [h]
+  simp only [hp, ne_eq, not_true_eq_false, if_false]
+  split
+  · intro l2 ls2 h2; rw [h] at h2; obtain ⟨rfl, rfl⟩ := List.cons.inj h2; exact ⟨id, hp, rfl⟩
+  · obtain ⟨l1, ls1, h1, hs1⟩ := drainFor_top s s.activeStart l ls h
+    intro l2 ls2 h2
+    unfold St.collapseBinaryCore at h2
+    rw [h1] at h2
+    simp only at h2
+    obtain ⟨_, _, u3, _⟩ := uncollapsedAsLeaves_sim (s.drainFor s.activeStart) l1
+    obtain ⟨_, _, b3⟩ := batchLoop_sim cx 64 0 ((s.drainFor s.activeStart).uncollapsedAsLeaves l1).1
+      ((s.drainFor s.activeStart).uncollapsedAsLeaves l1).2.nodes
+    rw [St.setTop_stack _ l1 _ ls1 (by rw [b3, u3, h1])] at h2
+    obtain ⟨rfl, rfl⟩ := List.cons.inj h2
+    have hpe : l1.pend = [] := by have := hs1.pend; rw [hp] at this; simpa using this
+    refine ⟨fun _ => rfl, ?_, ?_⟩
+    · show ((s.drainFor s.activeStart).uncollapsedAsLeaves l1).2.pend = []
+      unfold St.uncollapsedAsLeaves; split <;> exact hpe
+    · show ((s.drainFor s.activeStart).uncollapsedAsLeaves l1).2.level = l.level
+      unfold St.uncollapsedAsLeaves; split <;> exact hs1.level
+
+theorem cov_node_le (H : C → C → C) (z0 : C) {ns : List (Node C)} {L : List C} (h : Cov H z0 true ns L) :
+    ∀ n ∈ ns, 2 ^ n.depth ≤ L.length := by
+  intro n hn
+  rw [cov_full_length H z0 h]
+  exact le_sum_of_mem' (List.mem_map_of_mem (f := fun n : Node C => 2 ^ n.depth) hn)
+
+/-- **Batch collapse of a progressive scope's region**, after the rounds:
+    the scope keeps its invariant. -/
+theorem progBin_ok (cx : Ctx C) (hP : ParamsOK cx.P) (t : St C) (l : Layer C) (ls : List (Layer C))
+    (G : List (List C)) (Lb : List C) (h : t.stack = l :: ls)
+    (hpr : l.progressive = true) (hinc : l.incremental = true) (hnl : l.legacy = false) (hpe : l.pend = [])
+    (htl : l.tail = []) (hg : GroupsOK cx l.prog G) (hlv : l.level = G.length) (hcov : Cov cx.H cx.z0 true l.nodes Lb)
+    (hrd : ∀ n ∈ l.nodes, n.cell.isReady = true) (hsh : ∀ n ∈ l.nodes, n.depth < 40)
+    (hlf : l.collapsed = false → l.level = 0 ∧ ∀ n ∈ l.nodes, n.depth = 0)
+    (ht : TopOK t) (hsmall : Lb.length < 4 ^ l.level) (hL : Lb.length < 2 ^ 40) :
+    ∃ l' ls', (t.collapseBinary cx).stack = l' :: ls' ∧ ProgOK cx l' G Lb ∧ l'.pend = [] ∧ TopOK (t.collapseBinary cx) ∧
+      ls'.map Layer.erase = ls.map Layer.erase ∧ (t.collapseBinary cx).base.map Cell.erase = t.base.map Cell.erase ∧
+      (t.collapseBinary cx).hashErr = t.hashErr ∧ (t.collapseBinary cx).below.length = t.below.length ∧
+      HolesSub t.below (t.collapseBinary cx).below := by
+  have hnarrow : ∀ (ns : List (Node C)), Cov cx.H cx.z0 true ns Lb → ∀ n ∈ ns, n.depth ≤ 2 * l.level := by
+    intro ns hc n hn
+    have h1 := cov_node_le cx.H cx.z0 hc n hn
+    rw [four_pow] at hsmall
+    have : 2 ^ n.depth < 2 ^ (2 * l.level) := by omega
+    have := (Nat.pow_lt_pow_iff_right (by decide : 1 < 2)).mp this
+    omega
+  have hpend : PendOK cx l := ⟨fun _ => htl, by simp [hpe], by simp [htl], by simp [hpe], fun h => absurd hpe h⟩
+  by_cases hne : l.nodes = []
+  · have he : t.collapseBinary cx = t := by
+      unfold St.collapseBinary; rw [h]; simp only [hpe, ne_eq, not_true_eq_false, if_false]
+      rw [if_pos (by unfold d0Chunks; rw [hne]; simp; exact hP.batch_pos)]
+    rw [he]
+    exact ⟨l, ls, h, ⟨hpr, hinc, hnl, hg, hlv, hcov, hnarrow _ hcov, hsh, hlf, hpend⟩, hpe, ht, rfl, rfl, rfl, rfl,
+      HolesSub.refl _⟩
+  have hb : BinOK cx l.flat Lb :=
+    ⟨(fun hi => absurd (hi.symm.trans hinc) (by decide)), rfl, (fun hl => by have : l.legacy = true := hl; rw [hnl] at this; cases this), rfl, hpe, htl,
+      hcov, (fun hc => (hlf hc).2), hsh, (fun n hn hr => by rw [hrd n hn] at hr; cases hr), (fun _ => hne)⟩
+  have hst := collapseBin_prog cx hP t l ls Lb h hb hinc ht hL false
+  simp only [Bool.false_eq_true, if_false] at hst
+  obtain ⟨l', ls', h', hsc', hi', hp', hlv', hpm', _, ht', hle', hba', hh', hbl', hsub'⟩ := hst
+  obtain ⟨hco', hpe', _⟩ := collapseBinary_top2 cx t l ls h hpe l' ls' h'
+  obtain ⟨L1, hLb, hb', hpo'⟩ := hsc'
+  have htl' : l'.tail = [] := hpo'.tail hpe'
+  have hL1 : L1 = Lb := by rw [hLb]; simp [pendLeaves, Layer.flat, hpe', htl']
+  subst hL1
+  have hcov' : Cov cx.H cx.z0 true l'.nodes L1 := hb'.cov
+  refine ⟨l', ls', h', ⟨by rw [hp']; exact hpr, by rw [hi']; exact hinc, ?_, groupsOK_erase cx hg hpm',
+    by rw [hlv']; exact hlv, hcov', by rw [hlv']; exact hnarrow _ hcov', hb'.shallow, ?_,
+    ⟨fun _ => htl', by simp [hpe'], by simp [htl'], by simp [hpe'], fun h => absurd hpe' h⟩⟩, hpe', ht', hle',
+    hba', hh', hbl', hsub'⟩
+  · cases hlg : l'.legacy
+    · rfl
+    · have h1 : l'.incremental = false := hb'.nolegacy hlg
+      rw [hi', hinc] at h1; cases h1
+  · intro hc
+    have hc0 : l.collapsed = false := by
+      cases hcl : l.collapsed
+      · rfl
+      · rw [hco' hcl] at hc; cases hc
+    obtain ⟨h0, _⟩ := hlf hc0
+    exact ⟨by rw [hlv']; exact h0, hb'.leaves hc⟩
+
 end Ssz.Hasher
