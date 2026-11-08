@@ -696,27 +696,31 @@ def St.collapseProgressive (cx : Ctx C) (s : St C) (async : Bool) : St C :=
        else (((s.drainFor s.topStart).progInit l).precollapse cx).1.progCore cx async)
     else ((s.drainFor s.topStart).progInit l).progCore cx async
 
+/-- The partial last group's root joins the roots. -/
+def St.closePartial (cx : Ctx C) (s : St C) (l : Layer C) : St C × Layer C :=
+  if l.nodes ≠ [] then
+    ((s.collapseAll cx l.nodes (4 ^ l.level)).1,
+     { l with prog := l.prog ++ [(s.collapseAll cx l.nodes (4 ^ l.level)).2], nodes := [], counted := 0 })
+  else (s, l)
+
+/-- The fold of the roots, right to left. -/
+def St.closeFold (cx : Ctx C) (s : St C) : St C × Cell C :=
+  match s.stack with
+  | [] => (s, .ready cx.z0)
+  | l :: _ => ((s.vals l.prog "fold").1, .ready ((s.vals l.prog "fold").2.foldr (fun r acc => cx.H r acc) cx.z0))
+
+/-- After the collapses and the drain. -/
+def St.closeTail (cx : Ctx C) (s : St C) : St C × Cell C :=
+  match s.stack with
+  | [] => (s, .ready cx.z0)
+  | l :: _ => (((s.closePartial cx l).1.setTop (s.closePartial cx l).2).drainAll).closeFold cx
+
 /-- `collapseProgressiveLayer`: finalize all groups, the partial remainder,
     and fold the roots right to left. Returns the root cell. -/
 def St.closeProgressive (cx : Ctx C) (s : St C) (async : Bool) : St C × Cell C :=
-  let s := s.collapseProgressive cx async
-  let s := if s.jobs ≠ [] then (s.drainAll).collapseProgressive cx async else s
-  let s := s.drainAll
-  match s.stack with
-  | [] => (s, .ready cx.z0)
-  | l :: _ =>
-    let (s, l) :=
-      if l.nodes ≠ [] then
-        let l := { l with counted := l.nodes.length }
-        let (s, root) := s.collapseAll cx l.nodes (4 ^ l.level)
-        (s, { l with prog := l.prog ++ [root], nodes := [], counted := 0 })
-      else (s, l)
-    let s := (s.setTop l).drainAll
-    match s.stack with
-    | [] => (s, .ready cx.z0)
-    | l :: _ =>
-      let (s, roots) := s.vals l.prog "fold"
-      (s, .ready (roots.foldr (fun r acc => cx.H r acc) cx.z0))
+  (if (s.collapseProgressive cx async).jobs ≠ [] then
+      ((s.collapseProgressive cx async).drainAll).collapseProgressive cx async
+    else s.collapseProgressive cx async).drainAll.closeTail cx
 
 /-! ## Operations -/
 
