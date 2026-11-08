@@ -584,4 +584,78 @@ theorem flush_prog (cx : Ctx C) (hP : ParamsOK cx.P) (s : St C) (l : Layer C) (l
       · exact hA
   · exact hsync
 
+/-! ## `Collapse` on a progressive scope -/
+
+/-- A progressive scope with no run: its leaves. -/
+theorem progOK_of_scope {cx : Ctx C} {l : Layer C} {L : List C} (hs : ProgScope cx l L) (hpe : l.pend = []) :
+    ∃ G Lb, L = G.flatten ++ Lb ∧ ProgOK cx l G Lb := by
+  obtain ⟨G, Lb, hL, hp⟩ := hs
+  refine ⟨G, Lb, ?_, hp⟩
+  rw [hL]; simp [pendLeaves, hpe, hp.pendOK.tail hpe]
+
+theorem progScope_of_ok {cx : Ctx C} {l : Layer C} {G : List (List C)} {Lb : List C} (hp : ProgOK cx l G Lb)
+    (hpe : l.pend = []) : ProgScope cx l (G.flatten ++ Lb) :=
+  ⟨G, Lb, by simp [pendLeaves, hpe, hp.pendOK.tail hpe], hp⟩
+
+/-- The part of `Collapse` after the flush, on a progressive scope. -/
+theorem collapseTail_prog (cx : Ctx C) (hP : ParamsOK cx.P) (t : St C) (l : Layer C) (ls : List (Layer C))
+    (L : List C) (h : t.stack = l :: ls) (hs : ProgScope cx l L) (ht : TopOK t) (hL : L.length < 2 ^ 40) (a : Bool) :
+    PStep cx t (if a = true ∧ l.cells.length - l.prog.length < cx.P.active then t
+      else (if l.pend ≠ [] then t.flushSync cx else t).collapseProgressive cx a) l ls L := by
+  split
+  · exact PStep.refl cx h hs ht
+  · have hpre : PStep cx t (if l.pend ≠ [] then t.flushSync cx else t) l ls L := by
+      split
+      · obtain ⟨l', h', hs', _, _, _, _, ht', hbl', hba', hh'⟩ := flushSync_prog cx t l ls L h hs ht
+        exact ⟨l', ls, h', hs', ht', rfl, by rw [hba'], hh', by rw [hbl'], by rw [hbl']; exact HolesSub.refl _⟩
+      · exact PStep.refl cx h hs ht
+    -- the flushed scope has no run
+    have hnp : ∀ l2 ls2, (if l.pend ≠ [] then t.flushSync cx else t).stack = l2 :: ls2 → l2.pend = [] := by
+      intro l2 ls2 h2
+      split at h2
+      · obtain ⟨l', h', _, hpe', _⟩ := flushSync_prog cx t l ls L h hs ht
+        rw [h'] at h2; obtain ⟨rfl, rfl⟩ := List.cons.inj h2; exact hpe'
+      · rename_i hpe; rw [h] at h2; obtain ⟨rfl, rfl⟩ := List.cons.inj h2; simpa using hpe
+    apply PStep.trans cx hpre
+    intro l2 ls2 h2 hs2 ht2 _
+    have hpe2 := hnp l2 ls2 h2
+    obtain ⟨G, Lb, hL2, hp2⟩ := progOK_of_scope hs2 hpe2
+    obtain ⟨l', ls', G', Lb', h', hp', hfl', hpe', ht', hle', hba', hh', hbl', hsub', _⟩ :=
+      collapseProgressive_ok cx hP _ l2 ls2 G Lb a h2 hp2 hpe2 ht2 (by rw [← hL2]; exact hL)
+    refine ⟨l', ls', h', ?_, ht', hle', hba', hh', hbl', hsub'⟩
+    rw [hL2, hfl']; exact progScope_of_ok hp' hpe'
+
+/-- **`Collapse` on a progressive scope**: the run is flushed (or kept while
+    too small for the background path), a small active region is left for
+    later, otherwise the scope collapses progressively. -/
+theorem collapse_prog (cx : Ctx C) (hP : ParamsOK cx.P) (s : St C) (l : Layer C) (ls : List (Layer C)) (L : List C)
+    (h : s.stack = l :: ls) (hs : ProgScope cx l L) (ht : TopOK s) (hL : L.length < 2 ^ 40) (a : Bool) :
+    PStep cx s (s.step cx (.collapse a)) l ls L := by
+  obtain ⟨hpr, hinc, _⟩ := hs.flags
+  by_cases hpe : l.pend = []
+  · have : s.step cx (.collapse a) = if a = true ∧ l.cells.length - l.prog.length < cx.P.active then s
+        else (if l.pend ≠ [] then s.flushSync cx else s).collapseProgressive cx a := by
+      simp only [St.step, h, hinc, Bool.not_true, Bool.false_eq_true, if_false, hpe, ne_eq, not_true_eq_false,
+        false_and]
+      simp only [h, hpr, if_true]
+    rw [this]; exact collapseTail_prog cx hP s l ls L h hs ht hL a
+  by_cases hsm : a = true ∧ l.pend.length * l.pendC < cx.P.cap
+  · have : s.step cx (.collapse a) = s := by simp [St.step, h, hinc, hpe, hsm.1, hsm.2]
+    rw [this]; exact PStep.refl cx h hs ht
+  have hfl := flush_prog cx hP s l ls L h hs ht a a
+  obtain ⟨l1, ls1, h1, hs1, ht1, hle1, hba1, hh1, hbl1, hsub1⟩ := hfl
+  obtain ⟨hpr1, _, _⟩ := hs1.flags
+  have hstep : s.step cx (.collapse a) = if a = true ∧ l1.cells.length - l1.prog.length < cx.P.active then s.flush cx a a
+      else (if l1.pend ≠ [] then (s.flush cx a a).flushSync cx else s.flush cx a a).collapseProgressive cx a := by
+    have hsm' : ¬ (a = true ∧ l.pend.length * l.pendC < cx.P.cap) := hsm
+    simp only [St.step, h, hinc, Bool.not_true, Bool.false_eq_true, if_false, ne_eq, hpe, not_false_eq_true,
+      true_and, if_true]
+    rw [if_neg (by simpa using hsm')]
+    simp only [h1, hpr1, if_true]
+  rw [hstep]
+  apply PStep.trans cx ⟨l1, ls1, h1, hs1, ht1, hle1, hba1, hh1, hbl1, hsub1⟩
+  intro l2 ls2 h2 hs2 ht2 _
+  rw [h1] at h2; obtain ⟨rfl, rfl⟩ := List.cons.inj h2
+  exact collapseTail_prog cx hP _ l1 ls1 L h1 hs2 ht2 hL a
+
 end Ssz.Hasher
