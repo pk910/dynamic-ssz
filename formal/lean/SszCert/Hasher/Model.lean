@@ -560,13 +560,14 @@ def St.binRound (cx : Ctx C) (c : Nat) (s : St C) (l : Layer C) : St C :=
 
 /-- One progressive round: the elements' roots computed in the background
     land as depth-0 nodes. -/
+def progRoundLayer (be : Nat) (l : Layer C) (holes : List (Cell C)) : Layer C :=
+  { l with nodes := l.nodes ++ holes.map (fun h => ⟨0, h⟩), pend := l.pend.drop be }
+
 def St.progRound (cx : Ctx C) (c : Nat) (s : St C) (l : Layer C) : St C :=
   (s.enqueue cx (l.pend.take (cx.P.cap / c)).flatten (cx.P.cap / c) (s.activeStart + (nodeCells l.nodes).length)).1.setTop
-    (let l' := (s.enqueue cx (l.pend.take (cx.P.cap / c)).flatten (cx.P.cap / c)
-                  (s.activeStart + (nodeCells l.nodes).length)).1.topLayer l
-     { l' with nodes := l'.nodes ++ (s.enqueue cx (l.pend.take (cx.P.cap / c)).flatten (cx.P.cap / c)
-                  (s.activeStart + (nodeCells l.nodes).length)).2.map (fun h => ⟨0, h⟩),
-               pend := l'.pend.drop (cx.P.cap / c) })
+    (progRoundLayer (cx.P.cap / c)
+      ((s.enqueue cx (l.pend.take (cx.P.cap / c)).flatten (cx.P.cap / c) (s.activeStart + (nodeCells l.nodes).length)).1.topLayer l)
+      (s.enqueue cx (l.pend.take (cx.P.cap / c)).flatten (cx.P.cap / c) (s.activeStart + (nodeCells l.nodes).length)).2)
 
 /-- The rounds of `flushPendingAsync` (`dflt`: the scope it started on). -/
 def flushAsyncLoop (cx : Ctx C) (dflt : Layer C) (c : Nat) : Nat → St C → Bool → St C × Bool
