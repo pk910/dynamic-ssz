@@ -18,7 +18,7 @@ variable {C : Type}
 structure BinOK (cx : Ctx C) (l : Layer C) (L : List C) : Prop where
   ninc : l.incremental = false → l.collapsed = false
   noprog : l.progressive = false
-  nolegacy : l.legacy = false
+  nolegacy : l.legacy = true → l.incremental = false
   prog : l.prog = []
   pend : l.pend = []
   tail : l.tail = []
@@ -305,7 +305,7 @@ theorem binOK_of_erase (cx : Ctx C) {l l' : Layer C} {L : List C} (hb : BinOK cx
     have : n.erase ∈ l.nodes.map Node.erase := by rw [← hn]; exact List.mem_map_of_mem hn'
     obtain ⟨m, hm, he'⟩ := List.mem_map.mp this
     exact ⟨m, hm, by have := congrArg Node.depth he'; exact this⟩
-  refine ⟨fun hi => by rw [hco]; exact hb.ninc (by rw [← hinc]; exact hi), by rw [hpr]; exact hb.noprog, by rw [hle]; exact hb.nolegacy,
+  refine ⟨fun hi => by rw [hco]; exact hb.ninc (by rw [← hinc]; exact hi), by rw [hpr]; exact hb.noprog, fun hl' => by rw [hinc]; exact hb.nolegacy (by rw [← hle]; exact hl'),
     ?_, ?_, ?_, cov_of_erase_eq cx.H cx.z0 hn hb.cov, ?_, ?_, hh, ?_⟩
   · rw [hb.prog] at hp; exact map_erase_nil hp
   · rw [hb.pend] at hd; simpa using hd

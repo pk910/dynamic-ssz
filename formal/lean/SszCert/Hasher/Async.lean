@@ -405,7 +405,10 @@ theorem capRound_bin (cx : Ctx C) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) (hcd : 0
     have : l1.incremental = false := hi
     rw [e, hinc] at this; cases this
   · show l1.progressive = false; have := congrArg Layer.progressive he1; exact this.trans hb.noprog
-  · show l1.legacy = false; have := congrArg Layer.legacy he1; exact this.trans hb.nolegacy
+  · intro hl1
+    have e1 : l1.legacy = l.legacy := by have := congrArg Layer.legacy he1; exact this
+    have : l.legacy = true := by rw [← e1]; exact hl1
+    have := hb.nolegacy this; rw [hinc] at this; cases this
   · show l1.prog = []; have := congrArg Layer.prog he1; simpa [Layer.erase, hb.prog] using this
   · show l1.pend = []; have := congrArg Layer.pend he1; simpa [Layer.erase, hb.pend] using this
   · show l1.tail = []; have := congrArg Layer.tail he1; simpa [Layer.erase, hb.tail] using this

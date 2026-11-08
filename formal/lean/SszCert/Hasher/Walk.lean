@@ -124,7 +124,7 @@ theorem start_binary (cx : Ctx C) (p : Bool) :
   first | rfl | decide
 
 theorem binOK_start (cx : Ctx C) (p : Bool) : BinOK cx (binLayer p) ([] : List C) :=
-  ⟨fun _ => rfl, rfl, rfl, rfl, rfl, rfl, rfl, fun _ n hn => by simp [binLayer] at hn,
+  ⟨fun _ => rfl, rfl, (fun h => by cases h), rfl, rfl, rfl, rfl, fun _ n hn => by simp [binLayer] at hn,
     fun n hn => by simp [binLayer] at hn, fun n hn => by simp [binLayer] at hn, fun hc => by cases hc⟩
 
 theorem topOK_start (p : Bool) : TopOK ({ stack := [binLayer p] } : St C) := by

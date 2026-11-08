@@ -171,15 +171,24 @@ theorem prog_none (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C)) (L
 inductive Kind where
   | binary
   | none
+  /-- `Index`: a legacy scope (reduced in place, never deferred). -/
+  | index
   deriving DecidableEq
 
 def Kind.tt : Kind → TreeType
   | .binary => .binary
   | .none => .none
+  | .index => .none
+
+/-- The call that opens the scope. -/
+def Kind.openOp : Kind → Bool → Op C
+  | .index, _ => .index
+  | k, p => .startTree k.tt p
 
 def Kind.layer : Kind → Bool → Layer C
   | .binary, p => { incremental := true, legacy := false, progressive := false, packed := p }
   | .none, p => { incremental := false, legacy := false, progressive := false, packed := p }
+  | .index, _ => { incremental := false, legacy := true, progressive := false, packed := false }
 
 /-- How a scope is closed. -/
 inductive CloseOp (C : Type) where
@@ -217,6 +226,7 @@ def CloseOp.ok : CloseOp C → Bool → Nat → Prop
 def Kind.inc : Kind → Bool
   | .binary => true
   | .none => false
+  | .index => false
 
 theorem Kind.layer_inc (k : Kind) (p : Bool) : (k.layer p : Layer C).incremental = k.inc := by cases k <;> rfl
 
@@ -234,7 +244,6 @@ theorem closeChild (cx : Ctx C) (hP : ParamsOK cx.P) (s : St C) (l p : Layer C) 
   have hs0 := hs
   obtain ⟨_, _, hbs, _⟩ := hs0
   have hnp : l.progressive = false := hbs.noprog
-  have hnl : l.legacy = false := hbs.nolegacy
   cases cl with
   | mixin num limit a =>
     have hstep : s.step cx (CloseOp.mixin num limit a).op =
@@ -275,6 +284,10 @@ theorem closeChild (cx : Ctx C) (hP : ParamsOK cx.P) (s : St C) (l p : Layer C) 
       have hpi' : p.incremental = true := by simpa using hpi
       simp only [hpi', Bool.not_true, Bool.false_eq_true, if_false]
       -- the child: plain ready leaves
+      have hnl : l.legacy = false := by
+        cases hlg : l.legacy
+        · rfl
+        · simp [hlg] at hdef
       have hlp : l.pend = [] := by
         cases hli : l.incremental
         · exact hn hli
@@ -381,7 +394,7 @@ end
 
 mutual
 def Tree.ops : Tree C → List (Op C)
-  | .mk k p b c => .startTree k.tt p :: b.ops ++ [c.op]
+  | .mk k p b c => k.openOp p :: b.ops ++ [c.op]
 def Body.ops : Body C → List (Op C)
   | .nil => []
   | .leaf v r => .leaf v :: r.ops
@@ -429,20 +442,26 @@ theorem Kind.layer_cells (k : Kind) (p : Bool) : (k.layer p : Layer C).cells = [
 theorem Kind.layer_ok (cx : Ctx C) (k : Kind) (p : Bool) : ScopeOK cx (k.layer p : Layer C) [] := by
   apply scopeOK_of_bin
   cases k
-  · exact ⟨(fun h => by cases h), rfl, rfl, rfl, rfl, rfl, rfl, (fun _ n hn => by simp [Kind.layer] at hn),
+  · exact ⟨(fun h => by cases h), rfl, (fun h => by cases h), rfl, rfl, rfl, rfl, (fun _ n hn => by simp [Kind.layer] at hn),
       (fun n hn => by simp [Kind.layer] at hn), (fun n hn => by simp [Kind.layer] at hn), (fun hc => by cases hc)⟩
-  · exact ⟨(fun _ => rfl), rfl, rfl, rfl, rfl, rfl, rfl, (fun _ n hn => by simp [Kind.layer] at hn),
+  · exact ⟨(fun _ => rfl), rfl, (fun h => by cases h), rfl, rfl, rfl, rfl, (fun _ n hn => by simp [Kind.layer] at hn),
+      (fun n hn => by simp [Kind.layer] at hn), (fun n hn => by simp [Kind.layer] at hn), (fun hc => by cases hc)⟩
+  · exact ⟨(fun _ => rfl), rfl, (fun _ => rfl), rfl, rfl, rfl, rfl, (fun _ n hn => by simp [Kind.layer] at hn),
       (fun n hn => by simp [Kind.layer] at hn), (fun n hn => by simp [Kind.layer] at hn), (fun hc => by cases hc)⟩
 
-/-- `StartTree` on a scope: the parent flushes its run when the child is
-    incremental, then the child's empty scope opens. -/
+/-- `StartTree` (or `Index`) on a scope: the parent flushes its run when the
+    child is incremental, then the child's empty scope opens. -/
 theorem open_child (cx : Ctx C) (s : St C) (p : Layer C) (ps : List (Layer C)) (Lp : List C) (k : Kind)
     (pk : Bool) (h : s.stack = p :: ps) (hs : ScopeOK cx p Lp) (hpn : p.incremental = false → p.pend = [])
     (ht : TopOK s) :
-    ∃ sF, StepOK cx s sF p ps Lp ∧ s.step cx (.startTree k.tt pk) = { sF with stack := k.layer pk :: sF.stack } := by
+    ∃ sF, StepOK cx s sF p ps Lp ∧ s.step cx (k.openOp pk) = { sF with stack := k.layer pk :: sF.stack } := by
+  by_cases hk : k = .index
+  · subst hk; exact ⟨s, StepOK.refl cx h hs hpn ht, rfl⟩
+  have hop : (k.openOp pk : Op C) = .startTree k.tt pk := by cases k <;> simp_all [Kind.openOp]
+  rw [hop]
   have hl : ∀ t : St C, ({ t with stack := Kind.rawLayer k pk :: t.stack } : St C) =
       { t with stack := k.layer pk :: t.stack } := by
-    intro t; cases k <;> rfl
+    intro t; cases k <;> first | rfl | exact absurd rfl hk
   by_cases hc : k.tt ≠ TreeType.none ∧ p.pend ≠ []
   · obtain ⟨p1, hF, hb1, hi1, _, htF, hbF, hbaF, hhF⟩ := flushSync_scope cx s p ps Lp h hs ht
     refine ⟨s.flushSync cx, ⟨p1, ps, hF, scopeOK_of_bin cx hb1, hi1, fun _ => hb1.pend, htF, rfl,
@@ -541,7 +560,7 @@ end
 /-! ## The hasher's root -/
 
 theorem start_kind (cx : Ctx C) (k : Kind) (pk : Bool) :
-    ({} : St C).step cx (.startTree k.tt pk) = { stack := [k.layer pk] } := by
+    ({} : St C).step cx (k.openOp pk) = { stack := [k.layer pk] } := by
   cases k <;> rfl
 
 theorem topOK_empty : TopOK ({} : St C) :=
