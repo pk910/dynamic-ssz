@@ -18,6 +18,10 @@ import SszCert.Hasher.Binary
 import SszCert.Hasher.Async
 import SszCert.Hasher.Close
 import SszCert.Hasher.Walk
+import SszCert.Hasher.Defer
+import SszCert.Hasher.Flush
+import SszCert.Hasher.Scope
+import SszCert.Hasher.Nested
 import SszCert.Sha256
 import SszCert.Merkle
 import SszCert.Certified

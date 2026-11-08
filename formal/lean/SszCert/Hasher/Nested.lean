@@ -260,4 +260,241 @@ theorem closeChild (cx : Ctx C) (hP : ParamsOK cx.P) (s : St C) (l p : Layer C) 
         exact hfin _ _ rfl hp hpi' hT hc2
     · exact hred
 
+/-! ## Trees of calls -/
+
+mutual
+/-- A scope: opened, filled, closed. -/
+inductive Tree (C : Type) where
+  | mk (kind : Kind) (packed : Bool) (body : Body C) (close : CloseOp)
+/-- A scope's body: leaves, `Collapse` hints (either mode) and child scopes. -/
+inductive Body (C : Type) where
+  | nil
+  | leaf (v : C) (rest : Body C)
+  | collapse (async : Bool) (rest : Body C)
+  | sub (t : Tree C) (rest : Body C)
+end
+
+mutual
+def Tree.ops : Tree C → List (Op C)
+  | .mk k p b c => .startTree k.tt p :: b.ops ++ [c.op]
+def Body.ops : Body C → List (Op C)
+  | .nil => []
+  | .leaf v r => .leaf v :: r.ops
+  | .collapse a r => .collapse a :: r.ops
+  | .sub t r => t.ops ++ r.ops
+end
+
+mutual
+/-- **The specified root** of a scope. -/
+def Tree.root (cx : Ctx C) : Tree C → C
+  | .mk _ _ b c => c.rootOf cx (b.leaves cx)
+/-- The leaves of a body: its chunks and its children's roots. -/
+def Body.leaves (cx : Ctx C) : Body C → List C
+  | .nil => []
+  | .leaf v r => v :: r.leaves cx
+  | .collapse _ r => r.leaves cx
+  | .sub t r => t.root cx :: r.leaves cx
+end
+
+mutual
+/-- Every scope's leaves fit its limit and the model's 2^40 chunk bound. -/
+def Tree.WF (cx : Ctx C) : Tree C → Prop
+  | .mk _ _ b c => b.WF cx ∧ (b.leaves cx).length < 2 ^ 40 ∧ c.ok (b.leaves cx).length
+def Body.WF (cx : Ctx C) : Body C → Prop
+  | .nil => True
+  | .leaf _ r => r.WF cx
+  | .collapse _ r => r.WF cx
+  | .sub t r => t.WF cx ∧ r.WF cx
+end
+
+theorem topOK_open (s : St C) (nl : Layer C) (hc : nl.cells = []) (ht : TopOK s) :
+    TopOK ({ s with stack := nl :: s.stack } : St C) := by
+  have hcells : ({ s with stack := nl :: s.stack } : St C).cells = s.cells := by
+    simp [St.cells, hc]
+  exact ⟨⟨fun j hj => by rw [hcells]; exact ht.holes.inplace j hj,
+    fun q v id idx hq => by rw [hcells] at hq; exact ht.holes.owned q v id idx hq,
+    ht.holes.distinct, ht.holes.maxEnd⟩, ht.err, ht.jobsne, ht.ids⟩
+
+/-- The layer `StartTree` pushes, as the model writes it. -/
+def Kind.rawLayer (k : Kind) (pk : Bool) : Layer C := { incremental := decide (k.tt ≠ TreeType.none), legacy := false, progressive := k.tt == TreeType.progressive, packed := pk }
+
+theorem Kind.layer_cells (k : Kind) (p : Bool) : (k.layer p : Layer C).cells = [] := by
+  cases k <;> rfl
+
+theorem Kind.layer_ok (cx : Ctx C) (k : Kind) (p : Bool) : ScopeOK cx (k.layer p : Layer C) [] := by
+  apply scopeOK_of_bin
+  cases k
+  · exact ⟨(fun h => by cases h), rfl, rfl, rfl, rfl, rfl, rfl, (fun _ n hn => by simp [Kind.layer] at hn),
+      (fun n hn => by simp [Kind.layer] at hn), (fun n hn => by simp [Kind.layer] at hn), (fun hc => by cases hc)⟩
+  · exact ⟨(fun _ => rfl), rfl, rfl, rfl, rfl, rfl, rfl, (fun _ n hn => by simp [Kind.layer] at hn),
+      (fun n hn => by simp [Kind.layer] at hn), (fun n hn => by simp [Kind.layer] at hn), (fun hc => by cases hc)⟩
+
+/-- `StartTree` on a scope: the parent flushes its run when the child is
+    incremental, then the child's empty scope opens. -/
+theorem open_child (cx : Ctx C) (s : St C) (p : Layer C) (ps : List (Layer C)) (Lp : List C) (k : Kind)
+    (pk : Bool) (h : s.stack = p :: ps) (hs : ScopeOK cx p Lp) (hpn : p.incremental = false → p.pend = [])
+    (ht : TopOK s) :
+    ∃ sF, StepOK cx s sF p ps Lp ∧ s.step cx (.startTree k.tt pk) = { sF with stack := k.layer pk :: sF.stack } := by
+  have hl : ∀ t : St C, ({ t with stack := Kind.rawLayer k pk :: t.stack } : St C) =
+      { t with stack := k.layer pk :: t.stack } := by
+    intro t; cases k <;> rfl
+  by_cases hc : k.tt ≠ TreeType.none ∧ p.pend ≠ []
+  · obtain ⟨p1, hF, hb1, hi1, _, htF, hbF, hbaF, hhF⟩ := flushSync_scope cx s p ps Lp h hs ht
+    refine ⟨s.flushSync cx, ⟨p1, ps, hF, scopeOK_of_bin cx hb1, hi1, fun _ => hb1.pend, htF, rfl,
+      by rw [hbaF], hhF, by rw [hbF], by rw [hbF]; exact HolesSub.refl _⟩, ?_⟩
+    simp only [St.step, h]; rw [if_pos hc]; exact hl _
+  · refine ⟨s, StepOK.refl cx h hs hpn ht, ?_⟩
+    simp only [St.step, h]; rw [if_neg hc]
+    have := hl s; rw [h] at this ⊢; exact this
+
+theorem St.below_open (s : St C) (nl : Layer C) : ({ s with stack := nl :: s.stack } : St C).below = s.cells := by
+  simp [St.below, St.cells]
+
+theorem step_leaf (cx : Ctx C) (s : St C) (v : C) : s.step cx (.leaf v) = s.push (.ready v) := rfl
+
+mutual
+/-- **A child scope, whatever its calls**, adds exactly its specified root
+    to its parent's leaves. -/
+theorem Tree.step_ok (cx : Ctx C) (hP : ParamsOK cx.P) : ∀ (t : Tree C) (s : St C) (p : Layer C)
+    (ps : List (Layer C)) (Lp : List C), s.stack = p :: ps → ScopeOK cx p Lp →
+    (p.incremental = false → p.pend = []) → TopOK s → t.WF cx → (Lp ++ [t.root cx]).length < 2 ^ 40 →
+    StepOK cx s (t.ops.foldl (St.step cx) s) p ps (Lp ++ [t.root cx])
+  | .mk k pk b cl, s, p, ps, Lp, h, hs, hpn, ht, hwf, hlen => by
+    obtain ⟨hwb, hwl, hok⟩ := hwf
+    simp only [Tree.ops, Tree.root] at hlen ⊢
+    rw [List.foldl_append, List.foldl_cons, List.foldl_cons, List.foldl_nil]
+    obtain ⟨sF, hF, hstep⟩ := open_child cx s p ps Lp k pk h hs hpn ht
+    rw [hstep]
+    have hF0 := hF
+    obtain ⟨p1, ps1, hF1, hs1, _, hn1, htF, _, _, _, _, _⟩ := hF0
+    have ht1 := topOK_open sF (k.layer pk) (Kind.layer_cells k pk) htF
+    have hb := Body.step_ok cx hP b { sF with stack := k.layer pk :: sF.stack } (k.layer pk) sF.stack []
+      rfl (Kind.layer_ok cx k pk) (fun _ => by cases k <;> rfl) ht1 hwb (by simpa using hwl)
+    simp only [List.nil_append] at hb
+    obtain ⟨l2, ls2, h2, hs2, _, hn2, ht2, hle2, hba2, hh2, _, hsub2⟩ := hb
+    rw [hF1] at hle2
+    obtain ⟨p2, ps2, rfl⟩ : ∃ p2 ps2, ls2 = p2 :: ps2 := by
+      cases ls2 with
+      | nil => simp at hle2
+      | cons p2 ps2 => exact ⟨p2, ps2, rfl⟩
+    -- the parent kept its values and lost holes only
+    have hj1 : Jump sF (b.ops.foldl (St.step cx) { sF with stack := k.layer pk :: sF.stack }).pop := by
+      refine ⟨?_, ?_, ?_⟩
+      · show (_, _) = (_, _)
+        simp only [St.pop, h2, List.tail_cons]
+        rw [hba2, hle2, hF1]
+      · rw [St.pop_cells _ l2 _ h2, ← St.below_open sF (k.layer pk)]; exact hsub2
+      · exact hh2
+    obtain ⟨q2, qs2, hq2, hle, _⟩ := LayerLE.of_view hj1.view hF1 hj1.holes
+    have hq2' : q2 = p2 := by simp [St.pop, h2] at hq2; exact hq2.1.symm
+    subst hq2'
+    have hsp2 : ScopeOK cx q2 Lp := hle.scopeOK cx hs1
+    have hpn2 : q2.incremental = false → q2.pend = [] := by
+      intro hf
+      have hp1 := hn1 (by rw [← hle.flag_incremental]; exact hf)
+      have := hle.pend_map; rw [hp1] at this; simpa using this
+    obtain ⟨t, q, qs, hq, hj, htt, hst⟩ := closeChild cx hP _ l2 q2 ps2 (b.leaves cx) Lp cl h2 hs2 hn2 ht2
+      hok hsp2 hpn2 hlen
+    have hFt : StepOK cx s t p ps Lp := StepOK.jump cx hF (hj1.trans hj) htt
+    apply StepOK.trans cx hFt
+    intro l3 ls3 h3 _ _ _ _ _
+    rw [hq] at h3
+    obtain ⟨rfl, rfl⟩ := List.cons.inj h3
+    exact hst
+
+/-- **A body of calls** appends its leaves (chunks and children's roots) to
+    the scope. -/
+theorem Body.step_ok (cx : Ctx C) (hP : ParamsOK cx.P) : ∀ (b : Body C) (s : St C) (l : Layer C)
+    (ls : List (Layer C)) (L : List C), s.stack = l :: ls → ScopeOK cx l L →
+    (l.incremental = false → l.pend = []) → TopOK s → b.WF cx → (L ++ b.leaves cx).length < 2 ^ 40 →
+    StepOK cx s (b.ops.foldl (St.step cx) s) l ls (L ++ b.leaves cx)
+  | .nil, s, l, ls, L, h, hs, hn, ht, _, _ => by
+    simp only [Body.ops, Body.leaves, List.foldl_nil, List.append_nil]
+    exact StepOK.refl cx h hs hn ht
+  | .leaf v r, s, l, ls, L, h, hs, hn, ht, hwf, hlen => by
+    simp only [Body.ops, Body.leaves, List.foldl_cons, step_leaf] at hlen ⊢
+    apply StepOK.trans cx (push_scope cx s l ls L v h hs hn ht)
+    intro l2 ls2 h2 hs2 _ hn2 ht2 _
+    have := Body.step_ok cx hP r _ l2 ls2 (L ++ [v]) h2 hs2 hn2 ht2 hwf (by simpa using hlen)
+    simpa using this
+  | .collapse a r, s, l, ls, L, h, hs, hn, ht, hwf, hlen => by
+    simp only [Body.ops, Body.leaves, List.foldl_cons] at hlen ⊢
+    apply StepOK.trans cx (collapse_scope cx hP s l ls L h hs hn ht (by simp at hlen; omega) a)
+    intro l2 ls2 h2 hs2 _ hn2 ht2 _
+    exact Body.step_ok cx hP r _ l2 ls2 L h2 hs2 hn2 ht2 hwf hlen
+  | .sub t r, s, l, ls, L, h, hs, hn, ht, hwf, hlen => by
+    obtain ⟨hwt, hwr⟩ := hwf
+    simp only [Body.ops, Body.leaves, List.foldl_append] at hlen ⊢
+    apply StepOK.trans cx (Tree.step_ok cx hP t s l ls L h hs hn ht hwt (by simp at hlen ⊢; omega))
+    intro l2 ls2 h2 hs2 _ hn2 ht2 _
+    have := Body.step_ok cx hP r _ l2 ls2 (L ++ [t.root cx]) h2 hs2 hn2 ht2 hwr (by simpa using hlen)
+    simpa using this
+end
+
+/-! ## The hasher's root -/
+
+theorem start_kind (cx : Ctx C) (k : Kind) (pk : Bool) :
+    ({} : St C).step cx (.startTree k.tt pk) = { stack := [k.layer pk] } := by
+  cases k <;> rfl
+
+theorem topOK_empty : TopOK ({} : St C) :=
+  ⟨⟨fun j hj => by simp at hj, fun q v id idx hq => by simp [St.cells] at hq, by simp, fun j hj => by simp at hj⟩,
+    rfl, fun j hj => by simp at hj, fun j hj => by simp at hj⟩
+
+/-- A top-level close leaves one ready root in an otherwise empty hasher. -/
+theorem root_after_jump (s t : St C) (l : Layer C) (h : s.stack = [l]) (hb : s.base.map Cell.erase = [])
+    (hh : s.hashErr = none) (hj : Jump s.pop t) (ht : TopOK t) (r : C) : (t.push (.ready r)).root = some r := by
+  have hv := hj.view
+  simp only [St.view, St.pop, h, List.tail_cons, List.map_nil, Prod.mk.injEq] at hv
+  apply root_single t ht (erase_nil_layers hv.2) (by have := hv.1; rw [hb] at this; simpa using this)
+    (by rw [hj.herr]; exact hh)
+
+/-- **The hasher computes the specified root.** For every tree of calls the
+    engines make (binary and non-incremental scopes nested to any depth;
+    leaves; `Collapse` hints anywhere, each synchronous or asynchronous;
+    children closed with `Merkleize` — deferred into an incremental parent
+    whenever Go defers them — or `MerkleizeWithMixin`), `HashRoot` returns
+    the root the SSZ specification assigns, and none of the model's
+    protocol checks fires (no hole read or moved before its drain, no
+    scratch write over a live chunk, no impossible state). -/
+theorem run_tree (cx : Ctx C) (hP : ParamsOK cx.P) (t : Tree C) (hwf : t.WF cx) :
+    (run cx t.ops).root = some (t.root cx) := by
+  cases t with
+  | mk k pk b cl =>
+    obtain ⟨hwb, hwl, hok⟩ := hwf
+    unfold run
+    simp only [Tree.ops, Tree.root]
+    rw [List.foldl_append, List.foldl_cons, List.foldl_cons, List.foldl_nil, start_kind]
+    have ht0 : TopOK ({ stack := [k.layer pk] } : St C) :=
+      topOK_open ({} : St C) (k.layer pk) (Kind.layer_cells k pk) topOK_empty
+    have hb := Body.step_ok cx hP b { stack := [k.layer pk] } (k.layer pk) [] [] rfl (Kind.layer_ok cx k pk)
+      (fun _ => by cases k <;> rfl) ht0 hwb (by simpa using hwl)
+    simp only [List.nil_append] at hb
+    generalize (b.ops.foldl (St.step cx) { stack := [k.layer pk] }) = s2 at hb ⊢
+    obtain ⟨l2, ls2, h2, hs2, _, _, ht2, hle2, hba2, hh2, _, _⟩ := hb
+    rw [erase_nil_layers hle2] at h2
+    have hba : s2.base.map Cell.erase = [] := by simpa using hba2
+    have hh : s2.hashErr = none := hh2
+    have hs0 := hs2
+    obtain ⟨_, _, hbs, _⟩ := hs0
+    have hnp : l2.progressive = false := hbs.noprog
+    cases cl with
+    | mixin num limit a =>
+      have hstep : s2.step cx (CloseOp.mixin num limit a).op =
+          ((s2.flushSync cx).drainFor (s2.flushSync cx).topStart).mixinClose cx num limit := by
+        simp only [CloseOp.op, St.step, h2, hnp, Bool.false_eq_true, if_false]
+      obtain ⟨t, hj, htt, he⟩ := mixin_scope cx s2 l2 [] _ num limit h2 hs2 ht2 hok
+      rw [hstep, he]
+      exact root_after_jump s2 t l2 h2 hba hh hj htt _
+    | merkleize a =>
+      obtain ⟨t, hj, htt, he⟩ := closeBinary_scope cx s2 l2 [] _ 0 a h2 hs2 ht2 (Or.inl rfl)
+      have hstep : s2.step cx (CloseOp.merkleize a).op = s2.closeBinary cx 0 a := by
+        simp only [CloseOp.op, St.step, h2, hnp, Bool.false_eq_true, if_false]
+        split
+        · rename_i hls _; cases hls
+        · rfl
+      rw [hstep, he]
+      have := root_after_jump s2 t l2 h2 hba hh hj htt (mroot cx.H cx.z0 (closeDepth (b.leaves cx).length 0) (b.leaves cx))
+      simpa [CloseOp.rootOf, closeDepth] using this
+
 end Ssz.Hasher
