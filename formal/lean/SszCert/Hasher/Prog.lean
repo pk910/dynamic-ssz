@@ -1252,4 +1252,144 @@ theorem precollapse_false (cx : Ctx C) (p : St C) (l : Layer C) (ls : List (Laye
     simp only [St.failUnless, if_true, precollapseLoop, h]
     rw [if_pos hf]
 
+/-- After the cap rounds, fewer than a cap of leaves trail the cap nodes. -/
+def CapsRest (P : Params) (l : Layer C) : Prop :=
+  l.nodes.any (fun n => n.depth ≠ 0 ∧ n.depth ≠ P.capDepth) = true ∨ (l.nodes.drop (capCount P l)).length < P.cap
+
+theorem capCount_of_split (P : Params) (l : Layer C) (ncap : Nat) (hcd : 0 < P.capDepth)
+    (h1 : ∀ n ∈ l.nodes.take ncap, n.depth = P.capDepth) (h2 : ∀ n ∈ l.nodes.drop ncap, n.depth = 0) :
+    l.nodes.drop (capCount P l) = l.nodes.drop ncap := by
+  have hsplit : l.nodes = l.nodes.take ncap ++ l.nodes.drop ncap := (List.take_append_drop _ _).symm
+  have hcc : capCount P l = (l.nodes.take ncap).length := by
+    unfold capCount
+    have e : l.nodes.filter (·.depth == P.capDepth) = l.nodes.take ncap := by
+      conv => lhs; rw [hsplit]
+      rw [List.filter_append, List.filter_eq_self.mpr (fun n hn => by simp [h1 n hn]),
+        List.filter_eq_nil_iff.mpr (fun n hn => by simp [h2 n hn]; omega), List.append_nil]
+    rw [e]
+  rw [hcc]
+  by_cases hl : ncap ≤ l.nodes.length
+  · rw [List.length_take, Nat.min_eq_left hl]
+  · rw [List.length_take, Nat.min_eq_right (by omega), List.drop_length,
+      List.drop_eq_nil_of_le (by omega)]
+
+theorem precollapseLoop_rest (cx : Ctx C) (hcd : 0 < cx.P.capDepth) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) :
+    ∀ fuel (t : St C) (ncap : Nat),
+    TopShape (fun l => (∀ n ∈ l.nodes.take ncap, n.depth = cx.P.capDepth) ∧ (∀ n ∈ l.nodes.drop ncap, n.depth = 0) ∧
+      (l.nodes.drop ncap).length < cx.P.cap + fuel) t →
+    TopShape (fun l => CapsRest cx.P l) (precollapseLoop cx fuel t ncap) := by
+  intro fuel
+  induction fuel with
+  | zero =>
+    intro t ncap ht l ls h
+    obtain ⟨h1, h2, h3⟩ := ht l ls h
+    right; rw [capCount_of_split cx.P l ncap hcd h1 h2]; omega
+  | succ fuel ih =>
+    intro t ncap ht
+    cases h : t.stack with
+    | nil => simp only [precollapseLoop, h]; intro l ls hl; rw [h] at hl; cases hl
+    | cons l ls =>
+      obtain ⟨h1, h2, h3⟩ := ht l ls h
+      simp only [precollapseLoop, h]
+      split
+      · rename_i hsm
+        intro l2 ls2 hl2; rw [h] at hl2; obtain ⟨rfl, rfl⟩ := List.cons.inj hl2
+        right; rw [capCount_of_split cx.P l ncap hcd h1 h2]; exact hsm
+      · rename_i hbig
+        apply ih
+        obtain ⟨l', ls', h', hsh⟩ := enqueue_top cx t (nodeCells ((l.nodes.drop ncap).take cx.P.cap)) 1
+          (t.activeStart + ncap) l ls h
+        have hc : (t.capJob cx l ncap).1.stack = l' :: ls' := h'
+        have htl : (t.capJob cx l ncap).1.topLayer l = l' := by simp [St.topLayer, hc]
+        rw [htl]
+        intro l2 ls2 h2'
+        rw [St.setTop_stack _ l' _ ls' hc] at h2'
+        obtain ⟨rfl, rfl⟩ := List.cons.inj h2'
+        have hlen : l'.nodes.length = l.nodes.length := by
+          have := congrArg List.length hsh.depths; simpa using this
+        have hdi : ∀ i (hi : i < l'.nodes.length) (hi0 : i < l.nodes.length), (l'.nodes[i]).depth = (l.nodes[i]).depth := by
+          intro i hi hi0
+          have := congrArg (fun xs => xs[i]?) hsh.depths
+          simp only [List.getElem?_map, List.getElem?_eq_getElem hi, List.getElem?_eq_getElem hi0, Option.map_some,
+            Option.some.injEq] at this
+          exact this
+        have hnc : ncap ≤ l.nodes.length := by
+          rcases Nat.lt_or_ge l.nodes.length ncap with hlt | hge
+          · rw [List.drop_eq_nil_of_le (by omega)] at hbig; simp at hbig
+            have := Nat.one_le_two_pow (n := cx.P.capDepth); omega
+          · exact hge
+        have hholes : (t.capJob cx l ncap).2.length = 1 := by simp [St.capJob, St.enqueue]
+        obtain ⟨hc0, hhs⟩ : ∃ hc0, (t.capJob cx l ncap).2 = [hc0] := by
+          cases hh : (t.capJob cx l ncap).2 with
+          | nil => rw [hh] at hholes; cases hholes
+          | cons x xs => rw [hh] at hholes; cases xs with
+            | nil => exact ⟨x, rfl⟩
+            | cons _ _ => simp at hholes
+        rw [hhs]
+        have hmt : (l'.nodes.take ncap).map (·.depth) = (l.nodes.take ncap).map (·.depth) := by
+          rw [List.map_take, hsh.depths, ← List.map_take]
+        have hmd : (l'.nodes.drop ncap).map (·.depth) = (l.nodes.drop ncap).map (·.depth) := by
+          rw [List.map_drop, hsh.depths, ← List.map_drop]
+        have hlt' : (l'.nodes.take ncap).length = ncap := by simp; omega
+        have hnodes : (capCompact cx.P l' ncap [hc0]).nodes =
+            (l'.nodes.take ncap ++ [⟨cx.P.capDepth, hc0⟩]) ++ (l'.nodes.drop ncap).drop cx.P.cap := rfl
+        have hl2 : (l'.nodes.take ncap ++ [(⟨cx.P.capDepth, hc0⟩ : Node C)]).length = ncap + 1 := by simp [hlt']
+        refine ⟨?_, ?_, ?_⟩
+        · intro n hn
+          rw [hnodes, List.take_append_of_le_length (by rw [hl2]; omega), List.take_of_length_le (by rw [hl2]; omega)] at hn
+          rcases List.mem_append.mp hn with hn | hn
+          · have : n.depth ∈ (l.nodes.take ncap).map (·.depth) := by rw [← hmt]; exact List.mem_map_of_mem hn
+            obtain ⟨m, hm, he⟩ := List.mem_map.mp this
+            rw [← he]; exact h1 m hm
+          · simp at hn; rw [hn]
+        · intro n hn
+          rw [hnodes, List.drop_append_of_le_length (by rw [hl2]; omega), List.drop_of_length_le (by rw [hl2]; omega),
+            List.nil_append] at hn
+          have : n.depth ∈ (l.nodes.drop ncap).map (·.depth) := by
+            rw [← hmd]; exact List.mem_map_of_mem (List.mem_of_mem_drop hn)
+          obtain ⟨m, hm, he⟩ := List.mem_map.mp this
+          rw [← he]; exact h2 m hm
+        · rw [hnodes, List.drop_append_of_le_length (by rw [hl2]; omega), List.drop_of_length_le (by rw [hl2]; omega),
+            List.nil_append, List.length_drop, List.length_drop, hlen]
+          rw [List.length_drop] at h3
+          have := Nat.one_le_two_pow (n := cx.P.capDepth)
+          omega
+
+/-- **After a pre-collapse**, the scope bails (a node of another depth) or
+    fewer than a cap of leaves trail its cap nodes. -/
+theorem precollapse_rest (cx : Ctx C) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) (hcd : 0 < cx.P.capDepth)
+    (s : St C) (l : Layer C) (ls : List (Layer C)) (h : s.stack = l :: ls) (hni : NonInc l.nodes)
+    (hd0 : l.collapsed = false → ∀ n ∈ l.nodes, n.depth = 0) :
+    TopShape (fun l => CapsRest cx.P l) (s.precollapse cx).1 := by
+  have hlay : (s.uncollapsedAsLeaves l).2.nodes = l.nodes := by
+    unfold St.uncollapsedAsLeaves
+    cases hc : l.collapsed
+    · simp only [Bool.false_eq_true, if_false]; exact map_depth_zero l.nodes (hd0 hc)
+    · rfl
+  have hn : s.normTop.stack = (s.uncollapsedAsLeaves l).2 :: ls := by
+    unfold St.normTop; rw [h]; simp only
+    exact St.setTop_stack _ l _ ls (by rw [uncollapsedAsLeaves_state' s l]; exact h)
+  unfold St.precollapse
+  rw [hn]
+  simp only
+  split
+  · rename_i hany
+    intro l2 ls2 h2; rw [hn] at h2; obtain ⟨rfl, rfl⟩ := List.cons.inj h2; left; simpa using hany
+  · rename_i hany
+    apply precollapseLoop_rest cx hcd hcap
+    intro l2 ls2 h2
+    rw [failUnless_stack, hn] at h2
+    obtain ⟨rfl, rfl⟩ := List.cons.inj h2
+    have hd : ∀ n ∈ (s.uncollapsedAsLeaves l).2.nodes, n.depth = 0 ∨ n.depth = cx.P.capDepth := by
+      intro n hn'
+      by_cases h0 : n.depth = 0
+      · exact Or.inl h0
+      by_cases h1 : n.depth = cx.P.capDepth
+      · exact Or.inr h1
+      exfalso; apply hany; rw [List.any_eq_true]; exact ⟨n, hn', by simp [h0, h1]⟩
+    have hni' : NonInc (s.uncollapsedAsLeaves l).2.nodes := by rw [hlay]; exact hni
+    have hok := caps_then_leaves cx.P _ hni' hcd hd
+    simp only [Bool.and_eq_true, List.all_eq_true] at hok
+    refine ⟨fun n hn' => by simpa using hok.1 n hn', fun n hn' => by simpa using hok.2 n hn', by omega⟩
+
 end Ssz.Hasher
