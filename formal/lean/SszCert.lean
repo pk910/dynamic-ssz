@@ -11,6 +11,7 @@ import SszCert.Extended
 import SszCert.Hasher.Model
 import SszCert.Hasher.Spec
 import SszCert.Hasher.Nodes
+import SszCert.Hasher.State
 import SszCert.Sha256
 import SszCert.Merkle
 import SszCert.Certified
