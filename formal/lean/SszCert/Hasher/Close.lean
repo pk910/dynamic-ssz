@@ -113,7 +113,7 @@ theorem drainTop_bin (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C))
     ∃ l' ls', (s.drainFor s.topStart).stack = l' :: ls' ∧ BinOK cx l' L ∧ TopOK (s.drainFor s.topStart) ∧
       (∀ c ∈ l'.cells, c.isReady = true) ∧ ls'.map Layer.erase = ls.map Layer.erase ∧
       (s.drainFor s.topStart).base.map Cell.erase = s.base.map Cell.erase ∧
-      (s.drainFor s.topStart).hashErr = s.hashErr := by
+      (s.drainFor s.topStart).hashErr = s.hashErr ∧ HolesSub s.below (s.drainFor s.topStart).below := by
   obtain ⟨hv, ht2, hh2, _⟩ := drainFor_spec s ht s.topStart
   obtain ⟨l2, ls2, hs2, he2, hle2⟩ := stack_of_view hv h
   have htop : s.topStart = s.below.length := St.topStart_eq s l ls h
@@ -136,7 +136,8 @@ theorem drainTop_bin (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C))
       simp only [Layer.cells, List.mem_append, nodeCells, List.mem_map]
       exact Or.inl (Or.inl (Or.inr ⟨n, hn, rfl⟩))
     rw [hr2 _ this] at hnr; cases hnr)
-  exact ⟨l2, ls2, hs2, hb2, ht2, hr2, hle2, congrArg Prod.fst hv, hh2⟩
+  exact ⟨l2, ls2, hs2, hb2, ht2, hr2, hle2, congrArg Prod.fst hv, hh2,
+    holesSub_below hv h hs2 (drainFor_holesSub s ht.holes _)⟩
 
 theorem St.cells_pop (s : St C) (l : Layer C) (ls : List (Layer C)) (h : s.stack = l :: ls) :
     ({ s with stack := ls } : St C).cells = s.below := by
@@ -172,16 +173,17 @@ theorem closeBinary_bin (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer 
     (limit : Nat) (a : Bool) (h : s.stack = l :: ls) (hb : BinOK cx l L) (ht : TopOK s)
     (hlim : limit = 0 ∨ L.length ≤ limit) :
     ∃ s1 : St C, s1.stack.map Layer.erase = ls.map Layer.erase ∧ TopOK s1 ∧
-      s1.base.map Cell.erase = s.base.map Cell.erase ∧ s1.hashErr = s.hashErr ∧
+      s1.base.map Cell.erase = s.base.map Cell.erase ∧ s1.hashErr = s.hashErr ∧ HolesSub s.below s1.cells ∧
       s.closeBinary cx limit a = s1.push (.ready (mroot cx.H cx.z0 (closeDepth L.length limit) L)) := by
   have hfl := flushSync_nopend cx s l ls h hb.pend
-  obtain ⟨l2, ls2, hs2, hb2, ht2, hr2, hle2, hba2, hh2⟩ := drainTop_bin cx s l ls L h hb ht
+  obtain ⟨l2, ls2, hs2, hb2, ht2, hr2, hle2, hba2, hh2, hsub2⟩ := drainTop_bin cx s l ls L h hb ht
   obtain ⟨hst, hroot⟩ := binRoot_bin cx (s.drainFor s.topStart) l2 L limit hb2 hr2 hlim
   unfold St.closeBinary
   rw [hfl, hs2]
   simp only
   rw [hst, hroot, popWith_eq _ l2 ls2 hs2]
-  exact ⟨_, hle2, topOK_pop _ l2 ls2 hs2 ht2 hr2, hba2, hh2, rfl⟩
+  exact ⟨_, hle2, topOK_pop _ l2 ls2 hs2 ht2 hr2, hba2, hh2,
+    by rw [St.cells_pop _ l2 ls2 hs2]; exact hsub2, rfl⟩
 
 /-- **`MerkleizeWithMixin` on a binary scope**: the root mixes the scope's
     bounded Merkle root with the length word. -/
@@ -189,17 +191,18 @@ theorem mixinClose_bin (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C
     (num limit : Nat) (h : s.stack = l :: ls) (hb : BinOK cx l L) (ht : TopOK s)
     (hlim : limit = 0 ∨ L.length ≤ limit) :
     ∃ s1 : St C, s1.stack.map Layer.erase = ls.map Layer.erase ∧ TopOK s1 ∧
-      s1.base.map Cell.erase = s.base.map Cell.erase ∧ s1.hashErr = s.hashErr ∧
+      s1.base.map Cell.erase = s.base.map Cell.erase ∧ s1.hashErr = s.hashErr ∧ HolesSub s.below s1.cells ∧
       ((s.flushSync cx).drainFor (s.flushSync cx).topStart).mixinClose cx num limit =
         s1.push (.ready (cx.H (mroot cx.H cx.z0 (closeDepth L.length limit) L) (cx.word num))) := by
   have hfl := flushSync_nopend cx s l ls h hb.pend
-  obtain ⟨l2, ls2, hs2, hb2, ht2, hr2, hle2, hba2, hh2⟩ := drainTop_bin cx s l ls L h hb ht
+  obtain ⟨l2, ls2, hs2, hb2, ht2, hr2, hle2, hba2, hh2, hsub2⟩ := drainTop_bin cx s l ls L h hb ht
   obtain ⟨hst, hroot⟩ := binRoot_bin cx (s.drainFor s.topStart) l2 L limit hb2 hr2 hlim
   rw [hfl]
   unfold St.mixinClose
   rw [hs2]
   simp only
   rw [hst, hroot, vals_ready _ _ _ (by simp [Cell.isReady]), popWith_eq _ l2 ls2 hs2]
-  exact ⟨_, hle2, topOK_pop _ l2 ls2 hs2 ht2 hr2, hba2, hh2, rfl⟩
+  exact ⟨_, hle2, topOK_pop _ l2 ls2 hs2 ht2 hr2, hba2, hh2,
+    by rw [St.cells_pop _ l2 ls2 hs2]; exact hsub2, rfl⟩
 
 end Ssz.Hasher

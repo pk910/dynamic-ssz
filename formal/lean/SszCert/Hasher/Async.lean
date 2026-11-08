@@ -122,6 +122,11 @@ theorem ringDrain_topOK (P : Params) (s : St C) (ht : TopOK s) :
   · exact drainOldest_topOK s ht
   · exact ⟨rfl, ht, rfl, rfl, rfl⟩
 
+theorem ringDrain_holesSub (P : Params) (s : St C) (hok : HolesOK s) : HolesSub s.cells (s.ringDrain P).cells := by
+  unfold St.ringDrain; split
+  · exact (drainOldest_holesSub s hok).1
+  · exact HolesSub.refl _
+
 /-- **An enqueue with a ready input**: the ring-full drain, then the job
     appended with the reduction of its input. -/
 theorem enqueue_eq (cx : Ctx C) (s : St C) (input : List (Cell C)) (out dst : Nat)
@@ -268,7 +273,9 @@ theorem capRound_bin (cx : Ctx C) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) (hcd : 0
         (capCompact cx.P ((s.capJob cx l ncap).1.topLayer l) ncap (s.capJob cx l ncap).2)).hashErr = s.hashErr ∧
       ((s.capJob cx l ncap).1.setTop
         (capCompact cx.P ((s.capJob cx l ncap).1.topLayer l) ncap (s.capJob cx l ncap).2)).below.length =
-        s.below.length := by
+        s.below.length ∧
+      HolesSub s.below ((s.capJob cx l ncap).1.setTop
+        (capCompact cx.P ((s.capJob cx l ncap).1.topLayer l) ncap (s.capJob cx l ncap).2)).below := by
   -- the block and its readiness
   have hcl : l.cells = nodeCells l.nodes := layer_cells_bin l hb.prog hb.pend hb.tail
   have hblk : ∀ c ∈ nodeCells ((l.nodes.drop ncap).take cx.P.cap), c.isReady = true := by
@@ -390,7 +397,7 @@ theorem capRound_bin (cx : Ctx C) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) (hcd : 0
       ncap + 1 := by simp [htk]
   refine ⟨l', ls1, St.setTop_stack T l1 l' ls1 hTs, ⟨?_, ?_, ?_, ?_, ?_, ?_, hcov', (by intro hc; cases hc),
     cov_depth_lt cx.H cx.z0 hcov' hL, ?_, fun _ => by rw [hl'n]; simp⟩, ⟨?_, ?_, ?_, ?_⟩, ⟨?_, ?_, ?_⟩, ?_, hle1,
-    ?_, ?_, ?_⟩
+    ?_, ?_, ?_, ?_⟩
   · show l1.incremental = true; have := congrArg Layer.incremental he1; exact this.trans hb.inc
   · show l1.progressive = false; have := congrArg Layer.progressive he1; exact this.trans hb.noprog
   · show l1.legacy = false; have := congrArg Layer.legacy he1; exact this.trans hb.nolegacy
@@ -480,6 +487,9 @@ theorem capRound_bin (cx : Ctx C) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) (hcd : 0
     exact congrArg Prod.fst hv1
   · rw [St.setTop_hashErr]; exact hh1
   · rw [St.setTop_below T l1 l' ls1 hTs]; exact hbl1
+  · rw [St.setTop_below T l1 l' ls1 hTs]
+    show HolesSub s.below (s.ringDrain cx.P).below
+    exact holesSub_below hv1 h hs1 (ringDrain_holesSub cx.P s ht.holes)
 
 /-! ## The whole pre-collapse -/
 
@@ -558,21 +568,23 @@ theorem precollapseLoop_bin (cx : Ctx C) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) (
         TopOK (precollapseLoop cx fuel s ncap) ∧ ls'.map Layer.erase = ls.map Layer.erase ∧
         (precollapseLoop cx fuel s ncap).base.map Cell.erase = s.base.map Cell.erase ∧
         (precollapseLoop cx fuel s ncap).hashErr = s.hashErr ∧
-        (precollapseLoop cx fuel s ncap).below.length = s.below.length := by
+        (precollapseLoop cx fuel s ncap).below.length = s.below.length ∧
+        HolesSub s.below (precollapseLoop cx fuel s ncap).below := by
   intro fuel
   induction fuel with
-  | zero => intro s l ls ncap h hb ht _; exact ⟨l, ls, h, hb, ht, rfl, rfl, rfl, rfl⟩
+  | zero => intro s l ls ncap h hb ht _; exact ⟨l, ls, h, hb, ht, rfl, rfl, rfl, rfl, HolesSub.refl _⟩
   | succ fuel ih =>
     intro s l ls ncap h hb ht hsh
     simp only [precollapseLoop, h]
     split
-    · exact ⟨l, ls, h, hb, ht, rfl, rfl, rfl, rfl⟩
+    · exact ⟨l, ls, h, hb, ht, rfl, rfl, rfl, rfl, HolesSub.refl _⟩
     · rename_i hbig
-      obtain ⟨l', ls', hs', hb', ht', hsh', _, hle', hbase', hh', hbl'⟩ :=
+      obtain ⟨l', ls', hs', hb', ht', hsh', _, hle', hbase', hh', hbl', hsub'⟩ :=
         capRound_bin cx hcap hcd s l ls L ncap h hb ht hL hsh (by omega)
-      obtain ⟨l'', ls'', hs'', hb'', ht'', hle'', hbase'', hh'', hbl''⟩ := ih _ l' ls' (ncap + 1) hs' hb' ht' hsh'
+      obtain ⟨l'', ls'', hs'', hb'', ht'', hle'', hbase'', hh'', hbl'', hsub''⟩ :=
+        ih _ l' ls' (ncap + 1) hs' hb' ht' hsh'
       exact ⟨l'', ls'', hs'', hb'', ht'', by rw [hle'', hle'], by rw [hbase'', hbase'],
-        by rw [hh'', hh'], by rw [hbl'', hbl']⟩
+        by rw [hh'', hh'], by rw [hbl'', hbl'], HolesSub.trans hsub' hsub''⟩
 
 /-- **Asynchronous `Collapse` on a binary scope** (`precollapseCapRun`)
     keeps every invariant: whatever cap blocks become background jobs, the
@@ -583,13 +595,14 @@ theorem precollapse_bin (cx : Ctx C) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) (hcd 
     ∃ l' ls', (s.precollapse cx).1.stack = l' :: ls' ∧ BinOK cx l' L ∧ TopOK (s.precollapse cx).1 ∧
       ls'.map Layer.erase = ls.map Layer.erase ∧
       (s.precollapse cx).1.base.map Cell.erase = s.base.map Cell.erase ∧
-      (s.precollapse cx).1.hashErr = s.hashErr ∧ (s.precollapse cx).1.below.length = s.below.length := by
+      (s.precollapse cx).1.hashErr = s.hashErr ∧ (s.precollapse cx).1.below.length = s.below.length ∧
+      HolesSub s.below (s.precollapse cx).1.below := by
   obtain ⟨hns, hb0, ht0, hbl0, hba0, hh0⟩ := normTop_bin cx s l ls L h hb ht
   unfold St.precollapse
   rw [hns]
   simp only
   split
-  · exact ⟨_, ls, hns, hb0, ht0, rfl, by rw [hba0], hh0, by rw [hbl0]⟩
+  · exact ⟨_, ls, hns, hb0, ht0, rfl, by rw [hba0], hh0, by rw [hbl0], by rw [hbl0]; exact HolesSub.refl _⟩
   · rename_i hany
     have hd : ∀ n ∈ ({ l with counted := l.nodes.length } : Layer C).nodes,
         n.depth = 0 ∨ n.depth = cx.P.capDepth := by
@@ -605,8 +618,9 @@ theorem precollapse_bin (cx : Ctx C) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) (hcd 
     obtain ⟨hsh, hok⟩ := preShape_of_cov cx _ L hb0 hcd hd
     rw [hok]
     simp only [St.failUnless, if_true]
-    obtain ⟨l', ls', hs', hb', ht', hle', hba', hh', hbl'⟩ :=
+    obtain ⟨l', ls', hs', hb', ht', hle', hba', hh', hbl', hsub'⟩ :=
       precollapseLoop_bin cx hcap hcd L hL _ s.normTop _ ls _ hns hb0 ht0 hsh
-    exact ⟨l', ls', hs', hb', ht', hle', by rw [hba', hba0], by rw [hh', hh0], by rw [hbl', hbl0]⟩
+    exact ⟨l', ls', hs', hb', ht', hle', by rw [hba', hba0], by rw [hh', hh0], by rw [hbl', hbl0],
+      by rw [← hbl0]; exact hsub'⟩
 
 end Ssz.Hasher

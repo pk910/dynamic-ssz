@@ -278,6 +278,11 @@ theorem drainFor_spec (s : St C) (ht : TopOK s) (p : Nat) :
       fun j hj => by rw [h2] at hj; simp at hj⟩, h5, h7⟩
   · exact ⟨rfl, ht, rfl, rfl⟩
 
+theorem drainFor_holesSub (s : St C) (hok : HolesOK s) (p : Nat) : HolesSub s.cells (s.drainFor p).cells := by
+  unfold St.drainFor; split
+  · exact drainAll_holesSub s hok
+  · exact HolesSub.refl _
+
 theorem view_stack {s s' : St C} (h : s'.view = s.view) : s'.stack.map Layer.erase = s.stack.map Layer.erase :=
   congrArg Prod.snd h
 
@@ -338,6 +343,13 @@ theorem below_length_of_view {s s' : St C} (h : s'.view = s.view) {l l' : Layer 
     simpa [List.map_map, Function.comp_def] using this
   rw [h2]
 
+/-- Holes of the cells restrict to holes of the region below the innermost scope. -/
+theorem holesSub_below {s s' : St C} (h : s'.view = s.view) {l l' : Layer C} {ls ls' : List (Layer C)}
+    (hs : s.stack = l :: ls) (hs' : s'.stack = l' :: ls') (hc : HolesSub s.cells s'.cells) :
+    HolesSub s.below s'.below := by
+  rw [St.cells_top s l ls hs, St.cells_top s' l' ls' hs'] at hc
+  exact holesSub_prefix (below_length_of_view h hs hs').symm hc
+
 theorem uncollapsedAsLeaves_state (s : St C) (l : Layer C)
     (h : l.collapsed = false → ∀ n ∈ l.nodes, n.depth = 0) : (s.uncollapsedAsLeaves l).1 = s := by
   unfold St.uncollapsedAsLeaves
@@ -372,12 +384,12 @@ theorem collapseBinary_bin (cx : Ctx C) (hb0 : 0 < cx.P.batch) (hb2 : cx.P.batch
     ∃ l' ls', (s.collapseBinary cx).stack = l' :: ls' ∧ BinOK cx l' L ∧ TopOK (s.collapseBinary cx) ∧
       ls'.map Layer.erase = ls.map Layer.erase ∧
       (s.collapseBinary cx).base.map Cell.erase = s.base.map Cell.erase ∧
-      (s.collapseBinary cx).hashErr = s.hashErr := by
+      (s.collapseBinary cx).hashErr = s.hashErr ∧ HolesSub s.below (s.collapseBinary cx).below := by
   unfold St.collapseBinary
   rw [h]
   simp only [hb.pend, ne_eq, not_true_eq_false, if_false]
   split
-  · exact ⟨l, ls, h, hb, ht, rfl, rfl, rfl⟩
+  · exact ⟨l, ls, h, hb, ht, rfl, rfl, rfl, HolesSub.refl _⟩
   rename_i hd0
   -- the drain before the rounds
   obtain ⟨hv, ht2, hh2, _⟩ := drainFor_spec s ht s.activeStart
@@ -427,7 +439,7 @@ theorem collapseBinary_bin (cx : Ctx C) (hb0 : 0 < cx.P.batch) (hb2 : cx.P.batch
   refine ⟨_, ls2, St.setTop_stack _ l2 _ ls2 hs2, ⟨hb2'.inc, hb2'.noprog, hb2'.nolegacy, hb2'.prog, hb2'.pend,
     hb2'.tail, hcov, by simp, cov_depth_lt cx.H cx.z0 hcov hL,
     (fun n hn hnr' => by rw [hnr n hn] at hnr'; cases hnr'), fun _ => ?_⟩,
-    ?_, hle2, ?_, ?_⟩
+    ?_, hle2, ?_, ?_, ?_⟩
   · -- a batch ran, so the scope had nodes and has them still
     intro e
     have e' : ns = [] := e
@@ -450,5 +462,7 @@ theorem collapseBinary_bin (cx : Ctx C) (hb0 : 0 < cx.P.batch) (hb2 : cx.P.batch
     unfold St.setTop; rw [hs2]; exact this
   · show ((s.drainFor s.activeStart).setTop _).hashErr = s.hashErr
     unfold St.setTop; rw [hs2]; exact hh2
+  · rw [St.setTop_below _ l2 _ ls2 hs2]
+    exact holesSub_below hv h hs2 (drainFor_holesSub s ht.holes _)
 
 end Ssz.Hasher

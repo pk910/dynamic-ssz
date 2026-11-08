@@ -63,20 +63,20 @@ theorem body_bin (cx : Ctx C) (hP : ParamsOK cx.P) : ∀ (body : List (Op C)), (
       ∃ l' ls', (body.foldl (St.step cx) s).stack = l' :: ls' ∧ BinOK cx l' (L ++ leafVals body) ∧
         TopOK (body.foldl (St.step cx) s) ∧ ls'.map Layer.erase = ls.map Layer.erase ∧
         (body.foldl (St.step cx) s).base.map Cell.erase = s.base.map Cell.erase ∧
-        (body.foldl (St.step cx) s).hashErr = s.hashErr := by
+        (body.foldl (St.step cx) s).hashErr = s.hashErr ∧ HolesSub s.below (body.foldl (St.step cx) s).below := by
   intro body
   induction body with
-  | nil => intro _ s l ls L h hb ht _; exact ⟨l, ls, h, by simpa [leafVals] using hb, ht, rfl, rfl, rfl⟩
+  | nil => intro _ s l ls L h hb ht _; exact ⟨l, ls, h, by simpa [leafVals] using hb, ht, rfl, rfl, rfl, HolesSub.refl _⟩
   | cons op rest ih =>
     intro hbody s l ls L h hb ht hL
     have hrest : ∀ op ∈ rest, BinBody op := fun o ho => hbody o (List.mem_cons_of_mem _ ho)
     rw [List.foldl_cons]
     cases hbody op (by simp) with
     | leaf v =>
-      obtain ⟨hs1, hb1, ht1, _, hh1⟩ := push_bin cx s l ls L v h hb ht
+      obtain ⟨hs1, hb1, ht1, hbl1, hh1⟩ := push_bin cx s l ls L v h hb ht
       have hL' : (L ++ [v] ++ leafVals rest).length < 2 ^ 40 := by simpa [leafVals] using hL
-      obtain ⟨l', ls', hs', hb', ht', hle', hba', hh'⟩ := ih hrest _ _ ls _ hs1 hb1 ht1 hL'
-      refine ⟨l', ls', hs', by simpa [leafVals] using hb', ht', hle', ?_, ?_⟩
+      obtain ⟨l', ls', hs', hb', ht', hle', hba', hh', hsub'⟩ := ih hrest _ _ ls _ hs1 hb1 ht1 hL'
+      refine ⟨l', ls', hs', by simpa [leafVals] using hb', ht', hle', ?_, ?_, by rw [← hbl1]; exact hsub'⟩
       · show (List.foldl (St.step cx) (s.push (.ready v)) rest).base.map Cell.erase = _
         rw [hba', push_base s l ls h]
       · show (List.foldl (St.step cx) (s.push (.ready v)) rest).hashErr = _
@@ -89,18 +89,19 @@ theorem body_bin (cx : Ctx C) (hP : ParamsOK cx.P) : ∀ (body : List (Op C)), (
           BinOK cx l1 L ∧ TopOK (if a then (s.precollapse cx).1 else s.collapseBinary cx) ∧
           ls1.map Layer.erase = ls.map Layer.erase ∧
           (if a then (s.precollapse cx).1 else s.collapseBinary cx).base.map Cell.erase = s.base.map Cell.erase ∧
-          (if a then (s.precollapse cx).1 else s.collapseBinary cx).hashErr = s.hashErr := by
+          (if a then (s.precollapse cx).1 else s.collapseBinary cx).hashErr = s.hashErr ∧
+          HolesSub s.below (if a then (s.precollapse cx).1 else s.collapseBinary cx).below := by
         cases a
         · simp only [Bool.false_eq_true, if_false]
           exact collapseBinary_bin cx hP.batch_pos hP.batch_even s l ls L h hb ht hL0
         · simp only [if_true]
-          obtain ⟨l1, ls1, h1, h2, h3, h4, h5, h6, _⟩ :=
+          obtain ⟨l1, ls1, h1, h2, h3, h4, h5, h6, _, h8⟩ :=
             precollapse_bin cx hP.cap hP.capDepth_pos s l ls L h hb ht hL0
-          exact ⟨l1, ls1, h1, h2, h3, h4, h5, h6⟩
-      obtain ⟨l1, ls1, hs1, hb1, ht1, hle1, hba1, hh1⟩ := hstep
-      obtain ⟨l', ls', hs', hb', ht', hle', hba', hh'⟩ := ih hrest _ l1 ls1 L hs1 hb1 ht1 hL'
+          exact ⟨l1, ls1, h1, h2, h3, h4, h5, h6, h8⟩
+      obtain ⟨l1, ls1, hs1, hb1, ht1, hle1, hba1, hh1, hsub1⟩ := hstep
+      obtain ⟨l', ls', hs', hb', ht', hle', hba', hh', hsub'⟩ := ih hrest _ l1 ls1 L hs1 hb1 ht1 hL'
       exact ⟨l', ls', hs', by simpa [leafVals] using hb', ht', by rw [hle', hle1], by rw [hba', hba1],
-        by rw [hh', hh1]⟩
+        by rw [hh', hh1], HolesSub.trans hsub1 hsub'⟩
 
 /-! ## The top-level tree -/
 
@@ -152,7 +153,7 @@ theorem top_body (cx : Ctx C) (hP : ParamsOK cx.P) (p : Bool) (body : List (Op C
       (body.foldl (St.step cx) (({} : St C).step cx (.startTree .binary p))).base = [] ∧
       (body.foldl (St.step cx) (({} : St C).step cx (.startTree .binary p))).hashErr = none := by
   rw [start_binary]
-  obtain ⟨l, ls, hs, hb, ht, hle, hba, hh⟩ :=
+  obtain ⟨l, ls, hs, hb, ht, hle, hba, hh, _⟩ :=
     body_bin cx hP body hbody { stack := [binLayer p] } (binLayer p) [] [] rfl (binOK_start cx p) (topOK_start p)
       (by simpa using hL)
   rw [erase_nil_layers hle] at hs
@@ -174,7 +175,7 @@ theorem run_binary (cx : Ctx C) (hP : ParamsOK cx.P) (p : Bool) (body : List (Op
     simp only [St.step, hs, hb.noprog, Bool.false_eq_true, if_false]
     split <;> simp_all
   rw [hm]
-  obtain ⟨s1, hle1, ht1, hba1, hh1, he⟩ := closeBinary_bin cx s l [] _ 0 a hs hb ht (Or.inl rfl)
+  obtain ⟨s1, hle1, ht1, hba1, hh1, _, he⟩ := closeBinary_bin cx s l [] _ 0 a hs hb ht (Or.inl rfl)
   rw [he]
   exact root_single s1 ht1 (erase_nil_layers hle1) (by rw [hba] at hba1; simpa using hba1) (by rw [hh1, hh]) _
 
@@ -194,7 +195,7 @@ theorem run_binary_mixin (cx : Ctx C) (hP : ParamsOK cx.P) (p : Bool) (body : Li
       ((s.flushSync cx).drainFor (s.flushSync cx).topStart).mixinClose cx num limit := by
     simp only [St.step, hs, hb.noprog, Bool.false_eq_true, if_false]
   rw [hm]
-  obtain ⟨s1, hle1, ht1, hba1, hh1, he⟩ := mixinClose_bin cx s l [] _ num limit hs hb ht hlim
+  obtain ⟨s1, hle1, ht1, hba1, hh1, _, he⟩ := mixinClose_bin cx s l [] _ num limit hs hb ht hlim
   rw [he]
   exact root_single s1 ht1 (erase_nil_layers hle1) (by rw [hba] at hba1; simpa using hba1) (by rw [hh1, hh]) _
 

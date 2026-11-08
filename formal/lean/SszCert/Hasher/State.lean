@@ -468,4 +468,88 @@ theorem drainAll_spec (s : St C) (hok : HolesOK s) :
     obtain ⟨j, hj, _⟩ := k3.owned p v id idx hp
     rw [k2] at hj; simp at hj
 
+/-! ## Drains only remove holes -/
+
+/-- Every hole of `b` is a hole of `a` at the same position. -/
+@[reducible] def HolesSub (a b : List (Cell C)) : Prop :=
+  ∀ (i : Nat) (c : Cell C), b[i]? = some c → c.isReady = false → ∃ c0 : Cell C, a[i]? = some c0 ∧ c0.isReady = false
+
+theorem HolesSub.refl (a : List (Cell C)) : HolesSub a a := fun _ c h hr => ⟨c, h, hr⟩
+
+theorem HolesSub.trans {a b c : List (Cell C)} (h1 : HolesSub a b) (h2 : HolesSub b c) : HolesSub a c := by
+  intro i x hx hr
+  obtain ⟨y, hy, hyr⟩ := h2 i x hx hr
+  exact h1 i y hy hyr
+
+theorem holesSub_fillAt (p : Nat) (vs : List C) (cs : List (Cell C)) : HolesSub cs (fillAt p vs cs) := by
+  intro i c hc hr
+  rw [fillAt_getElem?] at hc
+  cases h : cs[i]? with
+  | none => rw [h] at hc; cases hc
+  | some c0 =>
+    rw [h] at hc
+    simp only [Option.map_some, Option.some.injEq] at hc
+    split at hc
+    · subst hc; cases hr
+    · subst hc; exact ⟨_, rfl, hr⟩
+
+/-- On prefixes of equal length. -/
+theorem holesSub_prefix {a b a' b' : List (Cell C)} (hl : a.length = a'.length) (h : HolesSub (a ++ b) (a' ++ b')) :
+    HolesSub a a' := by
+  intro i c hc hr
+  have hi : i < a'.length := by
+    rcases Nat.lt_or_ge i a'.length with h1 | h1
+    · exact h1
+    · rw [List.getElem?_eq_none h1] at hc; cases hc
+  obtain ⟨c0, h0, h0r⟩ := h i c (by rw [List.getElem?_append_left hi]; exact hc) hr
+  exact ⟨c0, by rw [List.getElem?_append_left (by omega)] at h0; exact h0, h0r⟩
+
+/-- On suffixes after prefixes of equal length. -/
+theorem holesSub_suffix {a b a' b' : List (Cell C)} (hl : a.length = a'.length) (h : HolesSub (a ++ b) (a' ++ b')) :
+    HolesSub b b' := by
+  intro i c hc hr
+  obtain ⟨c0, h0, h0r⟩ := h (a'.length + i) c (by rw [List.getElem?_append_right (by omega)]; simpa using hc) hr
+  rw [List.getElem?_append_right (by omega), ← hl] at h0
+  exact ⟨c0, by simpa using h0, h0r⟩
+
+theorem holesSub_append {a b a' b' : List (Cell C)} (hl : a.length = a'.length) (h1 : HolesSub a a')
+    (h2 : HolesSub b b') : HolesSub (a ++ b) (a' ++ b') := by
+  intro i c hc hr
+  rcases Nat.lt_or_ge i a'.length with hi | hi
+  · rw [List.getElem?_append_left hi] at hc
+    obtain ⟨c0, h0, h0r⟩ := h1 i c hc hr
+    exact ⟨c0, by rw [List.getElem?_append_left (by omega)]; exact h0, h0r⟩
+  · rw [List.getElem?_append_right hi] at hc
+    obtain ⟨c0, h0, h0r⟩ := h2 _ c hc hr
+    exact ⟨c0, by rw [List.getElem?_append_right (by omega), hl]; exact h0, h0r⟩
+
+theorem drainOldest_holesSub (s : St C) (hok : HolesOK s) :
+    HolesSub s.cells s.drainOldest.cells ∧ HolesOK s.drainOldest ∧ s.drainOldest.view = s.view ∧
+    s.drainOldest.err = s.err ∧ s.drainOldest.hashErr = s.hashErr ∧
+    (∀ j ∈ s.drainOldest.jobs, j ∈ s.jobs) := by
+  cases hj : s.jobs with
+  | nil =>
+    have : s.drainOldest = s := by unfold St.drainOldest; rw [hj]
+    rw [this]; exact ⟨HolesSub.refl _, hok, rfl, rfl, rfl, fun j h => by rw [hj] at h; exact h⟩
+  | cons j js =>
+    obtain ⟨hd, hok'⟩ := drainOldest_spec s j js hj hok
+    have hlen : (fillAt j.dst j.out s.cells).length = s.cells.length := fillAt_length _ _ _
+    obtain ⟨_, _, hcells, _, herr, hherr, _, _⟩ := St.setCells_spec s _ hlen
+    rw [hd]
+    refine ⟨?_, hok', ?_, herr, hherr, fun j' h => by simp at h; exact List.mem_cons_of_mem _ h⟩
+    · show HolesSub s.cells (s.setCells (fillAt j.dst j.out s.cells)).cells
+      rw [hcells]; exact holesSub_fillAt _ _ _
+    · rw [view_with_jobs, view_setCells s _ hlen (fillAt_vals _ _ _)]
+
+theorem drainAll_holesSub (s : St C) (hok : HolesOK s) : HolesSub s.cells s.drainAll.cells := by
+  have key : ∀ n (t : St C), HolesOK t → HolesSub t.cells (St.drainAll.go n t).cells := by
+    intro n
+    induction n with
+    | zero => intro t _; exact HolesSub.refl _
+    | succ n ih =>
+      intro t ht
+      obtain ⟨h1, h2, _⟩ := drainOldest_holesSub t ht
+      exact HolesSub.trans h1 (ih _ h2)
+  exact key s.jobs.length s hok
+
 end Ssz.Hasher
