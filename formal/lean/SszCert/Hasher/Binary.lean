@@ -32,6 +32,7 @@ structure TopOK (s : St C) : Prop where
   holes : HolesOK s
   err : s.err = none
   jobsne : ∀ j ∈ s.jobs, j.out ≠ []
+  ids : ∀ j ∈ s.jobs, j.id < s.nextJob
 
 theorem job_end_le (s : St C) (hok : HolesOK s) (j : Job C) (hj : j ∈ s.jobs) (hne : j.out ≠ []) :
     j.dst + j.out.length ≤ s.cells.length := by
@@ -65,7 +66,7 @@ theorem push_bin (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C)) (L 
     rw [layer_cells_bin ({ l with nodes := l.nodes ++ [⟨0, .ready v⟩] } : Layer C) hb.prog hb.pend hb.tail, hcl]
     simp [nodeCells]
   refine ⟨St.setTop_stack s l _ ls h, ⟨hb.inc, hb.noprog, hb.nolegacy, hb.prog, hb.pend, hb.tail,
-    cov_push cx.H cx.z0 hb.cov (.ready v), ?_, ?_, ?_⟩, ⟨?_, ?_, ?_⟩, St.setTop_below s l _ ls h, ?_⟩
+    cov_push cx.H cx.z0 hb.cov (.ready v), ?_, ?_, ?_⟩, ⟨?_, ?_, ?_, ?_⟩, St.setTop_below s l _ ls h, ?_⟩
   · intro hc n hn
     rcases List.mem_append.mp hn with hn | hn
     · exact hb.leaves hc n hn
@@ -92,6 +93,7 @@ theorem push_bin (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C)) (L 
       exact this
   · rw [St.setTop_err]; exact ht.err
   · intro j hj; rw [St.setTop_jobs] at hj; exact ht.jobsne j hj
+  · intro j hj; rw [St.setTop_jobs] at hj; rw [St.setTop_nextJob]; exact ht.ids j hj
   · unfold St.setTop; rw [h]
 
 /-! ## Drains before a reduction -/
@@ -185,7 +187,8 @@ theorem jobs_below (s : St C) (l : Layer C) (ls : List (Layer C)) (h : s.stack =
 theorem topOK_setTop_ready (s : St C) (l l' : Layer C) (ls : List (Layer C)) (h : s.stack = l :: ls)
     (ht : TopOK s) (hr : ∀ c ∈ l.cells, c.isReady = true) (hr' : ∀ c ∈ l'.cells, c.isReady = true) :
     TopOK (s.setTop l') := by
-  refine ⟨?_, by rw [St.setTop_err]; exact ht.err, fun j hj => by rw [St.setTop_jobs] at hj; exact ht.jobsne j hj⟩
+  refine ⟨?_, by rw [St.setTop_err]; exact ht.err, fun j hj => by rw [St.setTop_jobs] at hj; exact ht.jobsne j hj,
+    fun j hj => by rw [St.setTop_jobs] at hj; rw [St.setTop_nextJob]; exact ht.ids j hj⟩
   apply holesOK_setTop s l l' ls h ht.holes 0 (Nat.zero_le _) (by simp) (Nat.zero_le _)
   · intro i _ hi'; exact hr' _ (List.getElem_mem hi')
   · intro j hj; have := jobs_below s l ls h ht hr j hj; omega
@@ -269,7 +272,8 @@ theorem drainFor_spec (s : St C) (ht : TopOK s) (p : Nat) :
   unfold St.drainFor
   split
   · obtain ⟨h1, h2, h3, h4, h5, _, h7⟩ := drainAll_spec s ht.holes
-    exact ⟨h1, ⟨h3, by rw [h4]; exact ht.err, fun j hj => by rw [h2] at hj; simp at hj⟩, h5, h7⟩
+    exact ⟨h1, ⟨h3, by rw [h4]; exact ht.err, fun j hj => by rw [h2] at hj; simp at hj,
+      fun j hj => by rw [h2] at hj; simp at hj⟩, h5, h7⟩
   · exact ⟨rfl, ht, rfl, rfl⟩
 
 theorem view_stack {s s' : St C} (h : s'.view = s.view) : s'.stack.map Layer.erase = s.stack.map Layer.erase :=

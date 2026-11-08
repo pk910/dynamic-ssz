@@ -42,6 +42,15 @@ theorem St.setTop_jobs (s : St C) (l' : Layer C) : (s.setTop l').jobs = s.jobs :
 theorem St.setTop_err (s : St C) (l' : Layer C) : (s.setTop l').err = s.err := by
   unfold St.setTop; split <;> rfl
 
+theorem St.setTop_nextJob (s : St C) (l' : Layer C) : (s.setTop l').nextJob = s.nextJob := by
+  unfold St.setTop; split <;> rfl
+
+theorem St.setTop_hashErr (s : St C) (l' : Layer C) : (s.setTop l').hashErr = s.hashErr := by
+  unfold St.setTop; split <;> rfl
+
+theorem St.setTop_base (s : St C) (l' : Layer C) : (s.setTop l').base = s.base := by
+  unfold St.setTop; split <;> rfl
+
 theorem St.setTop_jobMaxEnd (s : St C) (l' : Layer C) : (s.setTop l').jobMaxEnd = s.jobMaxEnd := by
   unfold St.setTop; split <;> rfl
 
