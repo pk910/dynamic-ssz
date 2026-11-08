@@ -658,4 +658,107 @@ theorem collapse_prog (cx : Ctx C) (hP : ParamsOK cx.P) (s : St C) (l : Layer C)
   rw [h1] at h2; obtain ⟨rfl, rfl⟩ := List.cons.inj h2
   exact collapseTail_prog cx hP _ l1 ls1 L h1 hs2 ht2 hL a
 
+/-! ## The progressive closes -/
+
+/-- The flush and drain before a progressive close, then the close. -/
+theorem progClose_core (cx : Ctx C) (hP : ParamsOK cx.P) (s : St C) (l : Layer C) (ls : List (Layer C)) (L : List C)
+    (async : Bool) (h : s.stack = l :: ls) (hs : ProgScope cx l L) (ht : TopOK s) (hL : L.length < 2 ^ 40) :
+    ∃ l2 ls2, ((s.flushSync cx).drainFor (s.flushSync cx).topStart).stack = l2 :: ls2 ∧ l2.progressive = true ∧
+      ∃ t : St C, Jump s.pop t ∧ TopOK t ∧
+        (((s.flushSync cx).drainFor (s.flushSync cx).topStart).closeProgressive cx async).2 =
+          .ready (progRoot cx.H cx.z0 0 L) ∧
+        ∀ c, (((s.flushSync cx).drainFor (s.flushSync cx).topStart).closeProgressive cx async).1.popWith c =
+          t.push c := by
+  obtain ⟨l1, h1, hs1, hpe1, _, _, _, ht1, hbl1, hba1, hh1⟩ := flushSync_prog cx s l ls L h hs ht
+  obtain ⟨l2, ls2, h2, hle2, hr2, ht2, hls2, hba2, hh2, hbl2, hsub2⟩ := drainTop_any _ l1 ls h1 ht1
+  have hs2 := hle2.progScope cx hs1
+  have hpe2 : l2.pend = [] := by have := hle2.pend_map; rw [hpe1] at this; simpa using this
+  obtain ⟨G, Lb, hL2, hp2⟩ := progOK_of_scope hs2 hpe2
+  obtain ⟨hroot, l', ls', h', hls', ht', hr', hba', hh', hsub'⟩ :=
+    closeProgressive_ok cx hP _ l2 ls2 G Lb async h2 hp2 hpe2 ht2 (by rw [← hL2]; exact hL)
+  refine ⟨l2, ls2, h2, hp2.prog, { (((s.flushSync cx).drainFor (s.flushSync cx).topStart).closeProgressive cx async).1 with
+    stack := ls' }, ⟨?_, ?_, ?_⟩, topOK_pop _ l' ls' h' ht' hr', by rw [hroot, hL2], ?_⟩
+  · show (_, _) = (_, _)
+    simp only [St.pop, h, List.tail_cons]
+    rw [hba', hba2, hba1, hls', hls2]
+  · rw [St.pop_cells s l ls h, St.cells_pop _ l' ls' h']
+    rw [hbl1] at hsub2
+    exact HolesSub.trans hsub2 hsub'
+  · show _ = s.pop.hashErr
+    rw [hh', hh2, hh1]; rfl
+  · intro c; rw [popWith_eq _ l' ls' h']
+
+/-- **`MerkleizeProgressive`** on an incremental progressive scope. -/
+theorem progClose_prog (cx : Ctx C) (hP : ParamsOK cx.P) (s : St C) (l : Layer C) (ls : List (Layer C)) (L : List C)
+    (a : Bool) (h : s.stack = l :: ls) (hs : ProgScope cx l L) (ht : TopOK s) (hL : L.length < 2 ^ 40) :
+    ∃ t : St C, Jump s.pop t ∧ TopOK t ∧ s.step cx (.merkleizeProg a) = t.push (.ready (progRoot cx.H cx.z0 0 L)) := by
+  obtain ⟨hpr, hinc, _⟩ := hs.flags
+  obtain ⟨l2, ls2, h2, hpr2, t, hj, htt, hroot, he⟩ := progClose_core cx hP s l ls L a h hs ht hL
+  refine ⟨t, hj, htt, ?_⟩
+  have hfl : (if l.pend ≠ [] then s.flushSync cx else s) = s.flushSync cx := by
+    split
+    · rfl
+    · rename_i hpe; have : l.pend = [] := by simpa using hpe
+      unfold St.flushSync; rw [h]; simp [this]
+  simp only [St.step, h, hpr, Bool.not_true, Bool.false_eq_true, false_and, if_false]
+  rw [hfl, h2]
+  simp only [hpr2, if_true]
+  rw [he, hroot]
+
+/-- **`MerkleizeProgressiveWithMixin` / `WithActiveFields`** on an incremental
+    progressive scope: with roots, the full progressive close; with none
+    (no `Collapse` took a group yet), the leaves merkleized progressively. -/
+theorem progWord_prog (cx : Ctx C) (hP : ParamsOK cx.P) (s : St C) (l : Layer C) (ls : List (Layer C)) (L : List C)
+    (w : C) (a : Bool) (h : s.stack = l :: ls) (hs : ProgScope cx l L) (ht : TopOK s) (hL : L.length < 2 ^ 40) :
+    ∃ t : St C, Jump s.pop t ∧ TopOK t ∧
+      s.closeProgWord cx w a = t.push (.ready (cx.H (progRoot cx.H cx.z0 0 L) w)) := by
+  obtain ⟨hpr, hinc, _⟩ := hs.flags
+  have hfl : (if l.pend ≠ [] then s.flushSync cx else s) = s.flushSync cx := by
+    split
+    · rfl
+    · rename_i hpe; have : l.pend = [] := by simpa using hpe
+      unfold St.flushSync; rw [h]; simp [this]
+  unfold St.closeProgWord
+  rw [h]
+  simp only [hpr, Bool.not_true, Bool.false_eq_true, false_and, if_false]
+  rw [hfl]
+  obtain ⟨l1, h1, hs1, hpe1, _, _, _, ht1, hbl1, hba1, hh1⟩ := flushSync_prog cx s l ls L h hs ht
+  obtain ⟨l2, ls2, h2, hle2, hr2, ht2, hls2, hba2, hh2, hbl2, hsub2⟩ := drainTop_any _ l1 ls h1 ht1
+  rw [h2]
+  simp only
+  have hs2 := hle2.progScope cx hs1
+  have hpe2 : l2.pend = [] := by have := hle2.pend_map; rw [hpe1] at this; simpa using this
+  obtain ⟨G, Lb, hL2, hp2⟩ := progOK_of_scope hs2 hpe2
+  by_cases hpg : l2.prog = []
+  · -- no root yet: the leaves, merkleized progressively
+    rw [if_neg (by simp [hpg])]
+    have hG0 : G = [] := by have := hp2.groups.1; rw [hpg] at this; exact List.eq_nil_of_length_eq_zero this.symm
+    have hlv0 : l2.level = 0 := by rw [hp2.level, hG0]; rfl
+    have hd0 : ∀ n ∈ l2.nodes, n.depth = 0 := fun n hn => by have := hp2.narrow n hn; rw [hlv0] at this; omega
+    have htl2 : l2.tail = [] := hp2.pendOK.tail hpe2
+    have hcells : l2.cells = nodeCells l2.nodes := by simp [Layer.cells, hpg, hpe2, htl2]
+    have hvals : l2.cells.map Cell.val = Lb := by
+      rw [hcells]; unfold nodeCells; rw [List.map_map]; exact cov_leaves cx.H cx.z0 _ _ hp2.cov hd0
+    have hLL : L = Lb := by rw [hL2, hG0]; rfl
+    rw [show ((s.flushSync cx).drainFor (s.flushSync cx).topStart).vals l2.cells "merkleize" =
+      ((s.flushSync cx).drainFor (s.flushSync cx).topStart, l2.cells.map Cell.val) by
+        simp [St.vals, List.all_eq_true.mpr hr2]]
+    simp only [St.vals, List.all_cons, List.all_nil, Cell.isReady, Bool.and_true, if_true, List.map_cons,
+      List.map_nil, List.head?_cons, Option.getD_some, Cell.val]
+    rw [popWith_eq _ l2 ls2 h2, hvals, progImpl_eq cx.H cx.z0 _ 0 Lb (by omega), ← hLL]
+    refine ⟨{ (s.flushSync cx).drainFor (s.flushSync cx).topStart with stack := ls2 }, ⟨?_, ?_, ?_⟩,
+      topOK_pop _ l2 ls2 h2 ht2 hr2, rfl⟩
+    · show (_, _) = (_, _)
+      simp only [St.pop, h, List.tail_cons]; rw [hba2, hba1, hls2]
+    · rw [St.pop_cells s l ls h, St.cells_pop _ l2 ls2 h2, ← hbl1]; exact hsub2
+    · show _ = s.pop.hashErr; rw [hh2, hh1]; rfl
+  · -- the progressive close
+    rw [if_pos ⟨hp2.prog, hpg⟩]
+    obtain ⟨l2', ls2', h2', _, t, hj, htt, hroot, he⟩ := progClose_core cx hP s l ls L a h hs ht hL
+    rw [h2] at h2'; obtain ⟨rfl, rfl⟩ := List.cons.inj h2'
+    rw [hroot]
+    simp only [St.vals, List.all_cons, List.all_nil, Cell.isReady, Bool.and_true, if_true, List.map_cons,
+      List.map_nil, List.head?_cons, Option.getD_some, Cell.val]
+    exact ⟨t, hj, htt, he _⟩
+
 end Ssz.Hasher
