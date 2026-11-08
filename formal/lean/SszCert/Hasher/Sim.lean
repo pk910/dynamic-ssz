@@ -19,20 +19,22 @@ variable {C : Type}
 /-- The scope without its progressive roots. -/
 def Layer.flat (l : Layer C) : Layer C := { l with prog := [], progressive := false, level := 0 }
 
-/-- A scope holding cells as plain nodes. -/
-def progLayer (cs : List (Cell C)) : Layer C :=
-  { incremental := false, legacy := true, progressive := false, packed := false, nodes := cs.map (fun c => ⟨0, c⟩) }
+/-- A passive scope holding a scope's progressive roots as plain nodes (and
+    recording its progressive flag and level). -/
+def progLayer (l : Layer C) : Layer C :=
+  { incremental := false, legacy := true, progressive := l.progressive, packed := false, level := l.level,
+    nodes := l.prog.map (fun c => ⟨0, c⟩) }
 
 /-- The roots moved below the innermost scope. -/
 def St.sim (s : St C) : St C :=
   match s.stack with
   | [] => s
-  | l :: ls => { s with stack := l.flat :: progLayer l.prog :: ls }
+  | l :: ls => { s with stack := l.flat :: progLayer l :: ls }
 
 theorem St.sim_stack (s : St C) (l : Layer C) (ls : List (Layer C)) (h : s.stack = l :: ls) :
-    s.sim.stack = l.flat :: progLayer l.prog :: ls := by simp [St.sim, h]
+    s.sim.stack = l.flat :: progLayer l :: ls := by simp [St.sim, h]
 
-theorem progLayer_cells (cs : List (Cell C)) : (progLayer cs).cells = cs := by
+theorem progLayer_cells (l : Layer C) : (progLayer l).cells = l.prog := by
   simp [progLayer, Layer.cells, nodeCells, List.map_map, Function.comp_def]
 
 theorem Layer.flat_cells (l : Layer C) : l.prog ++ l.flat.cells = l.cells := by
@@ -68,8 +70,11 @@ theorem Layer.flat_setCells (l : Layer C) (X : List (Cell C)) :
     l.flat.setCells (X.drop l.prog.length) = (l.setCells X).flat := by
   simp [Layer.setCells, Layer.flat]
 
-theorem progLayer_setCells (P Z : List (Cell C)) (hz : Z.length = P.length) :
-    (progLayer P).setCells Z = progLayer Z := by
+theorem progLayer_setCells' (P Z : List (Cell C)) (pr : Bool) (lv : Nat) (hz : Z.length = P.length) :
+    ({ incremental := false, legacy := true, progressive := pr, packed := false, level := lv,
+       nodes := P.map (fun c => ⟨0, c⟩) } : Layer C).setCells Z =
+    { incremental := false, legacy := true, progressive := pr, packed := false, level := lv,
+      nodes := Z.map (fun c => ⟨0, c⟩) } := by
   have hz' : (Z.take (P.map (fun c => (⟨0, c⟩ : Node C))).length).length = (P.map (fun c => (⟨0, c⟩ : Node C))).length := by
     simp; omega
   have hzip : ((P.map (fun c => (⟨0, c⟩ : Node C))).zip (Z.take (P.map (fun c => (⟨0, c⟩ : Node C))).length)).map
@@ -84,10 +89,14 @@ theorem progLayer_setCells (P Z : List (Cell C)) (hz : Z.length = P.length) :
       | nil => simp at hz
       | cons z Z => simp only [List.length_cons, Nat.add_right_cancel_iff] at hz; simp [ih Z hz]
   unfold Layer.setCells
-  simp only [progLayer, List.length_nil, List.take_zero, List.drop_zero] at hzip ⊢
+  simp only [List.length_nil, List.take_zero, List.drop_zero] at hzip ⊢
   rw [hzip]
   have hle : Z.length ≤ P.length := by omega
   simp [Layer.setCells.splitPend, hle]
+
+theorem progLayer_setCells (l : Layer C) (Z : List (Cell C)) (hz : Z.length = l.prog.length) :
+    (progLayer l).setCells Z = progLayer { l with prog := Z } :=
+  progLayer_setCells' l.prog Z l.progressive l.level hz
 
 @[simp] theorem St.sim_base (t : St C) : t.sim.base = t.base := by unfold St.sim; split <;> rfl
 @[simp] theorem St.sim_jobs (t : St C) : t.sim.jobs = t.jobs := by unfold St.sim; split <;> rfl
@@ -136,7 +145,7 @@ theorem setCells_sim (s : St C) (l : Layer C) (ls : List (Layer C)) (h : s.stack
     rw [h, List.reverse_cons, setCells_go_append, setCells_go_one, hR, hr, List.reverse_append]; rfl
   have e1 : (s.sim.setCells cs).stack =
       l.flat.setCells ((r.drop l.prog.length).take l.flat.cells.length) ::
-      (progLayer l.prog).setCells (r.take l.prog.length) ::
+      (progLayer l).setCells (r.take l.prog.length) ::
       (St.setCells.go ls.reverse (cs.drop s.base.length)).reverse := by
     show (St.setCells.go s.sim.stack.reverse (cs.drop s.sim.base.length)).reverse = _
     have hb : s.sim.base = s.base := by simp [St.sim, h]
@@ -147,11 +156,14 @@ theorem setCells_sim (s : St C) (l : Layer C) (ls : List (Layer C)) (h : s.stack
   have hP : (l.setCells (r.take l.cells.length)).prog = r.take l.prog.length := by
     simp [Layer.setCells, List.take_take, Nat.min_eq_left hpl]
   have hsim : (s.setCells cs).sim.stack = (l.setCells (r.take l.cells.length)).flat ::
-      progLayer (l.setCells (r.take l.cells.length)).prog :: (St.setCells.go ls.reverse (cs.drop s.base.length)).reverse :=
+      progLayer (l.setCells (r.take l.cells.length)) :: (St.setCells.go ls.reverse (cs.drop s.base.length)).reverse :=
     St.sim_stack _ _ _ e2
   apply St.ext_fields
   · simp [St.sim_stack s l ls h]
-  · rw [e1, hsim, ← hX, Layer.flat_setCells, hP, progLayer_setCells _ _ (by simp; omega)]
+  · rw [e1, hsim, ← hX, Layer.flat_setCells, progLayer_setCells _ _ (by simp; omega)]
+    have : progLayer { l with prog := r.take l.prog.length } = progLayer (l.setCells (r.take l.cells.length)) := by
+      simp only [progLayer]; rw [hP]; rfl
+    rw [this]
   all_goals simp
 
 /-! ## Calls commute with the move -/
@@ -234,7 +246,7 @@ theorem batchLoop_sim (cx : Ctx C) : ∀ fuel d (s : St C) (ns : List (Node C)),
 theorem uncollapsedAsLeaves_sim (s : St C) (l : Layer C) :
     (s.uncollapsedAsLeaves l).1.sim = (s.sim.uncollapsedAsLeaves l.flat).1 ∧
     (s.sim.uncollapsedAsLeaves l.flat).2 = (s.uncollapsedAsLeaves l).2.flat ∧
-    (s.uncollapsedAsLeaves l).1.stack = s.stack ∧ (s.uncollapsedAsLeaves l).2.prog = l.prog := by
+    (s.uncollapsedAsLeaves l).1.stack = s.stack ∧ progLayer (s.uncollapsedAsLeaves l).2 = progLayer l := by
   unfold St.uncollapsedAsLeaves
   have hc : l.flat.collapsed = l.collapsed := rfl
   have hn : l.flat.nodes = l.nodes := rfl
@@ -243,11 +255,11 @@ theorem uncollapsedAsLeaves_sim (s : St C) (l : Layer C) :
   · exact ⟨rfl, rfl, rfl, rfl⟩
   · simp only
     split
-    · exact ⟨St.fail_sim _ _, rfl, St.fail_stack _ _, trivial⟩
-    · exact ⟨rfl, rfl, rfl, trivial⟩
+    · exact ⟨St.fail_sim _ _, rfl, St.fail_stack _ _, by simp [progLayer]⟩
+    · exact ⟨rfl, rfl, rfl, by simp [progLayer]⟩
 
 theorem St.setTop_sim (s : St C) (l l' : Layer C) (ls : List (Layer C)) (h : s.stack = l :: ls)
-    (hp : l'.prog = l.prog) : (s.setTop l').sim = s.sim.setTop l'.flat := by
+    (hp : progLayer l' = progLayer l) : (s.setTop l').sim = s.sim.setTop l'.flat := by
   apply St.ext_fields <;> simp [St.setTop, St.sim, h, hp]
 
 theorem writeHole_length (job : Nat) : ∀ (p : Nat) (vs : List C) (cs : List (Cell C)),
@@ -331,12 +343,12 @@ theorem push_cons (t : St C) (l : Layer C) (ls : List (Layer C)) (h : t.stack = 
 
 theorem push_sim (s : St C) (l : Layer C) (ls : List (Layer C)) (h : s.stack = l :: ls) (c : Cell C) :
     (s.push c).sim = s.sim.push c := by
-  rw [push_cons s l ls h c, push_cons s.sim l.flat (progLayer l.prog :: ls) (St.sim_stack s l ls h) c]
+  rw [push_cons s l ls h c, push_cons s.sim l.flat (progLayer l :: ls) (St.sim_stack s l ls h) c]
   have hp : l.flat.pend = l.pend := rfl
   rw [hp]
   apply St.ext_fields
   · simp
-  · rw [St.sim_stack _ _ _ rfl]; by_cases hq : l.pend = [] <;> simp [hq, Layer.flat]
+  · rw [St.sim_stack _ _ _ rfl]; by_cases hq : l.pend = [] <;> simp [hq, Layer.flat, progLayer]
   all_goals simp
 
 theorem collapseBinaryCore_sim (cx : Ctx C) (s : St C) :
@@ -352,7 +364,7 @@ theorem collapseBinaryCore_sim (cx : Ctx C) (s : St C) :
     rw [← u1, u2]
     have hn : ((s.uncollapsedAsLeaves l).2.flat).nodes = (s.uncollapsedAsLeaves l).2.nodes := rfl
     rw [hn, ← b1, ← b2]
-    rw [St.setTop_sim _ l _ ls (by rw [b3, u3, h]) (by simp [u4])]
+    rw [St.setTop_sim _ l _ ls (by rw [b3, u3, h]) (by rw [← u4]; rfl)]
     rfl
 
 theorem collapseBinary_sim (cx : Ctx C) (s : St C) : s.sim.collapseBinary cx = (s.collapseBinary cx).sim := by
@@ -391,7 +403,7 @@ theorem capJob_sim (cx : Ctx C) (s : St C) (l : Layer C) (ncap : Nat) :
 theorem capCompact_flat (P : Params) (l : Layer C) (ncap : Nat) (hs : List (Cell C)) :
     capCompact P l.flat ncap hs = (capCompact P l ncap hs).flat := rfl
 
-theorem St.setTop_sim_any (t : St C) (l' : Layer C) (hp : ∀ u us, t.stack = u :: us → l'.prog = u.prog) :
+theorem St.setTop_sim_any (t : St C) (l' : Layer C) (hp : ∀ u us, t.stack = u :: us → progLayer l' = progLayer u) :
     (t.setTop l').sim = t.sim.setTop l'.flat := by
   cases h : t.stack with
   | nil =>
@@ -421,7 +433,7 @@ theorem precollapseLoop_sim (cx : Ctx C) : ∀ fuel (s : St C) (ncap : Nat),
         rw [c1, c2, topLayer_sim, capCompact_flat,
           ← St.setTop_sim_any (s.capJob cx l ncap).1
             (capCompact cx.P ((s.capJob cx l ncap).1.topLayer l) ncap (s.capJob cx l ncap).2)
-            (fun u us hu => by simp [capCompact, St.topLayer, hu]), ih]
+            (fun u us hu => by simp [capCompact, St.topLayer, hu, progLayer]), ih]
 
 theorem precollapse_sim (cx : Ctx C) (s : St C) :
     (s.sim.precollapse cx).1 = (s.precollapse cx).1.sim ∧ (s.sim.precollapse cx).2 = (s.precollapse cx).2 := by
@@ -464,7 +476,7 @@ theorem flushSync_sim (cx : Ctx C) (s : St C) : s.sim.flushSync cx = (s.flushSyn
     · obtain ⟨f1, f2, f3⟩ := flushFold_sim cx l.pend s
       rw [f1, f2, St.setTop_sim (s.flushFold cx l.pend).1 l
         { l with nodes := l.nodes ++ (s.flushFold cx l.pend).2.map (fun v => ⟨0, .ready v⟩) ++ l.tail.map (fun c => ⟨0, c⟩), pend := [], pendC := 0, tail := [] }
-        ls (by rw [f3, h]) rfl]
+        ls (by rw [f3, h]) (by simp [progLayer])]
       rfl
 
 end Ssz.Hasher
