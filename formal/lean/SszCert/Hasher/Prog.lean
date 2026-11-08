@@ -537,7 +537,8 @@ theorem progRound_ok (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C))
       HolesSub s.below ((s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).1.setTop
         (roundLayer ((s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).1.topLayer l)
           (consumeCount (l.nodes.take l.counted) (4 ^ l.level))
-          (s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).2)).below := by
+          (s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).2)).below ∧
+      l'.nodes.length < l.nodes.length ∧ l'.collapsed = l.collapsed := by
   have hcnt : l.nodes.take l.counted = l.nodes := by rw [hr.counted, List.take_length]
   have hlv : leavesOf l.nodes = Lb.length := (cov_full_length cx.H cx.z0 hr.cov).symm
   rw [hcnt] at hbig ⊢
@@ -594,6 +595,13 @@ theorem progRound_ok (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C))
       rw [(roundLayer_fields l1 K r).2.2.1] at hn
       obtain ⟨m, hm, hmd⟩ := hdep n (List.mem_of_mem_drop hn)
       rw [← hmd]; exact hr.shallow m hm
+  have hlpos : 0 < l.nodes.length := by
+    rcases Nat.eq_zero_or_pos l.nodes.length with h0 | h0
+    · rw [List.eq_nil_of_length_eq_zero h0] at hgne; simp at hgne
+    · exact h0
+  have hshrink : ∀ l1 : Layer C, LayerLE l l1 → ∀ r, (roundLayer l1 K r).nodes.length < l.nodes.length := by
+    intro l1 hle r
+    rw [(roundLayer_fields l1 K r).2.2.1, List.length_drop, hle.nodes_length]; omega
   unfold St.groupRoot
   rw [four_pow, hD]
   split
@@ -636,7 +644,8 @@ theorem progRound_ok (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C))
         l1.prog ++ ([Cell.hole v (s.ringDrain cx.P).nextJob 0] ++ nodeCells (l1.nodes.drop K)) := by
       simp [Layer.cells, roundLayer, hp1, ht1', List.append_assoc]
     have hr1 : ∀ n ∈ l1.nodes, n.cell.isReady = true := nodes_ready_of_le hle1 hr.ready
-    refine ⟨_, ls1, St.setTop_stack T l1 _ ls1 hTs, rfl, hRP, ⟨?_, ?_, ?_, ?_⟩, hls1, ?_, ?_, ?_, ?_⟩
+    refine ⟨_, ls1, St.setTop_stack T l1 _ ls1 hTs, rfl, hRP, ⟨?_, ?_, ?_, ?_⟩, hls1, ?_, ?_, ?_, ?_,
+      hshrink l1 hle1 _, hle1.flag_collapsed⟩
     · show HolesOK (St.setTop ((s.ringDrain cx.P).addJob J) _)
       unfold St.addJob
       apply holesOK_addJob _ l1 _ ls1 hs1 ht1.holes J (fun j' hj' => Nat.ne_of_lt (ht1.ids j' hj'))
@@ -703,7 +712,7 @@ theorem progRound_ok (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C))
       fun j hj => by rw [St.setTop_jobs] at hj; exact ht.jobsne j hj,
       fun j hj => by rw [St.setTop_jobs] at hj; rw [St.setTop_nextJob]; exact ht.ids j hj⟩, rfl,
       by rw [St.setTop_base], St.setTop_hashErr s _, by rw [St.setTop_below s l _ ls h],
-      by rw [St.setTop_below s l _ ls h]; exact HolesSub.refl _⟩
+      by rw [St.setTop_below s l _ ls h]; exact HolesSub.refl _, hshrink l (LayerLE.refl l) _, rfl⟩
     apply holesOK_setTop s l _ ls h ht.holes l.prog.length (by rw [hlc]; simp)
       (by rw [hlc, hl'c, List.take_left' rfl, List.take_left' rfl]) (by rw [hl'c]; simp)
     · intro i hi hi'
@@ -720,5 +729,58 @@ theorem progRound_ok (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C))
         (by rw [St.cells_top s l ls h, hlc, List.append_assoc]) (by
           intro c hc; simp only [nodeCells, List.mem_map] at hc; obtain ⟨n, hn, rfl⟩ := hc; exact hr.ready n hn)
       intro j hj; have := this j hj; simp at this; omega
+
+/-! ## The rounds -/
+
+theorem lvl_bound {lv n : Nat} (h1 : 4 ^ lv ≤ n) (h2 : n < 2 ^ 40) : 2 * lv < 64 := by
+  rw [four_pow] at h1
+  have : 2 ^ (2 * lv) < 2 ^ 40 := by omega
+  have := (Nat.pow_lt_pow_iff_right (by decide : 1 < 2)).mp this
+  omega
+
+/-- **The rounds of `maybeCollapseProgressive`** take every complete group:
+    afterwards fewer than a group's leaves remain in the region. -/
+theorem progRounds_ok (cx : Ctx C) (async : Bool) : ∀ fuel (s : St C) (l : Layer C) (ls : List (Layer C))
+    (G : List (List C)) (Lb : List C) (f : Bool), s.stack = l :: ls → RoundP cx l G Lb → TopOK s →
+    Lb.length < 2 ^ 40 → l.nodes.length < fuel →
+    ∃ G' Lb' ls', (progRounds cx async fuel s l f).1.stack = (progRounds cx async fuel s l f).2.1 :: ls' ∧
+      RoundP cx (progRounds cx async fuel s l f).2.1 G' Lb' ∧ G.flatten ++ Lb = G'.flatten ++ Lb' ∧
+      Lb'.length < 4 ^ (progRounds cx async fuel s l f).2.1.level ∧ TopOK (progRounds cx async fuel s l f).1 ∧
+      ls'.map Layer.erase = ls.map Layer.erase ∧
+      (progRounds cx async fuel s l f).1.base.map Cell.erase = s.base.map Cell.erase ∧
+      (progRounds cx async fuel s l f).1.hashErr = s.hashErr ∧
+      (progRounds cx async fuel s l f).1.below.length = s.below.length ∧
+      HolesSub s.below (progRounds cx async fuel s l f).1.below ∧
+      ((progRounds cx async fuel s l f).2.2 = false → progRounds cx async fuel s l f = (s, l, f)) ∧
+      (f = true → (progRounds cx async fuel s l f).2.2 = true) ∧
+      (progRounds cx async fuel s l f).2.1.collapsed = l.collapsed := by
+  intro fuel
+  induction fuel with
+  | zero => intro s l ls G Lb f _ _ _ _ hf; omega
+  | succ fuel ih =>
+    intro s l ls G Lb f h hr ht hL hf
+    have hcnt : l.nodes.take l.counted = l.nodes := by rw [hr.counted, List.take_length]
+    have hlv : leavesOf l.nodes = Lb.length := (cov_full_length cx.H cx.z0 hr.cov).symm
+    simp only [progRounds]
+    split
+    · rename_i hsm
+      rw [hcnt, hlv] at hsm
+      exact ⟨G, Lb, ls, h, hr, rfl, hsm, ht, rfl, rfl, rfl, rfl, HolesSub.refl _, fun _ => rfl, id, rfl⟩
+    rename_i hbig
+    have hbig' : 4 ^ l.level ≤ leavesOf (l.nodes.take l.counted) := by omega
+    have hlvl : 2 * l.level < 64 := lvl_bound (by rw [hcnt, hlv] at hbig'; exact hbig') hL
+    obtain ⟨hk0, l', ls', hs', hl', hr', ht', hle', hba', hh', hbl', hsub', hshr', hco'⟩ :=
+      progRound_ok cx s l ls G Lb async h hr ht hL hbig' hlvl
+    split
+    · omega
+    rw [← hl'] at hs' ht' hba' hh' hbl' hsub' ⊢
+    have hLb' : (Lb.drop (2 ^ (2 * l.level))).length < 2 ^ 40 := by
+      rw [List.length_drop]; exact Nat.lt_of_le_of_lt (Nat.sub_le _ _) hL
+    obtain ⟨G'', Lb'', ls'', hs'', hr'', hsp'', hlt'', ht'', hle'', hba'', hh'', hbl'', hsub'', _, hft'', hco''⟩ :=
+      ih _ l' ls' _ _ true hs' hr' ht' hLb' (by omega)
+    refine ⟨G'', Lb'', ls'', hs'', hr'', ?_, hlt'', ht'', by rw [hle'', hle'], by rw [hba'', hba'],
+      by rw [hh'', hh'], by rw [hbl'', hbl'], HolesSub.trans hsub' hsub'', ?_, fun _ => hft'' rfl, by rw [hco'', hco']⟩
+    · rw [← hsp'', List.flatten_append, List.flatten_singleton, List.append_assoc, List.take_append_drop]
+    · intro hfalse; rw [hft'' rfl] at hfalse; cases hfalse
 
 end Ssz.Hasher
