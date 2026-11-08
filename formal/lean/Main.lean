@@ -1,5 +1,6 @@
 import SszCert
 import SszCert.Certified
+import SszCert.Eth
 
 /-!
 # ssz-oracle
@@ -47,7 +48,7 @@ def handle (name : String) (hex : String) : String :=
   match bytes? with
   | none => "ERR badhex"
   | some bytes =>
-    match certified.lookup name with
+    match (certified ++ certifiedEth).lookup name with
     | none => s!"ERR unknown {name}"
     | some c =>
       match c.dec bytes with

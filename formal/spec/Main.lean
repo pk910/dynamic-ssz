@@ -1,10 +1,11 @@
 import SszSpec.Certified
+import SszSpec.Eth
 
 /-!
 # ssz-spec-oracle
 
 Decision oracle over the certified declarations, answered by the official Lean
-specification of SSZ (`EthLib.Consensus.Ssz`). One request per stdin line:
+specification of SSZ (`EthLib.Serialization.Ssz`). One request per stdin line:
 
 * `D <type> <hex|->` — decode. `ACCEPT <root>` (the strict decoder accepts; the
   re-serialization is checked byte-for-byte, as canonicality guarantees) or
@@ -20,7 +21,7 @@ specification of SSZ (`EthLib.Consensus.Ssz`). One request per stdin line:
 * `ERR ...` — malformed line or unknown type.
 -/
 
-open EthLib.Consensus.Ssz SszSpec
+open EthLib.Serialization.Ssz SszSpec
 
 def hexNibble (c : Char) : Option Nat :=
   if '0' ≤ c ∧ c ≤ '9' then some (c.toNat - '0'.toNat)
@@ -63,7 +64,7 @@ def decodeFor (shape : Desc) (bytes : Bytes) : Except Err (Value × Bytes) := do
 def handle (words : List String) : String :=
   match words with
   | ["D", name, hex] =>
-    match declared.lookup name, parseHex hex with
+    match (declared ++ declaredEth).lookup name, parseHex hex with
     | none, _ => s!"ERR unknown {name}"
     | _, none => "ERR badhex"
     | some shape, some bytes =>
@@ -74,7 +75,7 @@ def handle (words : List String) : String :=
         | .ok again => if again == bytes then s!"ACCEPT {hexOf root}" else "MISMATCH"
         | .error fault => s!"MISMATCH {fault.reason}"
   | ["P", name, hex, idx] =>
-    match declared.lookup name, parseHex hex, idx.toNat? with
+    match (declared ++ declaredEth).lookup name, parseHex hex, idx.toNat? with
     | none, _, _ => s!"ERR unknown {name}"
     | _, none, _ => "ERR badhex"
     | _, _, none => "ERR badindex"
@@ -90,7 +91,7 @@ def handle (words : List String) : String :=
           | .ok false => "MISMATCH-PROOF"
           | .error fault => s!"MISMATCH-PROOF {fault.reason}"
   | ["V", name, hex, idx, leafHex, branchHex] =>
-    match declared.lookup name, parseHex hex, idx.toNat?, parseHex leafHex, parseHexList branchHex with
+    match (declared ++ declaredEth).lookup name, parseHex hex, idx.toNat?, parseHex leafHex, parseHexList branchHex with
     | some shape, some bytes, some index, some leaf, some branch =>
       match decodeFor shape bytes with
       | .error fault => reject fault
@@ -100,7 +101,7 @@ def handle (words : List String) : String :=
         | .error fault => reject fault
     | _, _, _, _, _ => "ERR badline"
   | ["M", name, hex, idxs] =>
-    match declared.lookup name, parseHex hex, parseNats idxs with
+    match (declared ++ declaredEth).lookup name, parseHex hex, parseNats idxs with
     | some shape, some bytes, some indices =>
       match decodeFor shape bytes with
       | .error fault => reject fault
@@ -114,7 +115,7 @@ def handle (words : List String) : String :=
           | .error fault => s!"MISMATCH-MULTI {fault.reason}"
     | _, _, _ => "ERR badline"
   | ["W", name, hex, idxs, leavesHex, proofHex] =>
-    match declared.lookup name, parseHex hex, parseNats idxs, parseHexList leavesHex, parseHexList proofHex with
+    match (declared ++ declaredEth).lookup name, parseHex hex, parseNats idxs, parseHexList leavesHex, parseHexList proofHex with
     | some shape, some bytes, some indices, some leaves, some proof =>
       match decodeFor shape bytes with
       | .error fault => reject fault

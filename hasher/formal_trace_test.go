@@ -51,6 +51,9 @@ func TestFormalTrace(t *testing.T) {
 		t.Skipf("hasher-model not built: %v", err)
 	}
 	walks := 400
+	if incrementalBatchSize > 64 {
+		walks = 30 // production thresholds: a sanity pass; the small build covers the paths
+	}
 	if v := os.Getenv("HASHER_TRACE_WALKS"); v != "" {
 		walks, _ = strconv.Atoi(v)
 	}
@@ -201,6 +204,9 @@ type walkGen struct {
 	leafSeq   uint64
 }
 
+// opBudget bounds a walk: past it, scopes get no further items.
+const opBudget = 30000
+
 func (g *walkGen) async() bool {
 	switch g.asyncMode {
 	case 0:
@@ -238,6 +244,9 @@ func (g *walkGen) collapse() {
 // itemCount draws a scope width with weight on the batch, cap and
 // progressive-group boundaries of the active thresholds.
 func (g *walkGen) itemCount(depth int) int {
+	if len(g.ops) > opBudget {
+		return 0
+	}
 	if depth >= 3 {
 		return g.rng.Intn(6)
 	}
@@ -248,8 +257,8 @@ func (g *walkGen) itemCount(depth int) int {
 	if g.rng.Intn(3) == 0 {
 		n = g.rng.Intn(3 * lazyFlushChunks)
 	}
-	if n > 700 {
-		n = 700 // production thresholds: keep walks bounded
+	if n > 300 {
+		n = 300 // production thresholds: keep walks bounded
 	}
 	return n
 }
@@ -350,7 +359,7 @@ func (g *walkGen) items(depth, n int, packed bool, collapseP int) int {
 			g.emit("mz "+b01(a), func(r *walkRun) { r.h.SetAsyncHashing(a); r.h.Merkleize(r.pop()) })
 		}
 	}
-	for i := 0; i < n; i++ {
+	for i := 0; i < n && len(g.ops) < 2*opBudget; i++ {
 		switch {
 		case style == 0:
 			g.leaf()

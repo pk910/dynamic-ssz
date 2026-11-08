@@ -12,3 +12,4 @@ import SszCert.Hasher.Model
 import SszCert.Sha256
 import SszCert.Merkle
 import SszCert.Certified
+import SszCert.Eth
