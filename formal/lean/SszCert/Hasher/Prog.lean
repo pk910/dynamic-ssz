@@ -981,4 +981,107 @@ theorem LayerLE.progScope (cx : Ctx C) {l l' : Layer C} (h : LayerLE l l') {L : 
   obtain ⟨G, Lb, hL, hpo⟩ := hp
   exact ⟨G, Lb, by rw [h.pendLeaves cx]; exact hL, h.progOK cx hpo⟩
 
+/-! ## What pre-collapse does to the innermost scope's shape -/
+
+theorem uncollapsedAsLeaves_state' (s : St C) (l : Layer C) : (s.uncollapsedAsLeaves l).1.stack = s.stack :=
+  (uncollapsedAsLeaves_sim s l).2.2.1
+
+/-- A property of the innermost scope's shape that drains keep. -/
+def TopShape (P : Layer C → Prop) (t : St C) : Prop := ∀ l ls, t.stack = l :: ls → P l
+
+theorem sameShapes_head {a b : List (Layer C)} (h : Layer.SameShapes a b) {l : Layer C} {ls : List (Layer C)}
+    (ha : a = l :: ls) : ∃ l' ls', b = l' :: ls' ∧ Layer.SameShape l l' := by
+  subst ha
+  cases b with
+  | nil => exact h.elim
+  | cons l' ls' => exact ⟨l', ls', rfl, h.1⟩
+
+theorem drainOldest_top (s : St C) (l : Layer C) (ls : List (Layer C)) (h : s.stack = l :: ls) :
+    ∃ l' ls', s.drainOldest.stack = l' :: ls' ∧ Layer.SameShape l l' := by
+  unfold St.drainOldest
+  cases hj : s.jobs with
+  | nil => exact ⟨l, ls, h, ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩⟩
+  | cons j js =>
+    simp only
+    have hl := writeHole_length j.id j.dst j.out s.cells
+    obtain ⟨_, hss, _⟩ := St.setCells_spec s (writeHole j.id j.dst j.out s.cells).1 hl
+    obtain ⟨l', ls', h', hsh⟩ := sameShapes_head hss h
+    split
+    · exact ⟨l', ls', h', hsh⟩
+    · exact ⟨l', ls', by rw [St.fail_stack]; exact h', hsh⟩
+
+theorem enqueue_top (cx : Ctx C) (s : St C) (input : List (Cell C)) (out dst : Nat) (l : Layer C)
+    (ls : List (Layer C)) (h : s.stack = l :: ls) :
+    ∃ l' ls', (s.enqueue cx input out dst).1.stack = l' :: ls' ∧ Layer.SameShape l l' := by
+  unfold St.enqueue
+  rw [show (if s.jobs.length ≥ cx.P.ring then s.drainOldest else s) = s.ringDrain cx.P from rfl]
+  have hr : ∃ l' ls', (s.ringDrain cx.P).stack = l' :: ls' ∧ Layer.SameShape l l' := by
+    unfold St.ringDrain; split
+    · exact drainOldest_top s l ls h
+    · exact ⟨l, ls, h, ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩⟩
+  obtain ⟨l', ls', h', hsh⟩ := hr
+  exact ⟨l', ls', by simp only; rw [vals_stack]; exact h', hsh⟩
+
+theorem depths_of_same {l l' : Layer C} (h : Layer.SameShape l l') :
+    ∀ n ∈ l'.nodes, ∃ m ∈ l.nodes, m.depth = n.depth := by
+  intro n hn
+  have : n.depth ∈ l.nodes.map (·.depth) := by rw [← h.depths]; exact List.mem_map_of_mem hn
+  obtain ⟨m, hm, he⟩ := List.mem_map.mp this
+  exact ⟨m, hm, he⟩
+
+theorem precollapseLoop_top (cx : Ctx C) (B : Nat) (hcB : cx.P.capDepth ≤ B) : ∀ fuel (t : St C) (ncap : Nat),
+    TopShape (fun l => (∀ n ∈ l.nodes, n.depth ≤ B) ∧ l.collapsed = true) t →
+    TopShape (fun l => (∀ n ∈ l.nodes, n.depth ≤ B) ∧ l.collapsed = true) (precollapseLoop cx fuel t ncap) := by
+  intro fuel
+  induction fuel with
+  | zero => intro t ncap ht; exact ht
+  | succ fuel ih =>
+    intro t ncap ht
+    cases h : t.stack with
+    | nil => simp only [precollapseLoop, h]; exact ht
+    | cons l ls =>
+      simp only [precollapseLoop, h]
+      split
+      · exact ht
+      · apply ih
+        obtain ⟨l', ls', h', hsh⟩ := enqueue_top cx t (nodeCells ((l.nodes.drop ncap).take cx.P.cap)) 1
+          (t.activeStart + ncap) l ls h
+        have hc : (t.capJob cx l ncap).1.stack = l' :: ls' := h'
+        have htl : (t.capJob cx l ncap).1.topLayer l = l' := by simp [St.topLayer, hc]
+        rw [htl]
+        intro l2 ls2 h2
+        rw [St.setTop_stack _ l' _ ls' hc] at h2
+        obtain ⟨rfl, rfl⟩ := List.cons.inj h2
+        obtain ⟨hB, _⟩ := ht l ls h
+        refine ⟨?_, rfl⟩
+        intro n hn
+        simp only [capCompact, List.mem_append, List.mem_map] at hn
+        rcases hn with (hn | ⟨c, _, rfl⟩) | hn
+        · obtain ⟨m, hm, hmd⟩ := depths_of_same hsh n (List.mem_of_mem_take hn)
+          rw [← hmd]; exact hB m hm
+        · exact hcB
+        · obtain ⟨m, hm, hmd⟩ := depths_of_same hsh n (List.mem_of_mem_drop (List.mem_of_mem_drop hn))
+          rw [← hmd]; exact hB m hm
+
+/-- **Pre-collapse keeps a scope collapsed and its nodes no wider than the
+    group**, the cap being no wider either. -/
+theorem precollapse_top (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C)) (h : s.stack = l :: ls)
+    (B : Nat) (hB : ∀ n ∈ l.nodes, n.depth ≤ B) (hcB : cx.P.capDepth ≤ B) (hc : l.collapsed = true) :
+    TopShape (fun l => (∀ n ∈ l.nodes, n.depth ≤ B) ∧ l.collapsed = true) (s.precollapse cx).1 := by
+  have hn : s.normTop.stack = { l with counted := l.nodes.length } :: ls := by
+    unfold St.normTop; rw [h]; simp only
+    rw [St.setTop_stack _ l _ ls (by rw [uncollapsedAsLeaves_state' s l]; exact h)]
+    simp [St.uncollapsedAsLeaves, hc]
+  have hT : TopShape (fun l => (∀ n ∈ l.nodes, n.depth ≤ B) ∧ l.collapsed = true) s.normTop := by
+    intro l2 ls2 h2; rw [hn] at h2; obtain ⟨rfl, rfl⟩ := List.cons.inj h2; exact ⟨hB, hc⟩
+  unfold St.precollapse
+  rw [hn]
+  simp only
+  split
+  · exact hT
+  · apply precollapseLoop_top cx B hcB
+    intro l2 ls2 h2
+    rw [failUnless_stack] at h2
+    exact hT l2 ls2 h2
+
 end Ssz.Hasher
