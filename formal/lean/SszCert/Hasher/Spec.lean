@@ -326,4 +326,54 @@ theorem merkleizeImpl_eq (xs : List C) (limit : Nat) :
   rw [this, chunks_single hn (Nat.le_trans hle hcap)]
   rfl
 
+/-! ## Progressive merkleization (EIP-7916) -/
+
+/-- `merkleize_progressive(chunks, 2^depth)`: the first `2^depth` chunks as a
+    bounded tree, the rest progressively with four times the width. -/
+def progRoot (depth : Nat) (xs : List C) : C :=
+  if xs = [] then z0
+  else H (mroot H z0 depth (xs.take (2 ^ depth))) (progRoot (depth + 2) (xs.drop (2 ^ depth)))
+termination_by xs.length
+decreasing_by
+  simp only [List.length_drop]
+  have : 0 < xs.length := List.length_pos_iff.mpr (by assumption)
+  have := Nat.one_le_two_pow (n := depth)
+  omega
+
+theorem progRoot_nil (depth : Nat) : progRoot H z0 depth [] = z0 := by
+  rw [progRoot]; simp
+
+theorem progRoot_cons {depth : Nat} {xs : List C} (h : xs ≠ []) :
+    progRoot H z0 depth xs = H (mroot H z0 depth (xs.take (2 ^ depth))) (progRoot H z0 (depth + 2) (xs.drop (2 ^ depth))) := by
+  rw [progRoot]; simp [h]
+
+/-- **`merkleizeProgressiveImpl`** is progressive merkleization, given fuel. -/
+theorem progImpl_eq : ∀ (fuel depth : Nat) (xs : List C), xs.length < fuel →
+    progImpl H z0 fuel depth xs = progRoot H z0 depth xs := by
+  intro fuel
+  induction fuel with
+  | zero => intro _ xs h; omega
+  | succ fuel ih =>
+    intro depth xs h
+    by_cases hx : xs = []
+    · subst hx; simp [progImpl, progRoot_nil]
+    rw [progRoot_cons H z0 hx]
+    simp only [progImpl, hx, if_false]
+    have hl : (merkleizeImpl H z0 (xs.take (2 ^ depth)) (2 ^ depth)).1 = mroot H z0 depth (xs.take (2 ^ depth)) := by
+      rw [merkleizeImpl_eq]
+      congr 1
+      unfold implLimit
+      have : (xs.take (2 ^ depth)).length ≤ 2 ^ depth := by simp; omega
+      have h2 : 2 ^ depth ≠ 0 := by have := Nat.one_le_two_pow (n := depth); omega
+      simp only [h2, if_false, Nat.max_eq_left this, depthOf_two_pow]
+    rw [hl]
+    congr 1
+    by_cases hr : xs.drop (2 ^ depth) = []
+    · rw [if_pos hr, hr, progRoot_nil]
+    · rw [if_neg hr]
+      apply ih
+      have : 0 < xs.length := List.length_pos_iff.mpr hx
+      have := Nat.one_le_two_pow (n := depth)
+      simp only [List.length_drop]; omega
+
 end Ssz.Hasher

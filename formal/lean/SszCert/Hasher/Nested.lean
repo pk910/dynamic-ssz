@@ -93,6 +93,78 @@ theorem mixin_scope (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C)) 
   · rw [St.pop_cells s l ls h, ← hbF]; exact hsub
   · rw [hh, hhF]; rfl
 
+/-! ## Progressive closes of a non-incremental scope -/
+
+/-- The drained, hole-free innermost scope's leaves. -/
+theorem none_vals (cx : Ctx C) {l : Layer C} {L : List C} (hb : BinOK cx l L) (hinc : l.incremental = false) :
+    l.cells.map Cell.val = L := by
+  rw [layer_cells_bin l hb.prog hb.pend hb.tail]; unfold nodeCells; rw [List.map_map]
+  exact cov_leaves cx.H cx.z0 l.nodes L hb.cov (hb.leaves (hb.ninc hinc))
+
+/-- **`MerkleizeProgressiveWithMixin` / `WithActiveFields`** on a
+    non-incremental scope. -/
+theorem progWord_none (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C)) (L : List C) (w : C) (a : Bool)
+    (h : s.stack = l :: ls) (hs : ScopeOK cx l L) (hinc : l.incremental = false) (hn : l.pend = []) (ht : TopOK s) :
+    ∃ t : St C, Jump s.pop t ∧ TopOK t ∧
+      s.closeProgWord cx w a = t.push (.ready (cx.H (progRoot cx.H cx.z0 0 L) w)) := by
+  have hb := bin_of_scopeOK cx hs hn
+  obtain ⟨l2, ls2, hs2, hb2, ht2, hr2, hle2, hba2, hh2, hsub2⟩ := drainTop_bin cx s l ls L h hb ht
+  have hi2 : l2.incremental = false := by
+    have := (stack_of_view (drainFor_spec s ht s.topStart).1 h)
+    obtain ⟨l', ls', h', he', _⟩ := this
+    rw [hs2] at h'; obtain ⟨rfl, rfl⟩ := List.cons.inj h'
+    have := congrArg Layer.incremental he'; exact this.trans hinc
+  have hvals := none_vals cx hb2 hi2
+  have hnp2 : l2.progressive = false := hb2.noprog
+  have hroot : progImpl cx.H cx.z0 ((l2.cells.map Cell.val).length + 1) 0 (l2.cells.map Cell.val) =
+      progRoot cx.H cx.z0 0 L := by rw [hvals]; exact progImpl_eq cx.H cx.z0 _ 0 L (by omega)
+  refine ⟨{ s.drainFor s.topStart with stack := ls2 }, ⟨?_, ?_, ?_⟩, topOK_pop _ l2 ls2 hs2 ht2 hr2, ?_⟩
+  · show (_, _) = (_, _)
+    simp only [St.pop, h, List.tail_cons]; rw [hba2, hle2]
+  · rw [St.pop_cells s l ls h, St.cells_pop _ l2 ls2 hs2]; exact hsub2
+  · exact hh2
+  · unfold St.closeProgWord
+    rw [h]
+    simp only [hb.noprog, hinc, hn, Bool.not_false, Bool.false_eq_true, and_false, if_false, ne_eq,
+      not_true_eq_false]
+    rw [hs2]
+    simp only [hnp2, Bool.false_eq_true, false_and, if_false]
+    rw [show (s.drainFor s.topStart).vals l2.cells "merkleize" = (s.drainFor s.topStart, l2.cells.map Cell.val) by
+      simp [St.vals, List.all_eq_true.mpr hr2]]
+    simp only [St.vals, List.all_cons, List.all_nil, Cell.isReady, Bool.and_true, if_true, List.map_cons,
+      List.map_nil, List.head?_cons, Option.getD_some, Cell.val]
+    rw [popWith_eq _ l2 ls2 hs2, hroot]
+
+/-- **`MerkleizeProgressive`** on a non-incremental scope. -/
+theorem prog_none (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C)) (L : List C) (a : Bool)
+    (h : s.stack = l :: ls) (hs : ScopeOK cx l L) (hinc : l.incremental = false) (hn : l.pend = []) (ht : TopOK s) :
+    ∃ t : St C, Jump s.pop t ∧ TopOK t ∧
+      s.step cx (.merkleizeProg a) = t.push (.ready (progRoot cx.H cx.z0 0 L)) := by
+  have hb := bin_of_scopeOK cx hs hn
+  obtain ⟨l2, ls2, hs2, hb2, ht2, hr2, hle2, hba2, hh2, hsub2⟩ := drainTop_bin cx s l ls L h hb ht
+  have hi2 : l2.incremental = false := by
+    have := (stack_of_view (drainFor_spec s ht s.topStart).1 h)
+    obtain ⟨l', ls', h', he', _⟩ := this
+    rw [hs2] at h'; obtain ⟨rfl, rfl⟩ := List.cons.inj h'
+    have := congrArg Layer.incremental he'; exact this.trans hinc
+  have hvals := none_vals cx hb2 hi2
+  have hnp2 : l2.progressive = false := hb2.noprog
+  have hroot : progImpl cx.H cx.z0 ((l2.cells.map Cell.val).length + 1) 0 (l2.cells.map Cell.val) =
+      progRoot cx.H cx.z0 0 L := by rw [hvals]; exact progImpl_eq cx.H cx.z0 _ 0 L (by omega)
+  refine ⟨{ s.drainFor s.topStart with stack := ls2 }, ⟨?_, ?_, ?_⟩, topOK_pop _ l2 ls2 hs2 ht2 hr2, ?_⟩
+  · show (_, _) = (_, _)
+    simp only [St.pop, h, List.tail_cons]; rw [hba2, hle2]
+  · rw [St.pop_cells s l ls h, St.cells_pop _ l2 ls2 hs2]; exact hsub2
+  · exact hh2
+  · simp only [St.step, h, hb.noprog, hinc, hn, Bool.not_false, Bool.false_eq_true, and_false, if_false, ne_eq,
+      not_true_eq_false]
+    rw [hs2]
+    simp only [hnp2, Bool.false_eq_true, if_false]
+    rw [show (s.drainFor s.topStart).vals l2.cells "merkleize" = (s.drainFor s.topStart, l2.cells.map Cell.val) by
+      simp [St.vals, List.all_eq_true.mpr hr2]]
+    simp only
+    rw [popWith_eq _ l2 ls2 hs2, hroot]
+
 /-! ## The grammar -/
 
 /-- The scopes the engines open for a value. -/
@@ -110,31 +182,51 @@ def Kind.layer : Kind → Bool → Layer C
   | .none, p => { incremental := false, legacy := false, progressive := false, packed := p }
 
 /-- How a scope is closed. -/
-inductive CloseOp where
+inductive CloseOp (C : Type) where
   | merkleize (async : Bool)
   | mixin (num limit : Nat) (async : Bool)
+  | prog (async : Bool)
+  | progMixin (num : Nat) (async : Bool)
+  | progActive (af : C) (async : Bool)
 
-def CloseOp.op : CloseOp → Op C
+def CloseOp.op : CloseOp C → Op C
   | .merkleize a => .merkleize a
   | .mixin num limit a => .merkleizeMixin num limit a
+  | .prog a => .merkleizeProg a
+  | .progMixin num a => .merkleizeProgMixin num a
+  | .progActive af a => .merkleizeProgActive af a
 
 /-- The specified root of a closed scope over its leaves. -/
-def CloseOp.rootOf (cx : Ctx C) : CloseOp → List C → C
+def CloseOp.rootOf (cx : Ctx C) : CloseOp C → List C → C
   | .merkleize _, L => mroot cx.H cx.z0 (depthOf L.length) L
   | .mixin num limit _, L => cx.H (mroot cx.H cx.z0 (closeDepth L.length limit) L) (cx.word num)
+  | .prog _, L => progRoot cx.H cx.z0 0 L
+  | .progMixin num _, L => cx.H (progRoot cx.H cx.z0 0 L) (cx.word num)
+  | .progActive af _, L => cx.H (progRoot cx.H cx.z0 0 L) af
 
-/-- The leaves fit the limit. -/
-def CloseOp.ok : CloseOp → Nat → Prop
-  | .merkleize _, _ => True
-  | .mixin _ limit _, n => limit = 0 ∨ n ≤ limit
+/-- The close fits the scope: the leaves fit the limit, and a progressive
+    close is made on a non-incremental scope (an incremental binary scope
+    closed progressively is a shape mismatch Go reports as an error). -/
+def CloseOp.ok : CloseOp C → Bool → Nat → Prop
+  | .merkleize _, _, _ => True
+  | .mixin _ limit _, _, n => limit = 0 ∨ n ≤ limit
+  | .prog _, inc, _ => inc = false
+  | .progMixin _ _, inc, _ => inc = false
+  | .progActive _ _, inc, _ => inc = false
+
+def Kind.inc : Kind → Bool
+  | .binary => true
+  | .none => false
+
+theorem Kind.layer_inc (k : Kind) (p : Bool) : (k.layer p : Layer C).incremental = k.inc := by cases k <;> rfl
 
 theorem depthOf_pos {n : Nat} (h : 2 ≤ n) : 0 < depthOf n := by
   unfold depthOf; rw [if_neg (by omega)]; omega
 
 /-- **A child scope's close**, deferred into its parent or reduced. -/
 theorem closeChild (cx : Ctx C) (hP : ParamsOK cx.P) (s : St C) (l p : Layer C) (ps : List (Layer C))
-    (Lc Lp : List C) (cl : CloseOp) (h : s.stack = l :: p :: ps) (hs : ScopeOK cx l Lc)
-    (hn : l.incremental = false → l.pend = []) (ht : TopOK s) (hok : cl.ok Lc.length)
+    (Lc Lp : List C) (cl : CloseOp C) (h : s.stack = l :: p :: ps) (hs : ScopeOK cx l Lc)
+    (hn : l.incremental = false → l.pend = []) (ht : TopOK s) (hok : cl.ok l.incremental Lc.length)
     (hp : ScopeOK cx p Lp) (hpn : p.incremental = false → p.pend = [])
     (hLp : (Lp ++ [cl.rootOf cx Lc]).length < 2 ^ 40) :
     ∃ t q qs, t.stack = q :: qs ∧ Jump s.pop t ∧ TopOK t ∧
@@ -152,6 +244,19 @@ theorem closeChild (cx : Ctx C) (hP : ParamsOK cx.P) (s : St C) (l p : Layer C) 
     obtain ⟨q, qs, hq, hst⟩ := push_after_jump cx s t l p ps Lp _ h hj htt hp hpn
     refine ⟨t, q, qs, hq, hj, htt, ?_⟩
     rw [hstep, he]; exact hst
+  | prog a =>
+    obtain ⟨t, hj, htt, he⟩ := prog_none cx s l (p :: ps) Lc a h hs hok (hn hok) ht
+    obtain ⟨q, qs, hq, hst⟩ := push_after_jump cx s t l p ps Lp _ h hj htt hp hpn
+    exact ⟨t, q, qs, hq, hj, htt, by show StepOK cx t (s.step cx (.merkleizeProg a)) q qs _; rw [he]; exact hst⟩
+  | progMixin num a =>
+    obtain ⟨t, hj, htt, he⟩ := progWord_none cx s l (p :: ps) Lc (cx.word num) a h hs hok (hn hok) ht
+    obtain ⟨q, qs, hq, hst⟩ := push_after_jump cx s t l p ps Lp _ h hj htt hp hpn
+    exact ⟨t, q, qs, hq, hj, htt, by
+      show StepOK cx t (s.closeProgWord cx (cx.word num) a) q qs _; rw [he]; exact hst⟩
+  | progActive af a =>
+    obtain ⟨t, hj, htt, he⟩ := progWord_none cx s l (p :: ps) Lc af a h hs hok (hn hok) ht
+    obtain ⟨q, qs, hq, hst⟩ := push_after_jump cx s t l p ps Lp _ h hj htt hp hpn
+    exact ⟨t, q, qs, hq, hj, htt, by show StepOK cx t (s.closeProgWord cx af a) q qs _; rw [he]; exact hst⟩
   | merkleize a =>
     -- the reduced close
     have hred : ∃ t q qs, t.stack = q :: qs ∧ Jump s.pop t ∧ TopOK t ∧
@@ -265,7 +370,7 @@ theorem closeChild (cx : Ctx C) (hP : ParamsOK cx.P) (s : St C) (l p : Layer C) 
 mutual
 /-- A scope: opened, filled, closed. -/
 inductive Tree (C : Type) where
-  | mk (kind : Kind) (packed : Bool) (body : Body C) (close : CloseOp)
+  | mk (kind : Kind) (packed : Bool) (body : Body C) (close : CloseOp C)
 /-- A scope's body: leaves, `Collapse` hints (either mode) and child scopes. -/
 inductive Body (C : Type) where
   | nil
@@ -299,7 +404,7 @@ end
 mutual
 /-- Every scope's leaves fit its limit and the model's 2^40 chunk bound. -/
 def Tree.WF (cx : Ctx C) : Tree C → Prop
-  | .mk _ _ b c => b.WF cx ∧ (b.leaves cx).length < 2 ^ 40 ∧ c.ok (b.leaves cx).length
+  | .mk k _ b c => b.WF cx ∧ (b.leaves cx).length < 2 ^ 40 ∧ c.ok k.inc (b.leaves cx).length
 def Body.WF (cx : Ctx C) : Body C → Prop
   | .nil => True
   | .leaf _ r => r.WF cx
@@ -371,7 +476,9 @@ theorem Tree.step_ok (cx : Ctx C) (hP : ParamsOK cx.P) : ∀ (t : Tree C) (s : S
     have hb := Body.step_ok cx hP b { sF with stack := k.layer pk :: sF.stack } (k.layer pk) sF.stack []
       rfl (Kind.layer_ok cx k pk) (fun _ => by cases k <;> rfl) ht1 hwb (by simpa using hwl)
     simp only [List.nil_append] at hb
-    obtain ⟨l2, ls2, h2, hs2, _, hn2, ht2, hle2, hba2, hh2, _, hsub2⟩ := hb
+    obtain ⟨l2, ls2, h2, hs2, hi2, hn2, ht2, hle2, hba2, hh2, _, hsub2⟩ := hb
+    rw [Kind.layer_inc] at hi2
+    rw [← hi2] at hok
     rw [hF1] at hle2
     obtain ⟨p2, ps2, rfl⟩ : ∃ p2 ps2, ls2 = p2 :: ps2 := by
       cases ls2 with
@@ -471,7 +578,8 @@ theorem run_tree (cx : Ctx C) (hP : ParamsOK cx.P) (t : Tree C) (hwf : t.WF cx) 
       (fun _ => by cases k <;> rfl) ht0 hwb (by simpa using hwl)
     simp only [List.nil_append] at hb
     generalize (b.ops.foldl (St.step cx) { stack := [k.layer pk] }) = s2 at hb ⊢
-    obtain ⟨l2, ls2, h2, hs2, _, _, ht2, hle2, hba2, hh2, _, _⟩ := hb
+    obtain ⟨l2, ls2, h2, hs2, hi2, hn2, ht2, hle2, hba2, hh2, _, _⟩ := hb
+    rw [Kind.layer_inc] at hi2
     rw [erase_nil_layers hle2] at h2
     have hba : s2.base.map Cell.erase = [] := by simpa using hba2
     have hh : s2.hashErr = none := hh2
@@ -479,6 +587,21 @@ theorem run_tree (cx : Ctx C) (hP : ParamsOK cx.P) (t : Tree C) (hwf : t.WF cx) 
     obtain ⟨_, _, hbs, _⟩ := hs0
     have hnp : l2.progressive = false := hbs.noprog
     cases cl with
+    | prog a =>
+      have hi : l2.incremental = false := hi2.trans hok
+      obtain ⟨t, hj, htt, he⟩ := prog_none cx s2 l2 [] _ a h2 hs2 hi (hn2 hi) ht2
+      show (s2.step cx (.merkleizeProg a)).root = _
+      rw [he]; exact root_after_jump s2 t l2 h2 hba hh hj htt _
+    | progMixin num a =>
+      have hi : l2.incremental = false := hi2.trans hok
+      obtain ⟨t, hj, htt, he⟩ := progWord_none cx s2 l2 [] _ (cx.word num) a h2 hs2 hi (hn2 hi) ht2
+      show (s2.closeProgWord cx (cx.word num) a).root = _
+      rw [he]; exact root_after_jump s2 t l2 h2 hba hh hj htt _
+    | progActive af a =>
+      have hi : l2.incremental = false := hi2.trans hok
+      obtain ⟨t, hj, htt, he⟩ := progWord_none cx s2 l2 [] _ af a h2 hs2 hi (hn2 hi) ht2
+      show (s2.closeProgWord cx af a).root = _
+      rw [he]; exact root_after_jump s2 t l2 h2 hba hh hj htt _
     | mixin num limit a =>
       have hstep : s2.step cx (CloseOp.mixin num limit a).op =
           ((s2.flushSync cx).drainFor (s2.flushSync cx).topStart).mixinClose cx num limit := by
