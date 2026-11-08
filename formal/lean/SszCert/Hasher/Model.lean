@@ -517,6 +517,13 @@ def St.precollapse (cx : Ctx C) (s : St C) : St C × Bool :=
 def reduceElem (H : C → C → C) (z0 : C) (xs : List C) : C :=
   (reduceTo H 1 xs.length xs).head?.getD z0
 
+/-- Read the deferred elements in order, reducing each to its root. -/
+def St.flushFold (cx : Ctx C) : St C → List (List (Cell C)) → St C × List C
+  | s, [] => (s, [])
+  | s, e :: es =>
+    (((s.vals e "flush").1.flushFold cx es).1,
+     reduceElem cx.H cx.z0 (s.vals e "flush").2 :: ((s.vals e "flush").1.flushFold cx es).2)
+
 /-- `flushPending` (synchronous): every deferred element becomes one root;
     the raw tail moves down behind them. -/
 def St.flushSync (cx : Ctx C) (s : St C) : St C :=
@@ -524,16 +531,56 @@ def St.flushSync (cx : Ctx C) (s : St C) : St C :=
   | [] => s
   | l :: _ =>
     if l.pend = [] then s else
-    let (s, roots) := l.pend.foldl (fun (acc : St C × List C) e =>
-      let (s, vs) := acc.1.vals e "flush"
-      (s, acc.2 ++ [reduceElem cx.H cx.z0 vs])) (s, [])
-    s.setTop { l with nodes := l.nodes ++ roots.map (fun v => ⟨0, .ready v⟩) ++ l.tail.map (fun c => ⟨0, c⟩),
-                      pend := [], pendC := 0, tail := [] }
+    (s.flushFold cx l.pend).1.setTop
+      { l with nodes := l.nodes ++ (s.flushFold cx l.pend).2.map (fun v => ⟨0, .ready v⟩) ++
+                          l.tail.map (fun c => ⟨0, c⟩),
+               pend := [], pendC := 0, tail := [] }
 
 /-- `asyncRootCompatible`. -/
 def asyncRootCompatible (l : Layer C) (nodeDepth : Nat) : Bool :=
   if !l.collapsed then l.nodes.isEmpty
   else (l.nodes.take l.counted).all (fun n => n.depth ≥ nodeDepth) && l.nodes.length == l.counted
+
+/-- The layer after one binary round of `flushPendingAsync`: the
+    consumed elements become one node at the depth of their subtree. -/
+def binRoundLayer (P : Params) (c : Nat) (l : Layer C) (holes : List (Cell C)) : Layer C :=
+  { l with collapsed := true,
+           nodes := (if l.collapsed then l.nodes else []) ++ holes.map (fun h => ⟨Nat.log2 (P.cap / c), h⟩),
+           counted := ((if l.collapsed then l.nodes else []) ++
+             holes.map (fun h => (⟨Nat.log2 (P.cap / c), h⟩ : Node C))).length,
+           pend := l.pend.drop (P.cap / c) }
+
+/-- One binary round: `cap / c` elements reduced in the background to one
+    root, written where the run begins. -/
+def St.binRound (cx : Ctx C) (c : Nat) (s : St C) (l : Layer C) : St C :=
+  (s.enqueue cx (l.pend.take (cx.P.cap / c)).flatten 1 (s.activeStart + (nodeCells l.nodes).length)).1.setTop
+    (binRoundLayer cx.P c
+      ((s.enqueue cx (l.pend.take (cx.P.cap / c)).flatten 1 (s.activeStart + (nodeCells l.nodes).length)).1.topLayer l)
+      (s.enqueue cx (l.pend.take (cx.P.cap / c)).flatten 1 (s.activeStart + (nodeCells l.nodes).length)).2)
+
+/-- One progressive round: the elements' roots computed in the background
+    land as depth-0 nodes. -/
+def St.progRound (cx : Ctx C) (c : Nat) (s : St C) (l : Layer C) : St C :=
+  (s.enqueue cx (l.pend.take (cx.P.cap / c)).flatten (cx.P.cap / c) (s.activeStart + (nodeCells l.nodes).length)).1.setTop
+    (let l' := (s.enqueue cx (l.pend.take (cx.P.cap / c)).flatten (cx.P.cap / c)
+                  (s.activeStart + (nodeCells l.nodes).length)).1.topLayer l
+     { l' with nodes := l'.nodes ++ (s.enqueue cx (l.pend.take (cx.P.cap / c)).flatten (cx.P.cap / c)
+                  (s.activeStart + (nodeCells l.nodes).length)).2.map (fun h => ⟨0, h⟩),
+               pend := l'.pend.drop (cx.P.cap / c) })
+
+/-- The rounds of `flushPendingAsync` (`dflt`: the scope it started on). -/
+def flushAsyncLoop (cx : Ctx C) (dflt : Layer C) (c : Nat) : Nat → St C → Bool → St C × Bool
+  | 0, s, e => (s, e)
+  | fuel + 1, s, e =>
+    if (s.topLayer dflt).pend.length < cx.P.cap / c then (s, e)
+    else if (s.topLayer dflt).progressive then
+      flushAsyncLoop cx dflt c fuel (s.progRound cx c (s.topLayer dflt)) true
+    else if !asyncRootCompatible (s.topLayer dflt) (Nat.log2 (cx.P.cap / c)) then (s, e)
+    else flushAsyncLoop cx dflt c fuel (s.binRound cx c (s.topLayer dflt)) true
+
+/-- After the rounds: an emptied run lets the raw tail move down. -/
+def flushFinish (l : Layer C) : Layer C :=
+  if l.pend = [] then { l with pendC := 0, nodes := l.nodes ++ l.tail.map (fun c => ⟨0, c⟩), tail := [] } else l
 
 /-- `flushPendingAsync`: cap-wide prefixes of the deferred run become
     background jobs. Returns whether any job was emitted. -/
@@ -541,32 +588,9 @@ def St.flushAsync (cx : Ctx C) (s : St C) : St C × Bool :=
   match s.stack with
   | [] => (s, false)
   | l :: _ =>
-    let c := l.pendC
-    let batchElems := cx.P.cap / c
-    let nodeDepth := Nat.log2 batchElems
-    let rec go : Nat → St C → Bool → St C × Bool
-      | 0, s, e => (s, e)
-      | fuel + 1, s, e =>
-        let l := (s.stack.head?).getD l
-        if l.pend.length < batchElems then (s, e) else
-        let start := s.activeStart + (nodeCells l.nodes).length
-        let input := (l.pend.take batchElems).flatten
-        if l.progressive then
-          let (s, holes) := s.enqueue cx input batchElems start
-          let l := (s.stack.head?).getD l
-          let s := s.setTop { l with nodes := l.nodes ++ holes.map (fun h => ⟨0, h⟩), pend := l.pend.drop batchElems }
-          go fuel s true
-        else if !asyncRootCompatible l nodeDepth then (s, e) else
-          let (s, holes) := s.enqueue cx input 1 start
-          let l := (s.stack.head?).getD l
-          let l := if l.collapsed then l else { l with collapsed := true, nodes := [], counted := 0 }
-          let nodes := l.nodes ++ holes.map (fun h => ⟨nodeDepth, h⟩)
-          let s := s.setTop { l with nodes := nodes, counted := nodes.length, pend := l.pend.drop batchElems }
-          go fuel s true
-    let (s, emitted) := go (l.pend.length + 1) s false
-    let l := (s.stack.head?).getD l
-    let l := if l.pend = [] then { l with pendC := 0, nodes := l.nodes ++ l.tail.map (fun c => ⟨0, c⟩), tail := [] } else l
-    (s.setTop l, emitted)
+    ((flushAsyncLoop cx l l.pendC (l.pend.length + 1) s false).1.setTop
+      (flushFinish ((flushAsyncLoop cx l l.pendC (l.pend.length + 1) s false).1.topLayer l)),
+     (flushAsyncLoop cx l l.pendC (l.pend.length + 1) s false).2)
 
 /-- `flushPending(layer, allowAsync)` on the innermost scope. -/
 def St.flush (cx : Ctx C) (s : St C) (allowAsync async : Bool) : St C :=
