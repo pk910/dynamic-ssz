@@ -704,21 +704,34 @@ def St.popWith (s : St C) (root : Cell C) : St C :=
   | [] => s
   | _ :: ls => ({ s with stack := ls } : St C).push root
 
-/-- The non-deferred close of `Merkleize`. -/
+/-- Record a chunk-limit overflow. -/
+def St.setHashErrIf (s : St C) (b : Bool) : St C := if b then s.setHashErr "chunk limit" else s
+
+/-- The binary root of a scope with a chunk limit (`0` = as many as there
+    are): a collapsed scope reduces through `collapseAllDepths`, any other
+    through `merkleizeImpl`. -/
+def St.binRoot (cx : Ctx C) (s : St C) (l : Layer C) (limit : Nat) : St C × Cell C :=
+  if l.collapsed then s.collapseAll cx l.nodes limit
+  else (((s.vals l.cells "merkleize").1.setHashErrIf (merkleizeImpl cx.H cx.z0 (l.cells.map Cell.val) limit).2),
+        .ready (merkleizeImpl cx.H cx.z0 (l.cells.map Cell.val) limit).1)
+
+/-- The non-deferred close of `Merkleize`: flush, drain, root, pop. -/
 def St.closeBinary (cx : Ctx C) (s : St C) (limit : Nat) (_async : Bool) : St C :=
-  let s := s.flushSync cx
-  let s := s.drainFor s.topStart
+  match ((s.flushSync cx).drainFor (s.flushSync cx).topStart).stack with
+  | [] => (s.flushSync cx).drainFor (s.flushSync cx).topStart
+  | l :: _ =>
+    (((s.flushSync cx).drainFor (s.flushSync cx).topStart).binRoot cx l limit).1.popWith
+      (((s.flushSync cx).drainFor (s.flushSync cx).topStart).binRoot cx l limit).2
+
+/-- The close of `MerkleizeWithMixin` after its flush and drain: root, mix in
+    the length, pop. -/
+def St.mixinClose (cx : Ctx C) (s : St C) (num limit : Nat) : St C :=
   match s.stack with
   | [] => s
   | l :: _ =>
-    if l.collapsed then
-      let (s, root) := s.collapseAll cx l.nodes limit
-      s.popWith root
-    else
-      let (s, vs) := s.vals l.cells "merkleize"
-      let (r, over) := merkleizeImpl cx.H cx.z0 vs limit
-      let s := if over then s.setHashErr "chunk limit" else s
-      s.popWith (.ready r)
+    ((s.binRoot cx l limit).1.vals [(s.binRoot cx l limit).2] "mixin").1.popWith
+      (.ready (cx.H (s.binRoot cx l limit).2.val (cx.word num)))
+
 /-- `MerkleizeProgressiveWithMixin` / `WithActiveFields`. -/
 def St.closeProgWord (cx : Ctx C) (s : St C) (w : C) (async : Bool) : St C :=
   match s.stack with
@@ -787,24 +800,12 @@ def St.step (cx : Ctx C) (s : St C) : Op C → St C
           if (p.pend.length + 1) * c ≥ cx.P.cap then s.flush cx true async else s
         | [] => s
       | _, _, _ => s.closeBinary cx 0 async
-  | .merkleizeMixin num limit async =>
+  | .merkleizeMixin num limit _ =>
     match s.stack with
     | [] => s.fail "merkleize without a scope"
     | l :: _ =>
-      let s := if l.progressive then s.setHashErr "scope shape mismatch" else s
-      let s := if l.pend ≠ [] then s.flushSync cx else s
-      let s := s.drainFor s.topStart
-      match s.stack with
-      | [] => s
-      | l :: _ =>
-        let (s, root) :=
-          if l.collapsed then s.collapseAll cx { l with counted := l.nodes.length }.nodes limit
-          else
-            let (s, vs) := s.vals l.cells "merkleize"
-            let (r, over) := merkleizeImpl cx.H cx.z0 vs limit
-            ((if over then s.setHashErr "chunk limit" else s), .ready r)
-        let (s, rv) := s.vals [root] "mixin"
-        s.popWith (.ready (cx.H (rv.head?.getD cx.z0) (cx.word num)))
+      (((if l.progressive then s.setHashErr "scope shape mismatch" else s).flushSync cx).drainFor
+        ((if l.progressive then s.setHashErr "scope shape mismatch" else s).flushSync cx).topStart).mixinClose cx num limit
   | .merkleizeProg async =>
     match s.stack with
     | [] => s.fail "merkleize without a scope"

@@ -539,6 +539,183 @@ theorem collapseLoop_cov (cx : Ctx C) (live : Bool) :
         simpa [hpdep m (by rw [hpm]; simp)] using hlen
       rw [hpdep m (by rw [hpm]; simp), depthOf_of_between h1 h2]
 
+/-! ## The loop raises no error -/
+
+/-- Depths never increase along the list. -/
+def NonInc : List (Node C) → Prop
+  | [] => True
+  | [_] => True
+  | n :: m :: ns => m.depth ≤ n.depth ∧ NonInc (m :: ns)
+
+theorem nonInc_of_cov {full : Bool} {ns : List (Node C)} {L : List C} (h : Cov H z0 full ns L) : NonInc ns := by
+  induction ns generalizing L with
+  | nil => trivial
+  | cons n ns ih =>
+    cases ns with
+    | nil => trivial
+    | cons m ns => obtain ⟨_, ys, _, _, _, hd, hc⟩ := h; exact ⟨hd, ih hc⟩
+
+theorem nonInc_le {n : Node C} {ns : List (Node C)} (h : NonInc (n :: ns)) : ∀ m ∈ ns, m.depth ≤ n.depth := by
+  induction ns generalizing n with
+  | nil => simp
+  | cons m ns ih =>
+    intro k hk
+    rcases List.mem_cons.mp hk with rfl | hk
+    · exact h.1
+    · exact Nat.le_trans (ih h.2 k hk) h.1
+
+theorem nonInc_tail {n : Node C} {ns : List (Node C)} (h : NonInc (n :: ns)) : NonInc ns := by
+  cases ns with
+  | nil => trivial
+  | cons m ns => exact h.2
+
+theorem nonInc_append_left : ∀ {A B : List (Node C)}, NonInc (A ++ B) → NonInc A
+  | [], _, _ => trivial
+  | [_], _, _ => trivial
+  | a :: a' :: as, B, h => ⟨h.1, nonInc_append_left (B := B) h.2⟩
+
+theorem nonInc_split {ns : List (Node C)} (h : NonInc ns) (hne : ns ≠ []) :
+    ∃ keep grp low, ns = keep ++ grp ∧ grp ≠ [] ∧ (∀ n ∈ grp, n.depth = low) ∧ (∀ n ∈ keep, low < n.depth) := by
+  induction ns with
+  | nil => exact absurd rfl hne
+  | cons n rest ih =>
+    cases rest with
+    | nil => exact ⟨[], [n], n.depth, rfl, by simp, by simp, by simp⟩
+    | cons m rest =>
+      obtain ⟨keep, grp, low, heq, hg, hgd, hkd⟩ := ih h.2 (by simp)
+      have hle := nonInc_le h
+      by_cases hlow : n.depth = low
+      · have hk : keep = [] := by
+          cases keep with
+          | nil => rfl
+          | cons k ks => have := hkd k (by simp); have := hle k (by rw [heq]; simp); omega
+        subst hk
+        exact ⟨[], n :: grp, low, by simp [heq], by simp,
+          fun k hk => by rcases List.mem_cons.mp hk with rfl | hk; exact hlow; exact hgd k hk, by simp⟩
+      · have : low < n.depth := by
+          obtain ⟨g, hgm⟩ := List.exists_mem_of_ne_nil grp hg
+          have := hle g (by rw [heq]; simp [hgm]); have := hgd g hgm; omega
+        exact ⟨n :: keep, grp, low, by simp [heq], hg, hgd,
+          fun k hk => by rcases List.mem_cons.mp hk with rfl | hk; exact this; exact hkd k hk⟩
+
+theorem nonInc_of_split {keep G : List (Node C)} {low : Nat} (hk : NonInc keep) (hkd : ∀ n ∈ keep, low < n.depth)
+    (hG : ∀ n ∈ G, n.depth = low + 1) (hGne : G ≠ []) : NonInc (keep ++ G) := by
+  induction keep with
+  | nil =>
+    simp only [List.nil_append]
+    induction G with
+    | nil => trivial
+    | cons g gs ih =>
+      cases gs with
+      | nil => trivial
+      | cons g' gs' =>
+        refine ⟨by rw [hG g' (by simp), hG g (by simp)]; exact Nat.le_refl _,
+          ih (fun n hn => hG n (List.mem_cons_of_mem _ hn)) (by simp)⟩
+  | cons k ks ih =>
+    cases ks with
+    | nil =>
+      obtain ⟨g, gs, rfl⟩ := List.exists_cons_of_ne_nil hGne
+      simp only [List.cons_append, List.nil_append]
+      refine ⟨by rw [hG g (by simp)]; exact hkd k (by simp), ?_⟩
+      have := ih trivial (fun n hn => by simp at hn) 
+      simpa using this
+    | cons k' ks' =>
+      refine ⟨hk.1, ?_⟩
+      have := ih hk.2 (fun n hn => hkd n (List.mem_cons_of_mem _ hn))
+      simpa using this
+
+/-- **The loop of `collapseAllDepths` raises no error** on a deepest-first list
+    of ready nodes outside group rounds (`live = false`), given its fuel. -/
+theorem collapseLoop_state (cx : Ctx C) :
+    ∀ fuel (s : St C) (ns : List (Node C)), NonInc ns → ns ≠ [] → (∀ n ∈ ns, n.cell.isReady = true) →
+      collapseMeasure ns ≤ fuel → (collapseLoop cx false fuel s ns).1 = s ∧
+        ∀ n ∈ (collapseLoop cx false fuel s ns).2, n.cell.isReady = true := by
+  intro fuel
+  induction fuel with
+  | zero =>
+    intro s ns _ hne _ hm
+    have : ns.length = 0 := by unfold collapseMeasure at hm; omega
+    exact absurd (List.eq_nil_of_length_eq_zero this) hne
+  | succ fuel ih =>
+    intro s ns hni hne hr hm
+    obtain ⟨keep, grp, low, rfl, hg, hgd, hkd⟩ := nonInc_split hni hne
+    have hm0 : collapseMeasure (keep ++ grp) ≤ fuel + 1 := hm
+    simp only [collapseLoop, min_depth_split hg hgd hkd, count_low_split hgd hkd, all_low_split hgd hkd]
+    by_cases hstop : grp.length = 1 ∧ keep.isEmpty = true
+    · rw [if_pos hstop]; exact ⟨rfl, hr⟩
+    rw [if_neg hstop]
+    let pad : List (Node C) := if grp.length % 2 = 1 then [⟨low, .ready (zeroH cx.H cx.z0 low)⟩] else []
+    have hns2 : (if grp.length % 2 = 1 then keep ++ grp ++ [⟨low, .ready (zeroH cx.H cx.z0 low)⟩]
+        else keep ++ grp) = keep ++ (grp ++ pad) := by simp only [pad]; split <;> simp
+    have hcnt2 : (if grp.length % 2 = 1 then grp.length + 1 else grp.length) = (grp ++ pad).length := by
+      simp only [pad]; split <;> simp
+    simp only [hns2, hcnt2, Bool.false_eq_true, and_false, if_false]
+    have hlen : (keep ++ (grp ++ pad)).length - (grp ++ pad).length = keep.length := by simp
+    rw [hlen, List.take_left' rfl, List.drop_left' rfl]
+    have hpadd : ∀ n ∈ pad, n.depth = low := by
+      intro n hn; simp only [pad] at hn; split at hn
+      · simp at hn; rw [hn]
+      · simp at hn
+    have hpd : ∀ n ∈ grp ++ pad, n.depth = low := by
+      intro n hn; rcases List.mem_append.mp hn with hn | hn
+      · exact hgd n hn
+      · exact hpadd n hn
+    have hall : (grp ++ pad).all (·.depth == low) = true := by
+      rw [List.all_eq_true]; intro n hn; simp [hpd n hn]
+    rw [if_pos hall]
+    have hpg : grp ++ pad ≠ [] := by simp [hg]
+    have hpr : ∀ n ∈ grp ++ pad, n.cell.isReady = true := by
+      intro n hn; rcases List.mem_append.mp hn with hn | hn
+      · exact hr n (List.mem_append_right _ hn)
+      · simp only [pad] at hn; split at hn
+        · simp at hn; rw [hn]; rfl
+        · simp at hn
+    have hst : (s.pairNodes cx (grp ++ pad)).1 = s := by
+      simp only [St.pairNodes, St.vals]
+      rw [if_pos (List.all_eq_true.mpr (fun c hc => by
+        simp only [nodeCells, List.mem_map] at hc; obtain ⟨n, hn, rfl⟩ := hc; exact hpr n hn))]
+    rw [hst, pairNodes_group cx _ hpg hpd]
+    let paired : List (Node C) :=
+      (pairUp cx.H ((grp ++ pad).map (·.cell.val))).map (fun v => ⟨low + 1, .ready v⟩)
+    have hpdep : ∀ n ∈ paired, n.depth = low + 1 := by
+      intro n hn; simp only [paired, List.mem_map] at hn; obtain ⟨_, _, rfl⟩ := hn; rfl
+    have hgp : (grp ++ pad).length = if grp.length % 2 = 1 then grp.length + 1 else grp.length := by
+      simp only [pad]; split <;> simp
+    have hplen : paired.length = (grp.length + 1) / 2 := by
+      simp only [paired, List.length_map, pairUp_length, hgp]
+      split <;> omega
+    have hpne : paired ≠ [] := by
+      intro e; have h1 := congrArg List.length e; rw [hplen] at h1
+      have h2 := List.length_pos_iff.mpr hg; simp only [List.length_nil] at h1; omega
+    have hkni : NonInc keep := nonInc_append_left hni
+    apply ih _ _ (nonInc_of_split hkni hkd hpdep hpne) (fun e => hpne (List.append_eq_nil_iff.mp e).2)
+    · intro n hn
+      rcases List.mem_append.mp hn with hn | hn
+      · exact hr n (List.mem_append_left _ hn)
+      · simp only [paired, List.mem_map] at hn; obtain ⟨_, _, rfl⟩ := hn; rfl
+    · unfold collapseMeasure at hm0 ⊢
+      rw [lastDepth_append hg, lastDepth_uniform hg hgd] at hm0
+      rw [lastDepth_append hpne, lastDepth_uniform hpne hpdep]
+      simp only [List.length_append, hplen] at hm0 ⊢
+      by_cases hke : keep = []
+      · subst hke
+        rw [headDepth_nil_append, headDepth_uniform hg hgd] at hm0
+        rw [headDepth_nil_append, headDepth_uniform hpne hpdep]
+        have : 2 ≤ grp.length := by
+          cases grp with
+          | nil => exact absurd rfl hg
+          | cons a r => cases r with
+            | nil => simp at hstop
+            | cons _ _ => simp
+        simp only [List.length_nil] at hm0 ⊢
+        omega
+      · rw [headDepth_append hke] at hm0 ⊢
+        have : low < headDepth keep := by
+          obtain ⟨k0, ks, rfl⟩ := List.exists_cons_of_ne_nil hke
+          exact hkd k0 (by simp)
+        have : (grp.length + 1) / 2 ≤ grp.length := by omega
+        omega
+
 /-- `getDepth` is monotone. -/
 theorem depthOf_mono {a b : Nat} (h : a ≤ b) : depthOf a ≤ depthOf b := by
   unfold depthOf
@@ -590,5 +767,30 @@ theorem collapseAll_val (cx : Ctx C) (s : St C) (ns : List (Node C)) (limit : Na
     have hle : n.depth ≤ depthOf limit := by
       rw [hnd]; exact depthOf_mono (by omega)
     rw [hv, foldl_expand cx.H cx.z0 _ _ L hLlen, Nat.add_sub_cancel' hle]
+
+/-- **`collapseAllDepths` raises no error** on a ready full cover outside group
+    rounds when the leaves fit the limit, and its root is ready. -/
+theorem collapseAll_state (cx : Ctx C) (s : St C) (ns : List (Node C)) (limit : Nat) (L : List C)
+    (hcov : Cov cx.H cx.z0 true ns L) (hne : ns ≠ []) (hr : ∀ n ∈ ns, n.cell.isReady = true)
+    (hd : headDepth ns < 64) (hlim : limit = 0 ∨ L.length ≤ limit) :
+    (s.collapseAll cx ns limit false).1 = s ∧ (s.collapseAll cx ns limit false).2.isReady = true := by
+  have hgood : ∀ m, ns = [m] → m.depth = depthOf L.length := by
+    intro m hm; subst hm
+    obtain ⟨_, hlen, _⟩ := hcov
+    simp at hlen; rw [hlen, depthOf_two_pow]
+  have hmeas : collapseMeasure ns ≤ 2 * ns.length + 64 := by unfold collapseMeasure; omega
+  have hchunks : ¬ (limit > 0 ∧ leavesOf ns > limit) := by
+    rw [← cov_full_length cx.H cx.z0 hcov]; omega
+  obtain ⟨n, hloop, _, _⟩ := collapseLoop_cov cx false _ s ns L (cov_of_full _ _ hcov) hne hmeas hgood
+  obtain ⟨hst, hrd⟩ := collapseLoop_state cx _ s ns (nonInc_of_cov _ _ hcov) hne hr hmeas
+  have hnr : n.cell.isReady = true := hrd n (by rw [hloop]; simp)
+  unfold St.collapseAll
+  rw [if_neg hchunks, hloop, hst]
+  by_cases hl0 : limit = 0
+  · simp only [collapseFinish, if_neg (show ¬ limit > 0 by omega)]
+    exact ⟨trivial, hnr⟩
+  · simp only [collapseFinish, if_pos (show limit > 0 by omega), Bool.false_eq_true, and_false, if_false,
+      St.vals, List.all_cons, List.all_nil, hnr, Bool.and_true, if_true]
+    exact ⟨trivial, rfl⟩
 
 end Ssz.Hasher
