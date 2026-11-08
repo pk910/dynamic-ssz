@@ -330,4 +330,120 @@ theorem binRound_bin (cx : Ctx C) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) (s : St 
     show HolesSub s.below (s.ringDrain cx.P).below
     exact holesSub_below hv1 h hs1 (ringDrain_holesSub cx.P s ht.holes)
 
+/-! ## The rounds and the whole flush -/
+
+theorem flushAsyncLoop_bin (cx : Ctx C) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) (dflt : Layer C) (k : Nat)
+    (hk0 : k < cx.P.capDepth) (L : List C) (hL : L.length < 2 ^ 40) :
+    ∀ fuel (s : St C) (l : Layer C) (ls : List (Layer C)) (L1 : List C) (e : Bool),
+      s.stack = l :: ls → RoundOK cx l L1 L → l.incremental = true → l.progressive = false → l.pendC = 2 ^ k →
+      TopOK s →
+      ∃ l' ls' L1', (flushAsyncLoop cx dflt (2 ^ k) fuel s e).1.stack = l' :: ls' ∧ RoundOK cx l' L1' L ∧
+        l'.incremental = true ∧ l'.progressive = false ∧ l'.pendC = 2 ^ k ∧
+        TopOK (flushAsyncLoop cx dflt (2 ^ k) fuel s e).1 ∧ ls'.map Layer.erase = ls.map Layer.erase ∧
+        (flushAsyncLoop cx dflt (2 ^ k) fuel s e).1.base.map Cell.erase = s.base.map Cell.erase ∧
+        (flushAsyncLoop cx dflt (2 ^ k) fuel s e).1.hashErr = s.hashErr ∧
+        (flushAsyncLoop cx dflt (2 ^ k) fuel s e).1.below.length = s.below.length ∧
+        HolesSub s.below (flushAsyncLoop cx dflt (2 ^ k) fuel s e).1.below := by
+  intro fuel
+  induction fuel with
+  | zero =>
+    intro s l ls L1 e h hr hi hp hc ht
+    exact ⟨l, ls, L1, h, hr, hi, hp, hc, ht, rfl, rfl, rfl, rfl, HolesSub.refl _⟩
+  | succ fuel ih =>
+    intro s l ls L1 e h hr hi hp hc ht
+    have htop : s.topLayer dflt = l := by simp [St.topLayer, h]
+    simp only [flushAsyncLoop, htop, hp, Bool.false_eq_true, if_false]
+    split
+    · exact ⟨l, ls, L1, h, hr, hi, hp, hc, ht, rfl, rfl, rfl, rfl, HolesSub.refl _⟩
+    split
+    · exact ⟨l, ls, L1, h, hr, hi, hp, hc, ht, rfl, rfl, rfl, rfl, HolesSub.refl _⟩
+    rename_i hpl hcomp
+    have hcomp' : asyncRootCompatible l (Nat.log2 (cx.P.cap / l.pendC)) = true := by
+      rw [hc]; simpa using hcomp
+    obtain ⟨l', ls', hs', hr', hi', hc', hp', _, ht', hle', hba', hh', hbl', hsub'⟩ :=
+      binRound_bin cx hcap s l ls L1 L k h hr hi ht hL hc hk0 (by rw [hc]; omega) hcomp'
+    rw [hc] at hs' ht' hba' hh' hbl' hsub'
+    obtain ⟨l'', ls'', L1'', hs'', hr'', hi'', hp'', hc'', ht'', hle'', hba'', hh'', hbl'', hsub''⟩ :=
+      ih _ l' ls' _ true hs' hr' hi' (by rw [hp']; exact hp) (by rw [hc', hc]) ht'
+    exact ⟨l'', ls'', L1'', hs'', hr'', hi'', hp'', hc'', ht'', by rw [hle'', hle'], by rw [hba'', hba'],
+      by rw [hh'', hh'], by rw [hbl'', hbl'], HolesSub.trans hsub' hsub''⟩
+
+/-- The last step of `flushPendingAsync`: an emptied run lets the tail move
+    down as leaves; the scope is then `ScopeOK`. -/
+theorem flushFinish_scope (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C)) (L1 L : List C) (k : Nat)
+    (h : s.stack = l :: ls) (hr : RoundOK cx l L1 L) (ht : TopOK s) (hk : l.pendC = 2 ^ k) (hk0 : 0 < k)
+    (hkb : 2 ^ k ≤ cx.P.batch) :
+    (s.setTop (flushFinish l)).stack = flushFinish l :: ls ∧ ScopeOK cx (flushFinish l) L ∧
+      (flushFinish l).incremental = l.incremental ∧ (flushFinish l).progressive = l.progressive ∧
+      TopOK (s.setTop (flushFinish l)) ∧ (s.setTop (flushFinish l)).below = s.below ∧
+      (s.setTop (flushFinish l)).base = s.base ∧ (s.setTop (flushFinish l)).hashErr = s.hashErr := by
+  have hp0 : l.prog = [] := hr.bin.prog
+  refine ⟨St.setTop_stack s l _ ls h, ?_, by unfold flushFinish; split <;> rfl, by unfold flushFinish; split <;> rfl,
+    topOK_setTop_same s l _ ls h ht ?_, St.setTop_below s l _ ls h, St.setTop_base s _, St.setTop_hashErr s _⟩
+  · unfold flushFinish
+    split
+    · rename_i hpe
+      have htr : ∀ c ∈ l.tail, c.isReady = true := fun c hc => hr.ready c (List.mem_append_right _ hc)
+      refine ⟨L1 ++ l.tail.map Cell.val, ?_, ?_, ?_⟩
+      · rw [hr.split]; simp [pendLeaves, hpe]
+      · have hcov := cov_append_leaves cx.H cx.z0 l.tail hr.bin.cov
+        refine ⟨hr.bin.ninc, hr.bin.noprog, hr.bin.nolegacy, hp0, rfl, rfl, hcov, ?_, ?_, ?_, ?_⟩
+        · intro hc n hn
+          rcases List.mem_append.mp hn with hn | hn
+          · exact hr.bin.leaves hc n hn
+          · obtain ⟨c, _, rfl⟩ := List.mem_map.mp hn; rfl
+        · intro n hn
+          rcases List.mem_append.mp hn with hn | hn
+          · exact hr.bin.shallow n hn
+          · obtain ⟨c, _, rfl⟩ := List.mem_map.mp hn; exact (by decide : (0 : Nat) < 40)
+        · intro n hn hnr
+          rcases List.mem_append.mp hn with hn | hn
+          · exact hr.bin.holes n hn hnr
+          · obtain ⟨c, hc, rfl⟩ := List.mem_map.mp hn; rw [htr c hc] at hnr; cases hnr
+        · intro hc e
+          exact hr.bin.nonempty hc (List.append_eq_nil_iff.mp e).1
+      · exact ⟨fun _ => rfl, by simp [hpe], by simp, by simp [hpe], fun h => absurd hpe h⟩
+    · rename_i hpe
+      refine ⟨L1, hr.split, hr.bin, ⟨fun e => absurd e hpe, ?_, ?_, hr.width, fun _ => ⟨k, hk, hk0, hkb⟩⟩⟩
+      · intro e he c hc; exact hr.ready c (List.mem_append_left _ (List.mem_flatten.mpr ⟨e, he, hc⟩))
+      · intro c hc; exact hr.ready c (List.mem_append_right _ hc)
+  · unfold flushFinish
+    split
+    · rename_i hpe
+      simp [Layer.cells, hpe, nodeCells, List.map_map, Function.comp_def, List.append_assoc]
+    · rfl
+
+/-- **`flushPendingAsync` on a binary scope** keeps its invariant, whatever
+    number of cap-wide blocks it turns into jobs. -/
+theorem flushAsync_scope (cx : Ctx C) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) (hlt : cx.P.batch < cx.P.cap)
+    (s : St C) (l : Layer C) (ls : List (Layer C)) (L : List C)
+    (h : s.stack = l :: ls) (hs : ScopeOK cx l L) (hinc : l.incremental = true) (hpne : l.pend ≠ [])
+    (ht : TopOK s) (hL : L.length < 2 ^ 40) :
+    ∃ l' ls', (s.flushAsync cx).1.stack = l' :: ls' ∧ ScopeOK cx l' L ∧ l'.incremental = true ∧
+      l'.progressive = l.progressive ∧ TopOK (s.flushAsync cx).1 ∧ ls'.map Layer.erase = ls.map Layer.erase ∧
+      (s.flushAsync cx).1.base.map Cell.erase = s.base.map Cell.erase ∧
+      (s.flushAsync cx).1.hashErr = s.hashErr ∧ (s.flushAsync cx).1.below.length = s.below.length ∧
+      HolesSub s.below (s.flushAsync cx).1.below := by
+  have hs0 := hs
+  obtain ⟨_, _, hb0, hpo0⟩ := hs0
+  obtain ⟨k, hk, hk0, hkb⟩ := hpo0.pow hpne
+  have hkc : k < cx.P.capDepth := by
+    have : 2 ^ k < 2 ^ cx.P.capDepth := by rw [← hcap]; omega
+    exact (Nat.pow_lt_pow_iff_right (by decide)).mp this
+  obtain ⟨L1, hr⟩ := roundOK_of_scope cx hs
+  have hnp : l.progressive = false := hb0.noprog
+  unfold St.flushAsync
+  rw [h]
+  simp only
+  rw [hk]
+  obtain ⟨l', ls', L1', hs', hr', hi', hp', hc', ht', hle', hba', hh', hbl', hsub'⟩ :=
+    flushAsyncLoop_bin cx hcap l k hkc L hL (l.pend.length + 1) s l ls L1 false h hr hinc hnp hk ht
+  have htop : (flushAsyncLoop cx l (2 ^ k) (l.pend.length + 1) s false).1.topLayer l = l' := by
+    simp [St.topLayer, hs']
+  rw [htop]
+  obtain ⟨hs2, hsc2, hi2, hp2, ht2, hb2, hba2, hh2⟩ :=
+    flushFinish_scope cx _ l' ls' L1' L k hs' hr' ht' hc' hk0 hkb
+  exact ⟨_, ls', hs2, hsc2, by rw [hi2, hi'], by rw [hp2, hp', hnp], ht2, hle', by rw [hba2, hba'],
+    by rw [hh2, hh'], by rw [hb2, hbl'], by rw [hb2]; exact hsub'⟩
+
 end Ssz.Hasher
