@@ -479,4 +479,78 @@ theorem flushSync_sim (cx : Ctx C) (s : St C) : s.sim.flushSync cx = (s.flushSyn
         ls (by rw [f3, h]) (by simp [progLayer])]
       rfl
 
+/-! ## Reading results back -/
+
+theorem topOK_congr {s t : St C} (hc : t.cells = s.cells) (hj : t.jobs = s.jobs) (hm : t.jobMaxEnd = s.jobMaxEnd)
+    (he : t.err = s.err) (hn : t.nextJob = s.nextJob) (ht : TopOK s) : TopOK t := by
+  refine ⟨⟨?_, ?_, ?_, ?_⟩, by rw [he]; exact ht.err, by rw [hj]; exact ht.jobsne, by rw [hj, hn]; exact ht.ids⟩
+  · intro j hj'; rw [hj] at hj'; rw [hc]; exact ht.holes.inplace j hj'
+  · intro p v id idx hp; rw [hc] at hp; rw [hj]; exact ht.holes.owned p v id idx hp
+  · rw [hj]; exact ht.holes.distinct
+  · intro j hj'; rw [hj] at hj'; rw [hm]; exact ht.holes.maxEnd j hj'
+
+theorem topOK_sim {s : St C} (ht : TopOK s) : TopOK s.sim :=
+  topOK_congr (St.sim_cells s) (by simp) (by simp) (by simp) (by simp) ht
+
+theorem topOK_unsim {s : St C} (ht : TopOK s.sim) : TopOK s :=
+  topOK_congr (St.sim_cells s).symm (by simp) (by simp) (by simp) (by simp) ht
+
+theorem St.sim_below (s : St C) (l : Layer C) (ls : List (Layer C)) (h : s.stack = l :: ls) :
+    s.sim.below = s.below ++ l.prog := by
+  simp [St.below, St.sim_stack s l ls h, h, progLayer_cells]
+
+theorem St.unsim {t : St C} {l1 : Layer C} {ls1 : List (Layer C)} (h : t.sim.stack = l1 :: ls1) :
+    ∃ l ls, t.stack = l :: ls ∧ l1 = l.flat ∧ ls1 = progLayer l :: ls := by
+  cases ht : t.stack with
+  | nil => rw [St.sim_nil t ht, ht] at h; cases h
+  | cons l ls =>
+    rw [St.sim_stack t l ls ht] at h
+    obtain ⟨rfl, rfl⟩ := List.cons.inj h
+    exact ⟨l, ls, rfl, rfl, rfl⟩
+
+/-- The result of calls on a progressive scope's region: the region past
+    the roots keeps its invariant, the roots keep their values and lose holes
+    only, and so do the enclosing scopes. -/
+def PStepOK (cx : Ctx C) (s s' : St C) (l : Layer C) (ls : List (Layer C)) (Lb : List C) : Prop :=
+  ∃ l' ls', s'.stack = l' :: ls' ∧ ScopeOK cx l'.flat Lb ∧ l'.incremental = l.incremental ∧
+    l'.progressive = l.progressive ∧ l'.level = l.level ∧ l'.prog.map Cell.erase = l.prog.map Cell.erase ∧
+    HolesSub l.prog l'.prog ∧ TopOK s' ∧ ls'.map Layer.erase = ls.map Layer.erase ∧
+    s'.base.map Cell.erase = s.base.map Cell.erase ∧ s'.hashErr = s.hashErr ∧
+    s'.below.length = s.below.length ∧ HolesSub s.below s'.below
+
+theorem StepOK.unsim (cx : Ctx C) {s s' : St C} {l : Layer C} {ls : List (Layer C)} {Lb : List C}
+    (h : s.stack = l :: ls) (hst : StepOK cx s.sim s'.sim l.flat (progLayer l :: ls) Lb) :
+    PStepOK cx s s' l ls Lb := by
+  obtain ⟨l1, ls1, h1, hs1, hi1, _, ht1, hle1, hba1, hh1, hbl1, hsub1⟩ := hst
+  obtain ⟨l', ls', h', rfl, rfl⟩ := St.unsim h1
+  simp only [List.map_cons, List.cons.injEq] at hle1
+  obtain ⟨hpe, hle⟩ := hle1
+  have hpr : l'.progressive = l.progressive := by have := congrArg Layer.progressive hpe; exact this
+  have hlv : l'.level = l.level := by have := congrArg Layer.level hpe; exact this
+  have hpm : l'.prog.map Cell.erase = l.prog.map Cell.erase := by
+    have := congrArg (fun x => nodeCells x.nodes) hpe
+    simpa [progLayer, Layer.erase, nodeCells, Node.erase, List.map_map, Function.comp_def] using this
+  have hpl : l'.prog.length = l.prog.length := erase_map_length hpm
+  rw [St.sim_below s' l' ls' h', St.sim_below s l ls h] at hsub1 hbl1
+  simp only [List.length_append] at hbl1
+  have hbl : s'.below.length = s.below.length := by omega
+  refine ⟨l', ls', h', hs1, hi1, hpr, hlv, hpm, holesSub_suffix hbl.symm hsub1, topOK_unsim ht1, hle,
+    by simpa using hba1, by simpa using hh1, hbl, holesSub_prefix hbl.symm hsub1⟩
+
+/-- **A collapse of a progressive scope's region** (batch or pre-collapse),
+    read back from the moved state. -/
+theorem collapseBin_prog (cx : Ctx C) (hP : ParamsOK cx.P) (s : St C) (l : Layer C) (ls : List (Layer C))
+    (Lb : List C) (h : s.stack = l :: ls) (hb : BinOK cx l.flat Lb) (hinc : l.incremental = true) (ht : TopOK s)
+    (hL : Lb.length < 2 ^ 40) (a : Bool) :
+    PStepOK cx s (if a then (s.precollapse cx).1 else s.collapseBinary cx) l ls Lb := by
+  have hst := collapseBin_step cx hP s.sim l.flat (progLayer l :: ls) Lb (St.sim_stack s l ls h) hb hinc
+    (topOK_sim ht) hL a
+  have e : (if a then (s.sim.precollapse cx).1 else s.sim.collapseBinary cx) =
+      (if a then (s.precollapse cx).1 else s.collapseBinary cx).sim := by
+    cases a
+    · simp [collapseBinary_sim]
+    · simp [(precollapse_sim cx s).1]
+  rw [e] at hst
+  exact StepOK.unsim cx h hst
+
 end Ssz.Hasher
