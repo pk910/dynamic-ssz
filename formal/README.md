@@ -1,225 +1,203 @@
-# Formal certificates for dynamic-ssz
+# Formal verification of dynamic-ssz
 
-Machine-checked, per-type correctness certificates for SSZ serialization —
-a proof-carrying companion to `dynssz-gen`.
+Machine-checked models of SSZ for the types dynamic-ssz encodes, the
+official Lean specification they are anchored on, an executable model of the
+incremental and async hasher, and the differential links that tie the Go
+code to all of them.
 
-For every Go type you certify, `dynssz-certify` builds the same go/types
-descriptor that dynssz-gen's code generation consumes and translates it into
-a *codec expression* over a verified combinator library written in Lean 4.
-Each combinator carries machine-checked proofs, so type-checking the
-generated certificate file (`lake build`) re-verifies, for that concrete
-type layout:
+Two kinds of evidence are combined, and the difference matters:
 
-* **Decode-canonicity (P2)** — every byte string the strict decoder accepts
-  is *exactly* the canonical serialization of its decoded value. Ghost gaps,
-  non-minimal or backward offsets, misaligned first offsets, nonzero
-  bitvector padding, missing bitlist sentinels, trailing bytes: all
-  impossible. This is the property behind the 2024 "Ghost-in-the-Block"
-  consensus-split vulnerability class.
-* **Roundtrip (P1)** — every well-typed, offset-representable value decodes
-  back from its serialization.
-* **Tree/root agreement (P7)** — the explicit Merkle tree the type
-  merkleizes into (the structure a `GetTree`-style API walks) hashes to
-  exactly the direct hash-tree-root. This is the property whose violation
-  was issue #191 (`GetTree` reordering leaves against `HashTreeRoot` on
-  Deneb+ `BeaconState`s), as a machine-checked theorem per type. The
-  merkleization model covers bounded trees with zero-subtree padding,
-  packed and composite leaves, the EIP-7916 progressive spine, EIP-7495
-  progressive-container layouts, and the length/active-fields/selector
-  mix-ins.
-* Injectivity and unique-encoding (non-malleability) follow as corollaries
-  inside the library.
+* **Proved** (Lean 4, no `sorry`, standard axioms only, checked by
+  `audit-axioms.sh`): properties of models — per-type codecs, EthLib's
+  generic theorems instantiated per type, the layout of every certified
+  Ethereum type against EthLib's own consensus containers, and the
+  merkleization laws the hasher relies on.
+* **Linked** (Go tests against the compiled models): the Go code itself —
+  both engines on every public API path, and the hasher state-for-state.
+  No deductive Go verifier accepts `reflect`/`unsafe`, so the link is
+  permanent, not a stopgap. Its strength is itself measured
+  (`mutation/`).
 
 ## Layout
 
 ```
 formal/
-  lean/                  Lean 4 package (core Lean only, no Mathlib, no SMT)
-    SszCert/Basic.lean       uintN little-endian primitives + theorems
-    SszCert/Schema.lean      schema-generic variable-offset containers (the
-                             theorem eth2.0-dafny#26 left open)
-    SszCert/Container.lean   concrete two-field container (didactic seed)
-    SszCert/VarList.lean     lists/vectors of variable-size elements
-    SszCert/FixedSeq.lean    lists/vectors of fixed-size elements (packed)
-    SszCert/Bitlist.lean     bitlist sentinel discipline
-    SszCert/Bitvector.lean   bitvector padding discipline
-    SszCert/Boolean.lean     strict 0x00/0x01 booleans
-    SszCert/Sha256.lean      executable SHA-256 (opaque to all proofs)
-    SszCert/Merkle.lean      merkleization: bounded + progressive trees,
-                             mix-ins, explicit `Node` trees, and the
-                             tree/root agreement theorems
-    SszCert/Codec.lean       the composition layer: `Codec` structure with
-                             proof fields + combinators for every SSZ shape
-                             (containers, lists, vectors, bitfields,
-                             CompatibleUnion, progressive types)
-    SszCert/Certified.lean   generated certificates (see below)
-    Main.lean                `ssz-oracle`: executable decision oracle
-  certify/               the certificate generator (Go)
-  harness/               the differential link (Go module; see harness/README.md)
-  certify.sh             regenerates harness methods + every certificate (CI: no diff)
-  audit-axioms.sh        prints/enforces the axioms every theorem depends on
-  spec/                  anchoring on the official Lean specification
-    lakefile.toml            requires ethereum/EthLib at the ssz-specs-pinned rev
-    SszSpec/Certified.lean   generated `Desc` declarations + registry
-    SszSpec/Theorems.lean    generated per-type instances of EthLib's theorems
-    Main.lean                `ssz-spec-oracle`: decode/root/branch/multiproof oracle
+  lean/                    in-house model (core Lean 4, no Mathlib)
+    SszCert/Basic … Bitvector, Schema, VarList, FixedSeq, Boolean
+                           the SSZ wire disciplines and their proofs
+    SszCert/Codec.lean     Codec structure with proof fields; combinators for
+                           every SSZ shape (containers, lists, vectors,
+                           bitfields, CompatibleUnion, progressive types)
+    SszCert/Extended.lean  dynamic-ssz extended types: classic Union (None
+                           variant), optional, big.Int (signed ints and floats
+                           certify as uintN over their bit pattern)
+    SszCert/Merkle.lean    merkleization (bounded, progressive, mix-ins, trees)
+    SszCert/Certified.lean generated: the harness types (70)
+    SszCert/Eth.lean       generated: the Ethereum types, per preset (204)
+    SszCert/Hasher/Model.lean  executable model of hasher.go/async.go
+    SszCert/Hasher/Spec.lean   merkleization generic in the hash + laws
+    Main.lean              ssz-oracle (verdicts, canonical re-encoding, roots)
+    HasherModel.lean       hasher-model (replays hasher calls, prints state)
+  spec/                    anchoring on ethereum/EthLib (Mathlib-backed proofs)
+    SszSpec/Certified.lean, Eth.lean          generated EthLib declarations
+    SszSpec/Theorems.lean, EthTheorems.lean   EthLib's theorems per type
+    SszSpec/EthCross.lean  layout = EthLib's typed consensus container
+    SszSpec/Layout.lean    layout equality (names ignored)
+    SszSpec/WellFormed.lean  ssz_wf: the one place well-formedness is evaluated
+    Main.lean              ssz-spec-oracle (verdicts, roots, branches, multiproofs)
+  certify/                 dynssz-certify (go/types descriptors, as dynssz-gen)
+  certify/certlib/         descriptor → Lean term translation (shared)
+  harness/                 the differential links (own Go module)
+  mutation/                planted bugs the links must catch, and their runner
+  certify.sh               regenerates harness methods + certificates (CI: no diff)
+  audit-axioms.sh          enforces standard axioms for every theorem
 ```
 
-Every theorem is `sorry`-free and depends only on Lean's three standard
-axioms (`propext`, `Classical.choice`, `Quot.sound`); there is no SMT solver
-and no Mathlib in the trusted base.
+## What is proved
+
+**Per certified type, in the in-house model** (`lake build` in `lean/`):
+decode-canonicity with no side conditions (every accepted byte string is
+exactly the encoding of its value — ghost gaps, non-minimal offsets,
+padding bits, missing bitlist sentinels, trailing bytes, non-minimal
+big.Int magnitudes, stray bytes after an absent optional: all impossible),
+roundtrip, and tree/root agreement (the explicit tree a `GetTree` walk sees
+hashes to the direct root). The extended types are certified here only:
+nothing in EthLib defines them.
+
+**Per certified type, in the official specification** (`lake build
+SszSpecTheorems` in `spec/`): the declaration's well-formedness, then
+EthLib's codec canonicality, roundtrip, injectivity, decode admissibility,
+root totality and Merkle-branch correctness instantiated for it.
+
+**Ethereum types against EthLib's consensus containers**
+(`SszSpec/EthCross.lean`, 598 theorems): for every Go mirror of
+`tests/spectests` (phase0 to gloas) under both presets, the declaration
+dynamic-ssz derives from the Go struct tags and the preset's spec values
+has the layout of EthLib's own definition of that container at that preset
+and fork. This is independent of dynamic-ssz's reading of its tags. Two
+equivalences are admitted, with justification in `Layout.lean`: byte-aligned
+bitvectors equal byte vectors, and outside list/vector elements `uintN`
+equals `ByteVector[N/8]`. 18 theorems prove a divergence instead (see
+Findings).
+
+**Hasher, generic in the hash** (`SszCert/Hasher/Spec.lean`): the bounded
+Merkle root and its laws — pairing, expansion under a zero sibling, zero
+padding, one padded reduction level over chunk roots, exact reductions (the
+background workers, `flushPending`'s level loop, `reduceElem`), `getDepth`,
+and `merkleizeImpl` equals the bounded root at the depth of its (widened)
+limit. The model-level theorems (the whole reduction machine computes the
+specified root for every walk, every Collapse schedule and every async
+pattern, and never reads or moves a hole) are in progress; until they
+land, the model is held to the Go hasher call by call (below).
+
+## What is linked
+
+`harness/` (Go module; `go test` with the oracles built):
+
+* **Every public API path, both engines.** `MarshalSSZ`, `MarshalSSZTo`,
+  `MarshalSSZWriter` (also with a one-byte writer), `SizeSSZ`,
+  `UnmarshalSSZ`, `UnmarshalSSZReader` with known and unknown size and with
+  one-byte reads, tiny stream buffers, `HashTreeRoot` with synchronous and
+  asynchronous hashing, the native sha256 backend, `GetTree`, and
+  `treeproof.Prove`/`ProveMulti` cross-verified with EthLib's
+  `buildProof`/`buildMultiproof`. All must agree with each other and with
+  the model's verdict, canonical bytes and root.
+* **Values** are drawn from the reflection engine's own type descriptor,
+  biased to length boundaries (empty, one, limit−1, limit, chunk and
+  power-of-two-chunk boundaries, the 256-chunk batch, progressive group
+  sizes), and mutated (truncation, extension, bit flips, insertions,
+  element-wide appends and drops).
+* `TestOracleLink`, `TestSpecLink`: the 70 harness types against both
+  models. `TestExtendedEdgeCases`: handcrafted non-canonical encodings of
+  the extended types. `TestHasherAPILink`: the public helpers no engine
+  calls (`PutBitlist`, `PutUint64Array`, `PutRootVector`, …).
+* `TestEthLink`: every consensus-spec-tests `ssz_static` case through every
+  path, against pyspec's recorded root and both models (three independent
+  anchors), plus generated values and mutations of every Ethereum type.
+* `TestRuntimeCertificatesAgree`: every certificate written again from the
+  reflection engine's runtime descriptor must equal the go/types one — the
+  two descriptor builders of dynamic-ssz agree.
+
+`hasher/formal_trace_test.go` (`TestFormalTrace`): random walks of hasher
+calls (nested binary, none, progressive, packed and legacy scopes, uniform
+element runs that defer into their parent, Collapse hints anywhere, async
+hashing switched per call, partial packed chunks) run on the real hasher
+and on the Lean model, and after **every call** the complete reduction
+state is compared: per scope its progressive roots and level, every node
+with its depth, the counted prefix, the deferred run and the tail, and the
+in-flight jobs with their hole positions. The model flags a hole read or
+moved before its drain and a scratch write over a live chunk. The
+`dynssz_smallhash` build tag shrinks the thresholds (`hasher/params*.go`)
+so that every batching and async path is reached; production thresholds
+run as a second pass.
+
+`mutation/run.py` plants each bug of `mutation/mutants.json` (decoders,
+generated code, hasher batching, progressive consumption, deferred runs,
+mixins, async root compatibility and pre-collapse, proof generation) in a
+copy of the tree and requires the links to kill it.
+
+## Results (2026-11-08, dynamic-ssz v1.4.0 + this branch)
+
+* Proofs: 213 in-house per-type theorems (harness) + 612 (Ethereum), 441 +
+  1428 EthLib instances, 598 cross-check theorems, 26 hasher-spec
+  theorems; all on standard axioms.
+* Harness link: 70 types × every path, both models — zero divergences.
+* Hasher trace: 3 seeds × 3000 walks (2.3 M calls) with small thresholds and
+  30 walks (268 k calls) at production thresholds — zero divergences.
+* Ethereum link (deneb, minimal): 1110 consensus-spec-tests cases through
+  both oracles, 3800 generated values — zero divergences.
+* Mutation testing: every non-equivalent mutant killed.
+
+## Findings
+
+* **Minimal-preset `committee_bits` (consumer type annotations).** The
+  Electra+ `CommitteeBits` of `tests/spectests` and of
+  `ethpandaops/go-eth2-client` is tagged `bitfield.Bitvector64
+  dynssz-size:"MAX_COMMITTEES_PER_SLOT/8"` without a bitvector type or bit
+  size. dynamic-ssz therefore reads it as a byte vector; under the minimal
+  preset (`MAX_COMMITTEES_PER_SLOT = 4`) that is one byte whose four padding
+  bits go unchecked, where the specification has `Bitvector[4]`. An
+  attestation with those bits set decodes (and re-encodes identically) in
+  dynamic-ssz and is rejected by every spec client. Mainnet (64 bits) is
+  unaffected. Fix in the type: `ssz-type:"bitvector"
+  dynssz-bitsize:"MAX_COMMITTEES_PER_SLOT"`. `EthCross.lean` proves the 18
+  affected declarations differ.
+* **dynssz-gen is not idempotent in one run.** It analyses the package
+  including its own previous output, and the methods found there change the
+  analysis of other types: from scratch the harness output takes four runs
+  to reach its fixed point. `certify.sh` iterates to it.
+
+## Trust base
+
+The descriptor → term translation in `certify/certlib` (cross-checked: both
+descriptor builders, and the Ethereum layouts against EthLib); the link's
+coverage (measured by mutation testing); SHA-256 and the SIMD backend
+(exercised by every root comparison, never verified); Lean's kernel and
+compiler; the Go toolchain.
+
+## Not covered
+
+* `custom` types (user-written methods): no semantics to certify.
+* Recursive types: a certificate is a finite term; the depth-bounded
+  unrolling (`WithMaxNestingDepth`) would match the implementation.
+* Spec-parametric sizes are certified per resolved preset (mainnet and
+  minimal for the Ethereum types).
+* The Go source of the generated methods is linked, not proved (Grackle-
+  style translation validation would be the next rung).
 
 ## Usage
 
 ```bash
-# 1. Generate certificates for your types (same package conventions as
-#    dynssz-gen, including sszutils.Annotate tags):
-go run github.com/pk910/dynamic-ssz/formal/certify \
-  -package ./path/to/types -types TypeA,TypeB,... \
-  -output <repo>/formal/lean/SszCert/Certified.lean
-
-# 2. Machine-check them (this *is* the verification step):
-cd formal/lean && lake build ssz-oracle
-
-# 3. (Optional) differential link: the built ssz-oracle binary answers
-#    "<TypeName> <hex|->" lines on stdin with ACCEPT/REJECT, letting a test
-#    harness compare the verified model's accept/reject decision against
-#    UnmarshalSSZ on any corpus. ACCEPT answers carry the certified hash
-#    tree root, for comparison against HashTreeRoot and GetTree().Hash()
-#    on both engines. On ACCEPT the oracle also re-serializes byte-for-byte
-#    and re-hashes the explicit tree against the direct root (the theorems
-#    make any mismatch a compiler bug, not a model question).
+./formal/certify.sh                                  # regenerate everything
+(cd formal/harness && FORMAL_UPDATE=1 go test -run 'TestEthCertificatesFresh|TestEthCrossCheckFresh' .)
+(cd formal/lean && lake build)                       # in-house proofs + oracles
+(cd formal/spec && lake exe cache get && lake build && lake build SszSpecTheorems)
+(cd formal/harness && go test -run 'TestOracleLink|TestSpecLink|TestExtendedEdgeCases|TestHasherAPILink' .)
+HASHER_TRACE_WALKS=3000 go test -tags dynssz_smallhash -run TestFormalTrace ./hasher/
+CONSENSUS_SPEC_TESTS_DIR=… go test -run TestEthLink ./formal/harness/   # tests/spectests/setup_test_data.sh
+python3 formal/mutation/run.py
 ```
 
-Requires [elan](https://github.com/leanprover/elan) (the Lean toolchain in
-`formal/lean/lean-toolchain` is installed automatically on first build).
-
-The checked-in `Certified.lean` carries the 57-type certificate set of the
-dynamic-ssz conformance harness (mirrors of the ethereum/ssz-specs fixture
-types: basics, boundary bitvectors, progressive lists/containers,
-CompatibleUnions), so `lake build` in a fresh checkout re-verifies a
-realistic certificate load end to end.
-
-## Anchoring on the official specification (`spec/`)
-
-`spec/` ties the same certified types to the *official* Lean specification of
-SSZ, [`ethereum/EthLib`](https://github.com/ethereum/EthLib)
-(`EthLib.Consensus.Ssz`, at the revision `ethereum/ssz-specs` pins for its
-own conformance harness). EthLib represents types as data (`Desc`) and
-proves its results once for every well-formed declaration: codec
-canonicality and round trip, decode admissibility, root totality, Merkle
-branch correctness, multiproof completeness and binding (two accepted
-proofs disagree only through a SHA-256 collision).
-
-`dynssz-certify -spec-output ... -spec-theorems ...` therefore emits, per
-Go type, its declaration `D_<T> : Desc` and the fact `D_<T>.wellFormed =
-.ok ()` (proved by evaluation), followed by the instantiated theorems:
-`D_<T>_canonical`, `D_<T>_roundTrip`, `D_<T>_injective`, `D_<T>_fits`,
-`D_<T>_root`, `D_<T>_proof`. Checking `spec/` (`lake build
-SszSpecTheorems`) is the verification step; it pulls EthLib's proof
-library, which is Mathlib-based.
-
-`ssz-spec-oracle` (`lake build ssz-spec-oracle`, Mathlib-free) answers
-decode verdicts, roots, single branches and multiproofs for the declared
-types straight from EthLib's executable functions, so a harness can link
-`UnmarshalSSZ`/`HashTreeRoot`/`GetTree` *and* `treeproof.Prove`/
-`ProveMulti`/`VerifyProof`/`VerifyMultiproof` to the specification —
-including cross-verification of each side's proofs by the other. The
-library's own `SszCert` model and EthLib are independent formalizations;
-agreement of both oracles on the same corpora cross-checks the two.
-
-```bash
-go run github.com/pk910/dynamic-ssz/formal/certify \
-  -package ./path/to/types -types TypeA,TypeB,... \
-  -output <repo>/formal/lean/SszCert/Certified.lean \
-  -spec-output <repo>/formal/spec/SszSpec/Certified.lean \
-  -spec-theorems <repo>/formal/spec/SszSpec/Theorems.lean
-cd formal/spec && lake build ssz-spec-oracle          # executable spec only
-cd formal/spec && lake exe cache get && lake build SszSpecTheorems   # the proofs
-```
-
-## Results
-
-Checked in CI (`.github/workflows/formal.yml`) and reproduced locally against
-dynamic-ssz v1.4.0 on 2026-11-06:
-
-* `lake build` of `lean/`: 171 per-type theorems (57 × canonicity, roundtrip,
-  tree/root), 0 `sorry`, standard axioms only.
-* `lake build SszSpecTheorems` of `spec/`: 399 per-type instances of EthLib's
-  theorems (57 × well-formedness, canonicity, roundtrip, injectivity,
-  admissibility, root totality, branch correctness), standard axioms only
-  (well-formedness by evaluation — `decide`, or `simp` through the
-  equations of EthLib's well-founded compatibility check for unions).
-* Link, in-house oracle: ssz-specs release fixtures (11,504 checks) +
-  Python-classified corpora (13,255 + 21,470) + generative rounds — zero
-  divergences across both engines.
-* Link, EthLib oracle: the same corpora, 46,229 checks; 27,025 values
-  rooted; 117,911 Merkle branches and 18,555 multiproofs byte-identical
-  with `buildProof`/`buildMultiproof` and cross-verified both ways; 32,450
-  refusals of unprovable indices agreed. The single policy difference:
-  EthLib refuses a branch for the root itself (`ROOT_HAS_NO_BRANCH`) where
-  `treeproof.Prove(1)` returns the empty branch (which verifies trivially).
-* Both oracles agree with each other on every vector (transitively through
-  the Go engines) — two independent formalizations, one of them the
-  official specification.
-
-## What is proved vs. what is trusted
-
-Machine-checked (per certified type): canonicity, roundtrip, injectivity,
-and tree/root agreement of the *model* codec the certificate denotes — the
-exact offset/limit/padding/sentinel discipline of SSZ serialization and the
-chunking/padding/spine/mix-in discipline of its merkleization.
-
-Trusted (the differential link carries these, not proofs):
-
-* the descriptor→combinator translation in `certify/` (one screenful of
-  structural mapping per SSZ kind, sharing the descriptor source that
-  code generation itself consumes);
-* the correspondence between the generated Go method text and the model —
-  linked empirically by running both on corpora (fixture replay + random
-  values + mutations), where the canonicity theorem collapses byte-level
-  agreement to accept/reject agreement;
-* the SHA-256 implementation (never unfolded by any proof; validated
-  against the FIPS vectors and continuously by the root comparisons);
-* Lean's kernel and compiler, and the Go toolchain.
-
-## Gaps — what is not (or cannot be) covered
-
-* **The library code itself is not proved.** The theorems are about the
-  *model* each type denotes (the exact SSZ layout the code generator sees);
-  the Go engines are tied to the model by the differential link. Go has no
-  deductive verifier that accepts `reflect` or `unsafe`, so the reflection
-  engine is empirically assured only, for good: the link is permanent, not
-  a stopgap. Proof-carrying translation validation of the generated method
-  *text* (Goose/Rocq style) would be the next rung and is grant-scale.
-* **Hashing.** SHA-256 is executable and FIPS-validated on the Lean side and
-  never unfolded by a proof; the SIMD backend (`hashtree`) and its pure-Go
-  fallback are exercised by every root comparison but not verified
-  (verification of those kernels is a separate effort).
-* **Types outside the specification.** `ssz-specs`/EthLib define no classic
-  positional `Union[T]`, `StableContainer`, `Optional[T]`, or dynssz's
-  extended types (`optional`, signed ints, floats, `big.Int`, custom
-  types). The certifier refuses them, so a type using them cannot be
-  certified yet; a model of dynssz's `optional`/`optional-list` could be
-  added to the in-house combinators (with no official spec to anchor it).
-* **Recursive types** (v1.4.0): a certificate is a finite term, and so is
-  an EthLib `Desc`. The library bounds nesting (`WithMaxNestingDepth`),
-  so certifying the depth-bounded unrolling would match the implemented
-  semantics exactly; not done yet.
-* **Spec-parametric sizes** (`dynssz-size`/`dynssz-max` expressions) are
-  certified per *resolved* preset: a certificate is one concrete layout.
-  The harness's preset-parametricity property test covers the expression
-  machinery empirically.
-* **Views, type wrappers, delegation:** the certifier walks the same
-  descriptor the generator does with delegation disabled, so what is
-  certified is the SSZ shape — not which Go method ends up being called.
-  Delegation precedence is covered by the library's own differential fuzzer.
-* **Streaming mode** (`UnmarshalSSZReader` with unknown size) and
-  `treeproof` compression are outside the oracles' surface.
-
-Merkle *proof construction and verification* (`treeproof.Prove`/
-`ProveMulti`/`VerifyProof`/`VerifyMultiproof`) is outside the `SszCert`
-surface; it is covered by the EthLib anchoring in `spec/`, whose oracle
-links the Go proofs to the specification's `buildProof`/`buildMultiproof`
-and verifiers. Recursive Go types are rejected by the certifier (Lean
-certificates are non-cyclic terms).
+To certify your own types: `go run ./formal/certify -package <pkg> -types
+A,B -output <lean file> [-spec-output <file> -spec-theorems <file>]`, then
+`lake build` the packages.
