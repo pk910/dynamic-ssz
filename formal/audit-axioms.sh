@@ -7,7 +7,7 @@ set -u
 module="${1:?module}"; ns="${2:?namespace}"
 source="${module//.//}.lean"
 [ -f "$source" ] || { echo "audit: no such module file: $source (run from the package directory)" >&2; exit 1; }
-mapfile -t names < <(grep -o '^theorem [A-Za-z0-9_]*' "$source" | awk '{print $2}')
+mapfile -t names < <(grep -o "^theorem [A-Za-z0-9_.'?!]*" "$source" | awk '{print $2}')
 [ "${#names[@]}" -gt 0 ] || { echo "audit: no theorems found in $source" >&2; exit 1; }
 {
   echo "import $module"

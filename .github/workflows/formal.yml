@@ -72,6 +72,8 @@ jobs:
         ../audit-axioms.sh SszCert.Certified Ssz
         ../audit-axioms.sh SszCert.Eth Ssz
         ../audit-axioms.sh SszCert.Hasher.Spec Ssz.Hasher
+        ../audit-axioms.sh SszCert.Hasher.Nodes Ssz.Hasher
+        ../audit-axioms.sh SszCert.Hasher.State Ssz.Hasher
 
     - name: Upload oracle
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
