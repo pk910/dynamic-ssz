@@ -78,7 +78,7 @@ func TestExtendedEdgeCases(t *testing.T) {
 	}
 	cases := []struct {
 		typ, desc, hex string
-		accept    bool
+		accept         bool
 	}{
 		// ExtBig = {Bounded big.Int (offset), Unbounded big.Int (offset), Tag uint16}
 		{"ExtBig", "zero, zero", "0a0000000b0000000500" + "00" + "00", true},
