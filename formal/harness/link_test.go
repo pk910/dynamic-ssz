@@ -19,7 +19,19 @@ import (
 // attack shapes.
 func mutateBytes(rt *rapid.T, enc []byte) []byte {
 	mut := append([]byte(nil), enc...)
-	switch rapid.IntRange(0, 4).Draw(rt, "mutkind") {
+	switch rapid.IntRange(0, 6).Draw(rt, "mutkind") {
+	case 5: // append one element of a common width (lists one over their limit)
+		w := rapid.SampledFrom([]int{1, 2, 4, 8, 16, 32, 48, 96}).Draw(rt, "elemw")
+		for i := 0; i < w; i++ {
+			mut = append(mut, byte(rapid.IntRange(0, 255).Draw(rt, "eb")))
+		}
+		return mut
+	case 6: // drop one element of a common width
+		w := rapid.SampledFrom([]int{1, 2, 4, 8, 16, 32}).Draw(rt, "elemw")
+		if len(mut) >= w {
+			return mut[:len(mut)-w]
+		}
+		return mut
 	case 0: // truncate
 		if len(mut) == 0 {
 			return []byte{0}

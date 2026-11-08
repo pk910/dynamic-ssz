@@ -91,6 +91,8 @@ func TestExtendedEdgeCases(t *testing.T) {
 		{"ExtOptionals", "all absent", "0d0000000e0000000f00000007" + "00" + "00" + "00", true},
 		{"ExtOptionals", "absent with trailing byte rejected", "0d0000000f0000001000000007" + "00ff" + "00" + "00", false},
 		{"ExtOptionals", "flag 2 rejected", "0d0000000e0000000f00000007" + "02" + "00" + "00", false},
+		{"ExtOptionals", "flag 2 with a payload rejected", "0d000000160000001700000007" + "02" + "0102030405060708" + "00" + "00", false},
+		{"ExtOptionals", "flag 0 with a payload rejected", "0d000000160000001700000007" + "00" + "0102030405060708" + "00" + "00", false},
 		{"ExtOptionals", "empty region rejected", "0d0000000d0000000e00000007" + "" + "00" + "00", false},
 		{"ExtOptionals", "present uint64", "0d000000160000001700000007" + "01" + "0102030405060708" + "00" + "00", true},
 		{"ExtOptionals", "present uint64 short rejected", "0d000000150000001600000007" + "01" + "01020304050607" + "00" + "00", false},

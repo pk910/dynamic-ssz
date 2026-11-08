@@ -304,6 +304,12 @@ def St.vals (s : St C) (cs : List (Cell C)) (what : String) : St C × List C :=
 
 /-! ## Jobs -/
 
+/-- Pair levels until at most `outChunks` remain (the worker's loop,
+    `reduceAsyncJob`, and `flushPending`'s level loop). -/
+def reduceTo (H : C → C → C) (outChunks : Nat) : Nat → List C → List C
+  | 0, xs => xs
+  | fuel + 1, xs => if xs.length > outChunks then reduceTo H outChunks fuel (pairUp H xs) else xs
+
 /-- `enqueueReduce`: claim a ring slot (draining the oldest when the ring is
     full), snapshot the input (it must hold no hole), and return the holes
     that replace it. The job's results are fixed at enqueue: the worker
@@ -312,10 +318,7 @@ def St.enqueue (cx : Ctx C) (s : St C) (input : List (Cell C)) (outChunks dst : 
     St C × List (Cell C) :=
   let s := if s.jobs.length ≥ cx.P.ring then s.drainOldest else s
   let (s, vs) := s.vals input "job input"
-  let rec reduce : Nat → List C → List C
-    | 0, xs => xs
-    | fuel + 1, xs => if xs.length > outChunks then reduce fuel (pairUp cx.H xs) else xs
-  let out := reduce input.length vs
+  let out := reduceTo cx.H outChunks input.length vs
   let id := s.nextJob
   let holes := (List.range outChunks).map (fun k => Cell.hole id k)
   let s := { s with jobs := s.jobs ++ [⟨id, dst, out⟩], nextJob := id + 1,
@@ -455,12 +458,7 @@ def St.precollapse (cx : Ctx C) (s : St C) : St C × Bool :=
 
 /-- Reduce a deferred element (a power-of-two run of chunks) to its root. -/
 def reduceElem (H : C → C → C) (z0 : C) (xs : List C) : C :=
-  let rec go : Nat → List C → C
-    | 0, xs => xs.head?.getD z0
-    | fuel + 1, xs => match xs with
-      | [x] => x
-      | _ => go fuel (pairUp H xs)
-  go xs.length xs
+  (reduceTo H 1 xs.length xs).head?.getD z0
 
 /-- `flushPending` (synchronous): every deferred element becomes one root;
     the raw tail moves down behind them. -/

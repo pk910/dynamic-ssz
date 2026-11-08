@@ -17,6 +17,7 @@ var Registries = map[string]map[string]Entry{
 	"test_compatible_unions":        unionTypes,
 	"test_decode_failure_smoke":     smokeTypes,
 	"test_extended_types":           extendedTypes,
+	"test_hasher_api":               apiTypes,
 }
 
 // generatedCodeAvailable is overridden to true by an init() in generated_check.go,

@@ -247,6 +247,18 @@ def D_ExtOptionalLists : Desc :=
 def D_ExtWrapperHolder : Desc :=
   (.container ["W", "N"] [(.byteList 64), (.uint 8)])
 
+/-- SSZ declaration of `harness.APIUint64List100`. -/
+def D_APIUint64List100 : Desc :=
+  (.list (.uint 8) 100)
+
+/-- SSZ declaration of `harness.APIRoots5`. -/
+def D_APIRoots5 : Desc :=
+  (.vector (.byteVector 32) 5)
+
+/-- SSZ declaration of `harness.APIBitvector12Elem`. -/
+def D_APIBitvector12Elem : Desc :=
+  (.bitVector 12)
+
 /-- Name-indexed declaration registry (for the oracle CLI). -/
 def declared : List (String × Desc) := [
   ("BasicBitList16", D_BasicBitList16),
@@ -308,6 +320,9 @@ def declared : List (String × Desc) := [
   ("SmokeBitList8", D_SmokeBitList8),
   ("ExtInner", D_ExtInner),
   ("ExtOptionalLists", D_ExtOptionalLists),
-  ("ExtWrapperHolder", D_ExtWrapperHolder)]
+  ("ExtWrapperHolder", D_ExtWrapperHolder),
+  ("APIUint64List100", D_APIUint64List100),
+  ("APIRoots5", D_APIRoots5),
+  ("APIBitvector12Elem", D_APIBitvector12Elem)]
 
 end SszSpec

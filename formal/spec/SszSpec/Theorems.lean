@@ -2358,4 +2358,121 @@ theorem D_ExtWrapperHolder_proof {value : Value} (fitted : Fits D_ExtWrapperHold
       buildProof D_ExtWrapperHolder value index = .ok branch ∧ verifyMerkleProof leaf branch index root = .ok true :=
   buildProof_fits_verifies D_ExtWrapperHolder value D_ExtWrapperHolder_wf fitted index leaf readLeaf indices indexed
 
+/-- `APIUint64List100` is a well-formed SSZ declaration (by evaluation, `ssz_wf`). -/
+theorem D_APIUint64List100_wf : D_APIUint64List100.wellFormed = .ok () := by ssz_wf D_APIUint64List100
+
+/-- Decode-canonicity for `APIUint64List100`: every accepted byte string is exactly the
+    serialization of its decoded value. -/
+theorem D_APIUint64List100_canonical {data : Bytes} {value : Value}
+    (read : deserialize D_APIUint64List100 data = .ok value) : serialize D_APIUint64List100 value = .ok data :=
+  serialize_of_deserialize D_APIUint64List100 D_APIUint64List100_wf data value read
+
+/-- Roundtrip for `APIUint64List100`: every encoding decodes back to the value it encodes. -/
+theorem D_APIUint64List100_roundTrip {value : Value} {bytes : Bytes}
+    (wrote : serialize D_APIUint64List100 value = .ok bytes) : deserialize D_APIUint64List100 bytes = .ok value :=
+  roundTrip_of_encoding D_APIUint64List100_wf wrote
+
+/-- Non-malleability for `APIUint64List100`: no value has two accepted encodings. -/
+theorem D_APIUint64List100_injective {left right : Bytes} {value : Value}
+    (first : deserialize D_APIUint64List100 left = .ok value) (second : deserialize D_APIUint64List100 right = .ok value) :
+    left = right :=
+  deserialize_injective D_APIUint64List100_wf first second
+
+/-- Every value `APIUint64List100` decodes fits its declaration. -/
+theorem D_APIUint64List100_fits {data : Bytes} {value : Value}
+    (read : deserialize D_APIUint64List100 data = .ok value) : Fits D_APIUint64List100 value :=
+  fits_of_deserialize D_APIUint64List100 data value read
+
+/-- Every admissible `APIUint64List100` value has a 32-byte hash tree root. -/
+theorem D_APIUint64List100_root {value : Value} (fitted : Fits D_APIUint64List100 value) :
+    ∃ root, hashTreeRoot D_APIUint64List100 value = .ok root ∧ root.size = bytesPerChunk :=
+  hashTreeRoot_total D_APIUint64List100 value D_APIUint64List100_wf fitted
+
+/-- Merkle proofs for `APIUint64List100`: every readable node has a branch that verifies
+    against the value's root. -/
+theorem D_APIUint64List100_proof {value : Value} (fitted : Fits D_APIUint64List100 value) (index : Nat) {leaf : Bytes}
+    (readLeaf : nodeRoot D_APIUint64List100 value index = .ok leaf) {indices : List Nat}
+    (indexed : getBranchIndices index = .ok indices) :
+    ∃ root branch, hashTreeRoot D_APIUint64List100 value = .ok root ∧
+      buildProof D_APIUint64List100 value index = .ok branch ∧ verifyMerkleProof leaf branch index root = .ok true :=
+  buildProof_fits_verifies D_APIUint64List100 value D_APIUint64List100_wf fitted index leaf readLeaf indices indexed
+
+/-- `APIRoots5` is a well-formed SSZ declaration (by evaluation, `ssz_wf`). -/
+theorem D_APIRoots5_wf : D_APIRoots5.wellFormed = .ok () := by ssz_wf D_APIRoots5
+
+/-- Decode-canonicity for `APIRoots5`: every accepted byte string is exactly the
+    serialization of its decoded value. -/
+theorem D_APIRoots5_canonical {data : Bytes} {value : Value}
+    (read : deserialize D_APIRoots5 data = .ok value) : serialize D_APIRoots5 value = .ok data :=
+  serialize_of_deserialize D_APIRoots5 D_APIRoots5_wf data value read
+
+/-- Roundtrip for `APIRoots5`: every encoding decodes back to the value it encodes. -/
+theorem D_APIRoots5_roundTrip {value : Value} {bytes : Bytes}
+    (wrote : serialize D_APIRoots5 value = .ok bytes) : deserialize D_APIRoots5 bytes = .ok value :=
+  roundTrip_of_encoding D_APIRoots5_wf wrote
+
+/-- Non-malleability for `APIRoots5`: no value has two accepted encodings. -/
+theorem D_APIRoots5_injective {left right : Bytes} {value : Value}
+    (first : deserialize D_APIRoots5 left = .ok value) (second : deserialize D_APIRoots5 right = .ok value) :
+    left = right :=
+  deserialize_injective D_APIRoots5_wf first second
+
+/-- Every value `APIRoots5` decodes fits its declaration. -/
+theorem D_APIRoots5_fits {data : Bytes} {value : Value}
+    (read : deserialize D_APIRoots5 data = .ok value) : Fits D_APIRoots5 value :=
+  fits_of_deserialize D_APIRoots5 data value read
+
+/-- Every admissible `APIRoots5` value has a 32-byte hash tree root. -/
+theorem D_APIRoots5_root {value : Value} (fitted : Fits D_APIRoots5 value) :
+    ∃ root, hashTreeRoot D_APIRoots5 value = .ok root ∧ root.size = bytesPerChunk :=
+  hashTreeRoot_total D_APIRoots5 value D_APIRoots5_wf fitted
+
+/-- Merkle proofs for `APIRoots5`: every readable node has a branch that verifies
+    against the value's root. -/
+theorem D_APIRoots5_proof {value : Value} (fitted : Fits D_APIRoots5 value) (index : Nat) {leaf : Bytes}
+    (readLeaf : nodeRoot D_APIRoots5 value index = .ok leaf) {indices : List Nat}
+    (indexed : getBranchIndices index = .ok indices) :
+    ∃ root branch, hashTreeRoot D_APIRoots5 value = .ok root ∧
+      buildProof D_APIRoots5 value index = .ok branch ∧ verifyMerkleProof leaf branch index root = .ok true :=
+  buildProof_fits_verifies D_APIRoots5 value D_APIRoots5_wf fitted index leaf readLeaf indices indexed
+
+/-- `APIBitvector12Elem` is a well-formed SSZ declaration (by evaluation, `ssz_wf`). -/
+theorem D_APIBitvector12Elem_wf : D_APIBitvector12Elem.wellFormed = .ok () := by ssz_wf D_APIBitvector12Elem
+
+/-- Decode-canonicity for `APIBitvector12Elem`: every accepted byte string is exactly the
+    serialization of its decoded value. -/
+theorem D_APIBitvector12Elem_canonical {data : Bytes} {value : Value}
+    (read : deserialize D_APIBitvector12Elem data = .ok value) : serialize D_APIBitvector12Elem value = .ok data :=
+  serialize_of_deserialize D_APIBitvector12Elem D_APIBitvector12Elem_wf data value read
+
+/-- Roundtrip for `APIBitvector12Elem`: every encoding decodes back to the value it encodes. -/
+theorem D_APIBitvector12Elem_roundTrip {value : Value} {bytes : Bytes}
+    (wrote : serialize D_APIBitvector12Elem value = .ok bytes) : deserialize D_APIBitvector12Elem bytes = .ok value :=
+  roundTrip_of_encoding D_APIBitvector12Elem_wf wrote
+
+/-- Non-malleability for `APIBitvector12Elem`: no value has two accepted encodings. -/
+theorem D_APIBitvector12Elem_injective {left right : Bytes} {value : Value}
+    (first : deserialize D_APIBitvector12Elem left = .ok value) (second : deserialize D_APIBitvector12Elem right = .ok value) :
+    left = right :=
+  deserialize_injective D_APIBitvector12Elem_wf first second
+
+/-- Every value `APIBitvector12Elem` decodes fits its declaration. -/
+theorem D_APIBitvector12Elem_fits {data : Bytes} {value : Value}
+    (read : deserialize D_APIBitvector12Elem data = .ok value) : Fits D_APIBitvector12Elem value :=
+  fits_of_deserialize D_APIBitvector12Elem data value read
+
+/-- Every admissible `APIBitvector12Elem` value has a 32-byte hash tree root. -/
+theorem D_APIBitvector12Elem_root {value : Value} (fitted : Fits D_APIBitvector12Elem value) :
+    ∃ root, hashTreeRoot D_APIBitvector12Elem value = .ok root ∧ root.size = bytesPerChunk :=
+  hashTreeRoot_total D_APIBitvector12Elem value D_APIBitvector12Elem_wf fitted
+
+/-- Merkle proofs for `APIBitvector12Elem`: every readable node has a branch that verifies
+    against the value's root. -/
+theorem D_APIBitvector12Elem_proof {value : Value} (fitted : Fits D_APIBitvector12Elem value) (index : Nat) {leaf : Bytes}
+    (readLeaf : nodeRoot D_APIBitvector12Elem value index = .ok leaf) {indices : List Nat}
+    (indexed : getBranchIndices index = .ok indices) :
+    ∃ root branch, hashTreeRoot D_APIBitvector12Elem value = .ok root ∧
+      buildProof D_APIBitvector12Elem value index = .ok branch ∧ verifyMerkleProof leaf branch index root = .ok true :=
+  buildProof_fits_verifies D_APIBitvector12Elem value D_APIBitvector12Elem_wf fitted index leaf readLeaf indices indexed
+
 end SszSpec

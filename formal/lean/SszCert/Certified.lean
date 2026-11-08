@@ -1433,6 +1433,69 @@ theorem C_ExtMixed_tree_root {v : Val} (hwt : C_ExtMixed.wt v) :
     (C_ExtMixed.tree v).root = C_ExtMixed.htr v :=
   C_ExtMixed.htr_tree hwt
 
+/-- Certificate for `harness.APIUint64List100`. -/
+def C_APIUint64List100 : Codec :=
+  (listPackedCodec (uintCodec 8) 8 100 (by rfl) (by decide))
+
+/-- Decode-canonicity (P2) for `APIUint64List100`: every accepted byte string is
+    exactly the canonical serialization of its decoded value. -/
+theorem C_APIUint64List100_canonicity {bs : List UInt8} {v : Val}
+    (h : C_APIUint64List100.dec bs = some v) : C_APIUint64List100.wt v ∧ C_APIUint64List100.ser v = bs :=
+  C_APIUint64List100.canon h
+
+/-- Roundtrip (P1) for `APIUint64List100`. -/
+theorem C_APIUint64List100_roundtrip {v : Val} (hwt : C_APIUint64List100.wt v) (hrep : C_APIUint64List100.rep v) :
+    C_APIUint64List100.dec (C_APIUint64List100.ser v) = some v :=
+  C_APIUint64List100.round hwt hrep
+
+/-- Tree/root agreement for `APIUint64List100`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_APIUint64List100_tree_root {v : Val} (hwt : C_APIUint64List100.wt v) :
+    (C_APIUint64List100.tree v).root = C_APIUint64List100.htr v :=
+  C_APIUint64List100.htr_tree hwt
+
+/-- Certificate for `harness.APIRoots5`. -/
+def C_APIRoots5 : Codec :=
+  (vectorFixedCodec (byteVectorCodec 32) 32 5 (by rfl))
+
+/-- Decode-canonicity (P2) for `APIRoots5`: every accepted byte string is
+    exactly the canonical serialization of its decoded value. -/
+theorem C_APIRoots5_canonicity {bs : List UInt8} {v : Val}
+    (h : C_APIRoots5.dec bs = some v) : C_APIRoots5.wt v ∧ C_APIRoots5.ser v = bs :=
+  C_APIRoots5.canon h
+
+/-- Roundtrip (P1) for `APIRoots5`. -/
+theorem C_APIRoots5_roundtrip {v : Val} (hwt : C_APIRoots5.wt v) (hrep : C_APIRoots5.rep v) :
+    C_APIRoots5.dec (C_APIRoots5.ser v) = some v :=
+  C_APIRoots5.round hwt hrep
+
+/-- Tree/root agreement for `APIRoots5`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_APIRoots5_tree_root {v : Val} (hwt : C_APIRoots5.wt v) :
+    (C_APIRoots5.tree v).root = C_APIRoots5.htr v :=
+  C_APIRoots5.htr_tree hwt
+
+/-- Certificate for `harness.APIBitvector12Elem`. -/
+def C_APIBitvector12Elem : Codec :=
+  (bitvectorCodec 12)
+
+/-- Decode-canonicity (P2) for `APIBitvector12Elem`: every accepted byte string is
+    exactly the canonical serialization of its decoded value. -/
+theorem C_APIBitvector12Elem_canonicity {bs : List UInt8} {v : Val}
+    (h : C_APIBitvector12Elem.dec bs = some v) : C_APIBitvector12Elem.wt v ∧ C_APIBitvector12Elem.ser v = bs :=
+  C_APIBitvector12Elem.canon h
+
+/-- Roundtrip (P1) for `APIBitvector12Elem`. -/
+theorem C_APIBitvector12Elem_roundtrip {v : Val} (hwt : C_APIBitvector12Elem.wt v) (hrep : C_APIBitvector12Elem.rep v) :
+    C_APIBitvector12Elem.dec (C_APIBitvector12Elem.ser v) = some v :=
+  C_APIBitvector12Elem.round hwt hrep
+
+/-- Tree/root agreement for `APIBitvector12Elem`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_APIBitvector12Elem_tree_root {v : Val} (hwt : C_APIBitvector12Elem.wt v) :
+    (C_APIBitvector12Elem.tree v).root = C_APIBitvector12Elem.htr v :=
+  C_APIBitvector12Elem.htr_tree hwt
+
 /-- Name-indexed certificate registry (for the oracle CLI). -/
 def certified : List (String × Codec) := [
   ("BasicBitList16", C_BasicBitList16),
@@ -1502,6 +1565,9 @@ def certified : List (String × Codec) := [
   ("ExtOptionalLists", C_ExtOptionalLists),
   ("ExtUnionHolder", C_ExtUnionHolder),
   ("ExtWrapperHolder", C_ExtWrapperHolder),
-  ("ExtMixed", C_ExtMixed)]
+  ("ExtMixed", C_ExtMixed),
+  ("APIUint64List100", C_APIUint64List100),
+  ("APIRoots5", C_APIRoots5),
+  ("APIBitvector12Elem", C_APIBitvector12Elem)]
 
 end Ssz

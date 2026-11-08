@@ -66,3 +66,6 @@ ExtOptionalLists
 ExtUnionHolder
 ExtWrapperHolder
 ExtMixed
+APIUint64List100
+APIRoots5
+APIBitvector12Elem
