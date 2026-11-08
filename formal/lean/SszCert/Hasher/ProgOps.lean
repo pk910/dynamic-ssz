@@ -315,6 +315,7 @@ theorem progRound_prog (cx : Ctx C) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) (s : S
     (hpl : cx.P.cap / l.pendC ≤ l.pend.length) :
     ∃ l' ls', (s.progRound cx l.pendC l).stack = l' :: ls' ∧
       PFlush cx l' G (Lb ++ (pendLeaves cx l).take (cx.P.cap / l.pendC)) ∧ l'.pendC = l.pendC ∧
+      pendLeaves cx l' = (pendLeaves cx l).drop (cx.P.cap / l.pendC) ∧
       l'.pend.length = l.pend.length - cx.P.cap / l.pendC ∧
       TopOK (s.progRound cx l.pendC l) ∧ ls'.map Layer.erase = ls.map Layer.erase ∧
       (s.progRound cx l.pendC l).base.map Cell.erase = s.base.map Cell.erase ∧
@@ -415,7 +416,7 @@ theorem progRound_prog (cx : Ctx C) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) (s : S
     simp [Layer.cells, l', progRoundLayer, nodeCells, List.map_map, Function.comp_def, List.append_assoc]
   have hk0 : (l1.prog ++ nodeCells l1.nodes).length = l.prog.length + l.nodes.length := by
     simp [nodeCells_length, hpl1, hnl1]
-  refine ⟨l', ls1, St.setTop_stack T l1 l' ls1 hTs, by rw [hTake]; exact hpf', hle.pendC,
+  refine ⟨l', ls1, St.setTop_stack T l1 l' ls1 hTs, by rw [hTake]; exact hpf', hle.pendC, by rw [hdrop, hpl1'],
     by simp [l', progRoundLayer, hpend1], ⟨?_, ?_, ?_, ?_⟩, hls1, ?_, ?_, ?_, ?_⟩
   · show HolesOK (St.setTop ((s.ringDrain cx.P).addJob J) l')
     unfold St.addJob
@@ -465,5 +466,122 @@ theorem progRound_prog (cx : Ctx C) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) (s : S
   · rw [St.setTop_below T l1 l' ls1 hTs]
     show HolesSub s.below (s.ringDrain cx.P).below
     exact holesSub_below hv1 h hs1 (ringDrain_holesSub cx.P s ht.holes)
+
+theorem flushAsyncLoop_prog (cx : Ctx C) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) (dflt : Layer C) (k : Nat)
+    (hkc : k ≤ cx.P.capDepth) (G : List (List C)) :
+    ∀ fuel (s : St C) (l : Layer C) (ls : List (Layer C)) (Lb : List C) (e : Bool),
+      s.stack = l :: ls → PFlush cx l G Lb → l.pendC = 2 ^ k → TopOK s →
+      ∃ l' ls' Lb', (flushAsyncLoop cx dflt (2 ^ k) fuel s e).1.stack = l' :: ls' ∧ PFlush cx l' G Lb' ∧
+        Lb ++ pendLeaves cx l = Lb' ++ pendLeaves cx l' ∧ l'.pendC = 2 ^ k ∧
+        TopOK (flushAsyncLoop cx dflt (2 ^ k) fuel s e).1 ∧ ls'.map Layer.erase = ls.map Layer.erase ∧
+        (flushAsyncLoop cx dflt (2 ^ k) fuel s e).1.base.map Cell.erase = s.base.map Cell.erase ∧
+        (flushAsyncLoop cx dflt (2 ^ k) fuel s e).1.hashErr = s.hashErr ∧
+        (flushAsyncLoop cx dflt (2 ^ k) fuel s e).1.below.length = s.below.length ∧
+        HolesSub s.below (flushAsyncLoop cx dflt (2 ^ k) fuel s e).1.below := by
+  intro fuel
+  induction fuel with
+  | zero =>
+    intro s l ls Lb e h hf hc ht
+    exact ⟨l, ls, Lb, h, hf, rfl, hc, ht, rfl, rfl, rfl, rfl, HolesSub.refl _⟩
+  | succ fuel ih =>
+    intro s l ls Lb e h hf hc ht
+    have htop : s.topLayer dflt = l := by simp [St.topLayer, h]
+    simp only [flushAsyncLoop, htop, hf.prog, if_true]
+    split
+    · exact ⟨l, ls, Lb, h, hf, rfl, hc, ht, rfl, rfl, rfl, rfl, HolesSub.refl _⟩
+    rename_i hpl
+    obtain ⟨l', ls', hs', hf', hc', hpd', _, ht', hle', hba', hh', hbl', hsub'⟩ :=
+      progRound_prog cx hcap s l ls G Lb k h hf ht hc hkc (by rw [hc]; omega)
+    rw [hc] at hs' ht' hba' hh' hbl' hsub'
+    obtain ⟨l'', ls'', Lb'', hs'', hf'', hsp'', hc'', ht'', hle'', hba'', hh'', hbl'', hsub''⟩ :=
+      ih _ l' ls' _ true hs' hf' (by rw [hc', hc]) ht'
+    refine ⟨l'', ls'', Lb'', hs'', hf'', ?_, hc'', ht'', by rw [hle'', hle'], by rw [hba'', hba'],
+      by rw [hh'', hh'], by rw [hbl'', hbl'], HolesSub.trans hsub' hsub''⟩
+    rw [← hsp'', hpd', List.append_assoc, List.take_append_drop]
+
+/-- The last step on a progressive scope. -/
+theorem flushFinish_prog (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C)) (G : List (List C)) (Lb : List C)
+    (k : Nat) (h : s.stack = l :: ls) (hf : PFlush cx l G Lb) (ht : TopOK s) (hk : l.pendC = 2 ^ k) (hk0 : 0 < k)
+    (hkb : 2 ^ k ≤ cx.P.batch) :
+    (s.setTop (flushFinish l)).stack = flushFinish l :: ls ∧
+      ProgScope cx (flushFinish l) (G.flatten ++ Lb ++ pendLeaves cx l) ∧
+      TopOK (s.setTop (flushFinish l)) ∧ (s.setTop (flushFinish l)).below = s.below ∧
+      (s.setTop (flushFinish l)).base = s.base ∧ (s.setTop (flushFinish l)).hashErr = s.hashErr := by
+  refine ⟨St.setTop_stack s l _ ls h, ?_, topOK_setTop_same s l _ ls h ht ?_, St.setTop_below s l _ ls h,
+    St.setTop_base s _, St.setTop_hashErr s _⟩
+  · unfold flushFinish
+    split
+    · rename_i hpe
+      have htr : ∀ c ∈ l.tail, c.isReady = true := fun c hc => hf.ready c (List.mem_append_right _ hc)
+      refine ⟨G, Lb ++ l.tail.map Cell.val, by simp [pendLeaves, hpe, List.append_assoc], ?_⟩
+      have hcov := cov_append_leaves cx.H cx.z0 l.tail hf.cov
+      refine ⟨hf.prog, hf.inc, hf.nolegacy, hf.groups, hf.level, hcov, ?_, ?_, ?_,
+        ⟨fun _ => rfl, by simp [hpe], by simp, by simp [hpe], fun h => absurd hpe h⟩⟩
+      · intro n hn; rcases List.mem_append.mp hn with hn | hn
+        · exact hf.narrow n hn
+        · obtain ⟨c, _, rfl⟩ := List.mem_map.mp hn; exact Nat.zero_le _
+      · intro n hn; rcases List.mem_append.mp hn with hn | hn
+        · exact hf.shallow n hn
+        · obtain ⟨c, _, rfl⟩ := List.mem_map.mp hn; exact (by decide : (0:Nat) < 40)
+      · intro hc
+        obtain ⟨h0, hd⟩ := hf.leaves hc
+        refine ⟨h0, fun n hn => ?_⟩
+        rcases List.mem_append.mp hn with hn | hn
+        · exact hd n hn
+        · obtain ⟨c, _, rfl⟩ := List.mem_map.mp hn; rfl
+    · rename_i hpe
+      refine ⟨G, Lb, rfl, ⟨hf.prog, hf.inc, hf.nolegacy, hf.groups, hf.level, hf.cov, hf.narrow, hf.shallow,
+        hf.leaves, ⟨fun e => absurd e hpe, ?_, ?_, hf.width, fun _ => ⟨k, hk, hk0, hkb⟩⟩⟩⟩
+      · intro e he c hc; exact hf.ready c (List.mem_append_left _ (List.mem_flatten.mpr ⟨e, he, hc⟩))
+      · intro c hc; exact hf.ready c (List.mem_append_right _ hc)
+  · unfold flushFinish
+    split
+    · rename_i hpe
+      simp [Layer.cells, hpe, nodeCells, List.map_map, Function.comp_def, List.append_assoc]
+    · rfl
+
+/-- **`flushPendingAsync` on a progressive scope.** -/
+theorem flushAsync_prog (cx : Ctx C) (hP : ParamsOK cx.P) (s : St C) (l : Layer C) (ls : List (Layer C)) (L : List C)
+    (h : s.stack = l :: ls) (hs : ProgScope cx l L) (hpne : l.pend ≠ []) (ht : TopOK s) :
+    PStep cx s (s.flushAsync cx).1 l ls L := by
+  obtain ⟨G, Lb, hL, hp⟩ := hs
+  obtain ⟨k, hk, hk0, hkb⟩ := hp.pendOK.pow hpne
+  have hkc : k ≤ cx.P.capDepth := by
+    have : 2 ^ k < 2 ^ cx.P.capDepth := by rw [← hP.cap]; have := hP.batch_lt_cap; omega
+    have := (Nat.pow_lt_pow_iff_right (by decide : 1 < 2)).mp this; omega
+  unfold St.flushAsync
+  rw [h]
+  simp only
+  rw [hk]
+  obtain ⟨l', ls', Lb', hs', hf', hsp', hc', ht', hle', hba', hh', hbl', hsub'⟩ :=
+    flushAsyncLoop_prog cx hP.cap l k hkc G (l.pend.length + 1) s l ls Lb false h (pflush_of_prog hp) hk ht
+  have htop : (flushAsyncLoop cx l (2 ^ k) (l.pend.length + 1) s false).1.topLayer l = l' := by
+    simp [St.topLayer, hs']
+  rw [htop]
+  obtain ⟨hs2, hsc2, ht2, hb2, hba2, hh2⟩ := flushFinish_prog cx _ l' ls' G Lb' k hs' hf' ht' hc' hk0 hkb
+  refine ⟨_, ls', hs2, ?_, ht2, hle', by rw [hba2, hba'], by rw [hh2, hh'], by rw [hb2, hbl'], by rw [hb2]; exact hsub'⟩
+  rw [hL, List.append_assoc, hsp', ← List.append_assoc]; exact hsc2
+
+/-- **`flushPending`** on a progressive scope, in either mode. -/
+theorem flush_prog (cx : Ctx C) (hP : ParamsOK cx.P) (s : St C) (l : Layer C) (ls : List (Layer C)) (L : List C)
+    (h : s.stack = l :: ls) (hs : ProgScope cx l L) (ht : TopOK s) (aa a : Bool) :
+    PStep cx s (s.flush cx aa a) l ls L := by
+  have hsync : PStep cx s (s.flushSync cx) l ls L := by
+    obtain ⟨l', h', hs', _, _, _, _, ht', hbl', hba', hh'⟩ := flushSync_prog cx s l ls L h hs ht
+    exact ⟨l', ls, h', hs', ht', rfl, by rw [hba'], hh', by rw [hbl'], by rw [hbl']; exact HolesSub.refl _⟩
+  unfold St.flush
+  rw [h]
+  simp only
+  split
+  · rename_i hc
+    obtain ⟨_, hpne, _⟩ := hc
+    have hA := flushAsync_prog cx hP s l ls L h hs hpne ht
+    cases hfa : s.flushAsync cx with
+    | mk s' em =>
+      rw [hfa] at hA
+      cases em
+      · exact hsync
+      · exact hA
+  · exact hsync
 
 end Ssz.Hasher
