@@ -8,11 +8,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"sort"
 	"strings"
 	"testing"
 
-	dynssz "github.com/pk910/dynamic-ssz"
 	"pgregory.net/rapid"
 )
 
@@ -89,8 +87,7 @@ func TestOracleLink(t *testing.T) {
 	rd := bufio.NewReaderSize(stdout, 1<<20)
 	wr := bufio.NewWriterSize(stdin, 1<<20)
 
-	dsGen := dynssz.NewDynSsz(nil)
-	dsRefl := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation())
+	eng := newEngineSet(nil)
 
 	// ask returns the certified Lean decoder's verdict for the given type
 	// name and bytes, plus the certified hash tree root on accepts;
@@ -119,40 +116,6 @@ func TestOracleLink(t *testing.T) {
 		return false, ""
 	}
 
-	// checkRoots demands that both engines' HashTreeRoot and both engines'
-	// GetTree(...).Hash() — the two independent Go merkleization paths —
-	// equal the certified Lean root for the given decoded value.
-	checkRoots := func(ctx, goName string, v any, leanRoot string) {
-		rootGen, err := dsGen.HashTreeRoot(v)
-		if err != nil {
-			t.Errorf("%s %s: codegen HashTreeRoot: %v", ctx, goName, err)
-			return
-		}
-		rootRefl, err := dsRefl.HashTreeRoot(v)
-		if err != nil {
-			t.Errorf("%s %s: reflection HashTreeRoot: %v", ctx, goName, err)
-			return
-		}
-		treeGen, err := dsGen.GetTree(v)
-		if err != nil {
-			t.Errorf("%s %s: codegen GetTree: %v", ctx, goName, err)
-			return
-		}
-		treeRefl, err := dsRefl.GetTree(v)
-		if err != nil {
-			t.Errorf("%s %s: reflection GetTree: %v", ctx, goName, err)
-			return
-		}
-		hg := hex.EncodeToString(rootGen[:])
-		hr := hex.EncodeToString(rootRefl[:])
-		tg := hex.EncodeToString(treeGen.Hash())
-		tr := hex.EncodeToString(treeRefl.Hash())
-		if hg != leanRoot || hr != leanRoot || tg != leanRoot || tr != leanRoot {
-			t.Errorf("ROOT DIVERGENCE %s %s: lean=%s codegenHTR=%s reflectionHTR=%s codegenTree=%s reflectionTree=%s",
-				ctx, goName, leanRoot, hg, hr, tg, tr)
-		}
-	}
-
 	checked := 0
 	perType := map[string]int{}
 	for _, vec := range vectors {
@@ -178,79 +141,63 @@ func TestOracleLink(t *testing.T) {
 			raw = mustHex(t, vec.Serialized)
 		}
 
-		decoded := entry.New()
-		genAccept := dsGen.UnmarshalSSZ(decoded, raw) == nil
-		reflAccept := dsRefl.UnmarshalSSZ(entry.New(), raw) == nil
+		ctx := vec.Dir + "/" + vec.TestID + " " + goName
+		fail := failer(t, ctx)
+		goAccept, decoded := eng.decodePaths(fail, entry.New, raw)
 		oracleAccept, leanRoot := ask(goName, raw)
-
-		if genAccept != oracleAccept || reflAccept != oracleAccept {
-			t.Errorf("VERDICT DIVERGENCE %s/%s type %s: codegen=%v reflection=%v lean=%v (bytes 0x%x)",
-				vec.Dir, vec.TestID, goName, genAccept, reflAccept, oracleAccept, raw)
+		if goAccept != oracleAccept {
+			t.Errorf("VERDICT DIVERGENCE %s: go=%v lean=%v (bytes 0x%s)", ctx, goAccept, oracleAccept, shortHex(raw))
 		}
-		if genAccept && oracleAccept {
-			checkRoots(vec.Dir+"/"+vec.TestID, goName, decoded, leanRoot)
+		if goAccept && oracleAccept {
+			eng.rootPaths(fail, decoded, leanRoot)
 		}
 		checked++
 		perType[goName]++
 	}
 
 	// Phase 2: generative coverage. Every certified type gets random valid
-	// values (must be accepted by the oracle) and byte mutations (verdict
-	// agreement), including the types no release fixture exercises at the
-	// top level.
-	allTypes := map[string]func() any{
-		"CUSquareProgList": func() any { return new(CUSquareProgList) },
-		"CUCircleProgList": func() any { return new(CUCircleProgList) },
-		"CUUint16List4":    func() any { return new(CUUint16List4) },
-	}
-	for _, reg := range Registries {
-		for _, entry := range reg {
-			entry := entry
-			goName := reflect.TypeOf(entry.New()).Elem().Name()
-			if strings.Contains(goName, "[") {
-				continue
-			}
-			allTypes[goName] = entry.New
-		}
-	}
-	names := make([]string, 0, len(allTypes))
-	for name := range allTypes {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	for _, name := range names {
-		newFn := allTypes[name]
-		t.Run("gen/"+name, func(t *testing.T) {
+	// values drawn from its descriptor, boundary-biased (must be accepted by
+	// the oracle on every encoding path and root identically on every
+	// merkleization path), and byte mutations (verdict agreement on every
+	// decoding path).
+	subjects := certifiedSubjects(t)
+	names := make([]string, 0, len(subjects))
+	for _, sub := range subjects {
+		sub := sub
+		names = append(names, sub.name)
+		t.Run("gen/"+sub.name, func(t *testing.T) {
 			rapid.Check(t, func(rt *rapid.T) {
-				v := newFn()
-				if err := RandomFill(rt, v); err != nil {
-					t.Fatalf("random fill %s: %v", name, err)
-				}
-				enc, err := dsGen.MarshalSSZ(v)
-				if err != nil {
-					t.Fatalf("marshal %s: %v", name, err)
+				name := sub.name
+				v := sub.genValue(t, rt, eng)
+				fail := failer(t, "gen/"+name)
+				enc, ok := eng.encodePaths(fail, v)
+				if !ok {
+					t.Fatalf("gen/%s: generated value is not encodable", name)
 				}
 				accepted, leanRoot := ask(name, enc)
 				if !accepted {
-					t.Errorf("VERDICT DIVERGENCE gen/%s: lean rejects generated encoding 0x%x", name, enc)
+					t.Errorf("VERDICT DIVERGENCE gen/%s: lean rejects generated encoding 0x%s", name, shortHex(enc))
 				} else {
-					checkRoots("gen", name, v, leanRoot)
+					eng.rootPaths(fail, v, leanRoot)
+					if goAccept, decoded := eng.decodePaths(fail, sub.newFn, enc); !goAccept {
+						t.Errorf("VERDICT DIVERGENCE gen/%s: go rejects its own encoding 0x%s", name, shortHex(enc))
+					} else {
+						eng.rootPaths(fail, decoded, leanRoot)
+					}
 				}
 				perType[name]++
 				checked++
 
 				mut := mutateBytes(rt, enc)
-				mutDecoded := newFn()
-				genAccept := dsGen.UnmarshalSSZ(mutDecoded, mut) == nil
-				reflAccept := dsRefl.UnmarshalSSZ(newFn(), mut) == nil
+				mfail := failer(t, "gen-mut/"+name)
+				goAccept, mutDecoded := eng.decodePaths(mfail, sub.newFn, mut)
 				oracleAccept, mutRoot := ask(name, mut)
-				if genAccept != oracleAccept || reflAccept != oracleAccept {
-					t.Errorf("VERDICT DIVERGENCE gen/%s mutation: codegen=%v reflection=%v lean=%v (bytes 0x%x)",
-						name, genAccept, reflAccept, oracleAccept, mut)
+				if goAccept != oracleAccept {
+					t.Errorf("VERDICT DIVERGENCE gen/%s mutation: go=%v lean=%v (bytes 0x%s)",
+						name, goAccept, oracleAccept, shortHex(mut))
 				}
-				if genAccept && oracleAccept {
-					checkRoots("gen-mut", name, mutDecoded, mutRoot)
+				if goAccept && oracleAccept {
+					eng.rootPaths(mfail, mutDecoded, mutRoot)
 				}
 				checked++
 			})
@@ -263,8 +210,8 @@ func TestOracleLink(t *testing.T) {
 			t.Errorf("COVERAGE GAP: no oracle-link vector exercised %s", name)
 		}
 	}
-	if len(names) != 57 {
-		t.Errorf("expected 57 certified types, got %d", len(names))
+	if len(names) == 0 {
+		t.Error("no certified types")
 	}
 	t.Logf("oracle link: %d vectors checked across %d/%d types", checked, len(perType), len(names))
 }

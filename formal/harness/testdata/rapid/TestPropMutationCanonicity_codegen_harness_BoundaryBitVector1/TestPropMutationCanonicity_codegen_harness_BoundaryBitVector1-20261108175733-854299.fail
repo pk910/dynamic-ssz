@@ -1,0 +1,19 @@
+# 2026/11/08 17:57:33.324804 [TestPropMutationCanonicity/codegen/harness.BoundaryBitVector1] [rapid] draw bit: false
+# 2026/11/08 17:57:33.324813 [TestPropMutationCanonicity/codegen/harness.BoundaryBitVector1] [rapid] draw bit: false
+# 2026/11/08 17:57:33.324817 [TestPropMutationCanonicity/codegen/harness.BoundaryBitVector1] [rapid] draw bit: false
+# 2026/11/08 17:57:33.324822 [TestPropMutationCanonicity/codegen/harness.BoundaryBitVector1] [rapid] draw bit: false
+# 2026/11/08 17:57:33.324826 [TestPropMutationCanonicity/codegen/harness.BoundaryBitVector1] [rapid] draw bit: false
+# 2026/11/08 17:57:33.324830 [TestPropMutationCanonicity/codegen/harness.BoundaryBitVector1] [rapid] draw bit: false
+# 2026/11/08 17:57:33.324834 [TestPropMutationCanonicity/codegen/harness.BoundaryBitVector1] [rapid] draw bit: false
+# 2026/11/08 17:57:33.324838 [TestPropMutationCanonicity/codegen/harness.BoundaryBitVector1] [rapid] draw bit: true
+# 2026/11/08 17:57:33.324842 [TestPropMutationCanonicity/codegen/harness.BoundaryBitVector1] marshal: invalid value range: bitvector padding bits are not zero
+# 
+v0.4.8#13170903253301828150
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1

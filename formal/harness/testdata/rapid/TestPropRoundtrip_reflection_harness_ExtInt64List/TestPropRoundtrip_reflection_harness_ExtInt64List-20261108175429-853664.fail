@@ -1,0 +1,7 @@
+# 2026/11/08 17:54:29.727227 [TestPropRoundtrip/reflection/harness.ExtInt64List] [rapid] draw len: 0
+# 2026/11/08 17:54:29.727238 [TestPropRoundtrip/reflection/harness.ExtInt64List] marshal: extended type not enabled: signed integers are not supported in SSZ (use unsigned integers instead)
+# 
+v0.4.8#7607640001363337568
+0x0
+0x0
+0x0

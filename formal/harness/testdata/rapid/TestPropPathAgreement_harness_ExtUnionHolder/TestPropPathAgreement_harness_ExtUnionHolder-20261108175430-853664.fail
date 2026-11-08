@@ -1,0 +1,24 @@
+# 2026/11/08 17:54:30.382342 [TestPropPathAgreement/harness.ExtUnionHolder] [rapid] draw u8: 0x0
+# 2026/11/08 17:54:30.382353 [TestPropPathAgreement/harness.ExtUnionHolder] [rapid] draw variant: 0
+# 2026/11/08 17:54:30.382357 [TestPropPathAgreement/harness.ExtUnionHolder] [rapid] draw variant: 0
+# 2026/11/08 17:54:30.382362 [TestPropPathAgreement/harness.ExtUnionHolder] [rapid] draw u64: 0x0
+# 2026/11/08 17:54:30.382368 [TestPropPathAgreement/harness.ExtUnionHolder] [rapid] draw len: 0
+# 2026/11/08 17:54:30.382374 [TestPropPathAgreement/harness.ExtUnionHolder] [rapid] draw u32: 0x0
+# 2026/11/08 17:54:30.382382 [TestPropPathAgreement/harness.ExtUnionHolder] marshal: U: invalid value range: union variant type mismatch
+# 
+v0.4.8#16552470535764995089
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0

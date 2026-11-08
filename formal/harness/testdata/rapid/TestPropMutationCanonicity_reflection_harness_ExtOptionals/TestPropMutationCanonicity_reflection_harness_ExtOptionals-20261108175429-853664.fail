@@ -1,0 +1,28 @@
+# 2026/11/08 17:54:29.945185 [TestPropMutationCanonicity/reflection/harness.ExtOptionals] [rapid] draw u64: 0x0
+# 2026/11/08 17:54:29.945192 [TestPropMutationCanonicity/reflection/harness.ExtOptionals] [rapid] draw byte: 0x0
+# 2026/11/08 17:54:29.945194 [TestPropMutationCanonicity/reflection/harness.ExtOptionals] [rapid] draw byte: 0x0
+# 2026/11/08 17:54:29.945201 [TestPropMutationCanonicity/reflection/harness.ExtOptionals] [rapid] draw byte: 0x0
+# 2026/11/08 17:54:29.945205 [TestPropMutationCanonicity/reflection/harness.ExtOptionals] [rapid] draw byte: 0x0
+# 2026/11/08 17:54:29.945210 [TestPropMutationCanonicity/reflection/harness.ExtOptionals] [rapid] draw u32: 0x0
+# 2026/11/08 17:54:29.945214 [TestPropMutationCanonicity/reflection/harness.ExtOptionals] [rapid] draw len: 0
+# 2026/11/08 17:54:29.945221 [TestPropMutationCanonicity/reflection/harness.ExtOptionals] [rapid] draw u8: 0x0
+# 2026/11/08 17:54:29.945237 [TestPropMutationCanonicity/reflection/harness.ExtOptionals] marshal: A: extended type not enabled: optional types are not supported in SSZ (use extended types option to enable it)
+# 
+v0.4.8#9569563947646972726
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0

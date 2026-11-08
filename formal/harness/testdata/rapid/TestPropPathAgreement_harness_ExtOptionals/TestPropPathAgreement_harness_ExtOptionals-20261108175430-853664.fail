@@ -1,0 +1,28 @@
+# 2026/11/08 17:54:30.379603 [TestPropPathAgreement/harness.ExtOptionals] [rapid] draw u64: 0x0
+# 2026/11/08 17:54:30.379610 [TestPropPathAgreement/harness.ExtOptionals] [rapid] draw byte: 0x0
+# 2026/11/08 17:54:30.379615 [TestPropPathAgreement/harness.ExtOptionals] [rapid] draw byte: 0x0
+# 2026/11/08 17:54:30.379620 [TestPropPathAgreement/harness.ExtOptionals] [rapid] draw byte: 0x0
+# 2026/11/08 17:54:30.379624 [TestPropPathAgreement/harness.ExtOptionals] [rapid] draw byte: 0x0
+# 2026/11/08 17:54:30.379630 [TestPropPathAgreement/harness.ExtOptionals] [rapid] draw u32: 0x0
+# 2026/11/08 17:54:30.379635 [TestPropPathAgreement/harness.ExtOptionals] [rapid] draw len: 0
+# 2026/11/08 17:54:30.379640 [TestPropPathAgreement/harness.ExtOptionals] [rapid] draw u8: 0x0
+# 2026/11/08 17:54:30.379652 [TestPropPathAgreement/harness.ExtOptionals] marshal: A: extended type not enabled: optional types are not supported in SSZ (use extended types option to enable it)
+# 
+v0.4.8#16659512272669060180
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0

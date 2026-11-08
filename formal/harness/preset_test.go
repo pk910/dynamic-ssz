@@ -47,10 +47,11 @@ func TestPropPresetParametricity(t *testing.T) {
 	dsDynamic := dynssz.NewDynSsz(presetSpecs)
 
 	rapid.Check(t, func(rt *rapid.T) {
-		var s PresetStatic
-		if err := RandomFill(rt, &s); err != nil {
+		gen, err := GenValue(rt, dynssz.NewDynSsz(nil, dynssz.WithNoDelegation()), func() any { return new(PresetStatic) }, DefaultGen)
+		if err != nil {
 			rt.Fatalf("gen: %v", err)
 		}
+		s := *gen.(*PresetStatic)
 		// Same data, dynamic schema.
 		var d PresetDynamic
 		copyFields(&d, &s)

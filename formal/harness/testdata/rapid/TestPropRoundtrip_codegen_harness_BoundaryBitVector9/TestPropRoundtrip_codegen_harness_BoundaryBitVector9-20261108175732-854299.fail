@@ -1,0 +1,35 @@
+# 2026/11/08 17:57:32.843721 [TestPropRoundtrip/codegen/harness.BoundaryBitVector9] [rapid] draw bit: false
+# 2026/11/08 17:57:32.843728 [TestPropRoundtrip/codegen/harness.BoundaryBitVector9] [rapid] draw bit: false
+# 2026/11/08 17:57:32.843732 [TestPropRoundtrip/codegen/harness.BoundaryBitVector9] [rapid] draw bit: false
+# 2026/11/08 17:57:32.843736 [TestPropRoundtrip/codegen/harness.BoundaryBitVector9] [rapid] draw bit: false
+# 2026/11/08 17:57:32.843741 [TestPropRoundtrip/codegen/harness.BoundaryBitVector9] [rapid] draw bit: false
+# 2026/11/08 17:57:32.843750 [TestPropRoundtrip/codegen/harness.BoundaryBitVector9] [rapid] draw bit: false
+# 2026/11/08 17:57:32.843756 [TestPropRoundtrip/codegen/harness.BoundaryBitVector9] [rapid] draw bit: false
+# 2026/11/08 17:57:32.843759 [TestPropRoundtrip/codegen/harness.BoundaryBitVector9] [rapid] draw bit: false
+# 2026/11/08 17:57:32.843763 [TestPropRoundtrip/codegen/harness.BoundaryBitVector9] [rapid] draw bit: false
+# 2026/11/08 17:57:32.843771 [TestPropRoundtrip/codegen/harness.BoundaryBitVector9] [rapid] draw bit: false
+# 2026/11/08 17:57:32.843774 [TestPropRoundtrip/codegen/harness.BoundaryBitVector9] [rapid] draw bit: false
+# 2026/11/08 17:57:32.843775 [TestPropRoundtrip/codegen/harness.BoundaryBitVector9] [rapid] draw bit: false
+# 2026/11/08 17:57:32.843779 [TestPropRoundtrip/codegen/harness.BoundaryBitVector9] [rapid] draw bit: false
+# 2026/11/08 17:57:32.843784 [TestPropRoundtrip/codegen/harness.BoundaryBitVector9] [rapid] draw bit: false
+# 2026/11/08 17:57:32.843787 [TestPropRoundtrip/codegen/harness.BoundaryBitVector9] [rapid] draw bit: false
+# 2026/11/08 17:57:32.843790 [TestPropRoundtrip/codegen/harness.BoundaryBitVector9] [rapid] draw bit: true
+# 2026/11/08 17:57:32.843801 [TestPropRoundtrip/codegen/harness.BoundaryBitVector9] marshal: invalid value range: bitvector padding bits are not zero
+# 
+v0.4.8#15506970700937166932
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1

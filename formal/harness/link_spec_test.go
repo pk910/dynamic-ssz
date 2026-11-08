@@ -14,7 +14,6 @@ import (
 	"strings"
 	"testing"
 
-	dynssz "github.com/pk910/dynamic-ssz"
 	"github.com/pk910/dynamic-ssz/treeproof"
 	"pgregory.net/rapid"
 )
@@ -153,35 +152,20 @@ type specStats struct {
 // treeproof against EthLib's buildProof/buildMultiproof, cross-verified in
 // both directions (P8).
 func (o *specOracle) checkValue(ctx, name string, v any, raw []byte, specRoot string,
-	dsGen, dsRefl *dynssz.DynSsz, rng *rand.Rand, st *specStats) {
+	eng *engineSet, rng *rand.Rand, st *specStats) {
 	t := o.t
-	rootGen, err := dsGen.HashTreeRoot(v)
-	if err != nil {
-		t.Errorf("%s %s: codegen HashTreeRoot: %v", ctx, name, err)
+	fail := failer(t, ctx+" "+name)
+	errsBefore := t.Failed()
+	eng.rootPaths(fail, v, specRoot)
+	if t.Failed() && !errsBefore {
 		return
 	}
-	rootRefl, err := dsRefl.HashTreeRoot(v)
-	if err != nil {
-		t.Errorf("%s %s: reflection HashTreeRoot: %v", ctx, name, err)
-		return
-	}
-	treeGen, err := dsGen.GetTree(v)
+	treeGen, err := eng.gen.GetTree(v)
 	if err != nil {
 		t.Errorf("%s %s: codegen GetTree: %v", ctx, name, err)
 		return
 	}
-	treeRefl, err := dsRefl.GetTree(v)
-	if err != nil {
-		t.Errorf("%s %s: reflection GetTree: %v", ctx, name, err)
-		return
-	}
-	hg, hr := hex.EncodeToString(rootGen[:]), hex.EncodeToString(rootRefl[:])
-	tg, tr := hex.EncodeToString(treeGen.Hash()), hex.EncodeToString(treeRefl.Hash())
-	if hg != specRoot || hr != specRoot || tg != specRoot || tr != specRoot {
-		t.Errorf("ROOT DIVERGENCE %s %s: spec=%s codegenHTR=%s reflectionHTR=%s codegenTree=%s reflectionTree=%s",
-			ctx, name, specRoot, hg, hr, tg, tr)
-		return
-	}
+	rootGen := treeGen.Hash()
 	st.vectors++
 
 	leaves, inner := treeIndices(treeGen, 4096)
@@ -208,7 +192,7 @@ func (o *specOracle) checkValue(ctx, name string, v any, raw []byte, specRoot st
 				// Documented policy difference: the specification refuses a
 				// branch for the root itself; Go returns the empty branch,
 				// which must still verify trivially against the root.
-				if ok, err := treeproof.VerifyProof(rootGen[:], goProof); err != nil || !ok {
+				if ok, err := treeproof.VerifyProof(rootGen, goProof); err != nil || !ok {
 					t.Errorf("ROOT PROOF %s %s: Go's empty root branch does not verify (ok=%v err=%v)", ctx, name, ok, err)
 				}
 				st.rootPolicy++
@@ -239,7 +223,7 @@ func (o *specOracle) checkValue(ctx, name string, v any, raw []byte, specRoot st
 			t.Errorf("PROOF CROSS-VERIFY %s %s gindex %d: spec rejects Go branch: %s", ctx, name, gi, vans)
 		}
 		leafBytes, _ := hex.DecodeString(specLeaf)
-		ok, err := treeproof.VerifyProof(rootGen[:], &treeproof.Proof{Index: gi, Leaf: leafBytes, Hashes: specBranch})
+		ok, err := treeproof.VerifyProof(rootGen, &treeproof.Proof{Index: gi, Leaf: leafBytes, Hashes: specBranch})
 		if err != nil || !ok {
 			t.Errorf("PROOF CROSS-VERIFY %s %s gindex %d: Go rejects spec branch (ok=%v err=%v)", ctx, name, gi, ok, err)
 		}
@@ -278,7 +262,7 @@ func (o *specOracle) checkValue(ctx, name string, v any, raw []byte, specRoot st
 			if vans != "VERIFY true" {
 				t.Errorf("MULTIPROOF CROSS-VERIFY %s %s %v: spec rejects Go multiproof: %s", ctx, name, idx, vans)
 			}
-			ok, err := treeproof.VerifyMultiproof(rootGen[:], specProof, specLeaves, idx)
+			ok, err := treeproof.VerifyMultiproof(rootGen, specProof, specLeaves, idx)
 			if err != nil || !ok {
 				t.Errorf("MULTIPROOF CROSS-VERIFY %s %s %v: Go rejects spec multiproof (ok=%v err=%v)", ctx, name, idx, ok, err)
 			}
@@ -295,8 +279,7 @@ func (o *specOracle) checkValue(ctx, name string, v any, raw []byte, specRoot st
 func TestSpecLink(t *testing.T) {
 	o := startSpecOracle(t)
 	vectors := loadFixturesOrNone(t)
-	dsGen := dynssz.NewDynSsz(nil)
-	dsRefl := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation())
+	eng := newEngineSet(nil)
 	rng := rand.New(rand.NewSource(20261106))
 	st := &specStats{}
 	checked := 0
@@ -321,75 +304,54 @@ func TestSpecLink(t *testing.T) {
 		} else {
 			raw = mustHex(t, vec.Serialized)
 		}
-		decoded := entry.New()
-		genAccept := dsGen.UnmarshalSSZ(decoded, raw) == nil
-		reflAccept := dsRefl.UnmarshalSSZ(entry.New(), raw) == nil
+		ctx := vec.Dir + "/" + vec.TestID
+		goAccept, decoded := eng.decodePaths(failer(t, ctx+" "+goName), entry.New, raw)
 		specAccept, specRoot := o.decode(goName, raw)
-		if genAccept != specAccept || reflAccept != specAccept {
-			t.Errorf("VERDICT DIVERGENCE %s/%s type %s: codegen=%v reflection=%v spec=%v (bytes 0x%x)",
-				vec.Dir, vec.TestID, goName, genAccept, reflAccept, specAccept, raw)
+		if goAccept != specAccept {
+			t.Errorf("VERDICT DIVERGENCE %s type %s: go=%v spec=%v (bytes 0x%s)", ctx, goName, goAccept, specAccept, shortHex(raw))
 		}
-		if genAccept && specAccept {
-			o.checkValue(vec.Dir+"/"+vec.TestID, goName, decoded, raw, specRoot, dsGen, dsRefl, rng, st)
+		if goAccept && specAccept {
+			o.checkValue(ctx, goName, decoded, raw, specRoot, eng, rng, st)
 		}
 		checked++
 		perType[goName]++
 	}
 
-	allTypes := map[string]func() any{
-		"CUSquareProgList": func() any { return new(CUSquareProgList) },
-		"CUCircleProgList": func() any { return new(CUCircleProgList) },
-		"CUUint16List4":    func() any { return new(CUUint16List4) },
-	}
-	for _, reg := range Registries {
-		for _, entry := range reg {
-			goName := reflect.TypeOf(entry.New()).Elem().Name()
-			if strings.Contains(goName, "[") {
-				continue
-			}
-			allTypes[goName] = entry.New
+	var names []string
+	for _, sub := range certifiedSubjects(t) {
+		if !sub.spec {
+			continue // extended types: certified against the in-house model only
 		}
-	}
-	names := make([]string, 0, len(allTypes))
-	for name := range allTypes {
+		sub := sub
+		name := sub.name
 		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	for _, name := range names {
-		newFn := allTypes[name]
 		t.Run("gen/"+name, func(t *testing.T) {
 			o.t = t
 			defer func() { o.t = t }()
 			rapid.Check(t, func(rt *rapid.T) {
-				v := newFn()
-				if err := RandomFill(rt, v); err != nil {
-					t.Fatalf("random fill %s: %v", name, err)
-				}
-				enc, err := dsGen.MarshalSSZ(v)
-				if err != nil {
-					t.Fatalf("marshal %s: %v", name, err)
+				v := sub.genValue(t, rt, eng)
+				enc, ok := eng.encodePaths(failer(t, "gen/"+name), v)
+				if !ok {
+					t.Fatalf("gen/%s: generated value is not encodable", name)
 				}
 				accepted, specRoot := o.decode(name, enc)
 				if !accepted {
-					t.Errorf("VERDICT DIVERGENCE gen/%s: spec rejects generated encoding 0x%x", name, enc)
+					t.Errorf("VERDICT DIVERGENCE gen/%s: spec rejects generated encoding 0x%s", name, shortHex(enc))
 				} else {
-					o.checkValue("gen", name, v, enc, specRoot, dsGen, dsRefl, rng, st)
+					o.checkValue("gen", name, v, enc, specRoot, eng, rng, st)
 				}
 				perType[name]++
 				checked++
 
 				mut := mutateBytes(rt, enc)
-				mutDecoded := newFn()
-				genAccept := dsGen.UnmarshalSSZ(mutDecoded, mut) == nil
-				reflAccept := dsRefl.UnmarshalSSZ(newFn(), mut) == nil
+				goAccept, mutDecoded := eng.decodePaths(failer(t, "gen-mut/"+name), sub.newFn, mut)
 				specAccept, mutRoot := o.decode(name, mut)
-				if genAccept != specAccept || reflAccept != specAccept {
-					t.Errorf("VERDICT DIVERGENCE gen/%s mutation: codegen=%v reflection=%v spec=%v (bytes 0x%x)",
-						name, genAccept, reflAccept, specAccept, mut)
+				if goAccept != specAccept {
+					t.Errorf("VERDICT DIVERGENCE gen/%s mutation: go=%v spec=%v (bytes 0x%s)",
+						name, goAccept, specAccept, shortHex(mut))
 				}
-				if genAccept && specAccept {
-					o.checkValue("gen-mut", name, mutDecoded, mut, mutRoot, dsGen, dsRefl, rng, st)
+				if goAccept && specAccept {
+					o.checkValue("gen-mut", name, mutDecoded, mut, mutRoot, eng, rng, st)
 				}
 				checked++
 			})

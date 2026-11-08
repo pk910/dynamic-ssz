@@ -2757,4 +2757,148 @@ theorem D_SmokeBitList8_proof {value : Value} (fitted : Fits D_SmokeBitList8 val
       buildProof D_SmokeBitList8 value index = .ok branch ∧ verifyMerkleProof leaf branch index root = .ok true :=
   buildProof_fits_verifies D_SmokeBitList8 value D_SmokeBitList8_wf fitted index leaf readLeaf indices indexed
 
+/-- `ExtInner` is a well-formed SSZ declaration (checked by evaluation; union
+    compatibility is well-founded recursion, evaluated through its equations). -/
+theorem D_ExtInner_wf : D_ExtInner.wellFormed = .ok () := ok_of_isOk (by
+  first
+  | decide
+  | simp +decide [D_ExtInner, isOk, Desc.wellFormed, Desc.allWellFormed, Desc.optionsCompatible,
+      isCompatible, compatibleAt, layoutsAgree, layoutPairAgree, placedFields, placedOrdinals,
+      Desc.nesting, Desc.deepestNesting, Desc.byteSequence, firstDuplicate, maxActiveFields,
+      Bind.bind, Except.bind, pure, Except.pure, List.find?, List.range, List.range.loop,
+      List.getElem!_eq_getElem?_getD, List.getElem?_cons_zero, List.getElem?_cons_succ,
+      List.getD, List.headD])
+
+/-- Decode-canonicity for `ExtInner`: every accepted byte string is exactly the
+    serialization of its decoded value. -/
+theorem D_ExtInner_canonical {data : Bytes} {value : Value}
+    (read : deserialize D_ExtInner data = .ok value) : serialize D_ExtInner value = .ok data :=
+  serialize_of_deserialize D_ExtInner D_ExtInner_wf data value read
+
+/-- Roundtrip for `ExtInner`: every encoding decodes back to the value it encodes. -/
+theorem D_ExtInner_roundTrip {value : Value} {bytes : Bytes}
+    (wrote : serialize D_ExtInner value = .ok bytes) : deserialize D_ExtInner bytes = .ok value :=
+  roundTrip_of_encoding D_ExtInner_wf wrote
+
+/-- Non-malleability for `ExtInner`: no value has two accepted encodings. -/
+theorem D_ExtInner_injective {left right : Bytes} {value : Value}
+    (first : deserialize D_ExtInner left = .ok value) (second : deserialize D_ExtInner right = .ok value) :
+    left = right :=
+  deserialize_injective D_ExtInner_wf first second
+
+/-- Every value `ExtInner` decodes fits its declaration. -/
+theorem D_ExtInner_fits {data : Bytes} {value : Value}
+    (read : deserialize D_ExtInner data = .ok value) : Fits D_ExtInner value :=
+  fits_of_deserialize D_ExtInner data value read
+
+/-- Every admissible `ExtInner` value has a 32-byte hash tree root. -/
+theorem D_ExtInner_root {value : Value} (fitted : Fits D_ExtInner value) :
+    ∃ root, hashTreeRoot D_ExtInner value = .ok root ∧ root.size = bytesPerChunk :=
+  hashTreeRoot_total D_ExtInner value D_ExtInner_wf fitted
+
+/-- Merkle proofs for `ExtInner`: every readable node has a branch that verifies
+    against the value's root. -/
+theorem D_ExtInner_proof {value : Value} (fitted : Fits D_ExtInner value) (index : Nat) {leaf : Bytes}
+    (readLeaf : nodeRoot D_ExtInner value index = .ok leaf) {indices : List Nat}
+    (indexed : getBranchIndices index = .ok indices) :
+    ∃ root branch, hashTreeRoot D_ExtInner value = .ok root ∧
+      buildProof D_ExtInner value index = .ok branch ∧ verifyMerkleProof leaf branch index root = .ok true :=
+  buildProof_fits_verifies D_ExtInner value D_ExtInner_wf fitted index leaf readLeaf indices indexed
+
+/-- `ExtOptionalLists` is a well-formed SSZ declaration (checked by evaluation; union
+    compatibility is well-founded recursion, evaluated through its equations). -/
+theorem D_ExtOptionalLists_wf : D_ExtOptionalLists.wellFormed = .ok () := ok_of_isOk (by
+  first
+  | decide
+  | simp +decide [D_ExtOptionalLists, isOk, Desc.wellFormed, Desc.allWellFormed, Desc.optionsCompatible,
+      isCompatible, compatibleAt, layoutsAgree, layoutPairAgree, placedFields, placedOrdinals,
+      Desc.nesting, Desc.deepestNesting, Desc.byteSequence, firstDuplicate, maxActiveFields,
+      Bind.bind, Except.bind, pure, Except.pure, List.find?, List.range, List.range.loop,
+      List.getElem!_eq_getElem?_getD, List.getElem?_cons_zero, List.getElem?_cons_succ,
+      List.getD, List.headD])
+
+/-- Decode-canonicity for `ExtOptionalLists`: every accepted byte string is exactly the
+    serialization of its decoded value. -/
+theorem D_ExtOptionalLists_canonical {data : Bytes} {value : Value}
+    (read : deserialize D_ExtOptionalLists data = .ok value) : serialize D_ExtOptionalLists value = .ok data :=
+  serialize_of_deserialize D_ExtOptionalLists D_ExtOptionalLists_wf data value read
+
+/-- Roundtrip for `ExtOptionalLists`: every encoding decodes back to the value it encodes. -/
+theorem D_ExtOptionalLists_roundTrip {value : Value} {bytes : Bytes}
+    (wrote : serialize D_ExtOptionalLists value = .ok bytes) : deserialize D_ExtOptionalLists bytes = .ok value :=
+  roundTrip_of_encoding D_ExtOptionalLists_wf wrote
+
+/-- Non-malleability for `ExtOptionalLists`: no value has two accepted encodings. -/
+theorem D_ExtOptionalLists_injective {left right : Bytes} {value : Value}
+    (first : deserialize D_ExtOptionalLists left = .ok value) (second : deserialize D_ExtOptionalLists right = .ok value) :
+    left = right :=
+  deserialize_injective D_ExtOptionalLists_wf first second
+
+/-- Every value `ExtOptionalLists` decodes fits its declaration. -/
+theorem D_ExtOptionalLists_fits {data : Bytes} {value : Value}
+    (read : deserialize D_ExtOptionalLists data = .ok value) : Fits D_ExtOptionalLists value :=
+  fits_of_deserialize D_ExtOptionalLists data value read
+
+/-- Every admissible `ExtOptionalLists` value has a 32-byte hash tree root. -/
+theorem D_ExtOptionalLists_root {value : Value} (fitted : Fits D_ExtOptionalLists value) :
+    ∃ root, hashTreeRoot D_ExtOptionalLists value = .ok root ∧ root.size = bytesPerChunk :=
+  hashTreeRoot_total D_ExtOptionalLists value D_ExtOptionalLists_wf fitted
+
+/-- Merkle proofs for `ExtOptionalLists`: every readable node has a branch that verifies
+    against the value's root. -/
+theorem D_ExtOptionalLists_proof {value : Value} (fitted : Fits D_ExtOptionalLists value) (index : Nat) {leaf : Bytes}
+    (readLeaf : nodeRoot D_ExtOptionalLists value index = .ok leaf) {indices : List Nat}
+    (indexed : getBranchIndices index = .ok indices) :
+    ∃ root branch, hashTreeRoot D_ExtOptionalLists value = .ok root ∧
+      buildProof D_ExtOptionalLists value index = .ok branch ∧ verifyMerkleProof leaf branch index root = .ok true :=
+  buildProof_fits_verifies D_ExtOptionalLists value D_ExtOptionalLists_wf fitted index leaf readLeaf indices indexed
+
+/-- `ExtWrapperHolder` is a well-formed SSZ declaration (checked by evaluation; union
+    compatibility is well-founded recursion, evaluated through its equations). -/
+theorem D_ExtWrapperHolder_wf : D_ExtWrapperHolder.wellFormed = .ok () := ok_of_isOk (by
+  first
+  | decide
+  | simp +decide [D_ExtWrapperHolder, isOk, Desc.wellFormed, Desc.allWellFormed, Desc.optionsCompatible,
+      isCompatible, compatibleAt, layoutsAgree, layoutPairAgree, placedFields, placedOrdinals,
+      Desc.nesting, Desc.deepestNesting, Desc.byteSequence, firstDuplicate, maxActiveFields,
+      Bind.bind, Except.bind, pure, Except.pure, List.find?, List.range, List.range.loop,
+      List.getElem!_eq_getElem?_getD, List.getElem?_cons_zero, List.getElem?_cons_succ,
+      List.getD, List.headD])
+
+/-- Decode-canonicity for `ExtWrapperHolder`: every accepted byte string is exactly the
+    serialization of its decoded value. -/
+theorem D_ExtWrapperHolder_canonical {data : Bytes} {value : Value}
+    (read : deserialize D_ExtWrapperHolder data = .ok value) : serialize D_ExtWrapperHolder value = .ok data :=
+  serialize_of_deserialize D_ExtWrapperHolder D_ExtWrapperHolder_wf data value read
+
+/-- Roundtrip for `ExtWrapperHolder`: every encoding decodes back to the value it encodes. -/
+theorem D_ExtWrapperHolder_roundTrip {value : Value} {bytes : Bytes}
+    (wrote : serialize D_ExtWrapperHolder value = .ok bytes) : deserialize D_ExtWrapperHolder bytes = .ok value :=
+  roundTrip_of_encoding D_ExtWrapperHolder_wf wrote
+
+/-- Non-malleability for `ExtWrapperHolder`: no value has two accepted encodings. -/
+theorem D_ExtWrapperHolder_injective {left right : Bytes} {value : Value}
+    (first : deserialize D_ExtWrapperHolder left = .ok value) (second : deserialize D_ExtWrapperHolder right = .ok value) :
+    left = right :=
+  deserialize_injective D_ExtWrapperHolder_wf first second
+
+/-- Every value `ExtWrapperHolder` decodes fits its declaration. -/
+theorem D_ExtWrapperHolder_fits {data : Bytes} {value : Value}
+    (read : deserialize D_ExtWrapperHolder data = .ok value) : Fits D_ExtWrapperHolder value :=
+  fits_of_deserialize D_ExtWrapperHolder data value read
+
+/-- Every admissible `ExtWrapperHolder` value has a 32-byte hash tree root. -/
+theorem D_ExtWrapperHolder_root {value : Value} (fitted : Fits D_ExtWrapperHolder value) :
+    ∃ root, hashTreeRoot D_ExtWrapperHolder value = .ok root ∧ root.size = bytesPerChunk :=
+  hashTreeRoot_total D_ExtWrapperHolder value D_ExtWrapperHolder_wf fitted
+
+/-- Merkle proofs for `ExtWrapperHolder`: every readable node has a branch that verifies
+    against the value's root. -/
+theorem D_ExtWrapperHolder_proof {value : Value} (fitted : Fits D_ExtWrapperHolder value) (index : Nat) {leaf : Bytes}
+    (readLeaf : nodeRoot D_ExtWrapperHolder value index = .ok leaf) {indices : List Nat}
+    (indexed : getBranchIndices index = .ok indices) :
+    ∃ root branch, hashTreeRoot D_ExtWrapperHolder value = .ok root ∧
+      buildProof D_ExtWrapperHolder value index = .ok branch ∧ verifyMerkleProof leaf branch index root = .ok true :=
+  buildProof_fits_verifies D_ExtWrapperHolder value D_ExtWrapperHolder_wf fitted index leaf readLeaf indices indexed
+
 end SszSpec

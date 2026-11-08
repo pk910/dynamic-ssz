@@ -235,6 +235,18 @@ def D_ProgUint64List : Desc :=
 def D_SmokeBitList8 : Desc :=
   (.bitList 8)
 
+/-- SSZ declaration of `harness.ExtInner`. -/
+def D_ExtInner : Desc :=
+  (.container ["X", "Y"] [(.uint 4), (.list (.uint 2) 20)])
+
+/-- SSZ declaration of `harness.ExtOptionalLists`. -/
+def D_ExtOptionalLists : Desc :=
+  (.container ["A", "B", "C"] [(.list (.uint 4) 1), (.list (.container ["X", "Y"] [(.uint 4), (.list (.uint 2) 20)]) 1), (.list (.byteVector 32) 1)])
+
+/-- SSZ declaration of `harness.ExtWrapperHolder`. -/
+def D_ExtWrapperHolder : Desc :=
+  (.container ["W", "N"] [(.byteList 64), (.uint 8)])
+
 /-- Name-indexed declaration registry (for the oracle CLI). -/
 def declared : List (String × Desc) := [
   ("BasicBitList16", D_BasicBitList16),
@@ -293,6 +305,9 @@ def declared : List (String × Desc) := [
   ("ProgNestedList", D_ProgNestedList),
   ("ProgUint16List", D_ProgUint16List),
   ("ProgUint64List", D_ProgUint64List),
-  ("SmokeBitList8", D_SmokeBitList8)]
+  ("SmokeBitList8", D_SmokeBitList8),
+  ("ExtInner", D_ExtInner),
+  ("ExtOptionalLists", D_ExtOptionalLists),
+  ("ExtWrapperHolder", D_ExtWrapperHolder)]
 
 end SszSpec

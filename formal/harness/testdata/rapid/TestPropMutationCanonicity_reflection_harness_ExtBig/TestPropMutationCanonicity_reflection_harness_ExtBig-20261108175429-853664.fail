@@ -1,0 +1,6 @@
+# 2026/11/08 17:54:29.936164 [TestPropMutationCanonicity/reflection/harness.ExtBig] [rapid] draw u16: 0x0
+# 2026/11/08 17:54:29.936178 [TestPropMutationCanonicity/reflection/harness.ExtBig] marshal: Bounded: extended type not enabled: big integers are not supported in SSZ (use extended types option to enable it)
+# 
+v0.4.8#7288658187331689371
+0x0
+0x0

@@ -1,0 +1,531 @@
+# 2026/11/08 17:57:32.835750 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835755 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835760 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835764 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835768 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835772 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835776 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835780 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835784 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835789 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835793 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835796 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835800 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835804 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835808 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835812 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835816 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835825 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835825 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835833 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835835 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835837 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835840 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835844 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835848 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835852 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835856 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835860 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835863 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835867 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835871 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835875 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835879 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835883 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835887 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835891 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835895 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835898 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835907 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835909 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835915 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835919 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835921 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835923 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835927 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835931 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835935 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835938 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835942 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835946 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835950 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835954 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835958 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835962 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835966 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835969 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835973 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835977 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835981 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835985 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835993 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.835993 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836001 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836003 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836005 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836008 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836012 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836016 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836020 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836024 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836028 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836032 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836035 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836039 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836043 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836047 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836053 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836057 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836061 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836065 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836069 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836077 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836077 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836085 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836087 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836089 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836092 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836096 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836100 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836104 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836108 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836112 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836116 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836120 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836123 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836127 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836131 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836135 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836139 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836143 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836147 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836150 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836158 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836161 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836165 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836170 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836173 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836174 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836178 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836182 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836185 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836189 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836193 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836197 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836201 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836205 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836209 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836213 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836216 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836220 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836224 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836228 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836232 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836236 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836244 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836245 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836251 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836255 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836257 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836259 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836263 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836267 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836271 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836275 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836279 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836282 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836286 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836290 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836294 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836298 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836302 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836306 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836309 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836313 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836317 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836321 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836329 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836329 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836337 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836339 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836341 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836344 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836360 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836364 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836368 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836372 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836376 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836380 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836383 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836387 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836391 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836395 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836399 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836403 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836411 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836413 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836419 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836423 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836425 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836426 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836430 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836434 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836438 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836442 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836445 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836449 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836453 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836457 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836461 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836465 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836469 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836473 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836477 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836481 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836484 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836488 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836495 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836497 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836503 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836507 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836509 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836512 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836516 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836519 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836523 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836527 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836531 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836535 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836539 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836543 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836546 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836550 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836554 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836558 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836562 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836566 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836570 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836577 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836581 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836585 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836589 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836593 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836593 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836597 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836601 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836605 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836609 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836613 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836617 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836621 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836625 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836629 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836632 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836636 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836640 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836644 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836648 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836652 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836656 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836663 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836665 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836671 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836675 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836677 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836679 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836683 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836687 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836691 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836694 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836698 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836702 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836706 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836710 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836714 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836718 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836722 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836725 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836729 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836733 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836737 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836745 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836749 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836753 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836757 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836761 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836761 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836764 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836768 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836772 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836776 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836780 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836784 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836788 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: false
+# 2026/11/08 17:57:32.836791 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] [rapid] draw bit: true
+# 2026/11/08 17:57:32.836800 [TestPropRoundtrip/codegen/harness.BoundaryBitVector257] marshal: invalid value range: bitvector padding bits are not zero
+# 
+v0.4.8#16564540227990773563
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1

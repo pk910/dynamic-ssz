@@ -1,0 +1,24 @@
+# 2026/11/08 17:54:29.735926 [TestPropRoundtrip/reflection/harness.ExtUnionHolder] [rapid] draw u8: 0x0
+# 2026/11/08 17:54:29.735933 [TestPropRoundtrip/reflection/harness.ExtUnionHolder] [rapid] draw variant: 0
+# 2026/11/08 17:54:29.735938 [TestPropRoundtrip/reflection/harness.ExtUnionHolder] [rapid] draw variant: 0
+# 2026/11/08 17:54:29.735943 [TestPropRoundtrip/reflection/harness.ExtUnionHolder] [rapid] draw u64: 0x0
+# 2026/11/08 17:54:29.735949 [TestPropRoundtrip/reflection/harness.ExtUnionHolder] [rapid] draw len: 0
+# 2026/11/08 17:54:29.735954 [TestPropRoundtrip/reflection/harness.ExtUnionHolder] [rapid] draw u32: 0x0
+# 2026/11/08 17:54:29.735960 [TestPropRoundtrip/reflection/harness.ExtUnionHolder] marshal: U: invalid value range: union variant type mismatch
+# 
+v0.4.8#3387427572688641303
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0

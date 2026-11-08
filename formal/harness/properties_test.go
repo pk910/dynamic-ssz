@@ -49,13 +49,19 @@ func allEntries() []struct {
 	return out
 }
 
+var enginesCache map[string]*dynssz.DynSsz
+
 func engines() map[string]*dynssz.DynSsz {
+	if enginesCache != nil {
+		return enginesCache
+	}
 	m := map[string]*dynssz.DynSsz{
-		"reflection": dynssz.NewDynSsz(nil, dynssz.WithNoDelegation()),
+		"reflection": dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithExtendedTypes()),
 	}
 	if generatedCodeAvailable {
-		m["codegen"] = dynssz.NewDynSsz(nil)
+		m["codegen"] = dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes())
 	}
+	enginesCache = m
 	return m
 }
 
@@ -69,8 +75,8 @@ func TestPropRoundtrip(t *testing.T) {
 			ds := ds
 			t.Run(engName+"/"+te.Name, func(t *testing.T) {
 				rapid.Check(t, func(rt *rapid.T) {
-					v1 := te.Entry.New()
-					if err := RandomFill(rt, v1); err != nil {
+					v1, err := GenValue(rt, engines()["reflection"], te.Entry.New, DefaultGen)
+					if err != nil {
 						rt.Fatalf("gen: %v", err)
 					}
 					b, err := ds.MarshalSSZ(v1)
@@ -117,8 +123,8 @@ func TestPropMutationCanonicity(t *testing.T) {
 			ds := ds
 			t.Run(engName+"/"+te.Name, func(t *testing.T) {
 				rapid.Check(t, func(rt *rapid.T) {
-					v1 := te.Entry.New()
-					if err := RandomFill(rt, v1); err != nil {
+					v1, err := GenValue(rt, engines()["reflection"], te.Entry.New, DefaultGen)
+					if err != nil {
 						rt.Fatalf("gen: %v", err)
 					}
 					b, err := ds.MarshalSSZ(v1)
@@ -183,8 +189,8 @@ func TestPropPathAgreement(t *testing.T) {
 		te := te
 		t.Run(te.Name, func(t *testing.T) {
 			rapid.Check(t, func(rt *rapid.T) {
-				v := te.Entry.New()
-				if err := RandomFill(rt, v); err != nil {
+				v, err := GenValue(rt, refl, te.Entry.New, DefaultGen)
+				if err != nil {
 					rt.Fatalf("gen: %v", err)
 				}
 				b, err := refl.MarshalSSZ(v)

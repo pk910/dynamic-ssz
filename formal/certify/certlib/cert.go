@@ -96,28 +96,17 @@ func CertExpr(desc *ssztypes.TypeDescriptor) (string, error) {
 		return fmt.Sprintf("(vectorVarCodec %s %d)", e, n), nil
 
 	case ssztypes.SszListType:
-		elem := desc.ElemDesc
-		if elem == nil {
+		if desc.ElemDesc == nil {
 			return "", fmt.Errorf("list without element descriptor")
 		}
-		limit := limitExpr(desc)
-		if elem.SszType == ssztypes.SszUint8Type {
-			return fmt.Sprintf("(byteListCodec %s)", limit), nil
+		return listCertExpr(desc.ElemDesc, limitExpr(desc))
+
+	case ssztypes.SszOptionalListType:
+		// A pointer encoded as the canonical List[T, 1].
+		if desc.ElemDesc == nil {
+			return "", fmt.Errorf("optional list without element descriptor")
 		}
-		e, err := CertExpr(elem)
-		if err != nil {
-			return "", err
-		}
-		if isFixedSize(elem) {
-			if elem.Size <= 0 {
-				return "", fmt.Errorf("fixed-size list element with size %d", elem.Size)
-			}
-			if isBasic(elem) {
-				return fmt.Sprintf("(listPackedCodec %s %d %s (by rfl) (by decide))", e, elem.Size, limit), nil
-			}
-			return fmt.Sprintf("(listFixedCodec %s %d %s (by rfl) (by decide))", e, elem.Size, limit), nil
-		}
-		return fmt.Sprintf("(listVarCodec %s %s)", e, limit), nil
+		return listCertExpr(desc.ElemDesc, "1")
 
 	case ssztypes.SszProgressiveListType:
 		// Progressive lists share the plain list wire format; the
@@ -164,40 +153,115 @@ func CertExpr(desc *ssztypes.TypeDescriptor) (string, error) {
 		if len(desc.UnionVariants) == 0 {
 			return "", fmt.Errorf("compatible union without variants")
 		}
-		selectors := make([]int, 0, len(desc.UnionVariants))
-		for sel := range desc.UnionVariants {
-			selectors = append(selectors, int(sel))
-		}
-		sort.Ints(selectors)
-		variants := make([]string, 0, len(selectors))
-		for _, sel := range selectors {
-			e, err := CertExpr(desc.UnionVariants[uint8(sel)])
-			if err != nil {
-				return "", fmt.Errorf("union variant %d: %w", sel, err)
-			}
-			variants = append(variants, fmt.Sprintf("(%d, %s)", sel, e))
+		variants, err := unionVariantExprs(desc, CertExpr, "(%d, %s)")
+		if err != nil {
+			return "", err
 		}
 		return "(unionCodec [" + strings.Join(variants, ", ") + "])", nil
+
+	// Extended types (formal/lean/SszCert/Extended.lean). Signed integers and
+	// floats encode and root exactly as uintN over their bit pattern.
+	case ssztypes.SszInt8Type:
+		return "(uintCodec 1)", nil
+	case ssztypes.SszInt16Type:
+		return "(uintCodec 2)", nil
+	case ssztypes.SszInt32Type, ssztypes.SszFloat32Type:
+		return "(uintCodec 4)", nil
+	case ssztypes.SszInt64Type, ssztypes.SszFloat64Type:
+		return "(uintCodec 8)", nil
+
+	case ssztypes.SszBigIntType:
+		return fmt.Sprintf("(bigIntCodec %s)", limitExpr(desc)), nil
+
+	case ssztypes.SszOptionalType:
+		if desc.ElemDesc == nil {
+			return "", fmt.Errorf("optional without element descriptor")
+		}
+		e, err := CertExpr(desc.ElemDesc)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("(optionalCodec %s)", e), nil
+
+	case ssztypes.SszUnionType:
+		hasNone := desc.SszTypeFlags&ssztypes.SszTypeFlagHasNoneVariant != 0
+		if len(desc.UnionVariants) == 0 && !hasNone {
+			return "", fmt.Errorf("union without variants")
+		}
+		variants, err := unionVariantExprs(desc, CertExpr, "(%d, %s)")
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("(classicUnionCodec %t [%s])", hasNone, strings.Join(variants, ", ")), nil
+
+	case ssztypes.SszTypeWrapperType:
+		// A wrapper is transparent: it encodes and roots as the wrapped type.
+		if desc.ElemDesc == nil {
+			return "", fmt.Errorf("type wrapper without wrapped descriptor")
+		}
+		return CertExpr(desc.ElemDesc)
+
 	default:
-		// Extended and legacy kinds (classic unions, optionals, signed ints,
-		// floats, big ints, custom types, wrappers) have no specification
-		// to certify against; see formal/README.md "Gaps".
+		// Custom types (user-provided methods) have no semantics to certify.
 	}
 
-	return "", fmt.Errorf("unsupported SSZ type %v (certificates cover the spec-defined SSZ surface)", desc.SszType)
+	return "", fmt.Errorf("unsupported SSZ type %v (custom types carry no certifiable semantics)", desc.SszType)
 }
 
 // isBasic reports whether a descriptor denotes an SSZ basic type (uintN or
 // boolean) — the element kinds whose sequences merkleize packed.
 func isBasic(d *ssztypes.TypeDescriptor) bool {
-	switch d.SszType {
-	case ssztypes.SszBoolType, ssztypes.SszUint8Type, ssztypes.SszUint16Type,
-		ssztypes.SszUint32Type, ssztypes.SszUint64Type,
-		ssztypes.SszUint128Type, ssztypes.SszUint256Type:
-		return true
-	default:
-		return false
+	d = unwrap(d)
+	return d.SszType.IsBasic()
+}
+
+// unwrap strips type wrappers, which are transparent to SSZ.
+func unwrap(d *ssztypes.TypeDescriptor) *ssztypes.TypeDescriptor {
+	for d.SszType == ssztypes.SszTypeWrapperType && d.ElemDesc != nil {
+		d = d.ElemDesc
 	}
+	return d
+}
+
+// listCertExpr renders a List[elem, limit] codec: byte lists, packed basic
+// elements, fixed-size composite elements or variable-size elements.
+func listCertExpr(elem *ssztypes.TypeDescriptor, limit string) (string, error) {
+	if unwrap(elem).SszType == ssztypes.SszUint8Type {
+		return fmt.Sprintf("(byteListCodec %s)", limit), nil
+	}
+	e, err := CertExpr(elem)
+	if err != nil {
+		return "", err
+	}
+	if isFixedSize(elem) {
+		if elem.Size <= 0 {
+			return "", fmt.Errorf("fixed-size list element with size %d", elem.Size)
+		}
+		if isBasic(elem) {
+			return fmt.Sprintf("(listPackedCodec %s %d %s (by rfl) (by decide))", e, elem.Size, limit), nil
+		}
+		return fmt.Sprintf("(listFixedCodec %s %d %s (by rfl) (by decide))", e, elem.Size, limit), nil
+	}
+	return fmt.Sprintf("(listVarCodec %s %s)", e, limit), nil
+}
+
+// unionVariantExprs renders a union's variants in selector order with the
+// given translation and per-variant format (selector, expression).
+func unionVariantExprs(desc *ssztypes.TypeDescriptor, tr func(*ssztypes.TypeDescriptor) (string, error), format string) ([]string, error) {
+	selectors := make([]int, 0, len(desc.UnionVariants))
+	for sel := range desc.UnionVariants {
+		selectors = append(selectors, int(sel))
+	}
+	sort.Ints(selectors)
+	variants := make([]string, 0, len(selectors))
+	for _, sel := range selectors {
+		e, err := tr(desc.UnionVariants[uint8(sel)])
+		if err != nil {
+			return nil, fmt.Errorf("union variant %d: %w", sel, err)
+		}
+		variants = append(variants, fmt.Sprintf(format, sel, e))
+	}
+	return variants, nil
 }
 
 // isFixedSize reports whether a descriptor denotes a fixed-size SSZ type
@@ -227,7 +291,7 @@ type CertEntry struct {
 // oracle CLI.
 func WriteCertFile(entries []CertEntry, outputFile string) error {
 	var out strings.Builder
-	out.WriteString("import SszCert.Codec\n\n")
+	out.WriteString("import SszCert.Codec\nimport SszCert.Extended\n\n")
 	out.WriteString("/-! Machine-checked SSZ certificates. Generated by dynssz-certify — do not edit. -/\n\n")
 	out.WriteString("namespace Ssz\n\n")
 	registry := make([]string, 0, len(entries))

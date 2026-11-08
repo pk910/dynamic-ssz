@@ -2,7 +2,14 @@ package harness
 
 import (
 	"fmt"
+	"math"
+	"math/big"
 	"reflect"
+)
+
+var (
+	bigIntType  = reflect.TypeOf(big.Int{})
+	float32Type = reflect.TypeOf(float32(0))
 )
 
 // EqualNormalized compares two Go values structurally, tolerating
@@ -24,7 +31,26 @@ func eqValue(a, b reflect.Value, path string) string {
 	if a.Type() != b.Type() {
 		return fmt.Sprintf("%s: type mismatch (%s vs %s)", path, a.Type(), b.Type())
 	}
+	if a.Type() == bigIntType {
+		x, _ := a.Interface().(big.Int)
+		y, _ := b.Interface().(big.Int)
+		if x.Cmp(&y) != 0 {
+			return fmt.Sprintf("%s: %s != %s", path, x.String(), y.String())
+		}
+		return ""
+	}
 	switch a.Kind() {
+	case reflect.Float32:
+		// Compare bit patterns: NaN payloads and -0 are distinct encodings.
+		x, _ := a.Convert(float32Type).Interface().(float32)
+		y, _ := b.Convert(float32Type).Interface().(float32)
+		if math.Float32bits(x) != math.Float32bits(y) {
+			return fmt.Sprintf("%s: float32 bits %08x != %08x", path, math.Float32bits(x), math.Float32bits(y))
+		}
+	case reflect.Float64:
+		if math.Float64bits(a.Float()) != math.Float64bits(b.Float()) {
+			return fmt.Sprintf("%s: float64 bits %016x != %016x", path, math.Float64bits(a.Float()), math.Float64bits(b.Float()))
+		}
 	case reflect.Bool:
 		if a.Bool() != b.Bool() {
 			return fmt.Sprintf("%s: %v != %v", path, a.Bool(), b.Bool())

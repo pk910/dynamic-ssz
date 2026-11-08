@@ -1,6 +1,7 @@
 package certlib
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -72,7 +73,7 @@ func SpecExpr(desc *ssztypes.TypeDescriptor) (string, error) {
 		if desc.Len <= 0 {
 			return "", fmt.Errorf("vector with non-positive length %d", desc.Len)
 		}
-		if desc.ElemDesc.SszType == ssztypes.SszUint8Type {
+		if unwrap(desc.ElemDesc).SszType == ssztypes.SszUint8Type {
 			return fmt.Sprintf("(.byteVector %d)", desc.Len), nil
 		}
 		e, err := SpecExpr(desc.ElemDesc)
@@ -88,14 +89,26 @@ func SpecExpr(desc *ssztypes.TypeDescriptor) (string, error) {
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasLimit == 0 {
 			return "", fmt.Errorf("list without a declared limit has no SSZ type")
 		}
-		if desc.ElemDesc.SszType == ssztypes.SszUint8Type {
-			return fmt.Sprintf("(.byteList %d)", desc.Limit), nil
+		return listSpecExpr(desc.ElemDesc, desc.Limit)
+
+	case ssztypes.SszOptionalListType:
+		// A pointer encoded as the canonical List[T, 1].
+		if desc.ElemDesc == nil {
+			return "", fmt.Errorf("optional list without element descriptor")
 		}
-		e, err := SpecExpr(desc.ElemDesc)
-		if err != nil {
-			return "", err
+		return listSpecExpr(desc.ElemDesc, 1)
+
+	case ssztypes.SszTypeWrapperType:
+		// A wrapper is transparent: it encodes and roots as the wrapped type.
+		if desc.ElemDesc == nil {
+			return "", fmt.Errorf("type wrapper without wrapped descriptor")
 		}
-		return fmt.Sprintf("(.list %s %d)", e, desc.Limit), nil
+		return SpecExpr(desc.ElemDesc)
+
+	case ssztypes.SszUnionType, ssztypes.SszOptionalType, ssztypes.SszBigIntType,
+		ssztypes.SszInt8Type, ssztypes.SszInt16Type, ssztypes.SszInt32Type, ssztypes.SszInt64Type,
+		ssztypes.SszFloat32Type, ssztypes.SszFloat64Type:
+		return "", fmt.Errorf("%w: %v", ErrNoSpec, desc.SszType)
 
 	case ssztypes.SszProgressiveListType:
 		if desc.ElemDesc == nil {
@@ -150,6 +163,22 @@ func SpecExpr(desc *ssztypes.TypeDescriptor) (string, error) {
 		// Extended and legacy kinds have no specification to certify against.
 	}
 	return "", fmt.Errorf("unsupported SSZ type %v (EthLib covers the spec-defined SSZ surface)", desc.SszType)
+}
+
+// ErrNoSpec marks a type outside the SSZ specification (dynamic-ssz extended
+// types); such types are certified against the in-house model only.
+var ErrNoSpec = errors.New("not an SSZ specification type")
+
+// listSpecExpr renders List[elem, limit]: a byte list for byte elements.
+func listSpecExpr(elem *ssztypes.TypeDescriptor, limit uint64) (string, error) {
+	if unwrap(elem).SszType == ssztypes.SszUint8Type {
+		return fmt.Sprintf("(.byteList %d)", limit), nil
+	}
+	e, err := SpecExpr(elem)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("(.list %s %d)", e, limit), nil
 }
 
 // optLimitExpr renders the optional bound of a progressive collection.

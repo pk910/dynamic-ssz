@@ -7,11 +7,12 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-TYPES="$(grep -o '^def C_[A-Za-z0-9_]* ' lean/SszCert/Certified.lean | sed 's/def C_//; s/ $//' | paste -sd,)"
-[ -n "$TYPES" ] || { echo "no certified types found in lean/SszCert/Certified.lean" >&2; exit 1; }
+# The certified harness types, one per line (harness/certified-types.txt).
+TYPES="$(grep -v '^\s*\(#\|$\)' harness/certified-types.txt | paste -sd,)"
+[ -n "$TYPES" ] || { echo "no certified types listed in harness/certified-types.txt" >&2; exit 1; }
 
 cd harness
-go run github.com/pk910/dynamic-ssz/dynssz-gen -package . -types "$TYPES" -output generated_ssz.go
+go run github.com/pk910/dynamic-ssz/dynssz-gen -with-extended-types -package . -types "$TYPES" -output generated_ssz.go
 go run github.com/pk910/dynamic-ssz/formal/certify -package . -types "$TYPES" \
   -output ../lean/SszCert/Certified.lean \
   -spec-output ../spec/SszSpec/Certified.lean \

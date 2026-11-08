@@ -12,6 +12,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"go/types"
@@ -106,6 +107,9 @@ func run(packagePath string, names []string, outputFile, specOutput, specThms st
 	// Certification needs the full structural descriptor, never a shallow
 	// delegation stub for types that already carry generated methods.
 	parser.NoDelegation = true
+	// dynamic-ssz extended types (signed ints, floats, big ints, optionals,
+	// classic unions) are certified against formal/lean/SszCert/Extended.lean.
+	parser.ExtendedTypes = true
 	parser.AnnotationResolver = annIdx.Resolve
 
 	scope := pkg.Types.Scope()
@@ -147,10 +151,17 @@ func run(packagePath string, names []string, outputFile, specOutput, specThms st
 
 		if specOutput != "" {
 			sexpr, err := certlib.SpecExpr(desc)
-			if err != nil {
+			switch {
+			case errors.Is(err, certlib.ErrNoSpec):
+				// Extended types are certified against the in-house model only.
+				if verbose {
+					log.Printf("%s: no specification declaration (%v)", name, err)
+				}
+			case err != nil:
 				return fmt.Errorf("type %s (spec): %w", name, err)
+			default:
+				spec = append(spec, certlib.SpecEntry{PkgName: pkg.Name, Name: name, Expr: sexpr})
 			}
-			spec = append(spec, certlib.SpecEntry{PkgName: pkg.Name, Name: name, Expr: sexpr})
 		}
 
 		if verbose {
