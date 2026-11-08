@@ -167,4 +167,97 @@ theorem collapse_scope (cx : Ctx C) (hP : ParamsOK cx.P) (s : St C) (l : Layer C
   · simp only [hp1, ne_eq, not_false_eq_true, if_true]
     exact StepOK.refl cx h2 hs2 hn2 ht2
 
+/-! ## Deferral -/
+
+/-- **`deferrableElemChunks`** pads a scope of `n` chunks to the full subtree
+    width `2^depthOf n`. -/
+theorem deferrableWidth_spec (P : Params) (n c : Nat) (h : deferrableWidth P n = some c) :
+    2 ≤ n ∧ n ≤ P.batch ∧ c = 2 ^ depthOf n := by
+  unfold deferrableWidth at h
+  split at h
+  · cases h
+  rename_i hr
+  have h2 : 2 ≤ n := by omega
+  have hb : n ≤ P.batch := by omega
+  have hn0 : n ≠ 0 := by omega
+  have hlo := Nat.log2_self_le hn0
+  have hhi : n < 2 ^ (n.log2 + 1) := Nat.lt_log2_self
+  generalize hm : n.log2 = m at hlo hhi h
+  -- a number strictly between powers of two shares a bit with its predecessor
+  have hbit : 2 ^ m < n → n &&& (n - 1) ≠ 0 := by
+    intro hlt e
+    have hpow : 2 ^ (m + 1) = 2 ^ m + 2 ^ m := by rw [Nat.pow_succ]; omega
+    have e1 : 2 ^ m + (n - 2 ^ m) = n := by omega
+    have e2 : 2 ^ m + (n - 1 - 2 ^ m) = n - 1 := by omega
+    have t1 : (2 ^ m + (n - 2 ^ m)).testBit m = true := by
+      rw [Nat.testBit_two_pow_add_eq, Nat.testBit_lt_two_pow (by omega)]; rfl
+    have t2 : (2 ^ m + (n - 1 - 2 ^ m)).testBit m = true := by
+      rw [Nat.testBit_two_pow_add_eq, Nat.testBit_lt_two_pow (by omega)]; rfl
+    rw [e1] at t1; rw [e2] at t2
+    have := Nat.testBit_and n (n - 1) m
+    rw [e, Nat.zero_testBit, t1, t2] at this
+    cases this
+  split at h
+  · rename_i hz
+    cases h
+    have heq : n = 2 ^ m := by
+      rcases Nat.lt_or_ge (2 ^ m) n with hlt | hge
+      · exact absurd hz (hbit hlt)
+      · omega
+    refine ⟨h2, hb, ?_⟩
+    rw [heq, depthOf_two_pow]
+  · rename_i hz
+    cases h
+    have hlt : 2 ^ m < n := by
+      rcases Nat.lt_or_ge (2 ^ m) n with hlt | hge
+      · exact hlt
+      · exfalso; apply hz
+        have heq : n = 2 ^ m := by omega
+        rw [heq, Nat.and_two_pow_sub_one_eq_mod, Nat.mod_self]
+    refine ⟨h2, hb, ?_⟩
+    rw [depthOf_of_between hlt (by omega)]
+
+/-- **Parking a child's chunks** as the next element of the parent's run. -/
+theorem deferInto_scope (cx : Ctx C) (t : St C) (p : Layer C) (ps : List (Layer C)) (Lp : List C)
+    (elem : List (Cell C)) (c k : Nat) (r : C)
+    (h : t.stack = p :: ps) (hs : ScopeOK cx p Lp) (hinc : p.incremental = true) (ht : TopOK t)
+    (hcond : p.pend = [] ∨ (p.pendC = c ∧ p.tail = []))
+    (he : ∀ x ∈ elem, x.isReady = true) (hel : elem.length = c) (hc : c = 2 ^ k) (hk : 0 < k)
+    (hkb : 2 ^ k ≤ cx.P.batch) (hr : reduceElem cx.H cx.z0 (elem.map Cell.val) = r) :
+    StepOK cx t (t.setTop { p with pendC := c, pend := p.pend ++ [elem] }) p ps (Lp ++ [r]) := by
+  obtain ⟨L1, hL, hb, hpo⟩ := hs
+  have htl : p.tail = [] := by
+    rcases hcond with hc0 | ⟨_, ht0⟩
+    · exact hpo.tail hc0
+    · exact ht0
+  let p' : Layer C := { p with pendC := c, pend := p.pend ++ [elem] }
+  have hsc : ScopeOK cx p' (Lp ++ [r]) := by
+    refine ⟨L1, ?_, hb, ⟨fun e => by simp [p'] at e, ?_, by simp [p', htl], ?_, fun _ => ⟨k, hc, hk, hkb⟩⟩⟩
+    · rw [hL]; simp [pendLeaves, p', htl, hr]
+    · intro e he' x hx
+      rcases List.mem_append.mp he' with he' | he'
+      · exact hpo.ready e he' x hx
+      · simp at he'; rw [he'] at hx; exact he x hx
+    · intro e he'
+      rcases List.mem_append.mp he' with he' | he'
+      · rcases hcond with hc0 | ⟨hpc, _⟩
+        · rw [hc0] at he'; cases he'
+        · show e.length = c; rw [← hpc]; exact hpo.width e he'
+      · simp at he'; rw [he']; exact hel
+  have hlc : p'.cells = p.cells ++ elem := by simp [Layer.cells, p', htl, List.append_assoc]
+  refine ⟨p', ps, St.setTop_stack t p p' ps h, hsc, rfl, (fun hf => by rw [hinc] at hf; cases hf), ?_, rfl,
+    (by rw [St.setTop_base]), St.setTop_hashErr t p', (by rw [St.setTop_below t p p' ps h]),
+    (by rw [St.setTop_below t p p' ps h]; exact HolesSub.refl _)⟩
+  refine ⟨?_, by rw [St.setTop_err]; exact ht.err, fun j hj => by rw [St.setTop_jobs] at hj; exact ht.jobsne j hj,
+    fun j hj => by rw [St.setTop_jobs] at hj; rw [St.setTop_nextJob]; exact ht.ids j hj⟩
+  apply holesOK_setTop t p p' ps h ht.holes p.cells.length (Nat.le_refl _) (by rw [hlc]; simp)
+    (by rw [hlc]; simp)
+  · intro i hi hi'
+    have hi2 : i - p.cells.length < elem.length := by rw [hlc] at hi'; simp at hi'; omega
+    simp only [hlc, List.getElem_append_right hi]
+    exact he _ (List.getElem_mem _)
+  · intro j hj
+    have := job_end_le t ht.holes j hj (ht.jobsne j hj)
+    rw [St.cells_top t p ps h, List.length_append] at this; exact this
+
 end Ssz.Hasher

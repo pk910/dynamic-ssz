@@ -22,15 +22,17 @@ structure ParamsOK (P : Params) : Prop where
   cap : P.cap = 2 ^ P.capDepth
   capDepth_pos : 0 < P.capDepth
   batch_lt_cap : P.batch < P.cap
+  batch_pow : ∃ b, P.batch = 2 ^ b
 
 /-- Go's production thresholds (`hasher/params.go`). -/
-theorem paramsOK_default : ParamsOK ({} : Params) := ⟨by decide, by decide, by decide, by decide, by decide⟩
+theorem paramsOK_default : ParamsOK ({} : Params) :=
+  ⟨by decide, by decide, by decide, by decide, by decide, ⟨8, by decide⟩⟩
 
 /-- The `dynssz_smallhash` thresholds (`hasher/params_small.go`). -/
 theorem paramsOK_small (ac pl r : Nat) :
     ParamsOK { batch := 4, asyncMin := 8, cap := 16, capDepth := 4, active := ac, precollapseLevel := pl, ring := r } :=
   ⟨show 0 < 4 by decide, show 4 % 2 = 0 by decide, show 16 = 2 ^ 4 by decide, show 0 < 4 by decide,
-    show 4 < 16 by decide⟩
+    show 4 < 16 by decide, ⟨2, show 4 = 2 ^ 2 by decide⟩⟩
 
 /-- The calls inside a binary scope. -/
 inductive BinBody : Op C → Prop
