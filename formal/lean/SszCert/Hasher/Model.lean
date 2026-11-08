@@ -403,37 +403,60 @@ def St.uncollapsedAsLeaves (s : St C) (l : Layer C) : St C × Layer C :=
     let s := if l.nodes.any (·.depth ≠ 0) then s.fail "uncollapsed scope with deep nodes" else s
     (s, { l with nodes := l.nodes.map (fun n => { n with depth := 0 }), counted := l.nodes.length })
 
-/-- `maybeCollapseBinary` on the innermost scope. Go locates the depth-`d`
-    group at the position after the counted deeper nodes. -/
+/-- Flag a violated expectation. -/
+def St.failUnless (s : St C) (ok : Bool) (msg : String) : St C := if ok then s else s.fail msg
+
+/-- Number of counted nodes deeper than `d` (Go: the depth-`d` group starts
+    after them). -/
+def deeperCount (d : Nat) (ns : List (Node C)) : Nat := (ns.filter (·.depth > d)).length
+
+/-- Nodes of depth `d` in whole batches. -/
+def batchSize (P : Params) (d : Nat) (ns : List (Node C)) : Nat :=
+  ((ns.filter (·.depth == d)).length / P.batch) * P.batch
+
+/-- The nodes one batch round at depth `d` pairs, located as Go does. -/
+def batchGroup (P : Params) (d : Nat) (ns : List (Node C)) : List (Node C) :=
+  (ns.drop (deeperCount d ns)).take (batchSize P d ns)
+
+/-- One batch round at depth `d`: the whole batches of depth-`d` nodes are
+    hashed in place into nodes one deeper. -/
+def batchStep (cx : Ctx C) (d : Nat) (s : St C) (ns : List (Node C)) : St C × List (Node C) :=
+  (((s.failUnless ((batchGroup cx.P d ns).all (·.depth == d))
+      "batch collapse: depth group not where the counts place it").pairNodes cx (batchGroup cx.P d ns)).1,
+   ns.take (deeperCount d ns) ++ (s.pairNodes cx (batchGroup cx.P d ns)).2 ++
+     (ns.drop (deeperCount d ns)).drop (batchSize cx.P d ns))
+
+/-- Batch rounds from depth `d` up while a depth holds a full batch. -/
+def batchLoop (cx : Ctx C) : Nat → Nat → St C → List (Node C) → St C × List (Node C)
+  | 0, _, s, ns => (s, ns)
+  | fuel + 1, d, s, ns =>
+    if (ns.filter (·.depth == d)).length < cx.P.batch then (s, ns)
+    else batchLoop cx fuel (d + 1) (batchStep cx d s ns).1 (batchStep cx d s ns).2
+
+/-- The batch rounds of `maybeCollapseBinary` on the innermost scope (after
+    its drain): every node becomes counted. -/
+def St.collapseBinaryCore (cx : Ctx C) (s : St C) : St C :=
+  match s.stack with
+  | [] => s
+  | l :: _ =>
+    (batchLoop cx 64 0 (s.uncollapsedAsLeaves l).1 (s.uncollapsedAsLeaves l).2.nodes).1.setTop
+      { (s.uncollapsedAsLeaves l).2 with
+        collapsed := true,
+        nodes := (batchLoop cx 64 0 (s.uncollapsedAsLeaves l).1 (s.uncollapsedAsLeaves l).2.nodes).2,
+        counted := (batchLoop cx 64 0 (s.uncollapsedAsLeaves l).1 (s.uncollapsedAsLeaves l).2.nodes).2.length }
+
+/-- Depth-0 nodes of a scope that count toward a batch (Go's `d0Chunks`). -/
+def d0Chunks (l : Layer C) : Nat :=
+  l.nodes.length - (if l.collapsed then (l.nodes.take l.counted).countP (·.depth ≥ 1) else 0)
+
+/-- `maybeCollapseBinary` on the innermost scope. -/
 def St.collapseBinary (cx : Ctx C) (s : St C) : St C :=
   match s.stack with
   | [] => s
   | l :: _ =>
-    if l.pend ≠ [] then s.fail "binary collapse with a pending run" else
-    let total := l.nodes.length
-    let deep := if l.collapsed then (l.nodes.take l.counted).countP (·.depth ≥ 1) else 0
-    if total - deep < cx.P.batch then s else
-    let s := s.drainFor s.activeStart
-    match s.stack with
-    | [] => s
-    | l :: _ =>
-      let (s, l) := s.uncollapsedAsLeaves l
-      let l := { l with collapsed := true }
-      let rec batches : Nat → Nat → St C → List (Node C) → St C × List (Node C)
-        | 0, _, s, ns => (s, ns)
-        | fuel + 1, d, s, ns =>
-          let cnt := (ns.filter (·.depth == d)).length
-          if cnt < cx.P.batch then (s, ns) else
-          let bc := (cnt / cx.P.batch) * cx.P.batch
-          let deeper := (ns.filter (·.depth > d)).length
-          let before := ns.take deeper
-          let rest := ns.drop deeper
-          let s := if (rest.take bc).all (·.depth == d) then s
-                   else s.fail "batch collapse: depth group not where the counts place it"
-          let (s, paired) := s.pairNodes cx (rest.take bc)
-          batches fuel (d + 1) s (before ++ paired ++ rest.drop bc)
-      let (s, ns) := batches 64 0 s l.nodes
-      s.setTop { l with nodes := ns, counted := ns.length }
+    if l.pend ≠ [] then s.fail "binary collapse with a pending run"
+    else if d0Chunks l < cx.P.batch then s
+    else (s.drainFor s.activeStart).collapseBinaryCore cx
 
 /-- `precollapseCapRun`: turn cap-wide spans of the trailing depth-0 run
     into cap-depth nodes reduced in the background. Returns whether jobs
