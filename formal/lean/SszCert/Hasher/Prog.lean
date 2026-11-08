@@ -1084,4 +1084,80 @@ theorem precollapse_top (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer 
     rw [failUnless_stack] at h2
     exact hT l2 ls2 h2
 
+/-! ## The drain and the reinitialization -/
+
+/-- The drain before a progressive collapse or close: the innermost scope
+    loses all holes. -/
+theorem drainTop_any (s : St C) (l : Layer C) (ls : List (Layer C)) (h : s.stack = l :: ls) (ht : TopOK s) :
+    ∃ l1 ls1, (s.drainFor s.topStart).stack = l1 :: ls1 ∧ LayerLE l l1 ∧ (∀ c ∈ l1.cells, c.isReady = true) ∧
+      TopOK (s.drainFor s.topStart) ∧ ls1.map Layer.erase = ls.map Layer.erase ∧
+      (s.drainFor s.topStart).base.map Cell.erase = s.base.map Cell.erase ∧
+      (s.drainFor s.topStart).hashErr = s.hashErr ∧ (s.drainFor s.topStart).below.length = s.below.length ∧
+      HolesSub s.below (s.drainFor s.topStart).below := by
+  obtain ⟨hv, ht2, hh2, _⟩ := drainFor_spec s ht s.topStart
+  obtain ⟨l2, ls2, hs2, hle, hle2⟩ := LayerLE.of_view hv h (drainFor_holesSub s ht.holes _)
+  have htop : s.topStart = s.below.length := St.topStart_eq s l ls h
+  have hbl := below_length_of_view hv h hs2
+  have hr2 : ∀ c ∈ l2.cells, c.isReady = true := by
+    intro c hc
+    obtain ⟨i, hi, rfl⟩ := List.getElem_of_mem hc
+    have hi' : (s.drainFor s.topStart).below.length + i < (s.drainFor s.topStart).cells.length := by
+      rw [St.cells_top _ l2 ls2 hs2, List.length_append]; omega
+    have := drainFor_no_holes s ht.holes s.topStart _ (by omega) hi'
+    have hget : (s.drainFor s.topStart).cells[(s.drainFor s.topStart).below.length + i]? = some (l2.cells[i]) := by
+      rw [St.cells_top _ l2 ls2 hs2, List.getElem?_append_right (by omega), Nat.add_sub_cancel_left,
+        List.getElem?_eq_getElem hi]
+    rw [List.getElem?_eq_getElem hi'] at hget
+    simp only [Option.some.injEq] at hget
+    rw [← hget]; exact this
+  exact ⟨l2, ls2, hs2, hle, hr2, ht2, hle2, congrArg Prod.fst hv, hh2, hbl,
+    holesSub_below hv h hs2 (drainFor_holesSub s ht.holes _)⟩
+
+theorem map_depth_zero (ns : List (Node C)) (h : ∀ n ∈ ns, n.depth = 0) :
+    ns.map (fun n => { n with depth := 0 }) = ns := by
+  induction ns with
+  | nil => rfl
+  | cons n ns ih =>
+    simp only [List.map_cons]
+    rw [ih (fun m hm => h m (List.mem_cons_of_mem _ hm))]
+    have : n.depth = 0 := h n (by simp)
+    cases n; simp_all
+
+/-- The layer `progInit` installs. -/
+theorem progInit_eq (d : St C) (l : Layer C) (ls : List (Layer C)) (h : d.stack = l :: ls)
+    (hleaves : l.collapsed = false → l.level = 0 ∧ ∀ n ∈ l.nodes, n.depth = 0) (hpl : l.prog.length = l.level) :
+    d.progInit l = d.setTop { l with counted := l.nodes.length } := by
+  unfold St.progInit
+  have hnf : ¬ (l.collapsed = false ∧ (l.prog ≠ [] ∨ l.level ≠ 0)) := by
+    intro ⟨hc, hp⟩
+    obtain ⟨h0, _⟩ := hleaves hc
+    rcases hp with hp | hp
+    · exact hp (List.eq_nil_of_length_eq_zero (by omega))
+    · exact hp h0
+  simp only [Bool.not_eq_true'] at hnf ⊢
+  rw [if_neg hnf]
+  unfold St.uncollapsedAsLeaves
+  cases hc : l.collapsed
+  · obtain ⟨_, hd0⟩ := hleaves hc
+    simp only [Bool.false_eq_true, if_false]
+    rw [if_neg (by intro hany; obtain ⟨n, hn, hd⟩ := List.any_eq_true.mp hany; simp [hd0 n hn] at hd),
+      map_depth_zero l.nodes hd0]
+  · rfl
+
+/-- **`progInit`** on a drained progressive scope: counts reinitialized,
+    ready for the rounds. -/
+theorem progInit_ok (cx : Ctx C) (d : St C) (l : Layer C) (ls : List (Layer C)) (G : List (List C)) (Lb : List C)
+    (h : d.stack = l :: ls) (hp : ProgOK cx l G Lb) (hr : ∀ c ∈ l.cells, c.isReady = true) (hpend : l.pend = [])
+    (ht : TopOK d) :
+    (d.progInit l).stack = { l with counted := l.nodes.length } :: ls ∧
+      RoundP cx { l with counted := l.nodes.length } G Lb ∧ TopOK (d.progInit l) ∧
+      (d.progInit l).below = d.below ∧ (d.progInit l).base = d.base ∧ (d.progInit l).hashErr = d.hashErr := by
+  rw [progInit_eq d l ls h hp.leaves (by rw [hp.groups.1, ← hp.level])]
+  have htl : l.tail = [] := hp.pendOK.tail hpend
+  refine ⟨St.setTop_stack d l _ ls h, ⟨hp.prog, hp.inc, hp.nolegacy, hpend, htl, hp.groups, hp.level, hp.cov,
+    hp.narrow, ?_, rfl, hp.shallow⟩, topOK_setTop_same d l _ ls h ht rfl, St.setTop_below d l _ ls h,
+    St.setTop_base d _, St.setTop_hashErr d _⟩
+  intro n hn; apply hr; simp only [Layer.cells, List.mem_append, nodeCells, List.mem_map]
+  exact Or.inl (Or.inl (Or.inr ⟨n, hn, rfl⟩))
+
 end Ssz.Hasher
