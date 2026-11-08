@@ -1,0 +1,784 @@
+/-!
+# Executable model of dynamic-ssz's incremental and async hasher
+
+A transcription of `hasher/hasher.go` and `hasher/async.go` at chunk
+granularity. Every function of the Go hasher that shapes the tree — scope
+opening and closing, the `Collapse` hint, binary batch collapse,
+progressive group finalization and compaction, `collapseAllDepths` with its
+odd-count padding and limit expansion, deferred child batching
+(`flushPending`, the deferral branch of `Merkleize` with its power-of-two
+padding), and the async paths (`flushPendingAsync`, `precollapseCapRun`,
+async group reductions, `drainJobs`/`drainJobsFor`, ring-full drains) — has a
+counterpart here with the same control flow and the same thresholds.
+
+What is abstracted:
+
+* **Hash values.** The model is generic in the chunk type `C`, the pair hash
+  `H`, the zero chunk and the mix-in words. Theorems about it hold for every
+  hash function, so they say nothing about SHA-256 and need nothing from it.
+* **Byte offsets.** The Go hasher tracks one byte buffer and byte offsets;
+  the model keeps each open scope's region as structured lists (completed
+  progressive roots, collapse nodes with their depths, the deferred run, the
+  raw tail) whose concatenation is that region, and the absolute chunk
+  position of every cell is computed from them. Holes of in-flight jobs are
+  recorded at absolute positions exactly as Go's `dstOff`, and a drain writes
+  the results there: a job whose hole moved would land on the wrong cell, as
+  in Go, and the model flags it.
+* **Partial chunks.** Packed values are appended as whole chunks once they
+  fill one; Go carries a partial tail opaquely through every reduction.
+
+The Go hasher and this model are held together by a per-operation state
+comparison (`hasher/formal_trace_test.go`); the proofs (`Hasher/Proofs`)
+show the model always computes the specified root.
+-/
+
+namespace Ssz.Hasher
+
+/-- The thresholds of the Go hasher (`hasher/params.go`). -/
+structure Params where
+  /-- `incrementalBatchSize`: same-depth node count that triggers a batch. -/
+  batch : Nat := 256
+  /-- `asyncMinChunks`: smallest group reduced in the background. -/
+  asyncMin : Nat := 8192
+  /-- `lazyFlushChunks`: job width (a power of two). -/
+  cap : Nat := 32768
+  /-- `asyncCapDepth`: `log2 cap`. -/
+  capDepth : Nat := 15
+  /-- `asyncActiveChunks`: progressive active region that triggers a round. -/
+  active : Nat := 131072
+  /-- `asyncPrecollapseLevel`: lowest progressive level whose groups are
+      multiples of the cap. -/
+  precollapseLevel : Nat := 8
+  /-- Job ring size (twice the worker count): a full ring drains its oldest. -/
+  ring : Nat := 8
+  deriving Repr
+
+/-- A chunk of the buffer: a value, or one chunk of an in-flight job's hole. -/
+inductive Cell (C : Type) where
+  | ready (v : C)
+  | hole (job idx : Nat)
+  deriving Repr, BEq, Inhabited
+
+/-- A node of a collapse region: a subtree root at the given depth. -/
+structure Node (C : Type) where
+  depth : Nat
+  cell : Cell C
+  deriving Repr, BEq, Inhabited
+
+/-- One open SSZ object scope (`treeLayer`). The region is
+    `prog ++ nodes ++ flatten pend ++ tail`. -/
+structure Layer (C : Type) where
+  incremental : Bool
+  legacy : Bool
+  progressive : Bool
+  packed : Bool
+  collapsed : Bool := false
+  /-- Completed progressive group roots (`progressiveCount` of them). -/
+  prog : List (Cell C) := []
+  /-- `progressiveLevel`. -/
+  level : Nat := 0
+  /-- Collapse region, deepest first. The first `counted` are reflected in
+      Go's `counts`; the rest are depth-0 chunks appended since. -/
+  nodes : List (Node C) := []
+  counted : Nat := 0
+  /-- Deferred child subtrees (`pendCount` of `pendElemChunks` chunks). -/
+  pendC : Nat := 0
+  pend : List (List (Cell C)) := []
+  /-- Chunks appended after the deferred run. -/
+  tail : List (Cell C) := []
+  deriving Repr, Inhabited
+
+/-- An in-flight background reduction: its results, and where its hole is. -/
+structure Job (C : Type) where
+  id : Nat
+  dst : Nat
+  out : List C
+  deriving Repr
+
+/-- Hasher state. `stack` lists open scopes innermost first; `base` holds
+    the chunks outside every scope. -/
+structure St (C : Type) where
+  base : List (Cell C) := []
+  stack : List (Layer C) := []
+  /-- In-flight jobs, oldest first (the ring). -/
+  jobs : List (Job C) := []
+  nextJob : Nat := 0
+  /-- `jobMaxEnd`: end of the highest hole since the last full drain. -/
+  jobMaxEnd : Nat := 0
+  /-- A protocol violation of the model: reading or moving a hole, or a
+      state the Go code assumes impossible. The proofs show it stays `none`. -/
+  err : Option String := none
+  /-- `hashErr`: an error Go records with `setHashErr` (shape mismatch,
+      chunk limit) and reports at `HashRoot`. -/
+  hashErr : Option String := none
+  deriving Repr
+
+/-- Hash function and words the reduction uses. -/
+structure Ctx (C : Type) where
+  H : C → C → C
+  /-- The zero chunk. -/
+  z0 : C
+  /-- Little-endian 32-byte word of a number (length and selector mix-ins). -/
+  word : Nat → C
+  P : Params
+
+variable {C : Type}
+
+/-! ## Values -/
+
+/-- Root of the all-zero subtree of depth `d` (`zeroHashes[d]`). -/
+def zeroH (H : C → C → C) (z0 : C) : Nat → C
+  | 0 => z0
+  | d + 1 => H (zeroH H z0 d) (zeroH H z0 d)
+
+/-- One reduction level: hash consecutive pairs. -/
+def pairUp (H : C → C → C) : List C → List C
+  | a :: b :: rest => H a b :: pairUp H rest
+  | _ => []
+
+/-- `getDepth`: the depth of a tree holding `n` leaves. -/
+def depthOf (n : Nat) : Nat :=
+  if n ≤ 1 then 0 else Nat.log2 (n - 1) + 1
+
+/-- One level of `merkleizeImpl`: pad an odd layer with the zero hash of
+    that level, then pair. -/
+def levelUp (H : C → C → C) (z : C) (xs : List C) : List C :=
+  pairUp H (if xs.length % 2 = 1 then xs ++ [z] else xs)
+
+/-- Iterate `levelUp` from level `i` for `n` levels. -/
+def levelsUp (H : C → C → C) (z0 : C) : Nat → Nat → List C → List C
+  | 0, _, xs => xs
+  | n + 1, i, xs => levelsUp H z0 n (i + 1) (levelUp H (zeroH H z0 i) xs)
+
+/-- `merkleizeImpl`: binary root of chunks with a chunk limit (`0` = as
+    many as there are). Reports a limit overflow (reduced at the depth the
+    chunks need, as Go does). -/
+def merkleizeImpl (H : C → C → C) (z0 : C) (xs : List C) (limit : Nat) : C × Bool :=
+  let count := xs.length
+  let limit0 := if limit = 0 then count else limit
+  let over := decide (count > limit0)
+  let lim := if over then count else limit0
+  if lim = 0 then (z0, over)
+  else if lim = 1 then ((xs.head?.getD z0), over)
+  else
+    let d := depthOf lim
+    if xs = [] then (zeroH H z0 d, over)
+    else ((levelsUp H z0 d 0 xs).head?.getD z0, over)
+
+/-- `merkleizeProgressiveImpl`: progressive root (EIP-7916 spine). -/
+def progImpl (H : C → C → C) (z0 : C) : Nat → Nat → List C → C
+  | 0, _, _ => z0
+  | fuel + 1, depth, xs =>
+    if xs = [] then z0
+    else
+      let base := 2 ^ depth
+      let left := (merkleizeImpl H z0 (xs.take base) base).1
+      let rest := xs.drop base
+      let right := if rest = [] then z0 else progImpl H z0 fuel (depth + 2) rest
+      H left right
+
+/-! ## Cells -/
+
+def Cell.isReady : Cell C → Bool
+  | .ready _ => true
+  | .hole _ _ => false
+
+/-- The values of cells, if none is a hole. -/
+def readyVals : List (Cell C) → Option (List C)
+  | [] => some []
+  | .ready v :: cs => (readyVals cs).map (v :: ·)
+  | .hole _ _ :: _ => none
+
+def nodeCells (ns : List (Node C)) : List (Cell C) := ns.map (·.cell)
+
+/-- A layer's region, in buffer order. -/
+def Layer.cells (l : Layer C) : List (Cell C) :=
+  l.prog ++ nodeCells l.nodes ++ l.pend.flatten ++ l.tail
+
+/-- The whole buffer: base, then scopes outermost first. -/
+def St.cells (s : St C) : List (Cell C) :=
+  s.base ++ (s.stack.reverse.map Layer.cells).flatten
+
+/-- Absolute chunk position where the innermost scope's region begins. -/
+def St.topStart (s : St C) : Nat :=
+  s.base.length + ((s.stack.drop 1).reverse.map (fun l => l.cells.length)).sum
+
+/-- Absolute position where the innermost scope's active region begins
+    (after its progressive roots). -/
+def St.activeStart (s : St C) : Nat :=
+  s.topStart + (match s.stack with | l :: _ => l.prog.length | [] => 0)
+
+def St.fail (s : St C) (msg : String) : St C :=
+  match s.err with
+  | none => { s with err := some msg }
+  | some _ => s
+
+def St.setHashErr (s : St C) (msg : String) : St C :=
+  match s.hashErr with
+  | none => { s with hashErr := some msg }
+  | some _ => s
+
+/-! ## Draining -/
+
+/-- Write `vals` over cells starting at position `pos` of `cs`, requiring
+    each overwritten cell to be the expected hole `(job, i)`. Returns the
+    updated cells and whether every target was that hole. -/
+def writeHole (job : Nat) : Nat → List C → List (Cell C) → List (Cell C) × Bool
+  | _, [], cs => (cs, true)
+  | _, _ :: _, [] => ([], false)
+  | 0, v :: vs, c :: cs =>
+    let ok := match c with | .hole j _ => j == job | _ => false
+    let (rest, ok') := writeHole job 0 vs cs
+    (.ready v :: rest, ok && ok')
+  | p + 1, vs, c :: cs =>
+    let (rest, ok) := writeHole job p vs cs
+    (c :: rest, ok)
+
+/-- Split a flat cell list back into a layer's region structure. -/
+def Layer.setCells (l : Layer C) (cs : List (Cell C)) : Layer C :=
+  let np := l.prog.length
+  let nn := l.nodes.length
+  let prog := cs.take np
+  let rest := cs.drop np
+  let nodes := (l.nodes.zip (rest.take nn)).map (fun (n, c) => { n with cell := c })
+  let rest := rest.drop nn
+  let rec splitPend : List (List (Cell C)) → List (Cell C) → List (List (Cell C)) × List (Cell C)
+    | [], r => ([], r)
+    | e :: es, r =>
+      let (es', r') := splitPend es (r.drop e.length)
+      (r.take e.length :: es', r')
+  let (pend, tail) := splitPend l.pend rest
+  { l with prog := prog, nodes := nodes, pend := pend, tail := tail }
+
+/-- Replace the whole buffer, keeping the region structure. -/
+def St.setCells (s : St C) (cs : List (Cell C)) : St C :=
+  let nb := s.base.length
+  let rec go : List (Layer C) → List (Cell C) → List (Layer C)
+    | [], _ => []
+    | l :: ls, r => l.setCells (r.take l.cells.length) :: go ls (r.drop l.cells.length)
+  { s with base := cs.take nb, stack := (go s.stack.reverse (cs.drop nb)).reverse }
+
+/-- Finish the oldest job: write its results into its hole. -/
+def St.drainOldest (s : St C) : St C :=
+  match s.jobs with
+  | [] => s
+  | j :: js =>
+    let (cs, ok) := writeHole j.id j.dst j.out s.cells
+    let s' := { s.setCells cs with jobs := js }
+    if ok then s' else s'.fail s!"job {j.id}: hole at {j.dst} moved before its drain"
+
+/-- `drainJobs`. -/
+def St.drainAll (s : St C) : St C :=
+  let rec go : Nat → St C → St C
+    | 0, s => s
+    | n + 1, s => go n s.drainOldest
+  { go s.jobs.length s with jobMaxEnd := 0 }
+
+/-- `drainJobsFor(indx)`: drain everything when a hole can lie at or after
+    `indx`. -/
+def St.drainFor (s : St C) (indx : Nat) : St C :=
+  if s.jobs ≠ [] ∧ indx < s.jobMaxEnd then s.drainAll else s
+
+/-! ## Layer access -/
+
+def St.top? (s : St C) : Option (Layer C) := s.stack.head?
+
+def St.setTop (s : St C) (l : Layer C) : St C :=
+  match s.stack with
+  | _ :: ls => { s with stack := l :: ls }
+  | [] => s
+
+/-- Append a cell at the end of the buffer (the innermost region's tail). -/
+def St.push (s : St C) (c : Cell C) : St C :=
+  match s.stack with
+  | [] => { s with base := s.base ++ [c] }
+  | l :: ls =>
+    if l.pend = [] then { s with stack := { l with nodes := l.nodes ++ [⟨0, c⟩] } :: ls }
+    else { s with stack := { l with tail := l.tail ++ [c] } :: ls }
+
+/-- Read the values of cells, flagging a hole. -/
+def St.vals (s : St C) (cs : List (Cell C)) (what : String) : St C × List C :=
+  match readyVals cs with
+  | some vs => (s, vs)
+  | none => (s.fail s!"{what}: read a hole", [])
+
+/-! ## Jobs -/
+
+/-- `enqueueReduce`: claim a ring slot (draining the oldest when the ring is
+    full), snapshot the input (it must hold no hole), and return the holes
+    that replace it. The job's results are fixed at enqueue: the worker
+    reduces a private copy. -/
+def St.enqueue (cx : Ctx C) (s : St C) (input : List (Cell C)) (outChunks dst : Nat) :
+    St C × List (Cell C) :=
+  let s := if s.jobs.length ≥ cx.P.ring then s.drainOldest else s
+  let (s, vs) := s.vals input "job input"
+  let rec reduce : Nat → List C → List C
+    | 0, xs => xs
+    | fuel + 1, xs => if xs.length > outChunks then reduce fuel (pairUp cx.H xs) else xs
+  let out := reduce input.length vs
+  let id := s.nextJob
+  let holes := (List.range outChunks).map (fun k => Cell.hole id k)
+  let s := { s with jobs := s.jobs ++ [⟨id, dst, out⟩], nextJob := id + 1,
+                    jobMaxEnd := max s.jobMaxEnd (dst + outChunks) }
+  (s, holes)
+
+/-! ## Reductions on node lists -/
+
+/-- Hash consecutive pairs of nodes of one depth into nodes one deeper. -/
+def St.pairNodes (cx : Ctx C) (s : St C) (ns : List (Node C)) : St C × List (Node C) :=
+  let (s, vs) := s.vals (nodeCells ns) "pair"
+  (s, (pairUp cx.H vs).map (fun v => ⟨(ns.head?.map (·.depth)).getD 0 + 1, .ready v⟩))
+
+/-- Number of nodes of depth `d` among the first `k` nodes (Go's counts). -/
+def countAt (ns : List (Node C)) (k d : Nat) : Nat :=
+  ((ns.take k).filter (·.depth == d)).length
+
+def maxDepthOf (ns : List (Node C)) : Nat := ns.foldl (fun m n => max m n.depth) 0
+
+/-- Leaves covered by nodes. -/
+def leavesOf (ns : List (Node C)) : Nat := (ns.map (fun n => 2 ^ n.depth)).sum
+
+/-- `collapseAllDepths`: reduce a node list to one root, padding odd
+    lowest-depth groups with the zero hash of that depth, then expand to the
+    depth `limit` needs (`0` = none). Go operates on the last `count`
+    cells, the lowest-depth group of a deepest-first region. -/
+def St.collapseAll (cx : Ctx C) (s : St C) (ns : List (Node C)) (limit : Nat)
+    (live : Bool := false) : St C × Cell C :=
+  let chunks := leavesOf ns
+  let s := if limit > 0 ∧ chunks > limit then s.setHashErr "chunk limit" else s
+  let rec loop : Nat → St C → List (Node C) → St C × List (Node C)
+    | 0, s, ns => (s.fail "collapseAllDepths: no progress", ns)
+    | fuel + 1, s, ns =>
+      match ns.map (·.depth) |>.min? with
+      | none => (s, ns)
+      | some low =>
+        let cnt := (ns.filter (·.depth == low)).length
+        if cnt = 1 ∧ ns.all (fun n => n.depth == low || n.depth < low) then (s, ns)
+        else
+          -- Go writes the zero pad at `bufEnd`: a live cell when more of the
+          -- region follows the reduced span (progressive group rounds).
+          let s := if cnt % 2 = 1 ∧ live then s.fail "collapseAllDepths: zero pad over a live cell" else s
+          let ns := if cnt % 2 = 1 then ns ++ [⟨low, .ready (zeroH cx.H cx.z0 low)⟩] else ns
+          let cnt := if cnt % 2 = 1 then cnt + 1 else cnt
+          let keep := ns.take (ns.length - cnt)
+          let grp := ns.drop (ns.length - cnt)
+          if grp.all (·.depth == low) then
+            let (s, paired) := s.pairNodes cx grp
+            loop fuel s (keep ++ paired)
+          else (s.fail "collapseAllDepths: lowest group not at the end", ns)
+  let (s, ns) := loop (2 * ns.length + 64) s ns
+  match ns with
+  | [n] =>
+    if limit > 0 then
+      let target := depthOf limit
+      let s := if n.depth < target ∧ live then s.fail "collapseAllDepths: expansion over a live cell" else s
+      let (s, vs) := s.vals [n.cell] "expand"
+      let v := (List.range (target - n.depth)).foldl
+        (fun acc i => cx.H acc (zeroH cx.H cx.z0 (n.depth + i))) (vs.head?.getD cx.z0)
+      (s, .ready v)
+    else (s, n.cell)
+  | _ => (s.fail "collapseAllDepths: did not reduce to one node", .ready cx.z0)
+
+/-- Treat every node of an uncollapsed scope as depth 0, as Go does when it
+    (re)initializes counts from the buffer; a deeper node there is an
+    impossible state, flagged. -/
+def St.uncollapsedAsLeaves (s : St C) (l : Layer C) : St C × Layer C :=
+  if l.collapsed then (s, { l with counted := l.nodes.length })
+  else
+    let s := if l.nodes.any (·.depth ≠ 0) then s.fail "uncollapsed scope with deep nodes" else s
+    (s, { l with nodes := l.nodes.map (fun n => { n with depth := 0 }), counted := l.nodes.length })
+
+/-- `maybeCollapseBinary` on the innermost scope. Go locates the depth-`d`
+    group at the position after the counted deeper nodes. -/
+def St.collapseBinary (cx : Ctx C) (s : St C) : St C :=
+  match s.stack with
+  | [] => s
+  | l :: _ =>
+    if l.pend ≠ [] then s.fail "binary collapse with a pending run" else
+    let total := l.nodes.length
+    let deep := if l.collapsed then (l.nodes.take l.counted).countP (·.depth ≥ 1) else 0
+    if total - deep < cx.P.batch then s else
+    let s := s.drainFor s.activeStart
+    match s.stack with
+    | [] => s
+    | l :: _ =>
+      let (s, l) := s.uncollapsedAsLeaves l
+      let l := { l with collapsed := true }
+      let rec batches : Nat → Nat → St C → List (Node C) → St C × List (Node C)
+        | 0, _, s, ns => (s, ns)
+        | fuel + 1, d, s, ns =>
+          let cnt := (ns.filter (·.depth == d)).length
+          if cnt < cx.P.batch then (s, ns) else
+          let bc := (cnt / cx.P.batch) * cx.P.batch
+          let deeper := (ns.filter (·.depth > d)).length
+          let before := ns.take deeper
+          let rest := ns.drop deeper
+          let s := if (rest.take bc).all (·.depth == d) then s
+                   else s.fail "batch collapse: depth group not where the counts place it"
+          let (s, paired) := s.pairNodes cx (rest.take bc)
+          batches fuel (d + 1) s (before ++ paired ++ rest.drop bc)
+      let (s, ns) := batches 64 0 s l.nodes
+      s.setTop { l with nodes := ns, counted := ns.length }
+
+/-- `precollapseCapRun`: turn cap-wide spans of the trailing depth-0 run
+    into cap-depth nodes reduced in the background. Returns whether jobs
+    were emitted. -/
+def St.precollapse (cx : Ctx C) (s : St C) : St C × Bool :=
+  match s.stack with
+  | [] => (s, false)
+  | l :: _ =>
+    let (s, l) := s.uncollapsedAsLeaves l
+    let s := s.setTop l
+    if l.nodes.any (fun n => n.depth ≠ 0 ∧ n.depth ≠ cx.P.capDepth) then (s, false) else
+    let ncap := (l.nodes.filter (·.depth == cx.P.capDepth)).length
+    let caps := l.nodes.take ncap
+    let rest := l.nodes.drop ncap
+    let s := if caps.all (·.depth == cx.P.capDepth) ∧ rest.all (·.depth == 0) then s
+             else s.fail "precollapse: cap nodes not where the counts place them"
+    -- Go compacts after every job, so a drain triggered by the next enqueue
+    -- (ring full) finds the earlier holes in place: update per job.
+    let rec go : Nat → St C → Layer C → Nat → Nat → St C × Bool
+      | 0, s, _, _, _ => (s, false)
+      | fuel + 1, s, l, ncap, pos =>
+        let rest := l.nodes.drop ncap
+        if rest.length < cx.P.cap then (s, false) else
+        let (s, holes) := s.enqueue cx (nodeCells (rest.take cx.P.cap)) 1 pos
+        -- the enqueue may have drained: re-read the layer
+        let l := (s.stack.head?).getD l
+        let caps := (l.nodes.take ncap) ++ holes.map (fun c => ⟨cx.P.capDepth, c⟩)
+        let nodes := caps ++ (l.nodes.drop ncap).drop cx.P.cap
+        let l := { l with nodes := nodes, counted := nodes.length, collapsed := true }
+        let s := s.setTop l
+        let (s, _) := go fuel s l (ncap + 1) (pos + 1)
+        (s, true)
+    go (rest.length + 1) s l ncap (s.activeStart + ncap)
+
+/-- Reduce a deferred element (a power-of-two run of chunks) to its root. -/
+def reduceElem (H : C → C → C) (z0 : C) (xs : List C) : C :=
+  let rec go : Nat → List C → C
+    | 0, xs => xs.head?.getD z0
+    | fuel + 1, xs => match xs with
+      | [x] => x
+      | _ => go fuel (pairUp H xs)
+  go xs.length xs
+
+/-- `flushPending` (synchronous): every deferred element becomes one root;
+    the raw tail moves down behind them. -/
+def St.flushSync (cx : Ctx C) (s : St C) : St C :=
+  match s.stack with
+  | [] => s
+  | l :: _ =>
+    if l.pend = [] then s else
+    let (s, roots) := l.pend.foldl (fun (acc : St C × List C) e =>
+      let (s, vs) := acc.1.vals e "flush"
+      (s, acc.2 ++ [reduceElem cx.H cx.z0 vs])) (s, [])
+    s.setTop { l with nodes := l.nodes ++ roots.map (fun v => ⟨0, .ready v⟩) ++ l.tail.map (fun c => ⟨0, c⟩),
+                      pend := [], pendC := 0, tail := [] }
+
+/-- `asyncRootCompatible`. -/
+def asyncRootCompatible (l : Layer C) (nodeDepth : Nat) : Bool :=
+  if !l.collapsed then l.nodes.isEmpty
+  else (l.nodes.take l.counted).all (fun n => n.depth ≥ nodeDepth) && l.nodes.length == l.counted
+
+/-- `flushPendingAsync`: cap-wide prefixes of the deferred run become
+    background jobs. Returns whether any job was emitted. -/
+def St.flushAsync (cx : Ctx C) (s : St C) : St C × Bool :=
+  match s.stack with
+  | [] => (s, false)
+  | l :: _ =>
+    let c := l.pendC
+    let batchElems := cx.P.cap / c
+    let nodeDepth := Nat.log2 batchElems
+    let rec go : Nat → St C → Bool → St C × Bool
+      | 0, s, e => (s, e)
+      | fuel + 1, s, e =>
+        let l := (s.stack.head?).getD l
+        if l.pend.length < batchElems then (s, e) else
+        let start := s.activeStart + (nodeCells l.nodes).length
+        let input := (l.pend.take batchElems).flatten
+        if l.progressive then
+          let (s, holes) := s.enqueue cx input batchElems start
+          let l := (s.stack.head?).getD l
+          let s := s.setTop { l with nodes := l.nodes ++ holes.map (fun h => ⟨0, h⟩), pend := l.pend.drop batchElems }
+          go fuel s true
+        else if !asyncRootCompatible l nodeDepth then (s, e) else
+          let (s, holes) := s.enqueue cx input 1 start
+          let l := (s.stack.head?).getD l
+          let l := if l.collapsed then l else { l with collapsed := true, nodes := [], counted := 0 }
+          let nodes := l.nodes ++ holes.map (fun h => ⟨nodeDepth, h⟩)
+          let s := s.setTop { l with nodes := nodes, counted := nodes.length, pend := l.pend.drop batchElems }
+          go fuel s true
+    let (s, emitted) := go (l.pend.length + 1) s false
+    let l := (s.stack.head?).getD l
+    let l := if l.pend = [] then { l with pendC := 0, nodes := l.nodes ++ l.tail.map (fun c => ⟨0, c⟩), tail := [] } else l
+    (s.setTop l, emitted)
+
+/-- `flushPending(layer, allowAsync)` on the innermost scope. -/
+def St.flush (cx : Ctx C) (s : St C) (allowAsync async : Bool) : St C :=
+  match s.stack with
+  | [] => s
+  | l :: _ =>
+    let c := l.pendC
+    if allowAsync ∧ l.pend ≠ [] ∧ c > 0 ∧ c ≤ cx.P.cap ∧ c &&& (c - 1) = 0 ∧ async then
+      let (s', emitted) := s.flushAsync cx
+      if emitted then s' else s.flushSync cx
+    else s.flushSync cx
+
+/-- Consume exactly `base` leaves from the front of the node list, by Go's
+    depth-greedy count: returns the number of nodes taken. -/
+def consumeCount (ns : List (Node C)) (base : Nat) : Nat :=
+  let md := maxDepthOf ns
+  let rec byDepth : Nat → Nat → Nat → Nat × Nat
+    | 0, consumed, k => (consumed, k)
+    | fuel + 1, consumed, k =>
+      let d := fuel
+      let avail := (ns.filter (·.depth == d)).length
+      let rec take : Nat → Nat → Nat → Nat × Nat
+        | 0, c, k => (c, k)
+        | f + 1, c, k => if c + 2 ^ d ≤ base then take f (c + 2 ^ d) (k + 1) else (c, k)
+      let (c', k') := take avail consumed k
+      if c' = base then (c', k') else byDepth fuel c' k'
+  (byDepth (md + 1) 0 0).2
+
+/-- `maybeCollapseProgressive` on the innermost scope. -/
+def St.collapseProgressive (cx : Ctx C) (s : St C) (async : Bool) : St C :=
+  let s := s.drainFor s.topStart
+  match s.stack with
+  | [] => s
+  | l :: _ =>
+    -- Go resets progressiveCount/Level of an uncollapsed scope: it must have none.
+    let s := if !l.collapsed ∧ (l.prog ≠ [] ∨ l.level ≠ 0) then s.fail "uncollapsed progressive scope with roots" else s
+    let (s, l) := s.uncollapsedAsLeaves l
+    let s := s.setTop l
+    let (s, pre) := if async ∧ l.level ≥ cx.P.precollapseLevel then s.precollapse cx else (s, false)
+    if pre then s else
+    match s.stack with
+    | [] => s
+    | l :: _ =>
+    let rec rounds : Nat → St C → Layer C → Bool → St C × Layer C × Bool
+      | 0, s, l, f => (s, l, f)
+      | fuel + 1, s, l, f =>
+        let base := 4 ^ l.level
+        if leavesOf (l.nodes.take l.counted) < base then (s, l, f) else
+        let k := consumeCount (l.nodes.take l.counted) base
+        if k = 0 then (s, l, f) else
+        let grp := l.nodes.take k
+        let grpStart := s.topStart + l.prog.length
+        let (s, root) :=
+          if async ∧ grp.all (·.depth == 0) ∧ leavesOf grp = base ∧ base ≥ cx.P.asyncMin ∧ base ≤ cx.P.cap then
+            let (s, holes) := s.enqueue cx (nodeCells grp) 1 grpStart
+            (s, holes.head?.getD (.ready cx.z0))
+          else s.collapseAll cx grp base (live := decide (l.nodes.length > k))
+        let l := { l with prog := l.prog ++ [root], level := l.level + 1,
+                          nodes := l.nodes.drop k, counted := l.counted - k }
+        rounds fuel (s.setTop l) l true
+    let (s, l, finalized) := rounds (l.nodes.length + 1) s l false
+    if !finalized then
+      if !async then s.collapseBinary cx else s
+    else if async then
+      s.setTop { l with collapsed := true }
+    else
+      -- Step 2: compact the remainder depth by depth (pairs hashed, odd kept).
+      let md := maxDepthOf l.nodes
+      let rec compact : Nat → St C → List (Node C) → St C × List (Node C)
+        | 0, s, _ => (s, [])
+        | fuel + 1, s, ns =>
+          let d := fuel
+          let grp := ns.filter (·.depth == d)
+          let (s, paired) := s.pairNodes cx (grp.take (2 * (grp.length / 2)))
+          let odd := grp.drop (2 * (grp.length / 2))
+          let (s, rest) := compact fuel s ns
+          (s, paired ++ odd ++ rest)
+      let (s, ns) := compact (md + 1) s l.nodes
+      let s := s.setTop { l with nodes := ns, counted := ns.length, collapsed := true }
+      s.collapseBinary cx
+
+/-- `collapseProgressiveLayer`: finalize all groups, the partial remainder,
+    and fold the roots right to left. Returns the root cell. -/
+def St.closeProgressive (cx : Ctx C) (s : St C) (async : Bool) : St C × Cell C :=
+  let s := s.collapseProgressive cx async
+  let s := if s.jobs ≠ [] then (s.drainAll).collapseProgressive cx async else s
+  let s := s.drainAll
+  match s.stack with
+  | [] => (s, .ready cx.z0)
+  | l :: _ =>
+    let (s, l) :=
+      if l.nodes ≠ [] then
+        let l := { l with counted := l.nodes.length }
+        let (s, root) := s.collapseAll cx l.nodes (4 ^ l.level)
+        (s, { l with prog := l.prog ++ [root], nodes := [], counted := 0 })
+      else (s, l)
+    let s := (s.setTop l).drainAll
+    match s.stack with
+    | [] => (s, .ready cx.z0)
+    | l :: _ =>
+      let (s, roots) := s.vals l.prog "fold"
+      (s, .ready (roots.foldr (fun r acc => cx.H r acc) cx.z0))
+
+/-! ## Operations -/
+
+inductive TreeType where
+  | none
+  | binary
+  | progressive
+  deriving Repr, BEq, DecidableEq
+
+/-- Hasher API calls, as the engines make them. Every call carries whether
+    async hashing is in effect (`asyncShared()` is read per call). -/
+inductive Op (C : Type) where
+  | startTree (t : TreeType) (packed : Bool)
+  | index
+  | leaf (v : C)
+  | collapse (async : Bool)
+  | merkleize (async : Bool)
+  | merkleizeMixin (num limit : Nat) (async : Bool)
+  | merkleizeProg (async : Bool)
+  | merkleizeProgMixin (num : Nat) (async : Bool)
+  | merkleizeProgActive (af : C) (async : Bool)
+  deriving Repr
+
+/-- `deferrableElemChunks`. -/
+def deferrableWidth (P : Params) (n : Nat) : Option Nat :=
+  if n < 2 ∨ n > P.batch then none
+  else if n &&& (n - 1) = 0 then some n
+  else some (2 ^ (Nat.log2 n + 1))
+
+/-- Pop the innermost scope and append its root to the enclosing region. -/
+def St.popWith (s : St C) (root : Cell C) : St C :=
+  match s.stack with
+  | [] => s
+  | _ :: ls => ({ s with stack := ls } : St C).push root
+
+/-- The non-deferred close of `Merkleize`. -/
+def St.closeBinary (cx : Ctx C) (s : St C) (limit : Nat) (_async : Bool) : St C :=
+  let s := s.flushSync cx
+  let s := s.drainFor s.topStart
+  match s.stack with
+  | [] => s
+  | l :: _ =>
+    if l.collapsed then
+      let (s, root) := s.collapseAll cx l.nodes limit
+      s.popWith root
+    else
+      let (s, vs) := s.vals l.cells "merkleize"
+      let (r, over) := merkleizeImpl cx.H cx.z0 vs limit
+      let s := if over then s.setHashErr "chunk limit" else s
+      s.popWith (.ready r)
+/-- `MerkleizeProgressiveWithMixin` / `WithActiveFields`. -/
+def St.closeProgWord (cx : Ctx C) (s : St C) (w : C) (async : Bool) : St C :=
+  match s.stack with
+  | [] => s.fail "merkleize without a scope"
+  | l :: _ =>
+    let s := if !l.progressive ∧ l.incremental then s.setHashErr "scope shape mismatch" else s
+    let s := if l.pend ≠ [] then s.flushSync cx else s
+    let s := s.drainFor s.topStart
+    match s.stack with
+    | [] => s
+    | l :: _ =>
+      let (s, root) :=
+        if l.progressive ∧ l.prog ≠ [] then s.closeProgressive cx async
+        else
+          let (s, vs) := s.vals l.cells "merkleize"
+          (s, .ready (progImpl cx.H cx.z0 (vs.length + 1) 0 vs))
+      let (s, rv) := s.vals [root] "mixin"
+      s.popWith (.ready (cx.H (rv.head?.getD cx.z0) w))
+
+def St.step (cx : Ctx C) (s : St C) : Op C → St C
+  | .startTree t packed =>
+    let s := match s.stack with
+      | l :: _ => if t ≠ TreeType.none ∧ l.pend ≠ [] then s.flushSync cx else s
+      | [] => s
+    { s with stack := { incremental := t ≠ TreeType.none, legacy := false, progressive := t == TreeType.progressive,
+                        packed := packed } :: s.stack }
+  | .index =>
+    { s with stack := { incremental := false, legacy := true, progressive := false, packed := false } :: s.stack }
+  | .leaf v => s.push (.ready v)
+  | .collapse async =>
+    match s.stack with
+    | [] => s
+    | l :: _ =>
+      if !l.incremental then s else
+      if l.pend ≠ [] ∧ async ∧ l.pend.length * l.pendC < cx.P.cap then s else
+      let s := if l.pend ≠ [] then s.flush cx async async else s
+      match s.stack with
+      | [] => s
+      | l :: _ =>
+      if l.progressive then
+        if async ∧ l.cells.length - l.prog.length < cx.P.active then s else
+        let s := if l.pend ≠ [] then s.flushSync cx else s
+        s.collapseProgressive cx async
+      else
+        if l.pend ≠ [] then s else
+        if async then (s.precollapse cx).1 else s.collapseBinary cx
+  | .merkleize async =>
+    match s.stack with
+    | [] => s.fail "merkleize without a scope"
+    | l :: ls =>
+      let s := if l.progressive then s.setHashErr "scope shape mismatch" else s
+      let deferrable := !l.legacy && (!l.incremental || (!l.progressive && !l.collapsed && l.pend = []))
+      let width := deferrableWidth cx.P (l.cells.length)
+      match deferrable, ls, width with
+      | true, p :: _, some c =>
+        if !p.incremental then s.closeBinary cx 0 async else
+        let elem := l.cells ++ List.replicate (c - l.cells.length) (.ready cx.z0)
+        let s := ({ s with stack := ls } : St C)
+        -- a run that does not extend contiguously or has another width flushes first
+        let s := match s.stack with
+          | p :: _ => if p.pend ≠ [] ∧ (p.pendC ≠ c ∨ p.tail ≠ []) then s.flushSync cx else s
+          | [] => s
+        match s.stack with
+        | p :: _ =>
+          let s := s.setTop { p with pendC := c, pend := p.pend ++ [elem] }
+          if (p.pend.length + 1) * c ≥ cx.P.cap then s.flush cx true async else s
+        | [] => s
+      | _, _, _ => s.closeBinary cx 0 async
+  | .merkleizeMixin num limit async =>
+    match s.stack with
+    | [] => s.fail "merkleize without a scope"
+    | l :: _ =>
+      let s := if l.progressive then s.setHashErr "scope shape mismatch" else s
+      let s := if l.pend ≠ [] then s.flushSync cx else s
+      let s := s.drainFor s.topStart
+      match s.stack with
+      | [] => s
+      | l :: _ =>
+        let (s, root) :=
+          if l.collapsed then s.collapseAll cx { l with counted := l.nodes.length }.nodes limit
+          else
+            let (s, vs) := s.vals l.cells "merkleize"
+            let (r, over) := merkleizeImpl cx.H cx.z0 vs limit
+            ((if over then s.setHashErr "chunk limit" else s), .ready r)
+        let (s, rv) := s.vals [root] "mixin"
+        s.popWith (.ready (cx.H (rv.head?.getD cx.z0) (cx.word num)))
+  | .merkleizeProg async =>
+    match s.stack with
+    | [] => s.fail "merkleize without a scope"
+    | l :: _ =>
+      let s := if !l.progressive ∧ l.incremental then s.setHashErr "scope shape mismatch" else s
+      let s := if l.pend ≠ [] then s.flushSync cx else s
+      let s := s.drainFor s.topStart
+      match s.stack with
+      | [] => s
+      | l :: _ =>
+        if l.progressive then
+          let (s, root) := s.closeProgressive cx async
+          s.popWith root
+        else
+          let (s, vs) := s.vals l.cells "merkleize"
+          s.popWith (.ready (progImpl cx.H cx.z0 (vs.length + 1) 0 vs))
+  | .merkleizeProgMixin num async => s.closeProgWord cx (cx.word num) async
+  | .merkleizeProgActive af async => s.closeProgWord cx af async
+
+/-- Run a sequence of operations from the empty hasher. -/
+def run (cx : Ctx C) (ops : List (Op C)) : St C :=
+  ops.foldl (St.step cx) {}
+
+/-- `HashRoot`: drain, then the single remaining chunk. -/
+def St.root (s : St C) : Option C :=
+  let s := s.drainAll
+  if s.err.isSome ∨ s.hashErr.isSome ∨ s.stack ≠ [] then none
+  else match readyVals s.base with
+    | some [v] => some v
+    | _ => none
+
+end Ssz.Hasher
