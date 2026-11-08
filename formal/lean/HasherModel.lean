@@ -47,7 +47,7 @@ def ctxOf (P : Params) : Ctx UInt64 :=
 
 def renderCell : Cell UInt64 → String
   | .ready v => hex64 v
-  | .hole _ _ => "?"
+  | .hole _ _ _ => "?"
 
 def renderCells (cs : List (Cell UInt64)) : String :=
   "[" ++ ",".intercalate (cs.map renderCell) ++ "]"

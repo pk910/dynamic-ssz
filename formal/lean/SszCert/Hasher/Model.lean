@@ -53,10 +53,14 @@ structure Params where
   ring : Nat := 8
   deriving Repr
 
-/-- A chunk of the buffer: a value, or one chunk of an in-flight job's hole. -/
+/-- A chunk of the buffer: a value, or one chunk of an in-flight job's hole.
+    A hole carries the value its job will write there: a job's result is
+    fixed when it is enqueued (the worker reduces a private copy of its
+    input), so values never depend on when jobs finish. Reading a hole — or
+    a drain finding it moved — is a protocol violation the model flags. -/
 inductive Cell (C : Type) where
   | ready (v : C)
-  | hole (job idx : Nat)
+  | hole (v : C) (job idx : Nat)
   deriving Repr, BEq, Inhabited
 
 /-- A node of a collapse region: a subtree root at the given depth. -/
@@ -181,13 +185,18 @@ def progImpl (H : C → C → C) (z0 : C) : Nat → Nat → List C → C
 
 def Cell.isReady : Cell C → Bool
   | .ready _ => true
-  | .hole _ _ => false
+  | .hole _ _ _ => false
+
+/-- The value a cell holds or will hold. -/
+def Cell.val : Cell C → C
+  | .ready v => v
+  | .hole v _ _ => v
 
 /-- The values of cells, if none is a hole. -/
 def readyVals : List (Cell C) → Option (List C)
   | [] => some []
   | .ready v :: cs => (readyVals cs).map (v :: ·)
-  | .hole _ _ :: _ => none
+  | .hole _ _ _ :: _ => none
 
 def nodeCells (ns : List (Node C)) : List (Cell C) := ns.map (·.cell)
 
@@ -227,7 +236,7 @@ def writeHole (job : Nat) : Nat → List C → List (Cell C) → List (Cell C) �
   | _, [], cs => (cs, true)
   | _, _ :: _, [] => ([], false)
   | 0, v :: vs, c :: cs =>
-    let ok := match c with | .hole j _ => j == job | _ => false
+    let ok := match c with | .hole _ j _ => j == job | _ => false
     let (rest, ok') := writeHole job 0 vs cs
     (.ready v :: rest, ok && ok')
   | p + 1, vs, c :: cs =>
@@ -296,11 +305,9 @@ def St.push (s : St C) (c : Cell C) : St C :=
     if l.pend = [] then { s with stack := { l with nodes := l.nodes ++ [⟨0, c⟩] } :: ls }
     else { s with stack := { l with tail := l.tail ++ [c] } :: ls }
 
-/-- Read the values of cells, flagging a hole. -/
+/-- Read the values of cells, flagging a hole (a read before the drain). -/
 def St.vals (s : St C) (cs : List (Cell C)) (what : String) : St C × List C :=
-  match readyVals cs with
-  | some vs => (s, vs)
-  | none => (s.fail s!"{what}: read a hole", [])
+  (if cs.all Cell.isReady then s else s.fail s!"{what}: read a hole", cs.map Cell.val)
 
 /-! ## Jobs -/
 
@@ -320,7 +327,7 @@ def St.enqueue (cx : Ctx C) (s : St C) (input : List (Cell C)) (outChunks dst : 
   let (s, vs) := s.vals input "job input"
   let out := reduceTo cx.H outChunks input.length vs
   let id := s.nextJob
-  let holes := (List.range outChunks).map (fun k => Cell.hole id k)
+  let holes := (List.range outChunks).map (fun k => Cell.hole (out.getD k cx.z0) id k)
   let s := { s with jobs := s.jobs ++ [⟨id, dst, out⟩], nextJob := id + 1,
                     jobMaxEnd := max s.jobMaxEnd (dst + outChunks) }
   (s, holes)
