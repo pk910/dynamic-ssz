@@ -26,6 +26,7 @@ structure BinOK (cx : Ctx C) (l : Layer C) (L : List C) : Prop where
   leaves : l.collapsed = false → ∀ n ∈ l.nodes, n.depth = 0
   shallow : ∀ n ∈ l.nodes, n.depth < 40
   holes : ∀ n ∈ l.nodes, n.cell.isReady = false → n.depth = cx.P.capDepth
+  nonempty : l.collapsed = true → l.nodes ≠ []
 
 /-- What the calls need of the rest of the state. -/
 structure TopOK (s : St C) : Prop where
@@ -66,7 +67,8 @@ theorem push_bin (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C)) (L 
     rw [layer_cells_bin ({ l with nodes := l.nodes ++ [⟨0, .ready v⟩] } : Layer C) hb.prog hb.pend hb.tail, hcl]
     simp [nodeCells]
   refine ⟨St.setTop_stack s l _ ls h, ⟨hb.inc, hb.noprog, hb.nolegacy, hb.prog, hb.pend, hb.tail,
-    cov_push cx.H cx.z0 hb.cov (.ready v), ?_, ?_, ?_⟩, ⟨?_, ?_, ?_, ?_⟩, St.setTop_below s l _ ls h, ?_⟩
+    cov_push cx.H cx.z0 hb.cov (.ready v), ?_, ?_, ?_, fun _ => by simp⟩, ⟨?_, ?_, ?_, ?_⟩,
+    St.setTop_below s l _ ls h, ?_⟩
   · intro hc n hn
     rcases List.mem_append.mp hn with hn | hn
     · exact hb.leaves hc n hn
@@ -299,12 +301,16 @@ theorem binOK_of_erase (cx : Ctx C) {l l' : Layer C} {L : List C} (hb : BinOK cx
     obtain ⟨m, hm, he'⟩ := List.mem_map.mp this
     exact ⟨m, hm, by have := congrArg Node.depth he'; exact this⟩
   refine ⟨by rw [hinc]; exact hb.inc, by rw [hpr]; exact hb.noprog, by rw [hle]; exact hb.nolegacy,
-    ?_, ?_, ?_, cov_of_erase_eq cx.H cx.z0 hn hb.cov, ?_, ?_, hh⟩
+    ?_, ?_, ?_, cov_of_erase_eq cx.H cx.z0 hn hb.cov, ?_, ?_, hh, ?_⟩
   · rw [hb.prog] at hp; exact map_erase_nil hp
   · rw [hb.pend] at hd; simpa using hd
   · rw [hb.tail] at hta; exact map_erase_nil hta
   · intro hc n hn'; obtain ⟨m, hm, hmd⟩ := hdep n hn'; rw [← hmd]; exact hb.leaves (by rw [← hco]; exact hc) m hm
   · intro n hn'; obtain ⟨m, hm, hmd⟩ := hdep n hn'; rw [← hmd]; exact hb.shallow m hm
+  · intro hc e
+    have := congrArg List.length hn
+    rw [e] at this; simp at this
+    exact hb.nonempty (by rw [← hco]; exact hc) (List.eq_nil_of_length_eq_zero this.symm)
 
 /-! ## Synchronous `Collapse` -/
 
@@ -372,6 +378,7 @@ theorem collapseBinary_bin (cx : Ctx C) (hb0 : 0 < cx.P.batch) (hb2 : cx.P.batch
   simp only [hb.pend, ne_eq, not_true_eq_false, if_false]
   split
   · exact ⟨l, ls, h, hb, ht, rfl, rfl, rfl⟩
+  rename_i hd0
   -- the drain before the rounds
   obtain ⟨hv, ht2, hh2, _⟩ := drainFor_spec s ht s.activeStart
   obtain ⟨l2, ls2, hs2, he2, hle2⟩ := stack_of_view hv h
@@ -418,8 +425,19 @@ theorem collapseBinary_bin (cx : Ctx C) (hb0 : 0 < cx.P.batch) (hb2 : cx.P.batch
   rw [hfin]
   generalize hns : (batchLoop cx 64 0 (s.drainFor s.activeStart) l2.nodes).2 = ns at hnr hcov
   refine ⟨_, ls2, St.setTop_stack _ l2 _ ls2 hs2, ⟨hb2'.inc, hb2'.noprog, hb2'.nolegacy, hb2'.prog, hb2'.pend,
-    hb2'.tail, hcov, by simp, cov_depth_lt cx.H cx.z0 hcov hL, fun n hn hnr' => by rw [hnr n hn] at hnr'; cases hnr'⟩,
+    hb2'.tail, hcov, by simp, cov_depth_lt cx.H cx.z0 hcov hL,
+    (fun n hn hnr' => by rw [hnr n hn] at hnr'; cases hnr'), fun _ => ?_⟩,
     ?_, hle2, ?_, ?_⟩
+  · -- a batch ran, so the scope had nodes and has them still
+    intro e
+    have e' : ns = [] := e
+    rw [e'] at hcov
+    have hL0 : L = [] := hcov
+    have hpos : 0 < l.nodes.length := by
+      have : 0 < d0Chunks l := by omega
+      unfold d0Chunks at this; omega
+    have := cov_ne_nil cx.H cx.z0 hb.cov (List.ne_nil_of_length_pos hpos)
+    exact this hL0
   · apply topOK_setTop_ready _ l2 _ ls2 hs2 ht2 hr2
     intro c hc
     simp only [Layer.cells, hb2'.prog, hb2'.pend, hb2'.tail, List.nil_append, List.flatten_nil,
