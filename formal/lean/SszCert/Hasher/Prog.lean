@@ -376,4 +376,349 @@ theorem collapseAll_exact (cx : Ctx C) (s : St C) (ns : List (Node C)) (L : List
   refine ⟨trivial, ?_⟩
   rw [← hv]; rfl
 
+/-! ## Covers cut at a node -/
+
+theorem cov_take_drop (H : C → C → C) (z0 : C) {ns : List (Node C)} {L : List C} (k : Nat)
+    (h : Cov H z0 true ns L) :
+    Cov H z0 true (ns.take k) (L.take (leavesOf (ns.take k))) ∧
+      Cov H z0 true (ns.drop k) (L.drop (leavesOf (ns.take k))) := by
+  have hsplit : ns = ns.take k ++ ns.drop k := (List.take_append_drop k ns).symm
+  by_cases hA : ns.take k = []
+  · rw [hA]; simp [leavesOf]
+    have : ns.drop k = ns := by
+      have := hsplit; rw [hA, List.nil_append] at this; exact this.symm
+    rw [this]; exact ⟨rfl, h⟩
+  by_cases hB : ns.drop k = []
+  · have hn : ns.take k = ns := by
+      have := hsplit; rw [hB, List.append_nil] at this; exact this.symm
+    have hl := cov_full_length H z0 h
+    rw [hB, hn, ← hl, List.take_length, List.drop_length]
+    exact ⟨h, rfl⟩
+  rw [hsplit] at h
+  obtain ⟨L1, L2, hL, h1, h2, _⟩ := cov_split H z0 hA hB h
+  have hl1 := cov_full_length H z0 h1
+  rw [hL, ← hl1, List.take_left' rfl, List.drop_left' rfl]
+  exact ⟨h1, h2⟩
+
+/-- A power-of-two block reduces to its bounded root. -/
+theorem reduceTo_pow (H : C → C → C) (z0 : C) (d : Nat) (vs : List C) (hv : vs.length = 2 ^ d) :
+    reduceTo H 1 vs.length vs = [mroot H z0 d vs] := by
+  have hne : vs ≠ [] := by intro e; subst e; simp at hv; have := Nat.one_le_two_pow (n := d); omega
+  have := reduceTo_chunks H z0 1 d (by omega) vs (by rw [hv]; simp) 0 vs.length
+    (Nat.zero_le _) (by rw [hv]; exact Nat.le_trans (Nat.sub_le _ _) (le_two_pow _))
+  rw [chunk_roots_zero] at this
+  rw [this, chunks_single hne (by rw [hv]; exact Nat.le_refl _)]
+  rfl
+
+/-! ## The progressive round invariant -/
+
+/-- The progressive roots stand for the complete groups `G`: group `i` has
+    `4^i` chunks and its root is their bounded root. -/
+def GroupsOK (cx : Ctx C) (prog : List (Cell C)) (G : List (List C)) : Prop :=
+  prog.length = G.length ∧ ∀ i (hi : i < G.length) (hp : i < prog.length),
+    (G[i]).length = 2 ^ (2 * i) ∧ (prog[i]).val = mroot cx.H cx.z0 (2 * i) G[i]
+
+/-- Between rounds: the region past the roots is a ready, counted cover of
+    the remaining leaves, no node wider than the current group. -/
+structure RoundP (cx : Ctx C) (l : Layer C) (G : List (List C)) (Lb : List C) : Prop where
+  prog : l.progressive = true
+  inc : l.incremental = true
+  nolegacy : l.legacy = false
+  pend : l.pend = []
+  tail : l.tail = []
+  groups : GroupsOK cx l.prog G
+  level : l.level = G.length
+  cov : Cov cx.H cx.z0 true l.nodes Lb
+  narrow : ∀ n ∈ l.nodes, n.depth ≤ 2 * l.level
+  ready : ∀ n ∈ l.nodes, n.cell.isReady = true
+  counted : l.counted = l.nodes.length
+  shallow : ∀ n ∈ l.nodes, n.depth < 40
+
+theorem groupsOK_snoc (cx : Ctx C) {prog : List (Cell C)} {G : List (List C)} (h : GroupsOK cx prog G)
+    (r : Cell C) (g : List C) (hg : g.length = 2 ^ (2 * G.length)) (hr : r.val = mroot cx.H cx.z0 (2 * G.length) g) :
+    GroupsOK cx (prog ++ [r]) (G ++ [g]) := by
+  obtain ⟨hl, hi⟩ := h
+  refine ⟨by simp [hl], ?_⟩
+  intro i h1 h2
+  rcases Nat.lt_or_ge i G.length with hlt | hge
+  · rw [List.getElem_append_left hlt, List.getElem_append_left (by omega)]
+    exact hi i hlt (by omega)
+  · have : i = G.length := by simp at h1; omega
+    subst this
+    rw [List.getElem_append_right (Nat.le_refl _), List.getElem_append_right (by omega)]
+    simp only [Nat.sub_self, List.getElem_cons_zero, List.length_append, List.length_singleton]
+    have e : G.length - prog.length = 0 := by omega
+    simp only [e, List.getElem_cons_zero]
+    exact ⟨hg, hr⟩
+
+theorem groupsOK_erase (cx : Ctx C) {prog prog' : List (Cell C)} {G : List (List C)} (h : GroupsOK cx prog G)
+    (he : prog'.map Cell.erase = prog.map Cell.erase) : GroupsOK cx prog' G := by
+  obtain ⟨hl, hi⟩ := h
+  have hl' := erase_map_length he
+  refine ⟨by omega, ?_⟩
+  intro i h1 h2
+  obtain ⟨a, b⟩ := hi i h1 (by omega)
+  refine ⟨a, ?_⟩
+  have := congrArg (fun xs => xs[i]?) (erase_vals he)
+  simp only [List.getElem?_map, List.getElem?_eq_getElem h2, List.getElem?_eq_getElem (show i < prog.length by omega),
+    Option.map_some, Option.some.injEq] at this
+  rw [this]; exact b
+
+theorem four_pow (n : Nat) : 4 ^ n = 2 ^ (2 * n) := by rw [Nat.pow_mul]
+
+/-- `LayerLE` on each part of a region with roots. -/
+theorem LayerLE.parts {l l' : Layer C} (h : LayerLE l l') :
+    HolesSub l.prog l'.prog ∧ HolesSub (nodeCells l.nodes) (nodeCells l'.nodes) ∧
+    HolesSub (l.pend.flatten ++ l.tail) (l'.pend.flatten ++ l'.tail) := by
+  have hc := h.holes
+  have hp : l.prog.length = l'.prog.length := (erase_map_length h.prog_map).symm
+  have hn : (nodeCells l.nodes).length = (nodeCells l'.nodes).length := by simp [nodeCells_length, h.nodes_length]
+  have e : ∀ x : Layer C, x.cells = x.prog ++ (nodeCells x.nodes ++ (x.pend.flatten ++ x.tail)) := by
+    intro x; simp [Layer.cells, List.append_assoc]
+  rw [e l, e l'] at hc
+  have h2 := holesSub_suffix hp hc
+  exact ⟨holesSub_prefix hp hc, holesSub_prefix hn h2, holesSub_suffix hn h2⟩
+
+theorem nodes_ready_of_le {l l' : Layer C} (h : LayerLE l l') (hr : ∀ n ∈ l.nodes, n.cell.isReady = true) :
+    ∀ n ∈ l'.nodes, n.cell.isReady = true := by
+  intro n hn
+  cases hc : n.cell.isReady with
+  | true => rfl
+  | false =>
+    exfalso
+    obtain ⟨i, hi, rfl⟩ := List.getElem_of_mem hn
+    have hi0 : i < l.nodes.length := by rw [← h.nodes_length]; exact hi
+    obtain ⟨c0, h0, h0r⟩ := h.parts.2.1 i _ (by simp [nodeCells, List.getElem?_map, List.getElem?_eq_getElem hi]) hc
+    simp only [nodeCells, List.getElem?_map, List.getElem?_eq_getElem hi0, Option.map_some, Option.some.injEq] at h0
+    rw [← h0, hr _ (List.getElem_mem _)] at h0r; cases h0r
+
+/-! ## One round -/
+
+/-- The new layer of a round, unfolded. -/
+theorem roundLayer_fields (l : Layer C) (k : Nat) (r : Cell C) :
+    (roundLayer l k r).prog = l.prog ++ [r] ∧ (roundLayer l k r).level = l.level + 1 ∧
+    (roundLayer l k r).nodes = l.nodes.drop k ∧ (roundLayer l k r).counted = l.counted - k := ⟨rfl, rfl, rfl, rfl⟩
+
+/-- **One round of `maybeCollapseProgressive`**: the first complete group of
+    the region becomes the next progressive root (computed here, or by a
+    background job whose hole is that root), and the region keeps covering
+    the rest. -/
+theorem progRound_ok (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C)) (G : List (List C))
+    (Lb : List C) (async : Bool) (h : s.stack = l :: ls) (hr : RoundP cx l G Lb) (ht : TopOK s)
+    (hL : Lb.length < 2 ^ 40) (hbig : 4 ^ l.level ≤ leavesOf (l.nodes.take l.counted)) (hlvl : 2 * l.level < 64) :
+    0 < consumeCount (l.nodes.take l.counted) (4 ^ l.level) ∧
+    ∃ l' ls', ((s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).1.setTop
+        (roundLayer ((s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).1.topLayer l)
+          (consumeCount (l.nodes.take l.counted) (4 ^ l.level))
+          (s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).2)).stack = l' :: ls' ∧
+      l' = roundLayer ((s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).1.topLayer l)
+          (consumeCount (l.nodes.take l.counted) (4 ^ l.level))
+          (s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).2 ∧
+      RoundP cx l' (G ++ [Lb.take (2 ^ (2 * l.level))]) (Lb.drop (2 ^ (2 * l.level))) ∧
+      TopOK ((s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).1.setTop
+        (roundLayer ((s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).1.topLayer l)
+          (consumeCount (l.nodes.take l.counted) (4 ^ l.level))
+          (s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).2)) ∧
+      ls'.map Layer.erase = ls.map Layer.erase ∧
+      ((s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).1.setTop
+        (roundLayer ((s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).1.topLayer l)
+          (consumeCount (l.nodes.take l.counted) (4 ^ l.level))
+          (s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).2)).base.map Cell.erase =
+        s.base.map Cell.erase ∧
+      ((s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).1.setTop
+        (roundLayer ((s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).1.topLayer l)
+          (consumeCount (l.nodes.take l.counted) (4 ^ l.level))
+          (s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).2)).hashErr = s.hashErr ∧
+      ((s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).1.setTop
+        (roundLayer ((s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).1.topLayer l)
+          (consumeCount (l.nodes.take l.counted) (4 ^ l.level))
+          (s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).2)).below.length =
+        s.below.length ∧
+      HolesSub s.below ((s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).1.setTop
+        (roundLayer ((s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).1.topLayer l)
+          (consumeCount (l.nodes.take l.counted) (4 ^ l.level))
+          (s.groupRoot cx async l (consumeCount (l.nodes.take l.counted) (4 ^ l.level))).2)).below := by
+  have hcnt : l.nodes.take l.counted = l.nodes := by rw [hr.counted, List.take_length]
+  have hlv : leavesOf l.nodes = Lb.length := (cov_full_length cx.H cx.z0 hr.cov).symm
+  rw [hcnt] at hbig ⊢
+  rw [four_pow] at hbig ⊢
+  generalize hD : 2 * l.level = D at hbig hlvl ⊢
+  have hnarrow : ∀ n ∈ l.nodes, n.depth ≤ D := by rw [← hD]; exact hr.narrow
+  obtain ⟨hk0, hkl⟩ := consumeCount_spec l.nodes D (nonInc_of_cov _ _ hr.cov) hnarrow hbig
+  refine ⟨hk0, ?_⟩
+  generalize hK : consumeCount l.nodes (2 ^ D) = K at hk0 hkl ⊢
+  obtain ⟨hc1, hc2⟩ := cov_take_drop cx.H cx.z0 K hr.cov
+  rw [hkl] at hc1 hc2
+  have hgne : l.nodes.take K ≠ [] := by
+    intro e; rw [e] at hkl; simp [leavesOf] at hkl; have := Nat.two_pow_pos D; omega
+  have hglen : (Lb.take (2 ^ D)).length = 2 ^ D := by simp; omega
+  have hgr : ∀ n ∈ l.nodes.take K, n.cell.isReady = true := fun n hn => hr.ready n (List.mem_of_mem_take hn)
+  have hgd : ∀ n ∈ l.nodes.take K, n.depth ≤ D := fun n hn => hnarrow n (List.mem_of_mem_take hn)
+  have hp0 : l.prog.length = G.length := hr.groups.1
+  have hlc : l.cells = l.prog ++ nodeCells l.nodes := by simp [Layer.cells, hr.pend, hr.tail]
+  -- the round's new layer, in general
+  have hnew : ∀ (l1 : Layer C) (r : Cell C), LayerLE l l1 → r.val = mroot cx.H cx.z0 D (Lb.take (2 ^ D)) →
+      RoundP cx (roundLayer l1 K r) (G ++ [Lb.take (2 ^ D)]) (Lb.drop (2 ^ D)) := by
+    intro l1 r hle hrv
+    have hp1 : l1.pend = [] := by have := hle.pend_map; rw [hr.pend] at this; simpa using this
+    have ht1 : l1.tail = [] := by have := hle.tail_map; rw [hr.tail] at this; simpa using this
+    have hn1 := hle.nodes_map
+    have hdrop : (l1.nodes.drop K).map Node.erase = (l.nodes.drop K).map Node.erase := by
+      rw [List.map_drop, hn1, ← List.map_drop]
+    have hdep : ∀ n ∈ l1.nodes, ∃ m ∈ l.nodes, m.depth = n.depth := by
+      intro n hn
+      have : n.erase ∈ l.nodes.map Node.erase := by rw [← hn1]; exact List.mem_map_of_mem hn
+      obtain ⟨m, hm, he'⟩ := List.mem_map.mp this
+      exact ⟨m, hm, by have := congrArg Node.depth he'; exact this⟩
+    refine ⟨by rw [roundLayer, hle.flag_progressive]; exact hr.prog, by rw [roundLayer, hle.flag_incremental]; exact hr.inc,
+      by rw [roundLayer, hle.flag_legacy]; exact hr.nolegacy, hp1, ht1, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+    · rw [(roundLayer_fields l1 K r).1]
+      apply groupsOK_snoc cx (groupsOK_erase cx hr.groups hle.prog_map) r _ (by rw [← hr.level, hD]; exact hglen)
+      rw [← hr.level, hD]; exact hrv
+    · show l1.level + 1 = _; rw [show l1.level = l.level from by have := congrArg Layer.level hle.erase; exact this,
+        hr.level]; simp
+    · rw [(roundLayer_fields l1 K r).2.2.1]; exact cov_of_erase_eq cx.H cx.z0 hdrop hc2
+    · intro n hn
+      rw [(roundLayer_fields l1 K r).2.2.1] at hn
+      obtain ⟨m, hm, hmd⟩ := hdep n (List.mem_of_mem_drop hn)
+      rw [(roundLayer_fields l1 K r).2.1, ← hmd,
+        show l1.level = l.level from by have := congrArg Layer.level hle.erase; exact this]
+      have := hr.narrow m hm; omega
+    · intro n hn
+      rw [(roundLayer_fields l1 K r).2.2.1] at hn
+      exact nodes_ready_of_le hle hr.ready n (List.mem_of_mem_drop hn)
+    · rw [(roundLayer_fields l1 K r).2.2.2, (roundLayer_fields l1 K r).2.2.1, List.length_drop,
+        show l1.counted = l.counted from by have := congrArg Layer.counted hle.erase; exact this, hr.counted,
+        hle.nodes_length]
+    · intro n hn
+      rw [(roundLayer_fields l1 K r).2.2.1] at hn
+      obtain ⟨m, hm, hmd⟩ := hdep n (List.mem_of_mem_drop hn)
+      rw [← hmd]; exact hr.shallow m hm
+  unfold St.groupRoot
+  rw [four_pow, hD]
+  split
+  · -- a background job for the group
+    rename_i hcond
+    obtain ⟨_, hall, _, _, _⟩ := hcond
+    have hall0 : ∀ n ∈ l.nodes.take K, n.depth = 0 := by
+      intro n hn; have := List.all_eq_true.mp hall n hn; simpa using this
+    have hvals : (nodeCells (l.nodes.take K)).map Cell.val = Lb.take (2 ^ D) := by
+      unfold nodeCells; rw [List.map_map]; exact cov_leaves cx.H cx.z0 _ _ hc1 hall0
+    have hinr : ∀ c ∈ nodeCells (l.nodes.take K), c.isReady = true := by
+      intro c hc; simp only [nodeCells, List.mem_map] at hc; obtain ⟨n, hn, rfl⟩ := hc; exact hgr n hn
+    have hinl : (nodeCells (l.nodes.take K)).length = 2 ^ D := by
+      rw [← List.length_map (f := Cell.val), hvals, hglen]
+    have hout : reduceTo cx.H 1 (nodeCells (l.nodes.take K)).length ((nodeCells (l.nodes.take K)).map Cell.val) =
+        [mroot cx.H cx.z0 D (Lb.take (2 ^ D))] := by
+      rw [show (nodeCells (l.nodes.take K)).length = ((nodeCells (l.nodes.take K)).map Cell.val).length by simp,
+        reduceTo_pow cx.H cx.z0 D _ (by rw [hvals, hglen]), hvals]
+    generalize hvd : mroot cx.H cx.z0 D (Lb.take (2 ^ D)) = v at hout hnew
+    have hact : s.topStart + l.prog.length = s.below.length + l.prog.length := by rw [St.topStart_eq s l ls h]
+    obtain ⟨hv1, ht1, hn1, hh1, hlen1⟩ := ringDrain_topOK cx.P s ht
+    obtain ⟨l1, ls1, hs1, hle1, hls1⟩ := LayerLE.of_view hv1 h (ringDrain_holesSub cx.P s ht.holes)
+    have hbl1 := below_length_of_view hv1 h hs1
+    let J : Job C := ⟨(s.ringDrain cx.P).nextJob, s.below.length + l.prog.length, [v]⟩
+    let T : St C := (s.ringDrain cx.P).addJob J
+    have hen : s.enqueue cx (nodeCells (l.nodes.take K)) 1 (s.topStart + l.prog.length) =
+        (T, [Cell.hole v (s.ringDrain cx.P).nextJob 0]) := by
+      rw [enqueue_eq cx s _ 1 _ hinr, hout, hact]; rfl
+    rw [hen]
+    simp only [List.head?_cons, Option.getD_some]
+    have hTs : T.stack = l1 :: ls1 := hs1
+    have hTtop : T.topLayer l = l1 := by simp [St.topLayer, hTs]
+    rw [hTtop]
+    have hRP := hnew l1 (.hole v (s.ringDrain cx.P).nextJob 0) hle1 rfl
+    have hp1 : l1.pend = [] := by have := hle1.pend_map; rw [hr.pend] at this; simpa using this
+    have ht1' : l1.tail = [] := by have := hle1.tail_map; rw [hr.tail] at this; simpa using this
+    have hpl1 : l1.prog.length = l.prog.length := erase_map_length hle1.prog_map
+    have hc1' : l1.cells = l1.prog ++ nodeCells l1.nodes := by simp [Layer.cells, hp1, ht1']
+    have hl'c : (roundLayer l1 K (.hole v (s.ringDrain cx.P).nextJob 0)).cells =
+        l1.prog ++ ([Cell.hole v (s.ringDrain cx.P).nextJob 0] ++ nodeCells (l1.nodes.drop K)) := by
+      simp [Layer.cells, roundLayer, hp1, ht1', List.append_assoc]
+    have hr1 : ∀ n ∈ l1.nodes, n.cell.isReady = true := nodes_ready_of_le hle1 hr.ready
+    refine ⟨_, ls1, St.setTop_stack T l1 _ ls1 hTs, rfl, hRP, ⟨?_, ?_, ?_, ?_⟩, hls1, ?_, ?_, ?_, ?_⟩
+    · show HolesOK (St.setTop ((s.ringDrain cx.P).addJob J) _)
+      unfold St.addJob
+      apply holesOK_addJob _ l1 _ ls1 hs1 ht1.holes J (fun j' hj' => Nat.ne_of_lt (ht1.ids j' hj'))
+        l1.prog.length (by rw [hc1']; simp)
+      · rw [hc1', hl'c, List.take_left' rfl, List.take_left' rfl]
+      · show s.below.length + l.prog.length = _; rw [hbl1, hpl1]
+      · intro i hi
+        have hi0 : i = 0 := by simp [J] at hi; omega
+        subst hi0
+        refine ⟨0, ?_⟩
+        rw [hl'c, Nat.add_zero, List.getElem?_append_right (Nat.le_refl _), Nat.sub_self]
+        rfl
+      · rw [hl'c]; simp [J]
+      · intro i hi hi'
+        have hm : (roundLayer l1 K (.hole v (s.ringDrain cx.P).nextJob 0)).cells[i]'hi' ∈
+            nodeCells (l1.nodes.drop K) := by
+          have hc'' : (roundLayer l1 K (.hole v (s.ringDrain cx.P).nextJob 0)).cells =
+              (l1.prog ++ [Cell.hole v (s.ringDrain cx.P).nextJob 0]) ++ nodeCells (l1.nodes.drop K) := by
+            rw [hl'c, List.append_assoc]
+          simp only [hc'']
+          rw [List.getElem_append_right (by simp [J] at hi; simp; omega)]
+          exact List.getElem_mem _
+        simp only [nodeCells, List.mem_map] at hm
+        obtain ⟨n, hn, he⟩ := hm
+        rw [← he]; exact hr1 n (List.mem_of_mem_drop hn)
+      · have := jobs_end_of_ready (s.ringDrain cx.P) ht1 ((s.ringDrain cx.P).below ++ l1.prog) (nodeCells l1.nodes)
+          (by rw [St.cells_top _ l1 ls1 hs1, hc1', List.append_assoc]) (by
+            intro c hc; simp only [nodeCells, List.mem_map] at hc; obtain ⟨n, hn, he⟩ := hc; rw [← he]; exact hr1 n hn)
+        intro j hj; have := this j hj; simp only [List.length_append] at this; exact this
+    · rw [St.setTop_err]; exact ht1.err
+    · intro j' hj'
+      rw [St.setTop_jobs] at hj'
+      change j' ∈ (s.ringDrain cx.P).jobs ++ [J] at hj'
+      rcases List.mem_append.mp hj' with hj' | hj'
+      · exact ht1.jobsne j' hj'
+      · simp at hj'; subst hj'; simp [J]
+    · intro j' hj'
+      rw [St.setTop_jobs] at hj'
+      change j' ∈ (s.ringDrain cx.P).jobs ++ [J] at hj'
+      rw [St.setTop_nextJob]
+      change j'.id < (s.ringDrain cx.P).nextJob + 1
+      rcases List.mem_append.mp hj' with hj' | hj'
+      · have := ht1.ids j' hj'; omega
+      · simp at hj'; subst hj'; simp [J]
+    · show (T.setTop _).base.map Cell.erase = s.base.map Cell.erase
+      rw [St.setTop_base]
+      exact congrArg Prod.fst hv1
+    · rw [St.setTop_hashErr]; exact hh1
+    · rw [St.setTop_below T l1 _ ls1 hTs]; exact hbl1
+    · rw [St.setTop_below T l1 _ ls1 hTs]
+      show HolesSub s.below (s.ringDrain cx.P).below
+      exact holesSub_below hv1 h hs1 (ringDrain_holesSub cx.P s ht.holes)
+  · -- the group reduced here
+    obtain ⟨hst, hroot⟩ := collapseAll_exact cx s (l.nodes.take K) (Lb.take (2 ^ D)) D
+      (decide (l.nodes.length > K)) hc1 hgne hgr hglen hgd hlvl
+    rw [hst, hroot]
+    have htop : s.topLayer l = l := by simp [St.topLayer, h]
+    rw [htop]
+    have hRP := hnew l (.ready (mroot cx.H cx.z0 D (Lb.take (2 ^ D)))) (LayerLE.refl l) rfl
+    have hl'c : (roundLayer l K (.ready (mroot cx.H cx.z0 D (Lb.take (2 ^ D))))).cells =
+        l.prog ++ ([Cell.ready (mroot cx.H cx.z0 D (Lb.take (2 ^ D)))] ++ nodeCells (l.nodes.drop K)) := by
+      simp [Layer.cells, roundLayer, hr.pend, hr.tail, List.append_assoc]
+    refine ⟨_, ls, St.setTop_stack s l _ ls h, rfl, hRP, ⟨?_, by rw [St.setTop_err]; exact ht.err,
+      fun j hj => by rw [St.setTop_jobs] at hj; exact ht.jobsne j hj,
+      fun j hj => by rw [St.setTop_jobs] at hj; rw [St.setTop_nextJob]; exact ht.ids j hj⟩, rfl,
+      by rw [St.setTop_base], St.setTop_hashErr s _, by rw [St.setTop_below s l _ ls h],
+      by rw [St.setTop_below s l _ ls h]; exact HolesSub.refl _⟩
+    apply holesOK_setTop s l _ ls h ht.holes l.prog.length (by rw [hlc]; simp)
+      (by rw [hlc, hl'c, List.take_left' rfl, List.take_left' rfl]) (by rw [hl'c]; simp)
+    · intro i hi hi'
+      have hm : (roundLayer l K (.ready (mroot cx.H cx.z0 D (Lb.take (2 ^ D))))).cells[i]'hi' ∈
+          [Cell.ready (mroot cx.H cx.z0 D (Lb.take (2 ^ D)))] ++ nodeCells (l.nodes.drop K) := by
+        simp only [hl'c]
+        rw [List.getElem_append_right hi]; exact List.getElem_mem _
+      rcases List.mem_append.mp hm with hm | hm
+      · simp at hm; rw [hm]; rfl
+      · simp only [nodeCells, List.mem_map] at hm
+        obtain ⟨n, hn, he⟩ := hm
+        rw [← he]; exact hr.ready n (List.mem_of_mem_drop hn)
+    · have := jobs_end_of_ready s ht (s.below ++ l.prog) (nodeCells l.nodes)
+        (by rw [St.cells_top s l ls h, hlc, List.append_assoc]) (by
+          intro c hc; simp only [nodeCells, List.mem_map] at hc; obtain ⟨n, hn, rfl⟩ := hc; exact hr.ready n hn)
+      intro j hj; have := this j hj; simp at this; omega
+
 end Ssz.Hasher
