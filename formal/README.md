@@ -80,15 +80,31 @@ bitvectors equal byte vectors, and outside list/vector elements `uintN`
 equals `ByteVector[N/8]`. 18 theorems prove a divergence instead (see
 Findings).
 
-**Hasher, generic in the hash** (`SszCert/Hasher/Spec.lean`): the bounded
-Merkle root and its laws — pairing, expansion under a zero sibling, zero
-padding, one padded reduction level over chunk roots, exact reductions (the
-background workers, `flushPending`'s level loop, `reduceElem`), `getDepth`,
-and `merkleizeImpl` equals the bounded root at the depth of its (widened)
-limit. The model-level theorems (the whole reduction machine computes the
-specified root for every walk, every Collapse schedule and every async
-pattern, and never reads or moves a hole) are in progress; until they
-land, the model is held to the Go hasher call by call (below).
+**Hasher, generic in the hash** (`SszCert/Hasher/`, on the executable model
+of `hasher.go`/`async.go` that the Go hasher is held to call by call):
+
+* `Spec.lean`: the bounded Merkle root and its laws (pairing, zero
+  expansion, zero padding, chunk levels, exact reductions, `getDepth`,
+  `merkleizeImpl` = bounded root at the depth of its limit).
+* `run_tree` (`Nested.lean`): for every tree of calls the engines make for
+  a value — binary and non-incremental (`TreeTypeNone`) scopes nested to
+  any depth; leaves; `Collapse` hints anywhere, each synchronous or
+  asynchronous; children closed with `Merkleize` (parked in an incremental
+  parent's deferred run exactly when Go defers them) or
+  `MerkleizeWithMixin` — `HashRoot` returns the root the SSZ
+  specification assigns, and none of the model's protocol checks fires: no
+  hole is read or moved before its drain, no scratch write lands on a live
+  chunk, no impossible state is reached. This covers batch collapse,
+  `precollapseCapRun` (background cap jobs, ring-full drains), deferral
+  (`pendStart/pendCount`), `flushPending` synchronous and asynchronous
+  (`flushPendingAsync` jobs per cap-wide block), `collapseAllDepths`, the
+  drains before every close, and padding to the subtree width
+  (`deferrableElemChunks`, including its bit trick). The proof holds for any
+  hash function and any thresholds with `ParamsOK` (both Go's production
+  constants and the `dynssz_smallhash` ones are shown to satisfy it).
+* Not yet proved (held to Go by the trace link only): progressive scopes
+  (`TreeTypeProgressive`, `MerkleizeProgressive*`), `Index`/legacy scopes,
+  and misuse paths (shape mismatch errors).
 
 ## What is linked
 
