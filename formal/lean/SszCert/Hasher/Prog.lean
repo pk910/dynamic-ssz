@@ -1030,8 +1030,8 @@ theorem depths_of_same {l l' : Layer C} (h : Layer.SameShape l l') :
   exact ⟨m, hm, he⟩
 
 theorem precollapseLoop_top (cx : Ctx C) (B : Nat) (hcB : cx.P.capDepth ≤ B) : ∀ fuel (t : St C) (ncap : Nat),
-    TopShape (fun l => (∀ n ∈ l.nodes, n.depth ≤ B) ∧ l.collapsed = true) t →
-    TopShape (fun l => (∀ n ∈ l.nodes, n.depth ≤ B) ∧ l.collapsed = true) (precollapseLoop cx fuel t ncap) := by
+    TopShape (fun l => (∀ n ∈ l.nodes, n.depth ≤ B) ∧ l.collapsed = true ∧ l.pend = []) t →
+    TopShape (fun l => (∀ n ∈ l.nodes, n.depth ≤ B) ∧ l.collapsed = true ∧ l.pend = []) (precollapseLoop cx fuel t ncap) := by
   intro fuel
   induction fuel with
   | zero => intro t ncap ht; exact ht
@@ -1052,8 +1052,8 @@ theorem precollapseLoop_top (cx : Ctx C) (B : Nat) (hcB : cx.P.capDepth ≤ B) :
         intro l2 ls2 h2
         rw [St.setTop_stack _ l' _ ls' hc] at h2
         obtain ⟨rfl, rfl⟩ := List.cons.inj h2
-        obtain ⟨hB, _⟩ := ht l ls h
-        refine ⟨?_, rfl⟩
+        obtain ⟨hB, _, hpe⟩ := ht l ls h
+        refine ⟨?_, rfl, by show l'.pend = []; have := hsh.pend; rw [hpe] at this; simpa using this⟩
         intro n hn
         simp only [capCompact, List.mem_append, List.mem_map] at hn
         rcases hn with (hn | ⟨c, _, rfl⟩) | hn
@@ -1066,14 +1066,14 @@ theorem precollapseLoop_top (cx : Ctx C) (B : Nat) (hcB : cx.P.capDepth ≤ B) :
 /-- **Pre-collapse keeps a scope collapsed and its nodes no wider than the
     group**, the cap being no wider either. -/
 theorem precollapse_top (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C)) (h : s.stack = l :: ls)
-    (B : Nat) (hB : ∀ n ∈ l.nodes, n.depth ≤ B) (hcB : cx.P.capDepth ≤ B) (hc : l.collapsed = true) :
-    TopShape (fun l => (∀ n ∈ l.nodes, n.depth ≤ B) ∧ l.collapsed = true) (s.precollapse cx).1 := by
+    (B : Nat) (hB : ∀ n ∈ l.nodes, n.depth ≤ B) (hcB : cx.P.capDepth ≤ B) (hc : l.collapsed = true) (hpe : l.pend = []) :
+    TopShape (fun l => (∀ n ∈ l.nodes, n.depth ≤ B) ∧ l.collapsed = true ∧ l.pend = []) (s.precollapse cx).1 := by
   have hn : s.normTop.stack = { l with counted := l.nodes.length } :: ls := by
     unfold St.normTop; rw [h]; simp only
     rw [St.setTop_stack _ l _ ls (by rw [uncollapsedAsLeaves_state' s l]; exact h)]
     simp [St.uncollapsedAsLeaves, hc]
-  have hT : TopShape (fun l => (∀ n ∈ l.nodes, n.depth ≤ B) ∧ l.collapsed = true) s.normTop := by
-    intro l2 ls2 h2; rw [hn] at h2; obtain ⟨rfl, rfl⟩ := List.cons.inj h2; exact ⟨hB, hc⟩
+  have hT : TopShape (fun l => (∀ n ∈ l.nodes, n.depth ≤ B) ∧ l.collapsed = true ∧ l.pend = []) s.normTop := by
+    intro l2 ls2 h2; rw [hn] at h2; obtain ⟨rfl, rfl⟩ := List.cons.inj h2; exact ⟨hB, hc, hpe⟩
   unfold St.precollapse
   rw [hn]
   simp only
@@ -1613,5 +1613,72 @@ theorem progFinish_ok (cx : Ctx C) (hP : ParamsOK cx.P) (async : Bool) (p : St C
         by rw [St.setTop_base]; exact hba', by rw [St.setTop_hashErr]; exact hh',
         by rw [St.setTop_below R.1 R.2.1 lc ls' hs']; exact hbl',
         by rw [St.setTop_below R.1 R.2.1 lc ls' hs']; exact hsub'⟩, lc, ls', Lb', hsc, ⟨G', hp2⟩, hlt⟩
+
+/-! ## Pre-collapse: when it emits jobs -/
+
+theorem capsRest_precollapse (cx : Ctx C) (t : St C) (l : Layer C) (ls : List (Layer C)) (h : t.stack = l :: ls)
+    (hc : CapsRest cx.P l) (hd0 : l.collapsed = false → ∀ n ∈ l.nodes, n.depth = 0) :
+    (t.precollapse cx).2 = false := by
+  have hlay : (t.uncollapsedAsLeaves l).2.nodes = l.nodes := by
+    unfold St.uncollapsedAsLeaves
+    cases hcl : l.collapsed
+    · simp only [Bool.false_eq_true, if_false]; exact map_depth_zero l.nodes (hd0 hcl)
+    · rfl
+  have hn : t.normTop.stack = (t.uncollapsedAsLeaves l).2 :: ls := by
+    unfold St.normTop; rw [h]; simp only
+    exact St.setTop_stack _ l _ ls (by rw [uncollapsedAsLeaves_state' t l]; exact h)
+  have hcc : capCount cx.P (t.uncollapsedAsLeaves l).2 = capCount cx.P l := by unfold capCount; rw [hlay]
+  unfold St.precollapse
+  rw [hn]
+  simp only
+  split
+  · rfl
+  · rename_i hany
+    rw [hcc, hlay]
+    rcases hc with hc | hc
+    · exfalso; apply hany; rw [hlay]; simpa using hc
+    · simp only [decide_eq_false_iff_not, Nat.not_le]; exact hc
+
+theorem enqueue_jobs (cx : Ctx C) (s : St C) (input : List (Cell C)) (out dst : Nat) :
+    (s.enqueue cx input out dst).1.jobs ≠ [] := by
+  simp [St.enqueue]
+
+theorem precollapseLoop_jobs (cx : Ctx C) : ∀ fuel (t : St C) (ncap : Nat), t.jobs ≠ [] →
+    (precollapseLoop cx fuel t ncap).jobs ≠ [] := by
+  intro fuel
+  induction fuel with
+  | zero => intro t ncap h; exact h
+  | succ fuel ih =>
+    intro t ncap h
+    simp only [precollapseLoop]
+    split
+    · exact h
+    · split
+      · exact h
+      · apply ih
+        rw [St.setTop_jobs]
+        exact enqueue_jobs cx t _ _ _
+
+theorem precollapseLoop_jobs' (cx : Ctx C) (fuel : Nat) (t : St C) (ncap : Nat) (l : Layer C) (ls : List (Layer C))
+    (h : t.stack = l :: ls) (hbig : cx.P.cap ≤ (l.nodes.drop ncap).length) :
+    (precollapseLoop cx (fuel + 1) t ncap).jobs ≠ [] := by
+  simp only [precollapseLoop, h]
+  rw [if_neg (by omega)]
+  apply precollapseLoop_jobs
+  rw [St.setTop_jobs]
+  exact enqueue_jobs cx _ _ _ _
+
+theorem precollapse_jobs (cx : Ctx C) (t : St C) (h : (t.precollapse cx).2 = true) :
+    (t.precollapse cx).1.jobs ≠ [] := by
+  revert h
+  unfold St.precollapse
+  split
+  · intro h; cases h
+  · rename_i l _ hst
+    split
+    · intro h; cases h
+    · intro h
+      simp only [decide_eq_true_eq] at h
+      exact precollapseLoop_jobs' cx _ _ _ l _ (by rw [failUnless_stack]; exact hst) h
 
 end Ssz.Hasher
