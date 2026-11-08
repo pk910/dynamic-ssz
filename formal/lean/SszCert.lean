@@ -23,6 +23,9 @@ import SszCert.Hasher.Flush
 import SszCert.Hasher.Scope
 import SszCert.Hasher.Nested
 import SszCert.Hasher.Sim
+import SszCert.Hasher.Prog
+import SszCert.Hasher.ProgOps
+import SszCert.Hasher.Tree
 import SszCert.Sha256
 import SszCert.Merkle
 import SszCert.Certified

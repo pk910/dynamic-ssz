@@ -540,4 +540,113 @@ theorem SBody.step_ok (cx : Ctx C) (hP : ParamsOK cx.P) : ∀ (b : SBody C) (s :
     simpa using this
 end
 
+/-! ## The hasher's root, every scope kind -/
+
+theorem start_skind (cx : Ctx C) (k : SKind) (pk : Bool) :
+    ({} : St C).step cx (k.openOp pk) = { stack := [k.layer pk] } := by
+  cases k <;> rfl
+
+/-- The top-level close of a non-progressive scope. -/
+theorem topClose_bin (cx : Ctx C) (s2 : St C) (l2 : Layer C) (L : List C) (cl : CloseOp C)
+    (h2 : s2.stack = [l2]) (hs2 : ScopeOK cx l2 L) (hn2 : l2.incremental = false → l2.pend = [])
+    (ht2 : TopOK s2) (hba : s2.base.map Cell.erase = []) (hh : s2.hashErr = none) (hok : cl.ok l2.incremental L.length) :
+    (s2.step cx cl.op).root = some (cl.rootOf cx L) := by
+  have hs0 := hs2
+  obtain ⟨_, _, hbs, _⟩ := hs0
+  have hnp : l2.progressive = false := hbs.noprog
+  cases cl with
+  | prog a =>
+    obtain ⟨t, hj, htt, he⟩ := prog_none cx s2 l2 [] _ a h2 hs2 hok (hn2 hok) ht2
+    show (s2.step cx (.merkleizeProg a)).root = _
+    rw [he]; exact root_after_jump s2 t l2 h2 hba hh hj htt _
+  | progMixin num a =>
+    obtain ⟨t, hj, htt, he⟩ := progWord_none cx s2 l2 [] _ (cx.word num) a h2 hs2 hok (hn2 hok) ht2
+    show (s2.closeProgWord cx (cx.word num) a).root = _
+    rw [he]; exact root_after_jump s2 t l2 h2 hba hh hj htt _
+  | progActive af a =>
+    obtain ⟨t, hj, htt, he⟩ := progWord_none cx s2 l2 [] _ af a h2 hs2 hok (hn2 hok) ht2
+    show (s2.closeProgWord cx af a).root = _
+    rw [he]; exact root_after_jump s2 t l2 h2 hba hh hj htt _
+  | mixin num limit a =>
+    have hstep : s2.step cx (CloseOp.mixin num limit a).op =
+        ((s2.flushSync cx).drainFor (s2.flushSync cx).topStart).mixinClose cx num limit := by
+      simp only [CloseOp.op, St.step, h2, hnp, Bool.false_eq_true, if_false]
+    obtain ⟨t, hj, htt, he⟩ := mixin_scope cx s2 l2 [] _ num limit h2 hs2 ht2 hok
+    rw [hstep, he]
+    exact root_after_jump s2 t l2 h2 hba hh hj htt _
+  | merkleize a =>
+    obtain ⟨t, hj, htt, he⟩ := closeBinary_scope cx s2 l2 [] _ 0 a h2 hs2 ht2 (Or.inl rfl)
+    have hstep : s2.step cx (CloseOp.merkleize a).op = s2.closeBinary cx 0 a := by
+      simp only [CloseOp.op, St.step, h2, hnp, Bool.false_eq_true, if_false]
+      split
+      · rename_i hls _; cases hls
+      · rfl
+    rw [hstep, he]
+    have := root_after_jump s2 t l2 h2 hba hh hj htt (mroot cx.H cx.z0 (closeDepth L.length 0) L)
+    simpa [CloseOp.rootOf, closeDepth] using this
+
+/-- The top-level close of a progressive scope. -/
+theorem topClose_prog (cx : Ctx C) (hP : ParamsOK cx.P) (s2 : St C) (l2 : Layer C) (L : List C) (cl : CloseOp C)
+    (h2 : s2.stack = [l2]) (hs2 : ProgScope cx l2 L) (ht2 : TopOK s2) (hba : s2.base.map Cell.erase = [])
+    (hh : s2.hashErr = none) (hok : cl.isProg) (hL : L.length < 2 ^ 40) :
+    (s2.step cx cl.op).root = some (cl.rootOf cx L) := by
+  cases cl with
+  | prog a =>
+    obtain ⟨t, hj, htt, he⟩ := progClose_prog cx hP s2 l2 [] L a h2 hs2 ht2 hL
+    show (s2.step cx (.merkleizeProg a)).root = _
+    rw [he]; exact root_after_jump s2 t l2 h2 hba hh hj htt _
+  | progMixin num a =>
+    obtain ⟨t, hj, htt, he⟩ := progWord_prog cx hP s2 l2 [] L (cx.word num) a h2 hs2 ht2 hL
+    show (s2.closeProgWord cx (cx.word num) a).root = _
+    rw [he]; exact root_after_jump s2 t l2 h2 hba hh hj htt _
+  | progActive af a =>
+    obtain ⟨t, hj, htt, he⟩ := progWord_prog cx hP s2 l2 [] L af a h2 hs2 ht2 hL
+    show (s2.closeProgWord cx af a).root = _
+    rw [he]; exact root_after_jump s2 t l2 h2 hba hh hj htt _
+  | merkleize _ => exact hok.elim
+  | mixin _ _ _ => exact hok.elim
+
+/-- **The hasher computes the specified root, for every scope kind.** For
+    every tree of calls the engines make — binary, non-incremental, `Index`
+    and progressive (EIP-7916) scopes nested to any depth; leaves; `Collapse`
+    hints anywhere, each synchronous or asynchronous; children closed with
+    `Merkleize` (deferred into an incremental or progressive parent exactly
+    when Go defers them), `MerkleizeWithMixin`, `MerkleizeProgressive`,
+    `MerkleizeProgressiveWithMixin` or `MerkleizeProgressiveWithActiveFields`
+    — `HashRoot` returns the root the SSZ specification assigns, and none of
+    the model's protocol checks fires: no hole is read or moved before its
+    drain, no scratch write lands on a live chunk, no impossible state is
+    reached. Generic in the hash; for any thresholds with `ParamsOK`, which
+    Go's production and `dynssz_smallhash` constants both satisfy. -/
+theorem run_stree (cx : Ctx C) (hP : ParamsOK cx.P) (t : STree C) (hwf : t.WF cx) :
+    (run cx t.ops).root = some (t.root cx) := by
+  cases t with
+  | mk k pk b cl =>
+    obtain ⟨hwb, hwl, hok⟩ := hwf
+    unfold run
+    simp only [STree.ops, STree.root]
+    rw [List.foldl_append, List.foldl_cons, List.foldl_cons, List.foldl_nil, start_skind]
+    have ht0 : TopOK ({ stack := [k.layer pk] } : St C) :=
+      topOK_open ({} : St C) (k.layer pk) (SKind.layer_cells k pk) topOK_empty
+    have hb := SBody.step_ok cx hP b { stack := [k.layer pk] } (k.layer pk) [] [] rfl (SKind.layer_ok cx k pk) ht0 hwb
+      (by simpa using hwl)
+    simp only [List.nil_append] at hb
+    generalize (b.ops.foldl (St.step cx) { stack := [k.layer pk] }) = s2 at hb ⊢
+    obtain ⟨l2, ls2, h2, hs2, hpr2, hi2, ht2, hle2, hba2, hh2, _, _⟩ := hb
+    rw [erase_nil_layers hle2] at h2
+    have hba : s2.base.map Cell.erase = [] := by simpa using hba2
+    have hh : s2.hashErr = none := hh2
+    cases k with
+    | progressive =>
+      exact topClose_prog cx hP s2 l2 _ cl h2 (layerOK_prog hs2 hpr2) ht2 hba hh hok hwl
+    | binary =>
+      obtain ⟨hs, hn⟩ := layerOK_bin hs2 hpr2
+      exact topClose_bin cx s2 l2 _ cl h2 hs hn ht2 hba hh (by rw [hi2]; exact hok.2)
+    | none =>
+      obtain ⟨hs, hn⟩ := layerOK_bin hs2 hpr2
+      exact topClose_bin cx s2 l2 _ cl h2 hs hn ht2 hba hh (by rw [hi2]; exact hok)
+    | index =>
+      obtain ⟨hs, hn⟩ := layerOK_bin hs2 hpr2
+      exact topClose_bin cx s2 l2 _ cl h2 hs hn ht2 hba hh (by rw [hi2]; exact hok)
+
 end Ssz.Hasher
