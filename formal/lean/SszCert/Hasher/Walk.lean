@@ -43,8 +43,9 @@ def leafVals : List (Op C) → List C
 
 theorem step_collapse_bin (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C)) (L : List C)
     (h : s.stack = l :: ls) (hb : BinOK cx l L) (a : Bool) :
-    s.step cx (.collapse a) = if a then (s.precollapse cx).1 else s.collapseBinary cx := by
-  simp [St.step, h, hb.inc, hb.pend, hb.noprog]
+    s.step cx (.collapse a) =
+      if l.incremental then (if a then (s.precollapse cx).1 else s.collapseBinary cx) else s := by
+  cases hi : l.incremental <;> simp [St.step, h, hi, hb.pend, hb.noprog]
 
 theorem push_base (s : St C) (l : Layer C) (ls : List (Layer C)) (h : s.stack = l :: ls) (c : Cell C) :
     (s.push c).base = s.base := by
@@ -61,12 +62,12 @@ theorem body_bin (cx : Ctx C) (hP : ParamsOK cx.P) : ∀ (body : List (Op C)), (
     ∀ (s : St C) (l : Layer C) (ls : List (Layer C)) (L : List C), s.stack = l :: ls → BinOK cx l L →
       TopOK s → (L ++ leafVals body).length < 2 ^ 40 →
       ∃ l' ls', (body.foldl (St.step cx) s).stack = l' :: ls' ∧ BinOK cx l' (L ++ leafVals body) ∧
-        TopOK (body.foldl (St.step cx) s) ∧ ls'.map Layer.erase = ls.map Layer.erase ∧
+        l'.incremental = l.incremental ∧ TopOK (body.foldl (St.step cx) s) ∧ ls'.map Layer.erase = ls.map Layer.erase ∧
         (body.foldl (St.step cx) s).base.map Cell.erase = s.base.map Cell.erase ∧
         (body.foldl (St.step cx) s).hashErr = s.hashErr ∧ HolesSub s.below (body.foldl (St.step cx) s).below := by
   intro body
   induction body with
-  | nil => intro _ s l ls L h hb ht _; exact ⟨l, ls, h, by simpa [leafVals] using hb, ht, rfl, rfl, rfl, HolesSub.refl _⟩
+  | nil => intro _ s l ls L h hb ht _; exact ⟨l, ls, h, by simpa [leafVals] using hb, rfl, ht, rfl, rfl, rfl, HolesSub.refl _⟩
   | cons op rest ih =>
     intro hbody s l ls L h hb ht hL
     have hrest : ∀ op ∈ rest, BinBody op := fun o ho => hbody o (List.mem_cons_of_mem _ ho)
@@ -75,8 +76,8 @@ theorem body_bin (cx : Ctx C) (hP : ParamsOK cx.P) : ∀ (body : List (Op C)), (
     | leaf v =>
       obtain ⟨hs1, hb1, ht1, hbl1, hh1⟩ := push_bin cx s l ls L v h hb ht
       have hL' : (L ++ [v] ++ leafVals rest).length < 2 ^ 40 := by simpa [leafVals] using hL
-      obtain ⟨l', ls', hs', hb', ht', hle', hba', hh', hsub'⟩ := ih hrest _ _ ls _ hs1 hb1 ht1 hL'
-      refine ⟨l', ls', hs', by simpa [leafVals] using hb', ht', hle', ?_, ?_, by rw [← hbl1]; exact hsub'⟩
+      obtain ⟨l', ls', hs', hb', hi', ht', hle', hba', hh', hsub'⟩ := ih hrest _ _ ls _ hs1 hb1 ht1 hL'
+      refine ⟨l', ls', hs', by simpa [leafVals] using hb', hi', ht', hle', ?_, ?_, by rw [← hbl1]; exact hsub'⟩
       · show (List.foldl (St.step cx) (s.push (.ready v)) rest).base.map Cell.erase = _
         rw [hba', push_base s l ls h]
       · show (List.foldl (St.step cx) (s.push (.ready v)) rest).hashErr = _
@@ -85,22 +86,27 @@ theorem body_bin (cx : Ctx C) (hP : ParamsOK cx.P) : ∀ (body : List (Op C)), (
       have hL0 : L.length < 2 ^ 40 := by simp at hL; omega
       have hL' : (L ++ leafVals rest).length < 2 ^ 40 := by simpa [leafVals] using hL
       rw [step_collapse_bin cx s l ls L h hb a]
+      cases hinc : l.incremental
+      · simp only [Bool.false_eq_true, if_false]
+        obtain ⟨l', ls', hs', hb', hi', ht', hle', hba', hh', hsub'⟩ := ih hrest s l ls L h hb ht hL'
+        exact ⟨l', ls', hs', by simpa [leafVals] using hb', hi'.trans hinc, ht', hle', hba', hh', hsub'⟩
+      simp only [if_true]
       have hstep : ∃ l1 ls1, (if a then (s.precollapse cx).1 else s.collapseBinary cx).stack = l1 :: ls1 ∧
-          BinOK cx l1 L ∧ TopOK (if a then (s.precollapse cx).1 else s.collapseBinary cx) ∧
+          BinOK cx l1 L ∧ l1.incremental = true ∧ TopOK (if a then (s.precollapse cx).1 else s.collapseBinary cx) ∧
           ls1.map Layer.erase = ls.map Layer.erase ∧
           (if a then (s.precollapse cx).1 else s.collapseBinary cx).base.map Cell.erase = s.base.map Cell.erase ∧
           (if a then (s.precollapse cx).1 else s.collapseBinary cx).hashErr = s.hashErr ∧
           HolesSub s.below (if a then (s.precollapse cx).1 else s.collapseBinary cx).below := by
         cases a
         · simp only [Bool.false_eq_true, if_false]
-          exact collapseBinary_bin cx hP.batch_pos hP.batch_even s l ls L h hb ht hL0
+          exact collapseBinary_bin cx hP.batch_pos hP.batch_even s l ls L h hb hinc ht hL0
         · simp only [if_true]
-          obtain ⟨l1, ls1, h1, h2, h3, h4, h5, h6, _, h8⟩ :=
-            precollapse_bin cx hP.cap hP.capDepth_pos s l ls L h hb ht hL0
-          exact ⟨l1, ls1, h1, h2, h3, h4, h5, h6, h8⟩
-      obtain ⟨l1, ls1, hs1, hb1, ht1, hle1, hba1, hh1, hsub1⟩ := hstep
-      obtain ⟨l', ls', hs', hb', ht', hle', hba', hh', hsub'⟩ := ih hrest _ l1 ls1 L hs1 hb1 ht1 hL'
-      exact ⟨l', ls', hs', by simpa [leafVals] using hb', ht', by rw [hle', hle1], by rw [hba', hba1],
+          obtain ⟨l1, ls1, h1, h2, h2', h3, h4, h5, h6, _, h8⟩ :=
+            precollapse_bin cx hP.cap hP.capDepth_pos s l ls L h hb hinc ht hL0
+          exact ⟨l1, ls1, h1, h2, h2', h3, h4, h5, h6, h8⟩
+      obtain ⟨l1, ls1, hs1, hb1, hi1, ht1, hle1, hba1, hh1, hsub1⟩ := hstep
+      obtain ⟨l', ls', hs', hb', hi', ht', hle', hba', hh', hsub'⟩ := ih hrest _ l1 ls1 L hs1 hb1 ht1 hL'
+      exact ⟨l', ls', hs', by simpa [leafVals] using hb', hi'.trans hi1, ht', by rw [hle', hle1], by rw [hba', hba1],
         by rw [hh', hh1], HolesSub.trans hsub1 hsub'⟩
 
 /-! ## The top-level tree -/
@@ -114,7 +120,7 @@ theorem start_binary (cx : Ctx C) (p : Bool) :
   first | rfl | decide
 
 theorem binOK_start (cx : Ctx C) (p : Bool) : BinOK cx (binLayer p) ([] : List C) :=
-  ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, fun _ n hn => by simp [binLayer] at hn,
+  ⟨fun _ => rfl, rfl, rfl, rfl, rfl, rfl, rfl, fun _ n hn => by simp [binLayer] at hn,
     fun n hn => by simp [binLayer] at hn, fun n hn => by simp [binLayer] at hn, fun hc => by cases hc⟩
 
 theorem topOK_start (p : Bool) : TopOK ({ stack := [binLayer p] } : St C) := by
@@ -153,7 +159,7 @@ theorem top_body (cx : Ctx C) (hP : ParamsOK cx.P) (p : Bool) (body : List (Op C
       (body.foldl (St.step cx) (({} : St C).step cx (.startTree .binary p))).base = [] ∧
       (body.foldl (St.step cx) (({} : St C).step cx (.startTree .binary p))).hashErr = none := by
   rw [start_binary]
-  obtain ⟨l, ls, hs, hb, ht, hle, hba, hh, _⟩ :=
+  obtain ⟨l, ls, hs, hb, _, ht, hle, hba, hh, _⟩ :=
     body_bin cx hP body hbody { stack := [binLayer p] } (binLayer p) [] [] rfl (binOK_start cx p) (topOK_start p)
       (by simpa using hL)
   rw [erase_nil_layers hle] at hs

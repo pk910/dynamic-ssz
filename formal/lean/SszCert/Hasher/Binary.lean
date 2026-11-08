@@ -16,7 +16,7 @@ variable {C : Type}
 
 /-- The invariant of an open binary scope whose leaves so far are `L`. -/
 structure BinOK (cx : Ctx C) (l : Layer C) (L : List C) : Prop where
-  inc : l.incremental = true
+  ninc : l.incremental = false → l.collapsed = false
   noprog : l.progressive = false
   nolegacy : l.legacy = false
   prog : l.prog = []
@@ -25,7 +25,7 @@ structure BinOK (cx : Ctx C) (l : Layer C) (L : List C) : Prop where
   cov : Cov cx.H cx.z0 true l.nodes L
   leaves : l.collapsed = false → ∀ n ∈ l.nodes, n.depth = 0
   shallow : ∀ n ∈ l.nodes, n.depth < 40
-  holes : ∀ n ∈ l.nodes, n.cell.isReady = false → n.depth = cx.P.capDepth
+  holes : ∀ n ∈ l.nodes, n.cell.isReady = false → 0 < n.depth
   nonempty : l.collapsed = true → l.nodes ≠ []
 
 /-- What the calls need of the rest of the state. -/
@@ -66,7 +66,7 @@ theorem push_bin (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C)) (L 
   have hcl' : ({ l with nodes := l.nodes ++ [⟨0, .ready v⟩] } : Layer C).cells = l.cells ++ [.ready v] := by
     rw [layer_cells_bin ({ l with nodes := l.nodes ++ [⟨0, .ready v⟩] } : Layer C) hb.prog hb.pend hb.tail, hcl]
     simp [nodeCells]
-  refine ⟨St.setTop_stack s l _ ls h, ⟨hb.inc, hb.noprog, hb.nolegacy, hb.prog, hb.pend, hb.tail,
+  refine ⟨St.setTop_stack s l _ ls h, ⟨hb.ninc, hb.noprog, hb.nolegacy, hb.prog, hb.pend, hb.tail,
     cov_push cx.H cx.z0 hb.cov (.ready v), ?_, ?_, ?_, fun _ => by simp⟩, ⟨?_, ?_, ?_, ?_⟩,
     St.setTop_below s l _ ls h, ?_⟩
   · intro hc n hn
@@ -291,7 +291,7 @@ theorem map_erase_nil {xs : List (Cell C)} (h : xs.map Cell.erase = ([] : List (
 
 /-- The scope invariant depends only on the erased layer (and its holes). -/
 theorem binOK_of_erase (cx : Ctx C) {l l' : Layer C} {L : List C} (hb : BinOK cx l L) (he : l'.erase = l.erase)
-    (hh : ∀ n ∈ l'.nodes, n.cell.isReady = false → n.depth = cx.P.capDepth) : BinOK cx l' L := by
+    (hh : ∀ n ∈ l'.nodes, n.cell.isReady = false → 0 < n.depth) : BinOK cx l' L := by
   have hinc : l'.incremental = l.incremental := by have := congrArg Layer.incremental he; exact this
   have hpr : l'.progressive = l.progressive := by have := congrArg Layer.progressive he; exact this
   have hle : l'.legacy = l.legacy := by have := congrArg Layer.legacy he; exact this
@@ -305,7 +305,7 @@ theorem binOK_of_erase (cx : Ctx C) {l l' : Layer C} {L : List C} (hb : BinOK cx
     have : n.erase ∈ l.nodes.map Node.erase := by rw [← hn]; exact List.mem_map_of_mem hn'
     obtain ⟨m, hm, he'⟩ := List.mem_map.mp this
     exact ⟨m, hm, by have := congrArg Node.depth he'; exact this⟩
-  refine ⟨by rw [hinc]; exact hb.inc, by rw [hpr]; exact hb.noprog, by rw [hle]; exact hb.nolegacy,
+  refine ⟨fun hi => by rw [hco]; exact hb.ninc (by rw [← hinc]; exact hi), by rw [hpr]; exact hb.noprog, by rw [hle]; exact hb.nolegacy,
     ?_, ?_, ?_, cov_of_erase_eq cx.H cx.z0 hn hb.cov, ?_, ?_, hh, ?_⟩
   · rw [hb.prog] at hp; exact map_erase_nil hp
   · rw [hb.pend] at hd; simpa using hd
@@ -380,8 +380,10 @@ theorem stack_of_view {s s' : St C} (h : s'.view = s.view) {l : Layer C} {ls : L
     scope still covers its leaves, the rest of the state keeps its view. -/
 theorem collapseBinary_bin (cx : Ctx C) (hb0 : 0 < cx.P.batch) (hb2 : cx.P.batch % 2 = 0)
     (s : St C) (l : Layer C) (ls : List (Layer C)) (L : List C)
-    (h : s.stack = l :: ls) (hb : BinOK cx l L) (ht : TopOK s) (hL : L.length < 2 ^ 40) :
-    ∃ l' ls', (s.collapseBinary cx).stack = l' :: ls' ∧ BinOK cx l' L ∧ TopOK (s.collapseBinary cx) ∧
+    (h : s.stack = l :: ls) (hb : BinOK cx l L) (hinc : l.incremental = true) (ht : TopOK s)
+    (hL : L.length < 2 ^ 40) :
+    ∃ l' ls', (s.collapseBinary cx).stack = l' :: ls' ∧ BinOK cx l' L ∧ l'.incremental = true ∧
+      TopOK (s.collapseBinary cx) ∧
       ls'.map Layer.erase = ls.map Layer.erase ∧
       (s.collapseBinary cx).base.map Cell.erase = s.base.map Cell.erase ∧
       (s.collapseBinary cx).hashErr = s.hashErr ∧ HolesSub s.below (s.collapseBinary cx).below := by
@@ -389,7 +391,7 @@ theorem collapseBinary_bin (cx : Ctx C) (hb0 : 0 < cx.P.batch) (hb2 : cx.P.batch
   rw [h]
   simp only [hb.pend, ne_eq, not_true_eq_false, if_false]
   split
-  · exact ⟨l, ls, h, hb, ht, rfl, rfl, rfl, HolesSub.refl _⟩
+  · exact ⟨l, ls, h, hb, hinc, ht, rfl, rfl, rfl, HolesSub.refl _⟩
   rename_i hd0
   -- the drain before the rounds
   obtain ⟨hv, ht2, hh2, _⟩ := drainFor_spec s ht s.activeStart
@@ -436,9 +438,11 @@ theorem collapseBinary_bin (cx : Ctx C) (hb0 : 0 < cx.P.batch) (hb2 : cx.P.batch
     intro ns; rw [uncollapsedAsLeaves_layer]
   rw [hfin]
   generalize hns : (batchLoop cx 64 0 (s.drainFor s.activeStart) l2.nodes).2 = ns at hnr hcov
-  refine ⟨_, ls2, St.setTop_stack _ l2 _ ls2 hs2, ⟨hb2'.inc, hb2'.noprog, hb2'.nolegacy, hb2'.prog, hb2'.pend,
+  have hinc2 : l2.incremental = true := (congrArg Layer.incremental he2).trans hinc
+  refine ⟨_, ls2, St.setTop_stack _ l2 _ ls2 hs2,
+    ⟨fun hi => absurd (show l2.incremental = false from hi) (by rw [hinc2]; decide), hb2'.noprog, hb2'.nolegacy, hb2'.prog, hb2'.pend,
     hb2'.tail, hcov, by simp, cov_depth_lt cx.H cx.z0 hcov hL,
-    (fun n hn hnr' => by rw [hnr n hn] at hnr'; cases hnr'), fun _ => ?_⟩,
+    (fun n hn hnr' => by rw [hnr n hn] at hnr'; cases hnr'), fun _ => ?_⟩, hinc2,
     ?_, hle2, ?_, ?_, ?_⟩
   · -- a batch ran, so the scope had nodes and has them still
     intro e

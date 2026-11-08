@@ -257,11 +257,12 @@ theorem layer_cells_of_erase {l l' : Layer C} (he : l'.erase = l.erase) (hp : l.
     Go's `dstOff` points; the scope keeps covering its leaves. -/
 theorem capRound_bin (cx : Ctx C) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) (hcd : 0 < cx.P.capDepth)
     (s : St C) (l : Layer C) (ls : List (Layer C)) (L : List C) (ncap : Nat)
-    (h : s.stack = l :: ls) (hb : BinOK cx l L) (ht : TopOK s) (hL : L.length < 2 ^ 40)
+    (h : s.stack = l :: ls) (hb : BinOK cx l L) (hinc : l.incremental = true) (ht : TopOK s)
+    (hL : L.length < 2 ^ 40)
     (hsh : PreShape cx.P l ncap) (hbig : cx.P.cap ≤ (l.nodes.drop ncap).length) :
     ∃ l' ls', ((s.capJob cx l ncap).1.setTop
         (capCompact cx.P ((s.capJob cx l ncap).1.topLayer l) ncap (s.capJob cx l ncap).2)).stack = l' :: ls' ∧
-      BinOK cx l' L ∧
+      BinOK cx l' L ∧ l'.incremental = true ∧
       TopOK ((s.capJob cx l ncap).1.setTop
         (capCompact cx.P ((s.capJob cx l ncap).1.topLayer l) ncap (s.capJob cx l ncap).2)) ∧
       PreShape cx.P l' (ncap + 1) ∧ (l'.nodes.drop (ncap + 1)).length = (l.nodes.drop ncap).length - cx.P.cap ∧
@@ -396,9 +397,13 @@ theorem capRound_bin (cx : Ctx C) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) (hcd : 0
   have hlen2 : (l1.nodes.take ncap ++ [(⟨cx.P.capDepth, .hole v (s.ringDrain cx.P).nextJob 0⟩ : Node C)]).length =
       ncap + 1 := by simp [htk]
   refine ⟨l', ls1, St.setTop_stack T l1 l' ls1 hTs, ⟨?_, ?_, ?_, ?_, ?_, ?_, hcov', (by intro hc; cases hc),
-    cov_depth_lt cx.H cx.z0 hcov' hL, ?_, fun _ => by rw [hl'n]; simp⟩, ⟨?_, ?_, ?_, ?_⟩, ⟨?_, ?_, ?_⟩, ?_, hle1,
+    cov_depth_lt cx.H cx.z0 hcov' hL, ?_, fun _ => by rw [hl'n]; simp⟩,
+    (by have e := congrArg Layer.incremental he1; exact e.trans hinc), ⟨?_, ?_, ?_, ?_⟩, ⟨?_, ?_, ?_⟩, ?_, hle1,
     ?_, ?_, ?_, ?_⟩
-  · show l1.incremental = true; have := congrArg Layer.incremental he1; exact this.trans hb.inc
+  · intro hi; exfalso
+    have e : l1.incremental = l.incremental := by have := congrArg Layer.incremental he1; exact this
+    have : l1.incremental = false := hi
+    rw [e, hinc] at this; cases this
   · show l1.progressive = false; have := congrArg Layer.progressive he1; exact this.trans hb.noprog
   · show l1.legacy = false; have := congrArg Layer.legacy he1; exact this.trans hb.nolegacy
   · show l1.prog = []; have := congrArg Layer.prog he1; simpa [Layer.erase, hb.prog] using this
@@ -409,8 +414,8 @@ theorem capRound_bin (cx : Ctx C) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) (hcd : 0
     rw [hl'n] at hn
     rcases List.mem_append.mp hn with hn | hn
     · rcases List.mem_append.mp hn with hn | hn
-      · exact hcaps1 n hn
-      · simp at hn; rw [hn]
+      · rw [hcaps1 n hn]; exact hcd
+      · simp at hn; rw [hn]; exact hcd
     · rw [(hz1d n (List.mem_of_mem_drop hn)).2] at hnr; cases hnr
   · -- the hole invariant, with the new job
     show HolesOK (St.setTop ((s.ringDrain cx.P).addJob J) l')
@@ -516,7 +521,7 @@ theorem normTop_bin (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C)) 
   have hn : s.normTop = s.setTop { l with counted := l.nodes.length } := by
     unfold St.normTop; rw [h]; simp only; rw [hs, hl]
   rw [hn]
-  refine ⟨St.setTop_stack s l _ ls h, ⟨hb.inc, hb.noprog, hb.nolegacy, hb.prog, hb.pend, hb.tail, hb.cov, hb.leaves,
+  refine ⟨St.setTop_stack s l _ ls h, ⟨hb.ninc, hb.noprog, hb.nolegacy, hb.prog, hb.pend, hb.tail, hb.cov, hb.leaves,
     hb.shallow, hb.holes, hb.nonempty⟩, topOK_setTop_same s l _ ls h ht rfl, St.setTop_below s l _ ls h,
     St.setTop_base s _, St.setTop_hashErr s _⟩
 
@@ -563,8 +568,8 @@ theorem preShape_of_cov (cx : Ctx C) (l : Layer C) (L : List C) (hb : BinOK cx l
 theorem precollapseLoop_bin (cx : Ctx C) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) (hcd : 0 < cx.P.capDepth)
     (L : List C) (hL : L.length < 2 ^ 40) :
     ∀ fuel (s : St C) (l : Layer C) (ls : List (Layer C)) (ncap : Nat), s.stack = l :: ls → BinOK cx l L →
-      TopOK s → PreShape cx.P l ncap →
-      ∃ l' ls', (precollapseLoop cx fuel s ncap).stack = l' :: ls' ∧ BinOK cx l' L ∧
+      l.incremental = true → TopOK s → PreShape cx.P l ncap →
+      ∃ l' ls', (precollapseLoop cx fuel s ncap).stack = l' :: ls' ∧ BinOK cx l' L ∧ l'.incremental = true ∧
         TopOK (precollapseLoop cx fuel s ncap) ∧ ls'.map Layer.erase = ls.map Layer.erase ∧
         (precollapseLoop cx fuel s ncap).base.map Cell.erase = s.base.map Cell.erase ∧
         (precollapseLoop cx fuel s ncap).hashErr = s.hashErr ∧
@@ -572,18 +577,18 @@ theorem precollapseLoop_bin (cx : Ctx C) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) (
         HolesSub s.below (precollapseLoop cx fuel s ncap).below := by
   intro fuel
   induction fuel with
-  | zero => intro s l ls ncap h hb ht _; exact ⟨l, ls, h, hb, ht, rfl, rfl, rfl, rfl, HolesSub.refl _⟩
+  | zero => intro s l ls ncap h hb hi ht _; exact ⟨l, ls, h, hb, hi, ht, rfl, rfl, rfl, rfl, HolesSub.refl _⟩
   | succ fuel ih =>
-    intro s l ls ncap h hb ht hsh
+    intro s l ls ncap h hb hi ht hsh
     simp only [precollapseLoop, h]
     split
-    · exact ⟨l, ls, h, hb, ht, rfl, rfl, rfl, rfl, HolesSub.refl _⟩
+    · exact ⟨l, ls, h, hb, hi, ht, rfl, rfl, rfl, rfl, HolesSub.refl _⟩
     · rename_i hbig
-      obtain ⟨l', ls', hs', hb', ht', hsh', _, hle', hbase', hh', hbl', hsub'⟩ :=
-        capRound_bin cx hcap hcd s l ls L ncap h hb ht hL hsh (by omega)
-      obtain ⟨l'', ls'', hs'', hb'', ht'', hle'', hbase'', hh'', hbl'', hsub''⟩ :=
-        ih _ l' ls' (ncap + 1) hs' hb' ht' hsh'
-      exact ⟨l'', ls'', hs'', hb'', ht'', by rw [hle'', hle'], by rw [hbase'', hbase'],
+      obtain ⟨l', ls', hs', hb', hi', ht', hsh', _, hle', hbase', hh', hbl', hsub'⟩ :=
+        capRound_bin cx hcap hcd s l ls L ncap h hb hi ht hL hsh (by omega)
+      obtain ⟨l'', ls'', hs'', hb'', hi'', ht'', hle'', hbase'', hh'', hbl'', hsub''⟩ :=
+        ih _ l' ls' (ncap + 1) hs' hb' hi' ht' hsh'
+      exact ⟨l'', ls'', hs'', hb'', hi'', ht'', by rw [hle'', hle'], by rw [hbase'', hbase'],
         by rw [hh'', hh'], by rw [hbl'', hbl'], HolesSub.trans hsub' hsub''⟩
 
 /-- **Asynchronous `Collapse` on a binary scope** (`precollapseCapRun`)
@@ -591,8 +596,10 @@ theorem precollapseLoop_bin (cx : Ctx C) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) (
     scope covers its leaves and every hole is where its job will write. -/
 theorem precollapse_bin (cx : Ctx C) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) (hcd : 0 < cx.P.capDepth)
     (s : St C) (l : Layer C) (ls : List (Layer C)) (L : List C)
-    (h : s.stack = l :: ls) (hb : BinOK cx l L) (ht : TopOK s) (hL : L.length < 2 ^ 40) :
-    ∃ l' ls', (s.precollapse cx).1.stack = l' :: ls' ∧ BinOK cx l' L ∧ TopOK (s.precollapse cx).1 ∧
+    (h : s.stack = l :: ls) (hb : BinOK cx l L) (hinc : l.incremental = true) (ht : TopOK s)
+    (hL : L.length < 2 ^ 40) :
+    ∃ l' ls', (s.precollapse cx).1.stack = l' :: ls' ∧ BinOK cx l' L ∧ l'.incremental = true ∧
+      TopOK (s.precollapse cx).1 ∧
       ls'.map Layer.erase = ls.map Layer.erase ∧
       (s.precollapse cx).1.base.map Cell.erase = s.base.map Cell.erase ∧
       (s.precollapse cx).1.hashErr = s.hashErr ∧ (s.precollapse cx).1.below.length = s.below.length ∧
@@ -602,7 +609,7 @@ theorem precollapse_bin (cx : Ctx C) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) (hcd 
   rw [hns]
   simp only
   split
-  · exact ⟨_, ls, hns, hb0, ht0, rfl, by rw [hba0], hh0, by rw [hbl0], by rw [hbl0]; exact HolesSub.refl _⟩
+  · exact ⟨_, ls, hns, hb0, hinc, ht0, rfl, by rw [hba0], hh0, by rw [hbl0], by rw [hbl0]; exact HolesSub.refl _⟩
   · rename_i hany
     have hd : ∀ n ∈ ({ l with counted := l.nodes.length } : Layer C).nodes,
         n.depth = 0 ∨ n.depth = cx.P.capDepth := by
@@ -618,9 +625,9 @@ theorem precollapse_bin (cx : Ctx C) (hcap : cx.P.cap = 2 ^ cx.P.capDepth) (hcd 
     obtain ⟨hsh, hok⟩ := preShape_of_cov cx _ L hb0 hcd hd
     rw [hok]
     simp only [St.failUnless, if_true]
-    obtain ⟨l', ls', hs', hb', ht', hle', hba', hh', hbl', hsub'⟩ :=
-      precollapseLoop_bin cx hcap hcd L hL _ s.normTop _ ls _ hns hb0 ht0 hsh
-    exact ⟨l', ls', hs', hb', ht', hle', by rw [hba', hba0], by rw [hh', hh0], by rw [hbl', hbl0],
+    obtain ⟨l', ls', hs', hb', hi', ht', hle', hba', hh', hbl', hsub'⟩ :=
+      precollapseLoop_bin cx hcap hcd L hL _ s.normTop _ ls _ hns hb0 hinc ht0 hsh
+    exact ⟨l', ls', hs', hb', hi', ht', hle', by rw [hba', hba0], by rw [hh', hh0], by rw [hbl', hbl0],
       by rw [← hbl0]; exact hsub'⟩
 
 end Ssz.Hasher
