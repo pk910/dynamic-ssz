@@ -144,9 +144,12 @@ copy of the tree and requires the links to kill it.
 * Harness link: 70 types × every path, both models — zero divergences.
 * Hasher trace: 3 seeds × 3000 walks (2.3 M calls) with small thresholds and
   30 walks (268 k calls) at production thresholds — zero divergences.
-* Ethereum link (deneb, minimal): 1110 consensus-spec-tests cases through
-  both oracles, 3800 generated values — zero divergences.
-* Mutation testing: every non-equivalent mutant killed.
+* Ethereum link, all forks, both presets (consensus-spec-tests
+  v1.7.0-beta.4): 10,185 cases replayed through every path against pyspec's
+  roots, 10,145 of them also through both models; 14,850 generated values
+  with mutations; 106,575 Merkle branches and 14,850 multiproofs
+  cross-verified with EthLib — zero divergences.
+* Mutation testing: all 16 catalogued mutants killed.
 
 ## Findings
 
