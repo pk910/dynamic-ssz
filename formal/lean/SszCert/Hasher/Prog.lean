@@ -1839,4 +1839,183 @@ theorem progRoot_partial (H : C → C → C) (z0 : C) {d : Nat} {R : List C} (hn
     progRoot H z0 d R = H (mroot H z0 d R) z0 := by
   rw [progRoot_cons H z0 hne, List.take_of_length_le hl, List.drop_eq_nil_of_le hl, progRoot_nil]
 
+/-! ## `collapseProgressiveLayer` -/
+
+theorem drainAll_nojobs (s : St C) (hj : s.jobs = []) : s.drainAll = { s with jobMaxEnd := 0 } := by
+  unfold St.drainAll; rw [hj]; simp [St.drainAll.go, hj]
+
+theorem topOK_of_ready (s : St C) (hj : s.jobs = []) (he : s.err = none)
+    (hr : ∀ c ∈ s.cells, c.isReady = true) : TopOK s := by
+  refine ⟨⟨(fun j hj' => by rw [hj] at hj'; cases hj'), (fun p v id idx hp => ?_), (by rw [hj]; simp),
+    (fun j hj' => by rw [hj] at hj'; cases hj')⟩, he, (fun j hj' => by rw [hj] at hj'; cases hj'),
+    (fun j hj' => by rw [hj] at hj'; cases hj')⟩
+  have := hr _ (List.mem_of_getElem? hp); simp [Cell.isReady] at this
+
+/-- A full drain of a state with a progressive scope on top. -/
+theorem drainAll_prog (cx : Ctx C) (s : St C) (l : Layer C) (ls : List (Layer C)) (G : List (List C)) (Lb : List C)
+    (h : s.stack = l :: ls) (hp : ProgOK cx l G Lb) (hpe : l.pend = []) (ht : TopOK s) :
+    ∃ l' ls', s.drainAll.stack = l' :: ls' ∧ ProgOK cx l' G Lb ∧ l'.pend = [] ∧ l'.level = l.level ∧
+      l'.nodes.map (·.depth) = l.nodes.map (·.depth) ∧ TopOK s.drainAll ∧ s.drainAll.jobs = [] ∧
+      (∀ c ∈ s.drainAll.cells, c.isReady = true) ∧ ls'.map Layer.erase = ls.map Layer.erase ∧
+      s.drainAll.base.map Cell.erase = s.base.map Cell.erase ∧ s.drainAll.hashErr = s.hashErr ∧
+      s.drainAll.err = s.err ∧ HolesSub s.below s.drainAll.below := by
+  obtain ⟨hv, hj, hok, he, hh, hnone, _⟩ := drainAll_spec s ht.holes
+  obtain ⟨l', ls', h', hle, hls⟩ := LayerLE.of_view hv h (drainAll_holesSub s ht.holes)
+  have hr : ∀ c ∈ s.drainAll.cells, c.isReady = true := by
+    intro c hc
+    cases hcr : c with
+    | ready _ => rfl
+    | hole v id idx =>
+      exfalso; obtain ⟨i, hi, hci⟩ := List.getElem_of_mem hc
+      exact hnone i v id idx (by rw [List.getElem?_eq_getElem hi, hci, hcr])
+  refine ⟨l', ls', h', hle.progOK cx hp, by have := hle.pend_map; rw [hpe] at this; simpa using this,
+    by have := congrArg Layer.level hle.erase; exact this,
+    by have := congrArg (List.map (·.depth)) hle.nodes_map; simpa [Node.erase, List.map_map, Function.comp_def] using this,
+    topOK_of_ready _ hj (by rw [he]; exact ht.err) hr, hj, hr, hls, congrArg Prod.fst hv, hh, he,
+    holesSub_below hv h h' (drainAll_holesSub s ht.holes)⟩
+
+/-- **`collapseProgressiveLayer`**: the root of a progressive scope is the
+    progressive root (EIP-7916) of its leaves, and the close leaves no job
+    and no hole. -/
+theorem closeProgressive_ok (cx : Ctx C) (hP : ParamsOK cx.P) (s0 : St C) (l : Layer C) (ls : List (Layer C))
+    (G : List (List C)) (Lb : List C) (async : Bool) (h : s0.stack = l :: ls) (hp : ProgOK cx l G Lb)
+    (hpe : l.pend = []) (ht : TopOK s0) (hLt : (G.flatten ++ Lb).length < 2 ^ 40) :
+    (s0.closeProgressive cx async).2 = .ready (progRoot cx.H cx.z0 0 (G.flatten ++ Lb)) ∧
+    ∃ l' ls', (s0.closeProgressive cx async).1.stack = l' :: ls' ∧ ls'.map Layer.erase = ls.map Layer.erase ∧
+      TopOK (s0.closeProgressive cx async).1 ∧ (∀ c ∈ l'.cells, c.isReady = true) ∧
+      (s0.closeProgressive cx async).1.base.map Cell.erase = s0.base.map Cell.erase ∧
+      (s0.closeProgressive cx async).1.hashErr = s0.hashErr ∧
+      HolesSub s0.below (s0.closeProgressive cx async).1.below := by
+  -- the first collapse
+  obtain ⟨lA, lsA, GA, LbA, hA, hpA, hfA, hpeA, htA, hleA, hbaA, hhA, hblA, hsubA, hdoneA, _, _⟩ :=
+    collapseProgressive_ok cx hP s0 l ls G Lb async h hp hpe ht hLt
+  have hLtA : (GA.flatten ++ LbA).length < 2 ^ 40 := by rw [← hfA]; exact hLt
+  -- the second collapse, after a full drain, when jobs are in flight
+  have hB : ∃ lB lsB GB LbB, (if (s0.collapseProgressive cx async).jobs ≠ [] then
+        ((s0.collapseProgressive cx async).drainAll).collapseProgressive cx async
+      else s0.collapseProgressive cx async).stack = lB :: lsB ∧ ProgOK cx lB GB LbB ∧
+      G.flatten ++ Lb = GB.flatten ++ LbB ∧ lB.pend = [] ∧
+      TopOK (if (s0.collapseProgressive cx async).jobs ≠ [] then
+        ((s0.collapseProgressive cx async).drainAll).collapseProgressive cx async
+      else s0.collapseProgressive cx async) ∧ lsB.map Layer.erase = ls.map Layer.erase ∧
+      (if (s0.collapseProgressive cx async).jobs ≠ [] then
+        ((s0.collapseProgressive cx async).drainAll).collapseProgressive cx async
+      else s0.collapseProgressive cx async).base.map Cell.erase = s0.base.map Cell.erase ∧
+      (if (s0.collapseProgressive cx async).jobs ≠ [] then
+        ((s0.collapseProgressive cx async).drainAll).collapseProgressive cx async
+      else s0.collapseProgressive cx async).hashErr = s0.hashErr ∧
+      HolesSub s0.below (if (s0.collapseProgressive cx async).jobs ≠ [] then
+        ((s0.collapseProgressive cx async).drainAll).collapseProgressive cx async
+      else s0.collapseProgressive cx async).below ∧ LbB.length < 4 ^ lB.level := by
+    by_cases hj : (s0.collapseProgressive cx async).jobs = []
+    · rw [if_neg (by simpa using hj)]
+      have hlt : LbA.length < 4 ^ lA.level := by
+        rcases hdoneA with hd | ⟨_, _, _, _, hjn⟩
+        · exact hd
+        · exact absurd hj hjn
+      exact ⟨lA, lsA, GA, LbA, hA, hpA, hfA, hpeA, htA, hleA, hbaA, hhA, hsubA, hlt⟩
+    · rw [if_pos hj]
+      obtain ⟨lA', lsA', hA', hpA', hpeA', hlvA', hdepA', htA', _, _, hleA', hbaA', hhA', _, hsubA'⟩ :=
+        drainAll_prog cx _ lA lsA GA LbA hA hpA hpeA htA
+      obtain ⟨lB, lsB, GB, LbB, hB, hpB, hfB, hpeB, htB, hleB, hbaB, hhB, _, hsubB, _, himp1, himp2⟩ :=
+        collapseProgressive_ok cx hP _ lA' lsA' GA LbA async hA' hpA' hpeA' htA' hLtA
+      have hlt : LbB.length < 4 ^ lB.level := by
+        rcases hdoneA with hd | ⟨_, _, _, hcr, _⟩
+        · exact himp1 (by rw [hlvA']; exact hd)
+        · exact himp2 (capsRest_of_depths cx.P hdepA' hcr)
+      refine ⟨lB, lsB, GB, LbB, hB, hpB, by rw [hfA, hfB], hpeB, htB, by rw [hleB, hleA', hleA],
+        by rw [hbaB, hbaA', hbaA], by rw [hhB, hhA', hhA], HolesSub.trans hsubA (HolesSub.trans hsubA' hsubB), hlt⟩
+  obtain ⟨lB, lsB, GB, LbB, hBs, hpB, hfB, hpeB, htB, hleB, hbaB, hhB, hsubB, hltB⟩ := hB
+  generalize hBe : (if (s0.collapseProgressive cx async).jobs ≠ [] then
+        ((s0.collapseProgressive cx async).drainAll).collapseProgressive cx async
+      else s0.collapseProgressive cx async) = B at hBs htB hbaB hhB hsubB
+  -- the final drain
+  obtain ⟨lC, lsC, hC, hpC, hpeC, hlvC, _, htC, hjC, hrC, hleC, hbaC, hhC, heC, hsubC⟩ :=
+    drainAll_prog cx B lB lsB GB LbB hBs hpB hpeB htB
+  have hltC : LbB.length < 4 ^ lC.level := by rw [hlvC]; exact hltB
+  have hcellsC : ∀ c ∈ lC.cells, c.isReady = true := by
+    intro c hc; apply hrC; rw [St.cells_top _ lC lsC hC]; exact List.mem_append_right _ hc
+  have hprogC : ∀ c ∈ lC.prog, c.isReady = true := fun c hc => hcellsC c (by simp [Layer.cells, hc])
+  have hnodesC : ∀ n ∈ lC.nodes, n.cell.isReady = true := fun n hn => hcellsC n.cell (by
+    simp only [Layer.cells, List.mem_append, nodeCells, List.mem_map]; exact Or.inl (Or.inl (Or.inr ⟨n, hn, rfl⟩)))
+  -- the root
+  have hvs := progRoot_groups cx.H cx.z0 GB (lC.prog.map Cell.val) 0 LbB (by simp [hpC.groups.1]) (by
+    intro i h1 h2
+    obtain ⟨a, b⟩ := hpC.groups.2 i h1 (by simpa using h2)
+    simp only [List.getElem_map, Nat.zero_add]
+    exact ⟨a, b⟩)
+  simp only [Nat.zero_add] at hvs
+  have hlvG : GB.length = lC.level := hpC.level.symm
+  rw [hlvG] at hvs
+  unfold St.closeProgressive
+  rw [hBe]
+  unfold St.closeTail
+  rw [hC]
+  simp only
+  unfold St.closePartial
+  have hbelowC : ∀ c ∈ B.drainAll.below, c.isReady = true := by
+    intro c hc; apply hrC; rw [St.cells_top _ lC lsC hC]; exact List.mem_append_left _ hc
+  -- the end of the close, on any state with this region
+  have hend : ∀ (E : St C) (lE : Layer C), E.stack = lE :: lsC → E.jobs = [] → E.err = none →
+      E.base = B.drainAll.base → E.hashErr = B.drainAll.hashErr → E.below = B.drainAll.below →
+      (∀ c ∈ lE.cells, c.isReady = true) →
+      (E.closeFold cx).2 = .ready ((lE.prog.map Cell.val).foldr (fun r acc => cx.H r acc) cx.z0) ∧
+      ∃ l' ls', (E.closeFold cx).1.stack = l' :: ls' ∧ ls'.map Layer.erase = ls.map Layer.erase ∧
+        TopOK (E.closeFold cx).1 ∧ (∀ c ∈ l'.cells, c.isReady = true) ∧
+        (E.closeFold cx).1.base.map Cell.erase = s0.base.map Cell.erase ∧ (E.closeFold cx).1.hashErr = s0.hashErr ∧
+        HolesSub s0.below (E.closeFold cx).1.below := by
+    intro E lE hEs hEj hEe hEb hEh hEbl hEr
+    have hpr : ∀ c ∈ lE.prog, c.isReady = true := fun c hc => hEr c (by simp [Layer.cells, hc])
+    have hfold : E.closeFold cx = (E, .ready ((lE.prog.map Cell.val).foldr (fun r acc => cx.H r acc) cx.z0)) := by
+      unfold St.closeFold; rw [hEs]; simp only [St.vals, if_pos (List.all_eq_true.mpr hpr)]
+    rw [hfold]
+    refine ⟨rfl, lE, lsC, hEs, by rw [hleC, hleB], ?_, hEr, by rw [hEb, hbaC, hbaB], by rw [hEh, hhC, hhB],
+      by rw [hEbl]; exact HolesSub.trans hsubB hsubC⟩
+    apply topOK_of_ready E hEj hEe
+    intro c hc
+    rw [St.cells_top E lE lsC hEs] at hc
+    rcases List.mem_append.mp hc with hc | hc
+    · rw [hEbl] at hc; exact hbelowC c hc
+    · exact hEr c hc
+  have heC' : B.drainAll.err = none := heC.trans htB.err
+  by_cases hn : lC.nodes = []
+  · have hLb0 : LbB = [] := by have := hpC.cov; rw [hn] at this; exact this
+    rw [if_neg (by simpa using hn), setTop_self _ lC lsC hC, drainAll_nojobs _ hjC]
+    obtain ⟨hr, rest⟩ := hend { B.drainAll with jobMaxEnd := 0 } lC hC hjC heC' rfl rfl rfl hcellsC
+    refine ⟨?_, rest⟩
+    rw [hr, hfB, hvs, hLb0, progRoot_nil]
+  · have hLbne : LbB ≠ [] := by
+      intro e
+      obtain ⟨n0, hn0⟩ := List.exists_mem_of_ne_nil _ hn
+      have h1 := cov_node_le cx.H cx.z0 hpC.cov n0 hn0
+      rw [e] at h1; simp at h1
+    have hlim : LbB.length ≤ 4 ^ lC.level := by omega
+    have hd64 : headDepth lC.nodes < 64 := by
+      obtain ⟨n0, ns0, hns⟩ := List.exists_cons_of_ne_nil hn
+      have := hpC.shallow n0 (by rw [hns]; simp); simp [headDepth, hns]; omega
+    obtain ⟨hst, hrd⟩ := collapseAll_state cx B.drainAll lC.nodes (4 ^ lC.level) LbB hpC.cov hn hnodesC hd64 (Or.inr hlim)
+    have hval := collapseAll_val cx B.drainAll lC.nodes (4 ^ lC.level) false LbB hpC.cov hn hd64 (Or.inr hlim)
+    rw [if_neg (by have := Nat.two_pow_pos (2 * lC.level); rw [four_pow]; omega), four_pow, depthOf_two_pow] at hval
+    rw [if_pos (by simpa using hn), hst]
+    generalize hroot : (B.drainAll.collapseAll cx lC.nodes (4 ^ lC.level)).2 = root at hrd hval
+    have hjP : (B.drainAll.setTop { lC with prog := lC.prog ++ [root], nodes := [], counted := 0 }).jobs = [] := by
+      rw [St.setTop_jobs]; exact hjC
+    rw [drainAll_nojobs _ hjP]
+    have htlC : lC.tail = [] := hpC.pendOK.tail hpeC
+    have hrP : ∀ c ∈ ({ lC with prog := lC.prog ++ [root], nodes := [], counted := 0 } : Layer C).cells,
+        c.isReady = true := by
+      intro c hc
+      simp only [Layer.cells, hpeC, htlC, nodeCells, List.map_nil, List.append_nil, List.flatten_nil,
+        List.mem_append, List.mem_singleton] at hc
+      rcases hc with hc | hc
+      · exact hprogC c hc
+      · rw [hc]; exact hrd
+    obtain ⟨hr, rest⟩ := hend { B.drainAll.setTop { lC with prog := lC.prog ++ [root], nodes := [], counted := 0 } with
+        jobMaxEnd := 0 } _ (St.setTop_stack B.drainAll lC _ lsC hC) hjP (by rw [St.setTop_err] at *; exact heC')
+      (St.setTop_base _ _) (St.setTop_hashErr _ _) (St.setTop_below B.drainAll lC _ lsC hC) hrP
+    have hrv : root.val = mroot cx.H cx.z0 (2 * lC.level) LbB := by rw [← hroot, four_pow]; exact hval
+    refine ⟨?_, rest⟩
+    rw [hr, hfB, hvs, progRoot_partial cx.H cx.z0 hLbne (by rw [← four_pow]; exact hlim), ← hrv]
+    simp only [List.map_append, List.map_cons, List.map_nil, List.foldr_append, List.foldr_cons, List.foldr_nil]
+
 end Ssz.Hasher
