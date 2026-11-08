@@ -348,46 +348,51 @@ def maxDepthOf (ns : List (Node C)) : Nat := ns.foldl (fun m n => max m n.depth)
 /-- Leaves covered by nodes. -/
 def leavesOf (ns : List (Node C)) : Nat := (ns.map (fun n => 2 ^ n.depth)).sum
 
-/-- `collapseAllDepths`: reduce a node list to one root, padding odd
-    lowest-depth groups with the zero hash of that depth, then expand to the
-    depth `limit` needs (`0` = none). Go operates on the last `count`
-    cells, the lowest-depth group of a deepest-first region. -/
-def St.collapseAll (cx : Ctx C) (s : St C) (ns : List (Node C)) (limit : Nat)
-    (live : Bool := false) : St C × Cell C :=
-  let chunks := leavesOf ns
-  let s := if limit > 0 ∧ chunks > limit then s.setHashErr "chunk limit" else s
-  let rec loop : Nat → St C → List (Node C) → St C × List (Node C)
-    | 0, s, ns => (s.fail "collapseAllDepths: no progress", ns)
-    | fuel + 1, s, ns =>
-      match ns.map (·.depth) |>.min? with
-      | none => (s, ns)
-      | some low =>
+/-- The loop of `collapseAllDepths`: reduce the lowest-depth group (padded
+    to even with the zero hash of its depth) until one node remains. Go
+    operates on the last `count` cells, the lowest-depth group of a
+    deepest-first region. -/
+def collapseLoop (cx : Ctx C) (live : Bool) : Nat → St C → List (Node C) → St C × List (Node C)
+  | 0, s, ns => (s.fail "collapseAllDepths: no progress", ns)
+  | fuel + 1, s, ns =>
+    match ns.map (·.depth) |>.min? with
+    | none => (s, ns)
+    | some low =>
+      if (ns.filter (·.depth == low)).length = 1 ∧ ns.all (fun n => n.depth == low || n.depth < low) then (s, ns)
+      else
         let cnt := (ns.filter (·.depth == low)).length
-        if cnt = 1 ∧ ns.all (fun n => n.depth == low || n.depth < low) then (s, ns)
-        else
-          -- Go writes the zero pad at `bufEnd`: a live cell when more of the
-          -- region follows the reduced span (progressive group rounds).
-          let s := if cnt % 2 = 1 ∧ live then s.fail "collapseAllDepths: zero pad over a live cell" else s
-          let ns := if cnt % 2 = 1 then ns ++ [⟨low, .ready (zeroH cx.H cx.z0 low)⟩] else ns
-          let cnt := if cnt % 2 = 1 then cnt + 1 else cnt
-          let keep := ns.take (ns.length - cnt)
-          let grp := ns.drop (ns.length - cnt)
-          if grp.all (·.depth == low) then
-            let (s, paired) := s.pairNodes cx grp
-            loop fuel s (keep ++ paired)
-          else (s.fail "collapseAllDepths: lowest group not at the end", ns)
-  let (s, ns) := loop (2 * ns.length + 64) s ns
-  match ns with
+        -- Go writes the zero pad at `bufEnd`: a live cell when more of the
+        -- region follows the reduced span (progressive group rounds).
+        let s := if cnt % 2 = 1 ∧ live then s.fail "collapseAllDepths: zero pad over a live cell" else s
+        let ns := if cnt % 2 = 1 then ns ++ [⟨low, .ready (zeroH cx.H cx.z0 low)⟩] else ns
+        let cnt := if cnt % 2 = 1 then cnt + 1 else cnt
+        let keep := ns.take (ns.length - cnt)
+        let grp := ns.drop (ns.length - cnt)
+        if grp.all (·.depth == low) then
+          let (s, paired) := s.pairNodes cx grp
+          collapseLoop cx live fuel s (keep ++ paired)
+        else (s.fail "collapseAllDepths: lowest group not at the end", ns)
+
+/-- The end of `collapseAllDepths`: one node remains; expand it to the depth
+    `limit` needs (`0` = none). -/
+def collapseFinish (cx : Ctx C) (limit : Nat) (live : Bool) (s : St C) : List (Node C) → St C × Cell C
   | [n] =>
     if limit > 0 then
-      let target := depthOf limit
-      let s := if n.depth < target ∧ live then s.fail "collapseAllDepths: expansion over a live cell" else s
-      let (s, vs) := s.vals [n.cell] "expand"
-      let v := (List.range (target - n.depth)).foldl
-        (fun acc i => cx.H acc (zeroH cx.H cx.z0 (n.depth + i))) (vs.head?.getD cx.z0)
-      (s, .ready v)
+      let s := if n.depth < depthOf limit ∧ live then s.fail "collapseAllDepths: expansion over a live cell" else s
+      ((s.vals [n.cell] "expand").1, .ready ((List.range (depthOf limit - n.depth)).foldl
+        (fun acc i => cx.H acc (zeroH cx.H cx.z0 (n.depth + i))) n.cell.val))
     else (s, n.cell)
   | _ => (s.fail "collapseAllDepths: did not reduce to one node", .ready cx.z0)
+
+/-- `collapseAllDepths`: reduce a node list to one root, then expand it to the
+    depth `limit` needs (`0` = none). -/
+def St.collapseAll (cx : Ctx C) (s : St C) (ns : List (Node C)) (limit : Nat)
+    (live : Bool := false) : St C × Cell C :=
+  collapseFinish cx limit live
+    (collapseLoop cx live (2 * ns.length + 64)
+      (if limit > 0 ∧ leavesOf ns > limit then s.setHashErr "chunk limit" else s) ns).1
+    (collapseLoop cx live (2 * ns.length + 64)
+      (if limit > 0 ∧ leavesOf ns > limit then s.setHashErr "chunk limit" else s) ns).2
 
 /-- Treat every node of an uncollapsed scope as depth 0, as Go does when it
     (re)initializes counts from the buffer; a deeper node there is an
