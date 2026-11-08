@@ -14,6 +14,7 @@ import SszCert.Hasher.Nodes
 import SszCert.Hasher.State
 import SszCert.Hasher.Batch
 import SszCert.Hasher.Top
+import SszCert.Hasher.Binary
 import SszCert.Sha256
 import SszCert.Merkle
 import SszCert.Certified
