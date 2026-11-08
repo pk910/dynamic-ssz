@@ -1810,4 +1810,33 @@ theorem collapseProgressive_ok (cx : Ctx C) (hP : ParamsOK cx.P) (s : St C) (l :
   · obtain ⟨l', ls', G', Lb', h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11⟩ := hcore _ rfl
     exact ⟨l', ls', G', Lb', h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, Or.inl h11, fun _ => h11, fun _ => h11⟩
 
+/-! ## The fold of the roots -/
+
+/-- **Progressive merkleization over complete groups**: the roots of the
+    groups folded right to left onto the progressive root of the rest. -/
+theorem progRoot_groups (H : C → C → C) (z0 : C) : ∀ (G : List (List C)) (vs : List C) (d : Nat) (R : List C),
+    vs.length = G.length →
+    (∀ i (h1 : i < G.length) (h2 : i < vs.length), (G[i]).length = 2 ^ (d + 2 * i) ∧ vs[i] = mroot H z0 (d + 2 * i) G[i]) →
+    progRoot H z0 d (G.flatten ++ R) = vs.foldr H (progRoot H z0 (d + 2 * G.length) R)
+  | [], [], d, R, _, _ => by simp
+  | [], _ :: _, _, _, h, _ => by simp at h
+  | _ :: _, [], _, _, h, _ => by simp at h
+  | g :: G, v :: vs, d, R, hl, hg => by
+    obtain ⟨hg0, hv0⟩ := hg 0 (by simp) (by simp)
+    simp only [List.getElem_cons_zero, Nat.mul_zero, Nat.add_zero] at hg0 hv0
+    have hne : g ++ (G.flatten ++ R) ≠ [] := by
+      intro e; have := congrArg List.length e; simp [hg0] at this
+    have ih := progRoot_groups H z0 G vs (d + 2) R (by simpa using hl) (by
+      intro i h1 h2
+      obtain ⟨a, b⟩ := hg (i + 1) (by simp; omega) (by simp; omega)
+      simp only [List.getElem_cons_succ] at a b
+      exact ⟨by rw [a]; congr 1; omega, by rw [b]; congr 1; omega⟩)
+    have e : d + 2 * (g :: G).length = d + 2 + 2 * G.length := by simp; omega
+    rw [e, List.flatten_cons, List.append_assoc, progRoot_cons H z0 hne, List.take_left' hg0, List.drop_left' hg0, ih,
+      List.foldr_cons, hv0]
+
+theorem progRoot_partial (H : C → C → C) (z0 : C) {d : Nat} {R : List C} (hne : R ≠ []) (hl : R.length ≤ 2 ^ d) :
+    progRoot H z0 d R = H (mroot H z0 d R) z0 := by
+  rw [progRoot_cons H z0 hne, List.take_of_length_le hl, List.drop_eq_nil_of_le hl, progRoot_nil]
+
 end Ssz.Hasher
