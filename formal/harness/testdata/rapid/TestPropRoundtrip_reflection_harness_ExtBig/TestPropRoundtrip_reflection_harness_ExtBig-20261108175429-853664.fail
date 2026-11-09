@@ -1,6 +1,0 @@
-# 2026/11/08 17:54:29.723616 [TestPropRoundtrip/reflection/harness.ExtBig] [rapid] draw u16: 0x0
-# 2026/11/08 17:54:29.723629 [TestPropRoundtrip/reflection/harness.ExtBig] marshal: Bounded: extended type not enabled: big integers are not supported in SSZ (use extended types option to enable it)
-# 
-v0.4.8#11146400571336309747
-0x0
-0x0

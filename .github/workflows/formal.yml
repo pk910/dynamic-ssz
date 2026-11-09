@@ -101,14 +101,24 @@ jobs:
         ./elan-init -y --default-toolchain none
         echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
-    - name: Cache Lean build and Mathlib oleans
+    # The dependencies (EthLib, Mathlib and its oleans, ~2.5 GiB) change only
+    # with the toolchain or the manifest, so they are keyed on those alone:
+    # one entry, reused by every run. The package's own build is small and
+    # keyed on its sources.
+    - name: Cache Lean dependencies and Mathlib oleans
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
-          formal/spec/.lake
+          formal/spec/.lake/packages
           ~/.cache/mathlib
-        key: lean-spec-${{ hashFiles('formal/spec/lean-toolchain', 'formal/spec/lake-manifest.json', 'formal/spec/**/*.lean') }}
-        restore-keys: lean-spec-
+        key: lean-spec-deps-${{ hashFiles('formal/spec/lean-toolchain', 'formal/spec/lake-manifest.json') }}
+
+    - name: Cache Lean build
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: formal/spec/.lake/build
+        key: lean-spec-build-${{ hashFiles('formal/spec/lean-toolchain', 'formal/spec/lake-manifest.json', 'formal/spec/**/*.lean') }}
+        restore-keys: lean-spec-build-
 
     - name: Build the specification oracle (executable spec only)
       working-directory: formal/spec

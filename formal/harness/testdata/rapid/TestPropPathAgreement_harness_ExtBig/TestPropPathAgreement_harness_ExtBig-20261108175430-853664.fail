@@ -1,6 +1,0 @@
-# 2026/11/08 17:54:30.362124 [TestPropPathAgreement/harness.ExtBig] [rapid] draw u16: 0x0
-# 2026/11/08 17:54:30.362136 [TestPropPathAgreement/harness.ExtBig] marshal: Bounded: extended type not enabled: big integers are not supported in SSZ (use extended types option to enable it)
-# 
-v0.4.8#4843694790601830271
-0x0
-0x0
