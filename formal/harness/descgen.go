@@ -57,7 +57,7 @@ func GenValue(rt *rapid.T, ds *dynssz.DynSsz, newFn func() any, cfg GenConfig) (
 // chunk holds (1 for composite elements).
 func pickLen(rt *rapid.T, limit uint64, maxN, perChunk int, cfg *GenConfig, label string) int {
 	hi := maxN
-	if limit < uint64(hi) {
+	if limit <= math.MaxInt32 && int(limit) < hi {
 		hi = int(limit)
 	}
 	if hi <= 0 {
@@ -88,6 +88,16 @@ func pickLen(rt *rapid.T, limit uint64, maxN, perChunk int, cfg *GenConfig, labe
 	return rapid.SampledFrom(valid).Draw(rt, label)
 }
 
+// descInt converts a descriptor size, length or bit size to int. Descriptor
+// values come from parsed tags; one beyond int32 range cannot be generated
+// (no value of that size fits in memory), so it is rejected outright.
+func descInt(n int64) int {
+	if n < 0 || n > math.MaxInt32 {
+		panic(fmt.Sprintf("descgen: descriptor value %d out of range", n))
+	}
+	return int(n)
+}
+
 // basicSize is the packed width of a basic descriptor, 0 otherwise.
 func basicSize(d *ssztypes.TypeDescriptor) int {
 	if d == nil {
@@ -97,7 +107,7 @@ func basicSize(d *ssztypes.TypeDescriptor) int {
 		d = d.ElemDesc
 	}
 	if d.SszType.IsBasic() {
-		return int(d.Size)
+		return descInt(d.Size)
 	}
 	return 0
 }
@@ -128,7 +138,7 @@ func genDesc(rt *rapid.T, desc *ssztypes.TypeDescriptor, v reflect.Value, cfg *G
 	case ssztypes.SszBoolType:
 		v.SetBool(rapid.Bool().Draw(rt, "bool"))
 	case ssztypes.SszUint8Type, ssztypes.SszUint16Type, ssztypes.SszUint32Type, ssztypes.SszUint64Type:
-		bits := 8 * int(desc.Size)
+		bits := 8 * descInt(desc.Size)
 		n := rapid.Uint64().Draw(rt, "uint")
 		if bits < 64 {
 			n &= (1 << bits) - 1
@@ -139,7 +149,7 @@ func genDesc(rt *rapid.T, desc *ssztypes.TypeDescriptor, v reflect.Value, cfg *G
 		}
 		v.SetUint(n)
 	case ssztypes.SszInt8Type, ssztypes.SszInt16Type, ssztypes.SszInt32Type, ssztypes.SszInt64Type:
-		bits := 8 * int(desc.Size)
+		bits := 8 * descInt(desc.Size)
 		n := rapid.Int64().Draw(rt, "int")
 		if bits < 64 {
 			n = n << (64 - bits) >> (64 - bits)
@@ -152,7 +162,7 @@ func genDesc(rt *rapid.T, desc *ssztypes.TypeDescriptor, v reflect.Value, cfg *G
 	case ssztypes.SszFloat64Type:
 		v.Set(reflect.ValueOf(randFloat64(rt)).Convert(v.Type()))
 	case ssztypes.SszUint128Type, ssztypes.SszUint256Type:
-		return fillRaw(rt, v, int(desc.Size))
+		return fillRaw(rt, v, descInt(desc.Size))
 	case ssztypes.SszBigIntType:
 		maxMag := 64
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 && desc.Limit >= 1 && desc.Limit-1 < uint64(maxMag) {
@@ -174,7 +184,7 @@ func genDesc(rt *rapid.T, desc *ssztypes.TypeDescriptor, v reflect.Value, cfg *G
 		}
 
 	case ssztypes.SszVectorType:
-		return genSeq(rt, desc, v, int(desc.Len), cfg, depth)
+		return genSeq(rt, desc, v, descInt(desc.Len), cfg, depth)
 	case ssztypes.SszListType, ssztypes.SszProgressiveListType:
 		limit := desc.Limit
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasLimit == 0 {
@@ -191,9 +201,9 @@ func genDesc(rt *rapid.T, desc *ssztypes.TypeDescriptor, v reflect.Value, cfg *G
 		return genSeq(rt, desc, v, n, cfg, depth)
 
 	case ssztypes.SszBitvectorType:
-		bits := int(desc.BitSize)
+		bits := descInt(desc.BitSize)
 		if bits <= 0 {
-			bits = 8 * int(desc.Size)
+			bits = 8 * descInt(desc.Size)
 		}
 		return setBits(rt, v, bits, false)
 	case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType:
