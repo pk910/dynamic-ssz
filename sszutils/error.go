@@ -19,8 +19,9 @@ var (
 	ErrUnexpectedEOF = fmt.Errorf("unexpected end of SSZ")
 
 	// ErrNegativeRead is returned when an io.Reader violates the io.Reader
-	// contract by reporting a negative byte count.
-	ErrNegativeRead = fmt.Errorf("reader returned negative byte count")
+	// contract by reporting a negative byte count, or more bytes than the
+	// buffer it was given.
+	ErrNegativeRead = fmt.Errorf("reader returned an invalid byte count")
 
 	// ErrOffset is returned when an SSZ offset is out of range, does not
 	// monotonically increase, or a field does not consume exactly the

@@ -9977,3 +9977,48 @@ func TestRemoveTypeThroughDynSsz(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+// overReportReader serves r but claims one byte more than the buffer it was
+// given.
+type overReportReader struct{ r io.Reader }
+
+func (o overReportReader) Read(p []byte) (int, error) {
+	_, err := o.r.Read(p)
+	return len(p) + 1, err
+}
+
+// A reader claiming more bytes than it was given makes UnmarshalSSZReader fail
+// with ErrNegativeRead instead of panicking, and leaves the instance usable.
+func TestUnmarshalSSZReaderOverReportedRead(t *testing.T) {
+	type payload struct {
+		A uint64
+		L []uint64 `ssz-max:"64"`
+		B [40]byte
+	}
+	value := &payload{A: 7, L: []uint64{1, 2, 3, 4, 5}, B: [40]byte{9}}
+
+	for _, bufSize := range []int{8, 64, 4096} {
+		ds := NewDynSsz(nil, WithStreamReaderBufferSize(bufSize))
+		raw, err := ds.MarshalSSZ(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, size := range []int{len(raw), -1} {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Fatalf("buffer=%d size=%d: panic: %v", bufSize, size, r)
+					}
+				}()
+				err := ds.UnmarshalSSZReader(&payload{}, overReportReader{bytes.NewReader(raw)}, size)
+				if !errors.Is(err, sszutils.ErrNegativeRead) {
+					t.Errorf("buffer=%d size=%d: err = %v, want ErrNegativeRead", bufSize, size, err)
+				}
+			}()
+			decoded := &payload{}
+			if err := ds.UnmarshalSSZReader(decoded, bytes.NewReader(raw), size); err != nil || !reflect.DeepEqual(decoded, value) {
+				t.Errorf("buffer=%d size=%d: decode after the error = %+v, %v", bufSize, size, decoded, err)
+			}
+		}
+	}
+}
