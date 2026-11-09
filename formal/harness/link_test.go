@@ -216,6 +216,32 @@ func TestOracleLink(t *testing.T) {
 		})
 	}
 
+	// Phase 3: deterministic limit probes. Every list and bitlist type with a
+	// limit is decoded at limit−1, limit and limit+1 elements on every Go
+	// path; the verdicts must match the oracle's (and roots on accepts).
+	probeDS := reflectionInstance(nil)
+	probes := 0
+	for _, sub := range subjects {
+		for _, raw := range limitProbes(runtimeDescriptor(t, probeDS, sub.newFn)) {
+			fail := failer(t, "limit/"+sub.name)
+			goAccept, decoded := eng.decodePaths(fail, sub.newFn, raw)
+			oracleAccept, leanRoot := ask(sub.name, raw)
+			if goAccept != oracleAccept {
+				t.Errorf("VERDICT DIVERGENCE limit/%s: go=%v lean=%v (%d bytes, 0x%s)",
+					sub.name, goAccept, oracleAccept, len(raw), shortHex(raw))
+			}
+			if goAccept && oracleAccept {
+				eng.rootPaths(fail, decoded, leanRoot)
+			}
+			probes++
+			checked++
+		}
+	}
+	if probes == 0 {
+		t.Error("no limit probes: no certified list or bitlist type has a limit")
+	}
+	t.Logf("oracle link: %d limit probes", probes)
+
 	// Every generated (certified) type must have been exercised.
 	for _, name := range names {
 		if perType[name] == 0 {

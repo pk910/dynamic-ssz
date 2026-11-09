@@ -137,7 +137,9 @@ of `hasher.go`/`async.go` that the Go hasher is held to call by call):
   biased to length boundaries (empty, one, limit−1, limit, chunk and
   power-of-two-chunk boundaries, the 256-chunk batch, progressive group
   sizes), and mutated (truncation, extension, bit flips, insertions,
-  element-wide appends and drops).
+  element-wide appends and drops). Every list and bitlist type with a limit is
+  also probed deterministically at limit−1, limit and limit+1 elements, so
+  an off-by-one limit check cannot survive on an unlucky seed.
 * `TestOracleLink`, `TestSpecLink`: the 70 harness types against both
   models. `TestExtendedEdgeCases`: handcrafted non-canonical encodings of
   the extended types. `TestHasherAPILink`: the public helpers no engine
