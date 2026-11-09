@@ -139,8 +139,8 @@ func run(packagePath string, names []string, outputFile, specOutput, specThms st
 		if err != nil {
 			return fmt.Errorf("failed to build descriptor for %s: %w", name, err)
 		}
-		if err := annIdx.Err(); err != nil {
-			return err
+		if annErr := annIdx.Err(); annErr != nil {
+			return annErr
 		}
 
 		expr, err := certlib.CertExpr(desc)

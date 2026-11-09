@@ -24,6 +24,6 @@ var _ = sszutils.Annotate[APIBitvector12Elem](`ssz-type:"bitvector" ssz-bitsize:
 
 var apiTypes = map[string]Entry{
 	"APIBitvector12Elem": {New: func() any { return new(APIBitvector12Elem) }},
-	"APIUint64List100": {New: func() any { return new(APIUint64List100) }},
-	"APIRoots5":        {New: func() any { return new(APIRoots5) }},
+	"APIUint64List100":   {New: func() any { return new(APIUint64List100) }},
+	"APIRoots5":          {New: func() any { return new(APIRoots5) }},
 }

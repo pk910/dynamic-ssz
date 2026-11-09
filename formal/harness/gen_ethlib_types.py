@@ -41,3 +41,5 @@ for name in sorted(mods):
 out += ["}", ""]
 open(os.path.join(here, "ethlib_types.go"), "w").write("\n".join(out))
 print(len(mods), "types")
+import subprocess
+subprocess.run(["gofmt", "-w", os.path.join(here, "ethlib_types.go")], check=True)

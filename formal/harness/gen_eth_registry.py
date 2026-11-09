@@ -32,3 +32,5 @@ for g in types:
 out.append("}")
 out += ["", "type ethType struct {", "\tSpecName string", "\tGoName   string", "\tNew      func() any", "}", ""]
 open(os.path.join(here, "eth_registry.go"), "w").write("\n".join(out))
+import subprocess
+subprocess.run(["gofmt", "-w", os.path.join(here, "eth_registry.go")], check=True)

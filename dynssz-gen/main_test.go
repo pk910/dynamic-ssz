@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"errors"
 	"flag"
-	"github.com/pk910/dynamic-ssz/dynssz-gen/annotations"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -21,6 +20,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/pk910/dynamic-ssz/dynssz-gen/annotations"
 
 	"github.com/pk910/dynamic-ssz/codegen"
 	"github.com/pk910/dynamic-ssz/dynssz-gen/testpkg"

@@ -47,7 +47,7 @@ func TestFormalTrace(t *testing.T) {
 	if modelPath == "" {
 		modelPath = filepath.Join("..", "formal", "lean", ".lake", "build", "bin", "hasher-model")
 	}
-	if _, err := os.Stat(modelPath); err != nil {
+	if _, err := os.Stat(modelPath); err != nil { //nolint:gosec // the test's own model binary
 		t.Skipf("hasher-model not built: %v", err)
 	}
 	walks := 400
@@ -124,6 +124,7 @@ func mixHash(dst, input []byte) error {
 // installMixZeroHashes rebuilds the zero-hash table from mixHash for the
 // test (the reduction pads with it), restoring the sha256 table afterwards.
 func installMixZeroHashes(t *testing.T) {
+	t.Helper()
 	initHasher()
 	saved := zeroHashes
 	for i := 0; i < 64; i++ {
@@ -141,7 +142,8 @@ type modelProc struct {
 }
 
 func startModel(t *testing.T, path string) *modelProc {
-	cmd := exec.Command(path)
+	t.Helper()
+	cmd := exec.Command(path) //nolint:gosec // the test's own model binary
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -360,10 +362,10 @@ func (g *walkGen) items(depth, n int, packed bool, collapseP int) int {
 		}
 	}
 	for i := 0; i < n && len(g.ops) < 2*opBudget; i++ {
-		switch {
-		case style == 0:
+		switch style {
+		case 0:
 			g.leaf()
-		case style == 1:
+		case 1:
 			tmpl()
 		default:
 			if g.rng.Intn(3) == 0 {
@@ -458,6 +460,7 @@ func (g *walkGen) closeProgressive(int) {
 // --- execution and comparison ----------------------------------------------
 
 func runWalk(t *testing.T, m *modelProc, w int, ops []traceOp) bool {
+	t.Helper()
 	h := NewHasherWithHashFn(mixHash)
 	r := &walkRun{h: h}
 	m.ask("R", false)

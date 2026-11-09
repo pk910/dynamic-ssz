@@ -692,8 +692,8 @@ func runGeneration(config *Config, typeSpecs []typeSpec) error {
 	codeMap, err := codeGen.GenerateToMap()
 	// A type whose annotations could not be read makes any generation error
 	// a consequence, so it is reported first.
-	if err := annIdx.Err(); err != nil {
-		return fmt.Errorf("failed to generate code: %v", err)
+	if annErr := annIdx.Err(); annErr != nil {
+		return fmt.Errorf("failed to generate code: %v", annErr)
 	}
 	if err != nil {
 		return fmt.Errorf("failed to generate code: %v", err)
