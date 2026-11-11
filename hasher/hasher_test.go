@@ -2186,6 +2186,18 @@ func TestZeroHashAccessorsSelfInitialize(t *testing.T) {
 	}
 }
 
+// BufferSince exposes a non-incremental scope's completed chunks.
+func TestBufferSince(t *testing.T) {
+	h := NewHasher()
+	idx := h.StartTree(sszutils.TreeTypeNone)
+	h.PutUint64(7)
+	h.PutUint64(9)
+	region := h.BufferSince(idx)
+	if len(region) != 64 || region[0] != 7 || region[32] != 9 {
+		t.Fatalf("BufferSince = %x", region)
+	}
+}
+
 // A packed run whose length is not a multiple of a chunk is padded before the
 // collapsed scope is reduced: collapsing during the appends must not change
 // the root of a vector of packed values.
