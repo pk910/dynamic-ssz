@@ -1,5 +1,6 @@
 import SszSpec.Certified
 import SszSpec.Eth
+import SszSpec.Declare
 
 /-!
 # ssz-spec-oracle
@@ -18,6 +19,10 @@ specification of SSZ (`EthLib.Serialization.Ssz`). One request per stdin line:
   (verified on this side) or `REJECT <reason>`.
 * `W <type> <hex|-> <i1,...> <l1,...> <h1,...|->` — verify a foreign multiproof:
   `VERIFY true|false` or `REJECT <reason>`.
+* `T <name> <json>` — declare a type for this session, in the JSON spelling
+  of the ssz-specs conformance vectors (`SszSpec.Declare`), with no spaces.
+  `OK` once `Desc.wellFormed` holds (EthLib's theorems then apply to it), or
+  `ILLFORMED <reason>`. A declared name shadows a compiled one.
 * `ERR ...` — malformed line or unknown type.
 -/
 
@@ -61,10 +66,12 @@ def decodeFor (shape : Desc) (bytes : Bytes) : Except Err (Value × Bytes) := do
   let root ← hashTreeRoot shape value
   return (value, root)
 
-def handle (words : List String) : String :=
+def handle (declaredHere : List (String × Desc)) (words : List String) : String :=
+  let lookup (name : String) : Option Desc :=
+    (declaredHere.lookup name).orElse fun _ => (declared ++ declaredEth).lookup name
   match words with
   | ["D", name, hex] =>
-    match (declared ++ declaredEth).lookup name, parseHex hex with
+    match lookup name, parseHex hex with
     | none, _ => s!"ERR unknown {name}"
     | _, none => "ERR badhex"
     | some shape, some bytes =>
@@ -75,7 +82,7 @@ def handle (words : List String) : String :=
         | .ok again => if again == bytes then s!"ACCEPT {hexOf root}" else "MISMATCH"
         | .error fault => s!"MISMATCH {fault.reason}"
   | ["P", name, hex, idx] =>
-    match (declared ++ declaredEth).lookup name, parseHex hex, idx.toNat? with
+    match lookup name, parseHex hex, idx.toNat? with
     | none, _, _ => s!"ERR unknown {name}"
     | _, none, _ => "ERR badhex"
     | _, _, none => "ERR badindex"
@@ -91,7 +98,7 @@ def handle (words : List String) : String :=
           | .ok false => "MISMATCH-PROOF"
           | .error fault => s!"MISMATCH-PROOF {fault.reason}"
   | ["V", name, hex, idx, leafHex, branchHex] =>
-    match (declared ++ declaredEth).lookup name, parseHex hex, idx.toNat?, parseHex leafHex, parseHexList branchHex with
+    match lookup name, parseHex hex, idx.toNat?, parseHex leafHex, parseHexList branchHex with
     | some shape, some bytes, some index, some leaf, some branch =>
       match decodeFor shape bytes with
       | .error fault => reject fault
@@ -101,7 +108,7 @@ def handle (words : List String) : String :=
         | .error fault => reject fault
     | _, _, _, _, _ => "ERR badline"
   | ["M", name, hex, idxs] =>
-    match (declared ++ declaredEth).lookup name, parseHex hex, parseNats idxs with
+    match lookup name, parseHex hex, parseNats idxs with
     | some shape, some bytes, some indices =>
       match decodeFor shape bytes with
       | .error fault => reject fault
@@ -115,7 +122,7 @@ def handle (words : List String) : String :=
           | .error fault => s!"MISMATCH-MULTI {fault.reason}"
     | _, _, _ => "ERR badline"
   | ["W", name, hex, idxs, leavesHex, proofHex] =>
-    match (declared ++ declaredEth).lookup name, parseHex hex, parseNats idxs, parseHexList leavesHex, parseHexList proofHex with
+    match lookup name, parseHex hex, parseNats idxs, parseHexList leavesHex, parseHexList proofHex with
     | some shape, some bytes, some indices, some leaves, some proof =>
       match decodeFor shape bytes with
       | .error fault => reject fault
@@ -126,14 +133,34 @@ def handle (words : List String) : String :=
     | _, _, _, _, _ => "ERR badline"
   | _ => "ERR badline"
 
-partial def loop (stdin : IO.FS.Stream) (stdout : IO.FS.Stream) : IO Unit := do
+/-- Declare a type for the session: the answer and the registry it leaves. -/
+def declare (declaredHere : List (String × Desc)) (name text : String) :
+    String × List (String × Desc) :=
+  match parseDesc text with
+  | .error fault => (s!"ERR baddesc {fault}", declaredHere)
+  | .ok shape =>
+    match shape.wellFormed with
+    | .ok () => ("OK", (name, shape) :: declaredHere)
+    | .error fault => (s!"ILLFORMED {fault.reason}", declaredHere)
+
+partial def loop (stdin : IO.FS.Stream) (stdout : IO.FS.Stream)
+    (declaredHere : List (String × Desc)) : IO Unit := do
   let line ← stdin.getLine
   if line == "" then return
   let line := String.ofList ((line.toList.dropWhile Char.isWhitespace).reverse.dropWhile Char.isWhitespace).reverse
-  unless line == "" do
-    stdout.putStrLn (handle (line.splitOn " "))
-    stdout.flush
-  loop stdin stdout
+  if line == "" then
+    loop stdin stdout declaredHere
+  else
+    match line.splitOn " " with
+    | ["T", name, text] =>
+      let (answer, declaredHere) := declare declaredHere name text
+      stdout.putStrLn answer
+      stdout.flush
+      loop stdin stdout declaredHere
+    | words =>
+      stdout.putStrLn (handle declaredHere words)
+      stdout.flush
+      loop stdin stdout declaredHere
 
 def main : IO Unit := do
-  loop (← IO.getStdin) (← IO.getStdout)
+  loop (← IO.getStdin) (← IO.getStdout) []
