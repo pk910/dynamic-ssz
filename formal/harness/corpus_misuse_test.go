@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"bytes"
 	"reflect"
 	"testing"
 
@@ -26,10 +27,11 @@ func TestCorpusMisuse(t *testing.T) {
 
 	// refuse checks that every engine refuses v on every encoding path.
 	refuse := func(t *testing.T, what string, v any) {
+		t.Helper()
 		tried++
 		// SizeSSZ: the engines currently disagree on unencodable values
 		// (ISSUES L9: generated SizeSSZ does not check limits); report, do not fail.
-		var sizeErrs []error
+		sizeErrs := make([]error, 0, len(engines))
 		for _, e := range engines {
 			_, err := e.ds.SizeSSZ(v)
 			sizeErrs = append(sizeErrs, err)
@@ -73,7 +75,7 @@ func TestCorpusMisuse(t *testing.T) {
 				first, firstErr = enc, err
 				continue
 			}
-			if (err == nil) != (firstErr == nil) || string(enc) != string(first) {
+			if (err == nil) != (firstErr == nil) || !bytes.Equal(enc, first) {
 				t.Errorf("%s: nil root: %s=(%x,%v) %s=(%x,%v)", e.Name, engines[0].name, first, firstErr, en.name, enc, err)
 			}
 		}
@@ -109,7 +111,7 @@ func TestCorpusMisuse(t *testing.T) {
 			want, werr := eng.gen.MarshalSSZ(full.Interface())
 			for _, en := range engines {
 				enc, err := en.ds.MarshalSSZ(short.Interface())
-				if werr != nil || err != nil || string(enc) != string(want) {
+				if werr != nil || err != nil || !bytes.Equal(enc, want) {
 					t.Errorf("%s: %s: a short slice vector should encode zero-padded (%v, %v)", e.Name, en.name, err, werr)
 				}
 			}

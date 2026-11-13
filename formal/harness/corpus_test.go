@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -26,11 +27,9 @@ var knownIssues = map[string][]string{
 	"W_S1_Uint128Words": {"generated/HashTreeRootWith"},
 }
 
-// corpusSpecs are the spec values the corpus is linked under.
-func corpusSpecs() map[string]any { return typegen.Specs() }
-
 // corpusEntries returns the generated corpus, or skips.
 func corpusEntries(t *testing.T) []corpus.Entry {
+	t.Helper()
 	if len(corpus.Registry) == 0 {
 		t.Skip("corpus not generated (formal/corpus.sh)")
 	}
@@ -51,7 +50,7 @@ func TestCorpusDeclarations(t *testing.T) {
 		}
 		if e.Opaque {
 			// a custom type's declaration lives in its methods, not in the descriptor
-			if _, err := certlib.CertJSON(desc); err == nil {
+			if _, cerr := certlib.CertJSON(desc); cerr == nil {
 				t.Errorf("%s (%s): a custom type should have no derived declaration", e.Name, e.Shape)
 			}
 			continue
@@ -59,13 +58,13 @@ func TestCorpusDeclarations(t *testing.T) {
 		if e.Recursive {
 			// a recursive type has no finite declaration; its unrollings are
 			// declared per value by TestCorpusRecursive
-			if _, err := certlib.CertJSON(desc); !errors.Is(err, certlib.ErrRecursive) {
-				t.Errorf("%s (%s): recursive type should have no declaration, got err=%v", e.Name, e.Shape, err)
+			if _, rerr := certlib.CertJSON(desc); !errors.Is(rerr, certlib.ErrRecursive) {
+				t.Errorf("%s (%s): recursive type should have no declaration, got err=%v", e.Name, e.Shape, rerr)
 			}
 			continue
 		}
-		if cert, err := certlib.CertJSON(desc); err != nil {
-			t.Errorf("%s (%s): no in-house declaration: %v", e.Name, e.Shape, err)
+		if cert, cerr := certlib.CertJSON(desc); cerr != nil {
+			t.Errorf("%s (%s): no in-house declaration: %v", e.Name, e.Shape, cerr)
 		} else if cert != e.CertDecl {
 			t.Errorf("DECLARATION DIVERGENCE (in-house) %s (%s):\n  dynamic-ssz %s\n  intended    %s", e.Name, e.Shape, cert, e.CertDecl)
 		}
@@ -190,7 +189,7 @@ func TestCorpusLink(t *testing.T) {
 					}
 					if goAccept {
 						again, ok := eng.encodePaths(failer(t, ctx+" mutation re-encode"), mutDecoded)
-						if ok && string(again) != string(mut) {
+						if ok && !bytes.Equal(again, mut) {
 							t.Errorf("CANONICITY %s: accepted 0x%s but re-encodes as 0x%s", ctx, shortHex(mut), shortHex(again))
 						}
 					}

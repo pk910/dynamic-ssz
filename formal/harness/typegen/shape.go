@@ -438,10 +438,11 @@ func (s *Shape) CertDecl() string {
 			opts[i] = fmt.Sprintf(`{"selector":%d,"type":%s}`, o.Selector, o.Shape.CertDecl())
 		}
 		return `{"kind":"CompatibleUnion","options":[` + strings.Join(opts, ",") + `]}`
-	default:
+	case Bool, Uint8, Uint16, Uint32, Uint64, Uint128, Uint256, ByteVector, ByteList, BitVector, BitList, Custom, SelfRef:
 		// the spec-defined leaves spell the same in both declarations
 		return s.decl()
 	}
+	panic("unreachable")
 }
 
 // Recursive reports whether the shape refers to its root.

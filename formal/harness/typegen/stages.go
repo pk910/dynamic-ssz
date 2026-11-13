@@ -359,7 +359,7 @@ func Delegating(roots []*Root) []*Root {
 // admits a cycle in — lists, progressive lists, optionals, optional-lists,
 // classic unions — plus a cycle through a second container.
 func Recursive() []*Root {
-	var out []*Root
+	out := make([]*Root, 0, 8)
 	add := func(label string, s *Shape) {
 		out = append(out, NewRoot(name("R", label), s, "rec"))
 	}

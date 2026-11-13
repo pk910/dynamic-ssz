@@ -97,6 +97,21 @@ combinators, so it carries the theorems — which gives the extended types,
 for which no specification exists, the same treatment, and lets the two
 formalizations be compared on every value.
 
+The corpus comes in stages, one CI job each: every leaf shape as a root
+(`1`); every child class under every parent context (`2`); the inherited
+properties through a middle type (`3`); method-less wrappers that reach
+generated code through reflection's delegation (`deleg`); recursive shapes,
+declared by the unrolling at each value's depth (`rec`); schema views of
+every container (`views`); and shapes drawn from the grammar (`random`).
+Every type is driven through both engines on every API path, through the
+generated methods called directly (including the streaming encoder and
+decoder and the legacy surface), through writers and readers that fail
+halfway, through verbose, stream-capped and nesting-bounded engines, and
+through misuse values the engines must refuse. Library defects the corpus
+finds are recorded in the verification project's issue log and gated as
+known issues until fixed, so the corpus stays a regression gate for
+everything else.
+
 ## What the link checks
 
 For every certified type, on ssz-specs fixtures (when configured), on

@@ -72,9 +72,9 @@ func TestCorpusBuildersAgree(t *testing.T) {
 				continue
 			}
 		}
-		desc, err := parser.GetTypeDescriptor(typeObj.Type(), typeHints, sizeHints, maxSizeHints)
-		if err != nil {
-			t.Errorf("%s (%s): go/types descriptor: %v", e.Name, e.Shape, err)
+		desc, derr := parser.GetTypeDescriptor(typeObj.Type(), typeHints, sizeHints, maxSizeHints)
+		if derr != nil {
+			t.Errorf("%s (%s): go/types descriptor: %v", e.Name, e.Shape, derr)
 			continue
 		}
 		if e.Opaque {
@@ -88,8 +88,8 @@ func TestCorpusBuildersAgree(t *testing.T) {
 		}
 		// The in-house declaration, from the go/types builder with spec sizes
 		// at their static defaults.
-		if cert, err := certlib.CertJSON(desc); err != nil {
-			t.Errorf("%s (%s): go/types in-house declaration: %v", e.Name, e.Shape, err)
+		if cert, cerr := certlib.CertJSON(desc); cerr != nil {
+			t.Errorf("%s (%s): go/types in-house declaration: %v", e.Name, e.Shape, cerr)
 		} else if cert != e.CertDeclStatic {
 			t.Errorf("DECLARATION DIVERGENCE (go/types, in-house) %s (%s):\n  dynamic-ssz %s\n  intended    %s", e.Name, e.Shape, cert, e.CertDeclStatic)
 		}
@@ -104,9 +104,9 @@ func TestCorpusBuildersAgree(t *testing.T) {
 			}
 			continue
 		}
-		got, err := certlib.SpecJSON(desc)
-		if err != nil {
-			t.Errorf("%s (%s): go/types declaration: %v", e.Name, e.Shape, err)
+		got, gerr := certlib.SpecJSON(desc)
+		if gerr != nil {
+			t.Errorf("%s (%s): go/types declaration: %v", e.Name, e.Shape, gerr)
 		} else if got != e.DeclStatic {
 			t.Errorf("DECLARATION DIVERGENCE (go/types) %s (%s):\n  dynamic-ssz %s\n  intended    %s", e.Name, e.Shape, got, e.DeclStatic)
 		}

@@ -68,7 +68,7 @@ type recursiveDeclarer struct {
 // name returns the oracle name of e unrolled to depth, declaring it first
 // if needed. It returns "" (and reports) when the depth exceeds what the
 // registry carries.
-func (d *recursiveDeclarer) name(e corpus.Entry, depth int, spec bool) string {
+func (d *recursiveDeclarer) name(e *corpus.Entry, depth int, spec bool) string {
 	if depth >= len(e.Unrolled) {
 		d.t.Logf("%s: a value of recursion depth %d exceeds the %d unrollings carried; not checked", e.Name, depth, len(e.Unrolled))
 		return ""
@@ -136,7 +136,7 @@ func TestCorpusRecursive(t *testing.T) {
 					depth = recursionDepth(reflect.ValueOf(decoded), root)
 				}
 				byDepth[e.Name][depth]++
-				if n := decl.name(e, depth, false); n != "" {
+				if n := decl.name(&e, depth, false); n != "" {
 					accepted, root := c.decode(n, raw)
 					if accepted != goAccept {
 						t.Errorf("VERDICT DIVERGENCE %s %s (in-house, depth %d): go=%v model=%v (bytes 0x%s)", ctx, what, depth, goAccept, accepted, shortHex(raw))
@@ -145,7 +145,7 @@ func TestCorpusRecursive(t *testing.T) {
 					}
 				}
 				if spec {
-					if n := decl.name(e, depth, true); n != "" {
+					if n := decl.name(&e, depth, true); n != "" {
 						accepted, specRoot := o.decode(n, raw)
 						if accepted != goAccept {
 							t.Errorf("VERDICT DIVERGENCE %s %s (spec, depth %d): go=%v spec=%v (bytes 0x%s)", ctx, what, depth, goAccept, accepted, shortHex(raw))
@@ -198,7 +198,7 @@ func TestCorpusRecursive(t *testing.T) {
 			})
 		})
 	}
-	var lines []string
+	lines := make([]string, 0, len(entries))
 	for _, e := range entries {
 		var parts []string
 		for d := 0; d <= deepest; d++ {

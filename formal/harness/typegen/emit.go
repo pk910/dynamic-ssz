@@ -507,7 +507,7 @@ func (d *dimTags) set(dim int, key, value string) {
 }
 
 func (d *dimTags) String() string {
-	var out []string
+	out := make([]string, 0, len(d.keys))
 	for _, k := range d.keys {
 		v := append([]string{}, d.vals[k]...)
 		for len(v) < d.depth {
