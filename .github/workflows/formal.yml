@@ -188,7 +188,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        stage: ['1', '2', '3', 'random']
+        # random values per type (the deterministic limit probes come on top);
+        # the oracle round trips dominate: ~60 ms per value.
+        include:
+        - { stage: '1', checks: 100 }
+        - { stage: '2', checks: 30 }
+        - { stage: '3', checks: 15 }
+        - { stage: 'random', checks: 60 }
     steps:
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -214,9 +220,7 @@ jobs:
       shell: bash -o pipefail {0}
       env:
         SSZ_SPEC_ORACLE: ${{ github.workspace }}/oracles/ssz-spec-oracle/ssz-spec-oracle
-        # 40 random values per type (plus the deterministic limit probes):
-        # stage 2 has ~700 types and ~30 oracle round trips per value.
-        CORPUS_TEST_FLAGS: -v -rapid.checks=40
+        CORPUS_TEST_FLAGS: -v -rapid.checks=${{ matrix.checks }}
 
   # The hasher against its executable model, call by call: random walks with
   # the small thresholds (every batching and async path), then a pass at the

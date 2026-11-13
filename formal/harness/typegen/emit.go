@@ -412,9 +412,18 @@ func (d *dimTags) set(dim int, key, value string) {
 func (d *dimTags) String() string {
 	var out []string
 	for _, k := range d.keys {
-		v := d.vals[k]
+		v := append([]string{}, d.vals[k]...)
 		for len(v) < d.depth {
 			v = append(v, "?")
+		}
+		// A dimension is either sized or dynamic: where a dynssz-* tag says
+		// nothing about a dimension the static tag sizes, it repeats the size.
+		if static, ok := strings.CutPrefix(k, "dyn"); ok {
+			for i, sv := range d.vals[static] {
+				if i < len(v) && v[i] == "?" && sv != "?" {
+					v[i] = sv
+				}
+			}
 		}
 		// trailing placeholders carry no information
 		for len(v) > 1 && v[len(v)-1] == "?" {
