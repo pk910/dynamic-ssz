@@ -230,6 +230,20 @@ func (e *engineSet) encodePaths(fail pathFailure, v any) ([]byte, bool) {
 		enc, err := m.MarshalSSZDyn(e.gen, nil)
 		out = append(out, res{"generated/MarshalSSZDyn", enc, err})
 	}
+	// The generated streaming encoder, into a stream encoder over a writer
+	// (small buffer, so it flushes mid-value) and into a buffer encoder.
+	if m, ok := v.(sszutils.DynamicEncoder); ok {
+		var w bytes.Buffer
+		se := sszutils.NewStreamEncoder(&w, 16)
+		err := m.MarshalSSZEncoder(e.gen, se)
+		se.Flush()
+		out = append(out, res{"generated/MarshalSSZEncoder(stream)", w.Bytes(), err})
+		if size, serr := e.gen.SizeSSZ(v); serr == nil {
+			be := sszutils.NewBufferEncoder(make([]byte, 0, size))
+			err := m.MarshalSSZEncoder(e.gen, be)
+			out = append(out, res{"generated/MarshalSSZEncoder(buffer)", be.GetBuffer(), err})
+		}
+	}
 	if m, ok := v.(sszutils.DynamicSizer); ok {
 		if size := m.SizeSSZDyn(e.gen); out[0].err == nil && size != len(out[0].enc) {
 			fail("generated/SizeSSZDyn = %d, encoding has %d bytes", size, len(out[0].enc))
@@ -333,6 +347,34 @@ func (e *engineSet) decodePaths(fail pathFailure, newFn func() any, raw []byte) 
 		}
 	}
 	ref := out[0]
+	// The generated streaming decoder, from a buffer decoder and from stream
+	// decoders of known and unknown length. Called directly it decodes the
+	// value's own bytes (the facade checks the range), so it is held to agree
+	// on accepted inputs: accept, and re-encode to the same bytes.
+	if ref.err == nil {
+		if probe := newFn(); true {
+			if _, ok := probe.(sszutils.DynamicDecoder); ok {
+				decoders := []struct {
+					name string
+					mk   func() sszutils.Decoder
+				}{
+					{"buffer", func() sszutils.Decoder { return sszutils.NewBufferDecoder(raw) }},
+					{"stream", func() sszutils.Decoder { return sszutils.NewStreamDecoder(bytes.NewReader(raw), len(raw), 64) }},
+					{"stream-unknown", func() sszutils.Decoder { return sszutils.NewUnknownStreamDecoder(bytes.NewReader(raw), 64, 1<<24) }},
+				}
+				for _, d := range decoders {
+					v := newFn()
+					if err := v.(sszutils.DynamicDecoder).UnmarshalSSZDecoder(e.gen, d.mk()); err != nil {
+						fail("generated/UnmarshalSSZDecoder(%s) refused an accepted encoding 0x%s: %v", d.name, shortHex(raw), err)
+						continue
+					}
+					if enc, err := e.gen.MarshalSSZ(v); err != nil || !bytes.Equal(enc, raw) {
+						fail("generated/UnmarshalSSZDecoder(%s) decoded 0x%s to a value that re-encodes as 0x%s (%v)", d.name, shortHex(raw), shortHex(enc), err)
+					}
+				}
+			}
+		}
+	}
 	for _, r := range out[1:] {
 		if (r.err == nil) != (ref.err == nil) {
 			fail("DECODE PATH DIVERGENCE on 0x%s: %s err=%v, %s err=%v",
