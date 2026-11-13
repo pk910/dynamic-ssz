@@ -310,6 +310,13 @@ func (s *Shape) decl() string {
 	panic("extended shape has no declaration")
 }
 
+// CertDeclStatic is CertDecl with every spec-parametric size at its static default.
+func (s *Shape) CertDeclStatic() string {
+	staticDecl = true
+	defer func() { staticDecl = false }()
+	return s.CertDecl()
+}
+
 // CertDecl is the declaration for the in-house oracle: the spec spelling
 // extended with the dynamic-ssz kinds (formal/lean/SszCert/Declare.lean).
 // Every shape has one. Unbounded limits are written null.

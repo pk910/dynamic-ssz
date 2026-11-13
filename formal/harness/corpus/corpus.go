@@ -17,7 +17,9 @@ type Entry struct {
 	// CertDecl is the declaration for the in-house oracle (spec spelling plus
 	// the extended kinds); every shape has one.
 	CertDecl string
-	Extended bool
+	// CertDeclStatic is CertDecl with spec-parametric sizes at their static defaults.
+	CertDeclStatic string
+	Extended       bool
 	// IllFormed: the SSZ specification declares the shape illegal (the spec
 	// oracle must refuse its declaration) although dynamic-ssz accepts it.
 	IllFormed bool

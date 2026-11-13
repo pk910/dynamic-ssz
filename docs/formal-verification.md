@@ -91,7 +91,11 @@ it is meant to have, computed from the shape alone; both descriptor builders
 of dynamic-ssz (reflection and go/types) must read exactly that declaration
 out of the generated struct tags, and the type is then linked like a
 certified one. Shapes the specification forbids but the library accepts are
-declared as such and the oracle must refuse them.
+declared as such and the oracle must refuse them. The in-house oracle takes
+declarations at run time too — its codec is assembled from the proof-carrying
+combinators, so it carries the theorems — which gives the extended types,
+for which no specification exists, the same treatment, and lets the two
+formalizations be compared on every value.
 
 ## What the link checks
 
