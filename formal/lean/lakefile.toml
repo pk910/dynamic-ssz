@@ -1,0 +1,16 @@
+name = "ssz-cert"
+version = "0.1.0"
+defaultTargets = ["SszCert", "ssz-oracle", "hasher-model"]
+
+[[lean_lib]]
+name = "SszCert"
+
+[[lean_exe]]
+name = "ssz-oracle"
+root = "Main"
+
+# Executable model of the incremental/async hasher, for the per-operation
+# trace comparison (hasher/formal_trace_test.go).
+[[lean_exe]]
+name = "hasher-model"
+root = "HasherModel"

@@ -14,3 +14,6 @@ fuzz-reports/
 
 # compiled test binaries
 *.test
+
+# rapid property-test failure replays (formal/harness)
+testdata/rapid/
