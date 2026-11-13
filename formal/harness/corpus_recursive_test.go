@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/pk910/dynamic-ssz/formal/harness/corpus"
 	"github.com/pk910/dynamic-ssz/formal/harness/typegen"
+	"github.com/pk910/dynamic-ssz/sszutils"
 	"pgregory.net/rapid"
 )
 
@@ -168,6 +170,28 @@ func TestCorpusRecursive(t *testing.T) {
 					return
 				}
 				check("value", enc, true, back)
+				// The nesting bound: an engine bounded at two levels accepts a
+				// value iff the unbounded engine accepts it and it is shallow
+				// enough; a refusal is ErrMaxDepthExceeded. (A level is one
+				// descent into a type on the cycle; the root costs nothing.)
+				depthErr := eng.reflDepth2.UnmarshalSSZ(e.New(), enc)
+				valueDepth := recursionDepth(reflect.ValueOf(back), root)
+				switch {
+				case depthErr == nil && valueDepth > 2:
+					t.Errorf("NESTING BOUND %s: a value of recursion depth %d decoded under a bound of 2", ctx, valueDepth)
+				case depthErr != nil && valueDepth == 0:
+					t.Errorf("NESTING BOUND %s: a value without recursion refused under a bound of 2: %v", ctx, depthErr)
+				case depthErr != nil && !errors.Is(depthErr, sszutils.ErrMaxDepthExceeded):
+					t.Errorf("NESTING BOUND %s: refused with %v, not ErrMaxDepthExceeded", ctx, depthErr)
+				}
+				if depthErr != nil {
+					if _, err := eng.reflDepth2.MarshalSSZ(back); !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+						t.Errorf("NESTING BOUND %s: decode refused but encode gave %v", ctx, err)
+					}
+					if _, err := eng.reflDepth2.HashTreeRoot(back); !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+						t.Errorf("NESTING BOUND %s: decode refused but root gave %v", ctx, err)
+					}
+				}
 				mut := mutateBytes(rt, enc)
 				goAccept, mutDecoded := eng.decodePaths(failer(t, ctx+" mutation"), e.New, mut)
 				check("mutation", mut, goAccept, mutDecoded)

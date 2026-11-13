@@ -22,10 +22,13 @@ import (
 // hashing, the native sha256 backend next to the SIMD one, and tiny stream
 // buffers that force the streaming decoder through open regions.
 type engineSet struct {
-	gen, refl           *dynssz.DynSsz
-	genAsync, reflAsync *dynssz.DynSsz
-	reflNative          *dynssz.DynSsz
-	genTiny, reflTiny   *dynssz.DynSsz
+	gen, refl             *dynssz.DynSsz
+	genAsync, reflAsync   *dynssz.DynSsz
+	reflNative            *dynssz.DynSsz
+	genTiny, reflTiny     *dynssz.DynSsz
+	genVerbose, reflVerb  *dynssz.DynSsz // verbose logging into a discarding callback
+	reflDepth2            *dynssz.DynSsz // nesting bound of two levels (recursive values beyond it are refused)
+	genStreamCap, reflCap *dynssz.DynSsz // unknown-size streams capped at 4 KiB
 
 	// specParametric caches, per Go type, whether a resolved spec value
 	// differs from its static default: the generated static methods
@@ -58,14 +61,20 @@ func newEngineSet(specs map[string]any) *engineSet {
 	noDel := dynssz.WithNoDelegation()
 	async := dynssz.WithAsyncHashing(4)
 	tiny := []dynssz.DynSszOption{dynssz.WithStreamReaderBufferSize(8), dynssz.WithStreamWriterBufferSize(8)}
+	quiet := dynssz.WithLogCb(func(string, ...any) {})
 	return &engineSet{
-		gen:        dynssz.NewDynSsz(specs, ext),
-		refl:       dynssz.NewDynSsz(specs, ext, noDel),
-		genAsync:   dynssz.NewDynSsz(specs, ext, async),
-		reflAsync:  dynssz.NewDynSsz(specs, ext, noDel, async),
-		reflNative: dynssz.NewDynSsz(specs, ext, noDel, dynssz.WithNoFastHash()),
-		genTiny:    dynssz.NewDynSsz(specs, append([]dynssz.DynSszOption{ext}, tiny...)...),
-		reflTiny:   dynssz.NewDynSsz(specs, append([]dynssz.DynSszOption{ext, noDel}, tiny...)...),
+		gen:          dynssz.NewDynSsz(specs, ext),
+		refl:         dynssz.NewDynSsz(specs, ext, noDel),
+		genAsync:     dynssz.NewDynSsz(specs, ext, async),
+		reflAsync:    dynssz.NewDynSsz(specs, ext, noDel, async),
+		reflNative:   dynssz.NewDynSsz(specs, ext, noDel, dynssz.WithNoFastHash()),
+		genTiny:      dynssz.NewDynSsz(specs, append([]dynssz.DynSszOption{ext}, tiny...)...),
+		reflTiny:     dynssz.NewDynSsz(specs, append([]dynssz.DynSszOption{ext, noDel}, tiny...)...),
+		genVerbose:   dynssz.NewDynSsz(specs, ext, dynssz.WithVerbose(), quiet),
+		reflVerb:     dynssz.NewDynSsz(specs, ext, noDel, dynssz.WithVerbose(), quiet),
+		reflDepth2:   dynssz.NewDynSsz(specs, ext, noDel, dynssz.WithMaxNestingDepth(2)),
+		genStreamCap: dynssz.NewDynSsz(specs, ext, dynssz.WithMaxStreamSize(4096)),
+		reflCap:      dynssz.NewDynSsz(specs, ext, noDel, dynssz.WithMaxStreamSize(4096)),
 	}
 }
 
@@ -188,6 +197,15 @@ func (e *engineSet) encodePaths(fail pathFailure, v any) ([]byte, bool) {
 			fail("%s/SizeSSZ = %d, encoding has %d bytes", eng.name, size, len(enc))
 		}
 	}
+	// Verbose engines log every step into a discarding callback and must
+	// encode the same bytes.
+	for _, eng := range []struct {
+		name string
+		ds   *dynssz.DynSsz
+	}{{"codegen-verbose", e.genVerbose}, {"reflection-verbose", e.reflVerb}} {
+		enc, err := eng.ds.MarshalSSZ(v)
+		out = append(out, res{eng.name + "/MarshalSSZ", enc, err})
+	}
 	// The generated methods called directly, as a user holding the value
 	// would: the static ones (default specs) and the *Dyn ones (the engine's).
 	if e.directStatic(v) {
@@ -257,6 +275,33 @@ func (e *engineSet) decodePaths(fail pathFailure, newFn func() any, raw []byte) 
 		out = append(out, res{eng.name + "/UnmarshalSSZReader(1B,unknown)", v,
 			eng.ds.UnmarshalSSZReader(v, &oneByteReader{bytes.NewReader(raw)}, -1)})
 	}
+	// Unknown-size streams under a size cap: accepted when the encoding fits,
+	// refused when it does not — on both engines, by instance option and by
+	// call option.
+	if out[0].err == nil {
+		for _, eng := range []struct {
+			name string
+			ds   *dynssz.DynSsz
+		}{{"codegen-cap", e.genStreamCap}, {"reflection-cap", e.reflCap}} {
+			err := eng.ds.UnmarshalSSZReader(newFn(), bytes.NewReader(raw), -1)
+			if fits := len(raw) <= 4096; (err == nil) != fits {
+				fail("%s/UnmarshalSSZReader(unknown, cap 4096) on %d bytes: err=%v", eng.name, len(raw), err)
+			}
+		}
+		for _, eng := range []struct {
+			name string
+			ds   *dynssz.DynSsz
+		}{{"codegen", e.gen}, {"reflection", e.refl}} {
+			if len(raw) > 1 {
+				if err := eng.ds.UnmarshalSSZReader(newFn(), bytes.NewReader(raw), -1, dynssz.WithStreamSizeLimit(len(raw)-1)); err == nil {
+					fail("%s/UnmarshalSSZReader(unknown, limit %d) accepted %d bytes", eng.name, len(raw)-1, len(raw))
+				}
+			}
+			if err := eng.ds.UnmarshalSSZReader(newFn(), bytes.NewReader(raw), -1, dynssz.WithStreamSizeLimit(len(raw))); err != nil {
+				fail("%s/UnmarshalSSZReader(unknown, limit %d) refused %d bytes: %v", eng.name, len(raw), len(raw), err)
+			}
+		}
+	}
 	// A reader that breaks halfway through an accepted encoding: every
 	// decoder must fail (its error arms), never accept a truncated value.
 	if out[0].err == nil && len(raw) > 0 {
@@ -320,7 +365,8 @@ func (e *engineSet) rootPaths(fail pathFailure, v any, want string) string {
 		name string
 		ds   *dynssz.DynSsz
 	}{{"codegen", e.gen}, {"reflection", e.refl}, {"codegen-async", e.genAsync},
-		{"reflection-async", e.reflAsync}, {"reflection-native-sha256", e.reflNative}} {
+		{"reflection-async", e.reflAsync}, {"reflection-native-sha256", e.reflNative},
+		{"codegen-verbose", e.genVerbose}, {"reflection-verbose", e.reflVerb}} {
 		r, err := eng.ds.HashTreeRoot(v)
 		out = append(out, res{eng.name + "/HashTreeRoot", hex.EncodeToString(r[:]), err})
 	}
