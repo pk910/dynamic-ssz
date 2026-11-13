@@ -31,7 +31,20 @@ type Entry struct {
 	// Opaque: the shape holds a custom type, whose declaration dynamic-ssz
 	// cannot derive; the link relies on the intended one.
 	Opaque bool
-	New    func() any
+	// Views are the schema views of a container root (stage views).
+	Views []ViewEntry
+	New   func() any
+}
+
+// ViewEntry is one schema view of a root: a struct with a subset or a
+// reordering of the root's fields, passed as WithViewDescriptor.
+type ViewEntry struct {
+	Name     string
+	Shape    string
+	Decl     string // "" if extended
+	CertDecl string
+	Extended bool
+	New      func() any // a nil pointer of the view type
 }
 
 // Registry lists the generated types; empty when the corpus is not generated.

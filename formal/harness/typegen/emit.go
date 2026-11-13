@@ -20,6 +20,15 @@ type Root struct {
 	NoMethods bool
 	// Inner names the root a method-less wrapper holds.
 	Inner string
+	// Views are schema views of a container root: structs with a subset or a
+	// reordering of its fields, matched by name.
+	Views []View
+}
+
+// View is one schema view of a container root.
+type View struct {
+	Name  string
+	Shape *Shape // the view's own container shape (its declaration)
 }
 
 // NewRoot returns a root for the shape, wrapping shapes that cannot stand
@@ -90,6 +99,15 @@ func (e *Emitter) Root(r *Root) {
 			d += fmt.Sprintf("\nvar _ = sszutils.Annotate[%s](`%s`)\n", r.Name, tags)
 		}
 		e.decls = append(e.decls, d)
+	}
+}
+
+// EmitViews declares the view types of a root: structs with the view's
+// fields, spelled exactly as the root spells them.
+func (e *Emitter) EmitViews(r *Root) {
+	for _, v := range r.Views {
+		e.self = r.Name
+		e.decls = append(e.decls, fmt.Sprintf("// %s: view of %s: %s\ntype %s %s\n", v.Name, r.Name, v.Shape.Describe(), v.Name, e.structBody(v.Shape)))
 	}
 }
 
@@ -672,8 +690,17 @@ func Registry(pkg string, roots []*Root) (string, error) {
 		if r.Shape.Recursive() {
 			unrolled, certUnrolled = quoteList(r.Shape.Unrolled()), quoteList(r.Shape.CertUnrolled())
 		}
-		fmt.Fprintf(&b, "\t\tEntry{Name: %q, Stage: %q, Shape: %q, Decl: %q, DeclStatic: %q, CertDecl: %q, CertDeclStatic: %q, Extended: %v, IllFormed: %v, Recursive: %v, Unrolled: %s, CertUnrolled: %s, Opaque: %v, New: func() any { return new(%s) }},\n",
-			r.Name, r.Stage, r.Desc, r.Shape.Decl(), r.Shape.DeclStatic(), r.Shape.CertDecl(), r.Shape.CertDeclStatic(), r.Shape.Extended(), r.IllFormed, r.Shape.Recursive(), unrolled, certUnrolled, r.Shape.Opaque(), r.Name)
+		views := "nil"
+		if len(r.Views) > 0 {
+			parts := make([]string, len(r.Views))
+			for i, v := range r.Views {
+				parts[i] = fmt.Sprintf("{Name: %q, Shape: %q, Decl: %q, CertDecl: %q, Extended: %v, New: func() any { return (*%s)(nil) }}",
+					v.Name, v.Shape.Describe(), v.Shape.Decl(), v.Shape.CertDecl(), v.Shape.Extended(), v.Name)
+			}
+			views = "[]ViewEntry{" + strings.Join(parts, ", ") + "}"
+		}
+		fmt.Fprintf(&b, "\t\tEntry{Name: %q, Stage: %q, Shape: %q, Decl: %q, DeclStatic: %q, CertDecl: %q, CertDeclStatic: %q, Extended: %v, IllFormed: %v, Recursive: %v, Unrolled: %s, CertUnrolled: %s, Opaque: %v, Views: %s, New: func() any { return new(%s) }},\n",
+			r.Name, r.Stage, r.Desc, r.Shape.Decl(), r.Shape.DeclStatic(), r.Shape.CertDecl(), r.Shape.CertDeclStatic(), r.Shape.Extended(), r.IllFormed, r.Shape.Recursive(), unrolled, certUnrolled, r.Shape.Opaque(), views, r.Name)
 	}
 	b.WriteString("\t)\n}\n")
 	out, err := format.Source([]byte(b.String()))

@@ -375,6 +375,30 @@ func Recursive() []*Root {
 	return out
 }
 
+// WithViews returns the container roots among roots that admit schema views
+// (at least two fields, not spec-parametric, no custom or recursive parts)
+// with two views each: a prefix view (the last field dropped) and a reversed
+// view (the fields in reverse order). Field names match the data type's.
+func WithViews(roots []*Root) []*Root {
+	var out []*Root
+	for _, r := range roots {
+		s := r.Shape
+		if r.NoMethods || s.Kind != Container || len(s.Fields) < 2 || s.Opaque() || s.Recursive() || s.SpecParametric() {
+			continue
+		}
+		prefix := &Shape{Kind: Container, Fields: append([]Field{}, s.Fields[:len(s.Fields)-1]...)}
+		reversed := &Shape{Kind: Container}
+		for i := len(s.Fields) - 1; i >= 0; i-- {
+			reversed.Fields = append(reversed.Fields, s.Fields[i])
+		}
+		v := *r
+		v.Stage = "views"
+		v.Views = []View{{Name: "V1_" + r.Name, Shape: prefix}, {Name: "V2_" + r.Name, Shape: reversed}}
+		out = append(out, &v)
+	}
+	return out
+}
+
 // Random draws n shapes from the grammar with nesting up to depth, for the
 // combinations the stages do not enumerate.
 func Random(seed int64, n, depth int) []*Root {

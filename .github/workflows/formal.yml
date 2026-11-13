@@ -199,6 +199,7 @@ jobs:
         - { stage: '3', checks: 15 }
         - { stage: 'deleg', checks: 40 }
         - { stage: 'rec', checks: 100 }
+        - { stage: 'views', checks: 40 }
         - { stage: 'random', checks: 60 }
     steps:
     - name: Checkout code

@@ -15,7 +15,7 @@ import (
 
 func main() {
 	out := flag.String("out", "corpus", "output directory (package corpus)")
-	stages := flag.String("stages", "1,2,3", "stages to generate: 1 (every leaf as a root), 2 (every child class under every parent), 3 (inherited properties through a middle type), deleg (stage 1 plus method-less wrappers that delegate), rec (recursive shapes), random")
+	stages := flag.String("stages", "1,2,3", "stages to generate: 1 (every leaf as a root), 2 (every child class under every parent), 3 (inherited properties through a middle type), deleg (stage 1 plus method-less wrappers that delegate), rec (recursive shapes), views (container roots with schema views), random")
 	seed := flag.Int64("seed", 1, "seed of the random stage")
 	randomN := flag.Int("random", 50, "number of random shapes")
 	randomDepth := flag.Int("depth", 4, "nesting depth of the random shapes")
@@ -32,6 +32,9 @@ func main() {
 			roots = append(roots, typegen.Stage3()...)
 		case "rec":
 			roots = append(roots, typegen.Recursive()...)
+		case "views":
+			// the container roots of stages 1 and 2 with two schema views each
+			roots = append(roots, typegen.WithViews(append(typegen.Stage1(), typegen.Stage2()...))...)
 		case "random":
 			roots = append(roots, typegen.Random(*seed, *randomN, *randomDepth)...)
 		case "deleg":
@@ -52,7 +55,30 @@ func main() {
 			continue
 		}
 		em.Root(r)
+		em.EmitViews(r)
 	}
+	// dynssz-gen type specs: a root with views is generated with them.
+	var specs []string
+	for _, r := range roots {
+		if len(r.Views) == 0 {
+			continue
+		}
+		vs := make([]string, len(r.Views))
+		for i, v := range r.Views {
+			vs[i] = v.Name
+		}
+		specs = append(specs, r.Name+":views="+strings.Join(vs, ";"))
+	}
+	names := em.Names
+	for _, sp := range specs {
+		root := strings.SplitN(sp, ":", 2)[0]
+		for i, n := range names {
+			if n == root {
+				names[i] = sp
+			}
+		}
+	}
+	em.Names = names
 	src, err := em.Source("corpus")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
