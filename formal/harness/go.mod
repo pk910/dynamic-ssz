@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/golang/snappy v1.0.0
 	github.com/pk910/dynamic-ssz v1.4.0
+	golang.org/x/tools v0.30.0
 	gopkg.in/yaml.v2 v2.4.0
 	pgregory.net/rapid v1.3.0
 )
@@ -12,6 +13,8 @@ require (
 require (
 	github.com/holiman/uint256 v1.3.2 // indirect
 	github.com/prysmaticlabs/go-bitfield v0.0.0-20240618144021-706c95b2dd15 // indirect
+	golang.org/x/mod v0.23.0 // indirect
+	golang.org/x/sync v0.17.0 // indirect
 )
 
 require (
