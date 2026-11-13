@@ -47,12 +47,13 @@ const (
 	Optional
 	OptionalList
 	Wrapper
+	SelfRef // the root type itself (a recursive shape)
 )
 
 var kindNames = [...]string{"Bool", "Uint8", "Uint16", "Uint32", "Uint64", "Uint128", "Uint256",
 	"Int8", "Int16", "Int32", "Int64", "Float32", "Float64", "BigInt", "Time",
 	"ByteVector", "ByteList", "BitVector", "BitList", "ProgBitList", "Vector", "List", "ProgList",
-	"Container", "ProgContainer", "CompatUnion", "Union", "Optional", "OptionalList", "Wrapper"}
+	"Container", "ProgContainer", "CompatUnion", "Union", "Optional", "OptionalList", "Wrapper", "SelfRef"}
 
 func (k Kind) String() string { return kindNames[k] }
 
@@ -151,7 +152,7 @@ func (s *Shape) Extended() bool {
 	switch s.Kind {
 	case Int8, Int16, Int32, Int64, Float32, Float64, BigInt, Union, Optional:
 		return true
-	case Bool, Uint8, Uint16, Uint32, Uint64, Uint128, Uint256, Time, ByteVector, ByteList, BitVector, BitList, ProgBitList:
+	case Bool, Uint8, Uint16, Uint32, Uint64, Uint128, Uint256, Time, ByteVector, ByteList, BitVector, BitList, ProgBitList, SelfRef:
 		return false
 	case Vector, List, ProgList, OptionalList, Wrapper:
 		return s.Elem.Extended()
@@ -176,7 +177,7 @@ func (s *Shape) Extended() bool {
 // Variable reports whether the shape has a variable-size encoding.
 func (s *Shape) Variable() bool {
 	switch s.Kind {
-	case ByteList, BitList, ProgBitList, List, ProgList, CompatUnion, Union, Optional, OptionalList, BigInt:
+	case ByteList, BitList, ProgBitList, List, ProgList, CompatUnion, Union, Optional, OptionalList, BigInt, SelfRef:
 		return true
 	case Vector:
 		return s.Elem.Variable()
@@ -221,10 +222,29 @@ func (s *Shape) SpecParametric() bool {
 // computed from the shape alone, never from dynamic-ssz: the link compares it
 // with the declaration dynamic-ssz derives from the Go type's tags.
 func (s *Shape) Decl() string {
-	if s.Extended() {
+	if s.Extended() || s.Recursive() {
 		return ""
 	}
 	return s.decl()
+}
+
+// Unrolled returns the declarations of a recursive shape at depths 0..MaxUnroll
+// (spec spelling; "" where extended), and CertUnrolled the in-house ones.
+func (s *Shape) Unrolled() []string {
+	out := make([]string, MaxUnroll+1)
+	for d := range out {
+		out[d] = s.Unroll(s, d).Decl()
+	}
+	return out
+}
+
+// CertUnrolled is Unrolled in the in-house spelling.
+func (s *Shape) CertUnrolled() []string {
+	out := make([]string, MaxUnroll+1)
+	for d := range out {
+		out[d] = s.Unroll(s, d).CertDecl()
+	}
+	return out
 }
 
 func (s *Shape) decl() string {
@@ -307,8 +327,11 @@ func (s *Shape) decl() string {
 		}
 		return `{"kind":"CompatibleUnion","options":[` + strings.Join(opts, ",") + `]}`
 	}
-	panic("extended shape has no declaration")
+	panic("extended or recursive shape has no declaration")
 }
+
+// SelfReference is the root type itself inside a recursive shape.
+func SelfReference() *Shape { return &Shape{Kind: SelfRef} }
 
 // CertDeclStatic is CertDecl with every spec-parametric size at its static default.
 func (s *Shape) CertDeclStatic() string {
@@ -321,6 +344,9 @@ func (s *Shape) CertDeclStatic() string {
 // extended with the dynamic-ssz kinds (formal/lean/SszCert/Declare.lean).
 // Every shape has one. Unbounded limits are written null.
 func (s *Shape) CertDecl() string {
+	if s.Recursive() {
+		return ""
+	}
 	switch s.Kind {
 	case Int8:
 		return `{"kind":"Uint8","bits":8}`
@@ -408,6 +434,66 @@ func (s *Shape) CertDecl() string {
 	}
 }
 
+// Recursive reports whether the shape refers to its root.
+func (s *Shape) Recursive() bool {
+	if s.Kind == SelfRef {
+		return true
+	}
+	if s.Elem != nil && s.Elem.Recursive() {
+		return true
+	}
+	for _, f := range s.Fields {
+		if f.Shape.Recursive() {
+			return true
+		}
+	}
+	for _, o := range s.Options {
+		if o.Shape != nil && o.Shape.Recursive() {
+			return true
+		}
+	}
+	return false
+}
+
+// Unroll replaces every self-reference by the root unrolled one level less;
+// at depth 0 a self-reference becomes a one-byte container placeholder,
+// which a value of that depth never reaches (its recursive collections are
+// empty, its recursive optionals absent, its recursive unions None), and
+// whose empty-collection roots agree with any composite element's.
+func (s *Shape) Unroll(root *Shape, depth int) *Shape {
+	switch s.Kind {
+	case SelfRef:
+		if depth <= 0 {
+			return ContainerOf(Basic(Uint8))
+		}
+		return root.Unroll(root, depth-1)
+	default:
+	}
+	c := *s
+	if s.Elem != nil {
+		c.Elem = s.Elem.Unroll(root, depth)
+	}
+	if len(s.Fields) > 0 {
+		c.Fields = make([]Field, len(s.Fields))
+		for i, f := range s.Fields {
+			c.Fields[i] = Field{Name: f.Name, Shape: f.Shape.Unroll(root, depth), Index: f.Index}
+		}
+	}
+	if len(s.Options) > 0 {
+		c.Options = make([]Option, len(s.Options))
+		for i, o := range s.Options {
+			c.Options[i] = Option{Selector: o.Selector}
+			if o.Shape != nil {
+				c.Options[i].Shape = o.Shape.Unroll(root, depth)
+			}
+		}
+	}
+	return &c
+}
+
+// MaxUnroll is the deepest unrolling the registry carries for a recursive shape.
+const MaxUnroll = 8
+
 // Describe renders the shape for a report.
 func (s *Shape) Describe() string {
 	var b strings.Builder
@@ -456,6 +542,8 @@ func (s *Shape) describe(b *strings.Builder) {
 			f.Shape.describe(b)
 		}
 		b.WriteString("}")
+	case SelfRef:
+		b.WriteString("↺")
 	case CompatUnion, Union:
 		b.WriteString("{")
 		for i, o := range s.Options {

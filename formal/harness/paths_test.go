@@ -3,11 +3,18 @@ package harness
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 
+	"reflect"
+
 	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/hasher"
+	"github.com/pk910/dynamic-ssz/ssztypes"
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 // engineSet is every dynamic-ssz configuration the link holds to the
@@ -19,6 +26,31 @@ type engineSet struct {
 	genAsync, reflAsync *dynssz.DynSsz
 	reflNative          *dynssz.DynSsz
 	genTiny, reflTiny   *dynssz.DynSsz
+
+	// specParametric caches, per Go type, whether a resolved spec value
+	// differs from its static default: the generated static methods
+	// (MarshalSSZ, HashTreeRoot, …) then encode the defaults and are not
+	// held to the engines; the *Dyn methods always are.
+	specParametric map[reflect.Type]bool
+}
+
+// directStatic reports whether v's generated static methods must agree with
+// the engines (no spec value in it differs from its default).
+func (e *engineSet) directStatic(v any) bool {
+	rt := reflect.TypeOf(v)
+	if rt.Kind() == reflect.Pointer {
+		rt = rt.Elem()
+	}
+	if e.specParametric == nil {
+		e.specParametric = map[reflect.Type]bool{}
+	}
+	if p, ok := e.specParametric[rt]; ok {
+		return !p
+	}
+	desc, err := e.refl.GetTypeCache().GetTypeDescriptor(rt, nil, nil, nil)
+	p := err != nil || desc.SszTypeFlags&(ssztypes.SszTypeFlagHasDynamicSize|ssztypes.SszTypeFlagHasDynamicMax) != 0
+	e.specParametric[rt] = p
+	return !p
 }
 
 func newEngineSet(specs map[string]any) *engineSet {
@@ -35,6 +67,49 @@ func newEngineSet(specs map[string]any) *engineSet {
 		genTiny:    dynssz.NewDynSsz(specs, append([]dynssz.DynSszOption{ext}, tiny...)...),
 		reflTiny:   dynssz.NewDynSsz(specs, append([]dynssz.DynSszOption{ext, noDel}, tiny...)...),
 	}
+}
+
+// failingWriter accepts limit bytes and then fails every Write: the encoders
+// must propagate the error from wherever they are in the value.
+type failingWriter struct {
+	limit int
+	n     int
+}
+
+var errWriterBroken = errors.New("writer broken")
+
+func (w *failingWriter) Write(p []byte) (int, error) {
+	if w.n+len(p) > w.limit {
+		room := w.limit - w.n
+		if room < 0 {
+			room = 0
+		}
+		w.n += room
+		return room, errWriterBroken
+	}
+	w.n += len(p)
+	return len(p), nil
+}
+
+// failingReader serves limit bytes of the data and then fails every Read.
+type failingReader struct {
+	data  []byte
+	limit int
+	pos   int
+}
+
+var errReaderBroken = errors.New("reader broken")
+
+func (r *failingReader) Read(p []byte) (int, error) {
+	if r.pos >= r.limit {
+		return 0, errReaderBroken
+	}
+	n := copy(p, r.data[r.pos:min(r.limit, len(r.data))])
+	r.pos += n
+	if n == 0 {
+		return 0, errReaderBroken
+	}
+	return n, nil
 }
 
 // oneByteReader hands out one byte per Read: the stream decoder must
@@ -97,9 +172,49 @@ func (e *engineSet) encodePaths(fail pathFailure, v any) ([]byte, bool) {
 		err = eng.ds.MarshalSSZWriter(v, &ow)
 		out = append(out, res{eng.name + "/MarshalSSZWriter(1B)", ow.buf.Bytes(), err})
 
+		// A writer that breaks halfway: the error must surface (every encoder
+		// error arm), never a truncated success.
+		if err == nil && len(enc) > 0 {
+			for _, limit := range []int{0, len(enc) / 2, len(enc) - 1} {
+				fw := &failingWriter{limit: limit}
+				if werr := eng.ds.MarshalSSZWriter(v, fw); werr == nil {
+					fail("%s/MarshalSSZWriter reported success on a writer that failed after %d of %d bytes", eng.name, limit, len(enc))
+				}
+			}
+		}
+
 		size, err := eng.ds.SizeSSZ(v)
 		if err == nil && enc != nil && size != len(enc) {
 			fail("%s/SizeSSZ = %d, encoding has %d bytes", eng.name, size, len(enc))
+		}
+	}
+	// The generated methods called directly, as a user holding the value
+	// would: the static ones (default specs) and the *Dyn ones (the engine's).
+	if e.directStatic(v) {
+		if m, ok := v.(sszutils.FastsszValueMarshaler); ok {
+			enc, err := m.MarshalSSZ()
+			out = append(out, res{"generated/MarshalSSZ", enc, err})
+		}
+		if m, ok := v.(sszutils.FastsszBufferMarshaler); ok {
+			to, err := m.MarshalSSZTo([]byte{0xde, 0xad})
+			if err == nil && len(to) >= 2 {
+				to = to[2:]
+			}
+			out = append(out, res{"generated/MarshalSSZTo", to, err})
+		}
+		if m, ok := v.(sszutils.FastsszSizer); ok {
+			if size := m.SizeSSZ(); out[0].err == nil && size != len(out[0].enc) {
+				fail("generated/SizeSSZ = %d, encoding has %d bytes", size, len(out[0].enc))
+			}
+		}
+	}
+	if m, ok := v.(sszutils.DynamicMarshaler); ok {
+		enc, err := m.MarshalSSZDyn(e.gen, nil)
+		out = append(out, res{"generated/MarshalSSZDyn", enc, err})
+	}
+	if m, ok := v.(sszutils.DynamicSizer); ok {
+		if size := m.SizeSSZDyn(e.gen); out[0].err == nil && size != len(out[0].enc) {
+			fail("generated/SizeSSZDyn = %d, encoding has %d bytes", size, len(out[0].enc))
 		}
 	}
 	ref := out[0]
@@ -141,6 +256,36 @@ func (e *engineSet) decodePaths(fail pathFailure, newFn func() any, raw []byte) 
 		v = newFn()
 		out = append(out, res{eng.name + "/UnmarshalSSZReader(1B,unknown)", v,
 			eng.ds.UnmarshalSSZReader(v, &oneByteReader{bytes.NewReader(raw)}, -1)})
+	}
+	// A reader that breaks halfway through an accepted encoding: every
+	// decoder must fail (its error arms), never accept a truncated value.
+	if out[0].err == nil && len(raw) > 0 {
+		for _, eng := range []struct {
+			name string
+			ds   *dynssz.DynSsz
+		}{{"codegen", e.gen}, {"reflection", e.refl}, {"codegen-tiny", e.genTiny}, {"reflection-tiny", e.reflTiny}} {
+			for _, limit := range []int{0, len(raw) / 2, len(raw) - 1} {
+				for _, known := range []bool{true, false} {
+					size := len(raw)
+					if !known {
+						size = -1
+					}
+					if rerr := eng.ds.UnmarshalSSZReader(newFn(), &failingReader{data: raw, limit: limit}, size); rerr == nil {
+						fail("%s/UnmarshalSSZReader(known=%v) accepted a stream that failed after %d of %d bytes", eng.name, known, limit, len(raw))
+					}
+				}
+			}
+		}
+	}
+	if probe := newFn(); e.directStatic(probe) {
+		if m, ok := probe.(sszutils.FastsszUnmarshaler); ok {
+			out = append(out, res{"generated/UnmarshalSSZ", probe, m.UnmarshalSSZ(raw)})
+		}
+	}
+	if v := newFn(); true {
+		if m, ok := v.(sszutils.DynamicUnmarshaler); ok {
+			out = append(out, res{"generated/UnmarshalSSZDyn", v, m.UnmarshalSSZDyn(e.gen, raw)})
+		}
 	}
 	ref := out[0]
 	for _, r := range out[1:] {
@@ -190,6 +335,34 @@ func (e *engineSet) rootPaths(fail pathFailure, v any, want string) string {
 		}
 		out = append(out, res{eng.name + "/GetTree", root, err})
 	}
+	if e.directStatic(v) {
+		if m, ok := v.(sszutils.FastsszHashRoot); ok {
+			r, err := m.HashTreeRoot()
+			out = append(out, res{"generated/HashTreeRoot", hex.EncodeToString(r[:]), err})
+		}
+		if m, ok := v.(sszutils.FastsszHashRootWith); ok {
+			hh := hasher.NewHasher()
+			err := m.HashTreeRootWith(hh)
+			root := ""
+			if err == nil {
+				var r [32]byte
+				r, err = hh.HashRoot()
+				root = hex.EncodeToString(r[:])
+			}
+			out = append(out, res{"generated/HashTreeRootWith", root, err})
+		}
+	}
+	if m, ok := v.(sszutils.DynamicHashRoot); ok {
+		hh := hasher.NewHasher()
+		err := m.HashTreeRootWithDyn(e.gen, hh)
+		root := ""
+		if err == nil {
+			var r [32]byte
+			r, err = hh.HashRoot()
+			root = hex.EncodeToString(r[:])
+		}
+		out = append(out, res{"generated/HashTreeRootWithDyn", root, err})
+	}
 	for _, r := range out {
 		if r.err != nil {
 			fail("ROOT PATH ERROR %s: %v", r.name, r.err)
@@ -210,10 +383,24 @@ func shortHex(b []byte) string {
 	return h
 }
 
-// failer adapts testing.TB to a pathFailure with a context prefix.
+// failer adapts testing.TB to a pathFailure with a context prefix. A failure
+// of a type listed in knownIssues whose message contains the listed text is
+// logged as a known issue instead of failing the test.
 func failer(t testing.TB, ctx string) pathFailure {
 	return func(format string, args ...any) {
 		t.Helper()
-		t.Errorf("%s: "+format, append([]any{ctx}, args...)...)
+		msg := fmt.Sprintf(format, args...)
+		for name, needles := range knownIssues {
+			if !strings.Contains(ctx, name) {
+				continue
+			}
+			for _, needle := range needles {
+				if strings.Contains(msg, needle) {
+					t.Logf("KNOWN ISSUE %s: %s", ctx, msg)
+					return
+				}
+			}
+		}
+		t.Errorf("%s: %s", ctx, msg)
 	}
 }

@@ -326,6 +326,47 @@ func Stage3() []*Root {
 	return out
 }
 
+// Delegating returns, for every stage-1 root, a method-less container
+// holding it. Both engines walk such a root by reflection; the codegen
+// engine then delegates the held value to its generated methods, which is
+// the reflection engine's delegation path (tryMarshalCompat and friends).
+// The declaration is the container of the root's declaration.
+func Delegating(roots []*Root) []*Root {
+	var out []*Root
+	for _, r := range roots {
+		if r.NoMethods {
+			continue
+		}
+		inner := r.Shape
+		w := &Root{Name: "W_" + r.Name, Shape: ContainerOf(inner), Desc: "Deleg(" + r.Desc + ")", Stage: "deleg", IllFormed: r.IllFormed, NoMethods: true, Inner: r.Name}
+		w.Shape.Fields[0].Name = "V"
+		out = append(out, w)
+	}
+	return out
+}
+
+// Recursive returns the recursive roots: a container whose field refers
+// back to the root through every kind of variable-size position dynamic-ssz
+// admits a cycle in — lists, progressive lists, optionals, optional-lists,
+// classic unions — plus a cycle through a second container.
+func Recursive() []*Root {
+	var out []*Root
+	add := func(label string, s *Shape) {
+		out = append(out, NewRoot(name("R", label), s, "rec"))
+	}
+	self := SelfReference()
+	add("List3", ContainerOf(Basic(Uint8), ListOf(self, 3)))
+	add("List1T", ContainerOf(Basic(Uint8), ListOf(self, 1<<40)))
+	add("ProgList", ContainerOf(Basic(Uint8), ProgListOf(self, 0)))
+	add("Optional", ContainerOf(Basic(Uint8), OptionalOf(self)))
+	add("OptionalList", ContainerOf(Basic(Uint8), OptionalListOf(self)))
+	add("UnionNone", ContainerOf(Basic(Uint8), UnionOf(true, self)))
+	add("ViaContainer", ContainerOf(Basic(Uint8), ListOf(ContainerOf(Basic(Uint16), self), 2)))
+	add("TwoWays", ContainerOf(Basic(Uint8), ListOf(self, 2), OptionalListOf(self), ByteListOf(4)))
+	add("ProgContainer", ProgContainerOf([]int{0, 2}, Basic(Uint8), ListOf(self, 2)))
+	return out
+}
+
 // Random draws n shapes from the grammar with nesting up to depth, for the
 // combinations the stages do not enumerate.
 func Random(seed int64, n, depth int) []*Root {

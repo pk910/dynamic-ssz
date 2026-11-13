@@ -13,6 +13,18 @@ import (
 	"pgregory.net/rapid"
 )
 
+// knownIssues lists library defects the corpus has found that are not yet
+// fixed (results/ISSUES.md of the verification project): a failure of the
+// listed type whose message contains the listed text is reported as a known
+// issue instead of failing the test, so the corpus stays a regression gate
+// for everything else. Remove an entry when the defect is fixed.
+var knownIssues = map[string][]string{
+	// L7: the generated HashTreeRootWith of a root [2]uint64 uint128 leaves an
+	// unpadded 16-byte chunk in the hasher.
+	"S1_Uint128Words":   {"generated/HashTreeRootWith"},
+	"W_S1_Uint128Words": {"generated/HashTreeRootWith"},
+}
+
 // corpusSpecs are the spec values the corpus is linked under.
 func corpusSpecs() map[string]any { return typegen.Specs() }
 

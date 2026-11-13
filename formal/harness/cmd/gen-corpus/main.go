@@ -15,7 +15,7 @@ import (
 
 func main() {
 	out := flag.String("out", "corpus", "output directory (package corpus)")
-	stages := flag.String("stages", "1,2,3", "stages to generate: 1 (every leaf as a root), 2 (every child class under every parent), 3 (inherited properties through a middle type), random")
+	stages := flag.String("stages", "1,2,3", "stages to generate: 1 (every leaf as a root), 2 (every child class under every parent), 3 (inherited properties through a middle type), deleg (stage 1 plus method-less wrappers that delegate), rec (recursive shapes), random")
 	seed := flag.Int64("seed", 1, "seed of the random stage")
 	randomN := flag.Int("random", 50, "number of random shapes")
 	randomDepth := flag.Int("depth", 4, "nesting depth of the random shapes")
@@ -30,8 +30,15 @@ func main() {
 			roots = append(roots, typegen.Stage2()...)
 		case "3":
 			roots = append(roots, typegen.Stage3()...)
+		case "rec":
+			roots = append(roots, typegen.Recursive()...)
 		case "random":
 			roots = append(roots, typegen.Random(*seed, *randomN, *randomDepth)...)
+		case "deleg":
+			// stage-1 roots with generated methods, each also held by a method-less wrapper
+			s1 := typegen.Stage1()
+			roots = append(roots, s1...)
+			roots = append(roots, typegen.Delegating(s1)...)
 		case "":
 		default:
 			fmt.Fprintf(os.Stderr, "unknown stage %q\n", st)
@@ -40,6 +47,10 @@ func main() {
 	}
 	em := typegen.NewEmitter()
 	for _, r := range roots {
+		if r.NoMethods {
+			em.Delegating(r.Name, r.Inner)
+			continue
+		}
 		em.Root(r)
 	}
 	src, err := em.Source("corpus")

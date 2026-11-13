@@ -178,9 +178,12 @@ jobs:
 
   # The generic link: a generated corpus of types — every kind as a root type,
   # every child class under every parent, the inherited properties through a
-  # middle type, and random shapes from the grammar — declared to the spec
-  # oracle at run time (which proves each declaration well-formed) and linked
-  # on every API path of both engines. Both descriptor builders must derive
+  # middle type, method-less wrappers that reach generated code through
+  # reflection's delegation, and random shapes from the grammar — declared to
+  # both oracles at run time (the spec oracle proves each declaration
+  # well-formed; the in-house one builds the codec from the proof-carrying
+  # combinators) and linked on every API path of both engines, including the
+  # generated methods called directly. Both descriptor builders must derive
   # the intended declaration from the generated tags.
   corpus:
     runs-on: ubuntu-latest
@@ -194,6 +197,8 @@ jobs:
         - { stage: '1', checks: 100 }
         - { stage: '2', checks: 30 }
         - { stage: '3', checks: 15 }
+        - { stage: 'deleg', checks: 40 }
+        - { stage: 'rec', checks: 100 }
         - { stage: 'random', checks: 60 }
     steps:
     - name: Checkout code

@@ -23,7 +23,12 @@ type Entry struct {
 	// IllFormed: the SSZ specification declares the shape illegal (the spec
 	// oracle must refuse its declaration) although dynamic-ssz accepts it.
 	IllFormed bool
-	New       func() any
+	// Recursive: the shape refers to itself; Decl and CertDecl are empty and
+	// Unrolled/CertUnrolled hold the declarations of its unrollings by depth.
+	Recursive    bool
+	Unrolled     []string
+	CertUnrolled []string
+	New          func() any
 }
 
 // Registry lists the generated types; empty when the corpus is not generated.
