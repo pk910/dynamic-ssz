@@ -15,7 +15,7 @@ TYPES="$(paste -sd, corpus/types.txt)"
 # dynssz-gen reads its previous output; iterate to the fixed point.
 for _ in 1 2 3 4 5 6 7 8; do
   before="$(sha256sum corpus/generated_ssz.go 2>/dev/null || true)"
-  go run github.com/pk910/dynamic-ssz/dynssz-gen -with-extended-types -package ./corpus -types "$TYPES" -output corpus/generated_ssz.go
+  go run github.com/pk910/dynamic-ssz/dynssz-gen -with-extended-types -with-streaming -legacy -package ./corpus -types "$TYPES" -output corpus/generated_ssz.go
   [ "$before" = "$(sha256sum corpus/generated_ssz.go)" ] && break
 done
 go vet ./corpus/
