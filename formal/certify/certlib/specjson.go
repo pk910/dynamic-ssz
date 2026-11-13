@@ -16,6 +16,9 @@ import (
 // writes as a Lean term, and contains no whitespace. Types outside the SSZ
 // specification return ErrNoSpec, as SpecExpr does.
 func SpecJSON(desc *ssztypes.TypeDescriptor) (string, error) {
+	if isRecursive(desc) {
+		return "", ErrRecursive
+	}
 	switch desc.SszType {
 	case ssztypes.SszBoolType:
 		return `{"kind":"Boolean"}`, nil

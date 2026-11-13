@@ -20,6 +20,9 @@ import (
 // leanExpr translates an SSZ type descriptor into an expression over the
 // verified codec combinators.
 func CertExpr(desc *ssztypes.TypeDescriptor) (string, error) {
+	if isRecursive(desc) {
+		return "", ErrRecursive
+	}
 	switch desc.SszType {
 	case ssztypes.SszBoolType:
 		return "boolCodec", nil

@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"errors"
 	"fmt"
 	"math/rand"
 	"reflect"
@@ -48,6 +49,14 @@ func TestCorpusDeclarations(t *testing.T) {
 			t.Errorf("%s (%s): descriptor: %v", e.Name, e.Shape, err)
 			continue
 		}
+		if e.Recursive {
+			// a recursive type has no finite declaration; its unrollings are
+			// declared per value by TestCorpusRecursive
+			if _, err := certlib.CertJSON(desc); !errors.Is(err, certlib.ErrRecursive) {
+				t.Errorf("%s (%s): recursive type should have no declaration, got err=%v", e.Name, e.Shape, err)
+			}
+			continue
+		}
 		if cert, err := certlib.CertJSON(desc); err != nil {
 			t.Errorf("%s (%s): no in-house declaration: %v", e.Name, e.Shape, err)
 		} else if cert != e.CertDecl {
@@ -87,6 +96,9 @@ func TestCorpusLink(t *testing.T) {
 
 	for _, e := range entries {
 		e := e
+		if e.Recursive {
+			continue // TestCorpusRecursive declares these per value depth
+		}
 		desc, err := eng.refl.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(e.New()).Elem(), nil, nil, nil)
 		if err != nil {
 			t.Errorf("%s: descriptor: %v", e.Name, err)

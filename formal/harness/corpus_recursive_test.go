@@ -21,13 +21,21 @@ func recursionDepth(v reflect.Value, root reflect.Type) int {
 		}
 		v = v.Elem()
 	}
+	// isRoot: a non-nil value of the root type (directly or behind a pointer)
+	isRoot := func(x reflect.Value) bool {
+		t := x.Type()
+		if t == root {
+			return true
+		}
+		return t.Kind() == reflect.Pointer && t.Elem() == root && !x.IsNil()
+	}
 	depth := 0
 	switch v.Kind() {
 	case reflect.Struct:
 		for i := 0; i < v.NumField(); i++ {
 			f := v.Field(i)
 			d := recursionDepth(f, root)
-			if deref(f).Type() == root && (f.Kind() != reflect.Pointer || !f.IsNil()) {
+			if isRoot(f) {
 				d++
 			}
 			depth = max(depth, d)
@@ -36,7 +44,7 @@ func recursionDepth(v reflect.Value, root reflect.Type) int {
 		for i := 0; i < v.Len(); i++ {
 			el := v.Index(i)
 			d := recursionDepth(el, root)
-			if deref(el).Type() == root && (el.Kind() != reflect.Pointer || !el.IsNil()) {
+			if isRoot(el) {
 				d++
 			}
 			depth = max(depth, d)

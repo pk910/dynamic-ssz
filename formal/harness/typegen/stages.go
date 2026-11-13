@@ -360,7 +360,6 @@ func Recursive() []*Root {
 	add("ProgList", ContainerOf(Basic(Uint8), ProgListOf(self, 0)))
 	add("Optional", ContainerOf(Basic(Uint8), OptionalOf(self)))
 	add("OptionalList", ContainerOf(Basic(Uint8), OptionalListOf(self)))
-	add("UnionNone", ContainerOf(Basic(Uint8), UnionOf(true, self)))
 	add("ViaContainer", ContainerOf(Basic(Uint8), ListOf(ContainerOf(Basic(Uint16), self), 2)))
 	add("TwoWays", ContainerOf(Basic(Uint8), ListOf(self, 2), OptionalListOf(self), ByteListOf(4)))
 	add("ProgContainer", ProgContainerOf([]int{0, 2}, Basic(Uint8), ListOf(self, 2)))

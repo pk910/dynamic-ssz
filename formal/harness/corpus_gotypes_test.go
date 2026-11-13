@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"errors"
 	"go/types"
 	"testing"
 
@@ -74,6 +75,12 @@ func TestCorpusBuildersAgree(t *testing.T) {
 		desc, err := parser.GetTypeDescriptor(typeObj.Type(), typeHints, sizeHints, maxSizeHints)
 		if err != nil {
 			t.Errorf("%s (%s): go/types descriptor: %v", e.Name, e.Shape, err)
+			continue
+		}
+		if e.Recursive {
+			if _, err := certlib.CertJSON(desc); !errors.Is(err, certlib.ErrRecursive) {
+				t.Errorf("%s (%s): recursive type should have no declaration, got err=%v", e.Name, e.Shape, err)
+			}
 			continue
 		}
 		// The in-house declaration, from the go/types builder with spec sizes

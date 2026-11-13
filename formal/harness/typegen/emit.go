@@ -390,6 +390,9 @@ func (e *Emitter) optionalElem(s *Shape) (string, string) {
 	switch s.Kind {
 	case Container, ProgContainer:
 		return e.named(s, "C"), ""
+	case SelfRef:
+		// the optional's pointer is the self-reference
+		return e.self, ""
 	default:
 		return e.typeExpr(s)
 	}

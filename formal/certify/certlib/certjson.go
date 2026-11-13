@@ -17,6 +17,9 @@ import (
 // `time.Time` as the unsigned widths they encode as. It contains no
 // whitespace. It describes exactly the codec CertExpr writes as a Lean term.
 func CertJSON(desc *ssztypes.TypeDescriptor) (string, error) {
+	if isRecursive(desc) {
+		return "", ErrRecursive
+	}
 	switch desc.SszType {
 	case ssztypes.SszBoolType:
 		return `{"kind":"Boolean"}`, nil

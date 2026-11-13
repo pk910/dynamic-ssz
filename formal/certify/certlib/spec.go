@@ -18,6 +18,9 @@ import (
 // root totality, proof correctness), so a certified type needs only the
 // `wellFormed` fact to instantiate them.
 func SpecExpr(desc *ssztypes.TypeDescriptor) (string, error) {
+	if isRecursive(desc) {
+		return "", ErrRecursive
+	}
 	switch desc.SszType {
 	case ssztypes.SszBoolType:
 		return ".bool", nil
