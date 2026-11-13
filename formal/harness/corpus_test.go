@@ -1,0 +1,156 @@
+package harness
+
+import (
+	"math/rand"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/pk910/dynamic-ssz/formal/certify/certlib"
+	"github.com/pk910/dynamic-ssz/formal/harness/corpus"
+	"github.com/pk910/dynamic-ssz/formal/harness/typegen"
+	"pgregory.net/rapid"
+)
+
+// corpusSpecs are the spec values the corpus is linked under.
+func corpusSpecs() map[string]any { return typegen.Specs() }
+
+// corpusEntries returns the generated corpus, or skips.
+func corpusEntries(t *testing.T) []corpus.Entry {
+	if len(corpus.Registry) == 0 {
+		t.Skip("corpus not generated (formal/corpus.sh)")
+	}
+	return corpus.Registry
+}
+
+// TestCorpusDeclarations checks, for every spec-defined corpus type, that the
+// declaration dynamic-ssz derives from the Go type's tags (through the
+// reflection engine's descriptor and the certifier's translation) is the one
+// the shape was generated to have — the tag language, read generically.
+func TestCorpusDeclarations(t *testing.T) {
+	eng := newEngineSet(typegen.Specs())
+	for _, e := range corpusEntries(t) {
+		desc, err := eng.refl.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(e.New()).Elem(), nil, nil, nil)
+		if err != nil {
+			t.Errorf("%s (%s): descriptor: %v", e.Name, e.Shape, err)
+			continue
+		}
+		got, err := certlib.SpecJSON(desc)
+		switch {
+		case e.IllFormed:
+		case e.Extended:
+			if err == nil {
+				t.Errorf("%s (%s): extended shape has a spec declaration %s", e.Name, e.Shape, got)
+			}
+		case err != nil:
+			t.Errorf("%s (%s): no declaration: %v", e.Name, e.Shape, err)
+		case got != e.Decl:
+			t.Errorf("DECLARATION DIVERGENCE %s (%s):\n  dynamic-ssz %s\n  intended    %s", e.Name, e.Shape, got, e.Decl)
+		}
+	}
+}
+
+// TestCorpusLink links every corpus type generically: spec-defined shapes
+// are declared to the spec oracle at run time (which proves them well-formed
+// by evaluation, so EthLib's theorems apply) and checked as TestSpecLink
+// checks a certified type — verdicts, canonical bytes, roots, branches and
+// multiproofs on every API path of both engines, for generated values, their
+// mutations and the limit probes. Extended shapes, which have no
+// specification, are checked for agreement across all paths and engines and
+// for decode-canonicity.
+func TestCorpusLink(t *testing.T) {
+	entries := corpusEntries(t)
+	o := startSpecOracle(t)
+	eng := newEngineSet(typegen.Specs())
+	rng := rand.New(rand.NewSource(20261113))
+	st := &specStats{}
+	linked := map[string]int{}
+
+	for _, e := range entries {
+		e := e
+		desc, err := eng.refl.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(e.New()).Elem(), nil, nil, nil)
+		if err != nil {
+			t.Errorf("%s: descriptor: %v", e.Name, err)
+			continue
+		}
+		sub := subject{name: e.Name, newFn: e.New, spec: !e.Extended && !e.IllFormed}
+		if e.IllFormed {
+			// A shape the specification forbids: the oracle must say so; the
+			// engines are then only held to agree with each other.
+			if ans := o.declare(e.Name, e.Decl); !strings.HasPrefix(ans, "ILLFORMED") {
+				t.Errorf("%s (%s): the specification should refuse this declaration, oracle said %s", e.Name, e.Shape, ans)
+				continue
+			}
+		} else if sub.spec {
+			if ans := o.declare(e.Name, e.Decl); ans != "OK" {
+				t.Errorf("%s (%s): declaration refused: %s", e.Name, e.Shape, ans)
+				continue
+			}
+		}
+		t.Run(e.Stage+"/"+e.Name, func(t *testing.T) {
+			o.t = t
+			defer func() { o.t = t }()
+			ctx := e.Stage + "/" + e.Name
+			rapid.Check(t, func(rt *rapid.T) {
+				v := sub.genValue(t, rt, eng)
+				enc, ok := eng.encodePaths(failer(t, ctx), v)
+				if !ok {
+					t.Fatalf("%s: generated value is not encodable", ctx)
+				}
+				mut := mutateBytes(rt, enc)
+				if sub.spec {
+					accepted, specRoot := o.decode(e.Name, enc)
+					if !accepted {
+						t.Errorf("VERDICT DIVERGENCE %s: spec rejects generated encoding 0x%s", ctx, shortHex(enc))
+					} else {
+						o.checkValue(e.Stage, e.Name, v, enc, specRoot, eng, rng, st)
+					}
+					goAccept, mutDecoded := eng.decodePaths(failer(t, ctx+" mutation"), e.New, mut)
+					specAccept, mutRoot := o.decode(e.Name, mut)
+					if goAccept != specAccept {
+						t.Errorf("VERDICT DIVERGENCE %s mutation: go=%v spec=%v (bytes 0x%s)", ctx, goAccept, specAccept, shortHex(mut))
+					}
+					if goAccept && specAccept {
+						o.checkValue(e.Stage+"-mut", e.Name, mutDecoded, mut, mutRoot, eng, rng, st)
+					}
+				} else {
+					// No specification: both engines on every path must agree
+					// with each other, round-trip the value, and accept only
+					// canonical bytes.
+					okDec, back := eng.decodePaths(failer(t, ctx), e.New, enc)
+					if !okDec {
+						t.Errorf("ROUNDTRIP %s: engines reject their own encoding 0x%s", ctx, shortHex(enc))
+					} else if diff := EqualNormalized(v, back); diff != "" {
+						t.Errorf("ROUNDTRIP %s: decoded value differs: %s", ctx, diff)
+					}
+					eng.rootPaths(failer(t, ctx), v, "")
+					goAccept, mutDecoded := eng.decodePaths(failer(t, ctx+" mutation"), e.New, mut)
+					if goAccept {
+						again, ok := eng.encodePaths(failer(t, ctx+" mutation re-encode"), mutDecoded)
+						if ok && string(again) != string(mut) {
+							t.Errorf("CANONICITY %s: accepted 0x%s but re-encodes as 0x%s", ctx, shortHex(mut), shortHex(again))
+						}
+						eng.rootPaths(failer(t, ctx+" mutation"), mutDecoded, "")
+					}
+				}
+				linked[e.Name]++
+			})
+			for i, probe := range limitProbes(desc) {
+				goAccept, decoded := eng.decodePaths(failer(t, ctx+" limit probe"), e.New, probe)
+				if sub.spec {
+					specAccept, root := o.decode(e.Name, probe)
+					if goAccept != specAccept {
+						t.Errorf("VERDICT DIVERGENCE %s limit probe %d: go=%v spec=%v (%d bytes)", ctx, i, goAccept, specAccept, len(probe))
+					}
+					if goAccept && specAccept {
+						o.checkValue(e.Stage+"-limit", e.Name, decoded, probe, root, eng, rng, st)
+					}
+				} else if goAccept {
+					eng.rootPaths(failer(t, ctx+" limit probe"), decoded, "")
+				}
+			}
+		})
+	}
+	t.Logf("corpus link: %d/%d types linked; %d values rooted, %d branches, %d multiproofs, %d refusals agreed",
+		len(linked), len(entries), st.vectors, st.proofs, st.multiproofs, st.refusedBoth)
+}
