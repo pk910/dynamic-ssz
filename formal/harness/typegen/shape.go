@@ -48,12 +48,13 @@ const (
 	OptionalList
 	Wrapper
 	SelfRef // the root type itself (a recursive shape)
+	Custom  // a type serialized by its own methods (ssz-type:"custom"), N bytes, laid out like ByteVector[N]
 )
 
 var kindNames = [...]string{"Bool", "Uint8", "Uint16", "Uint32", "Uint64", "Uint128", "Uint256",
 	"Int8", "Int16", "Int32", "Int64", "Float32", "Float64", "BigInt", "Time",
 	"ByteVector", "ByteList", "BitVector", "BitList", "ProgBitList", "Vector", "List", "ProgList",
-	"Container", "ProgContainer", "CompatUnion", "Union", "Optional", "OptionalList", "Wrapper", "SelfRef"}
+	"Container", "ProgContainer", "CompatUnion", "Union", "Optional", "OptionalList", "Wrapper", "SelfRef", "Custom"}
 
 func (k Kind) String() string { return kindNames[k] }
 
@@ -152,7 +153,7 @@ func (s *Shape) Extended() bool {
 	switch s.Kind {
 	case Int8, Int16, Int32, Int64, Float32, Float64, BigInt, Union, Optional:
 		return true
-	case Bool, Uint8, Uint16, Uint32, Uint64, Uint128, Uint256, Time, ByteVector, ByteList, BitVector, BitList, ProgBitList, SelfRef:
+	case Bool, Uint8, Uint16, Uint32, Uint64, Uint128, Uint256, Time, ByteVector, ByteList, BitVector, BitList, ProgBitList, SelfRef, Custom:
 		return false
 	case Vector, List, ProgList, OptionalList, Wrapper:
 		return s.Elem.Extended()
@@ -265,6 +266,15 @@ func (s *Shape) decl() string {
 		return `{"kind":"Uint256","bits":256}`
 	case ByteVector:
 		return fmt.Sprintf(`{"kind":"ByteVector","length":%d}`, s.Size())
+	case Custom:
+		// its methods write N little-endian bytes and leave the padded chunk:
+		// the layout of ByteVector[N], and of uintN at a basic width
+		switch s.N {
+		case 1, 2, 4, 8, 16, 32:
+			return fmt.Sprintf(`{"kind":"Uint%d","bits":%d}`, s.N*8, s.N*8)
+		default:
+			return fmt.Sprintf(`{"kind":"ByteVector","length":%d}`, s.N)
+		}
 	case ByteList:
 		return fmt.Sprintf(`{"kind":"ByteList","limit":%d}`, s.Size())
 	case BitVector:
@@ -494,6 +504,32 @@ func (s *Shape) Unroll(root *Shape, depth int) *Shape {
 // MaxUnroll is the deepest unrolling the registry carries for a recursive shape.
 const MaxUnroll = 8
 
+// Opaque reports whether the shape holds a custom type: dynamic-ssz cannot
+// derive its declaration (the methods carry the semantics), so the
+// declaration checks skip it and the link relies on the intended one.
+func (s *Shape) Opaque() bool {
+	if s.Kind == Custom {
+		return true
+	}
+	if s.Elem != nil && s.Elem.Opaque() {
+		return true
+	}
+	for _, f := range s.Fields {
+		if f.Shape.Opaque() {
+			return true
+		}
+	}
+	for _, o := range s.Options {
+		if o.Shape != nil && o.Shape.Opaque() {
+			return true
+		}
+	}
+	return false
+}
+
+// CustomOf returns a custom type of n bytes.
+func CustomOf(n uint64) *Shape { return &Shape{Kind: Custom, N: n} }
+
 // Describe renders the shape for a report.
 func (s *Shape) Describe() string {
 	var b strings.Builder
@@ -507,7 +543,7 @@ func (s *Shape) describe(b *strings.Builder) {
 		b.WriteString("/" + repNames[s.Rep])
 	}
 	switch s.Kind {
-	case ByteVector, ByteList, BitVector, BitList, BigInt:
+	case ByteVector, ByteList, BitVector, BitList, BigInt, Custom:
 		if s.Kind != BigInt || s.Limited {
 			fmt.Fprintf(b, "[%d]", s.N)
 		}

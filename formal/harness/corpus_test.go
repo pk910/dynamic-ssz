@@ -49,6 +49,13 @@ func TestCorpusDeclarations(t *testing.T) {
 			t.Errorf("%s (%s): descriptor: %v", e.Name, e.Shape, err)
 			continue
 		}
+		if e.Opaque {
+			// a custom type's declaration lives in its methods, not in the descriptor
+			if _, err := certlib.CertJSON(desc); err == nil {
+				t.Errorf("%s (%s): a custom type should have no derived declaration", e.Name, e.Shape)
+			}
+			continue
+		}
 		if e.Recursive {
 			// a recursive type has no finite declaration; its unrollings are
 			// declared per value by TestCorpusRecursive

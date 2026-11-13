@@ -77,6 +77,9 @@ func TestCorpusBuildersAgree(t *testing.T) {
 			t.Errorf("%s (%s): go/types descriptor: %v", e.Name, e.Shape, err)
 			continue
 		}
+		if e.Opaque {
+			continue
+		}
 		if e.Recursive {
 			if _, err := certlib.CertJSON(desc); !errors.Is(err, certlib.ErrRecursive) {
 				t.Errorf("%s (%s): recursive type should have no declaration, got err=%v", e.Name, e.Shape, err)

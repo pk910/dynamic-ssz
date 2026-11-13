@@ -250,6 +250,12 @@ func (o *specOracle) checkValue(ctx, name string, v any, raw []byte, specRoot st
 		if hex.EncodeToString(goProof.Leaf) != specLeaf {
 			t.Errorf("PROOF LEAF DIVERGENCE %s %s gindex %d: go=%x spec=%s", ctx, name, gi, goProof.Leaf, specLeaf)
 		}
+		// The tree's own lookup of the index must find the proven node.
+		if node, err := treeGen.Get(gi); err != nil {
+			t.Errorf("TREE GET %s %s gindex %d: %v", ctx, name, gi, err)
+		} else if hex.EncodeToString(node.Hash()) != specLeaf {
+			t.Errorf("TREE GET %s %s gindex %d: node hash %x, proven leaf %s", ctx, name, gi, node.Hash(), specLeaf)
+		}
 		if hexListOrDash(goProof.Hashes) != hexListOrDash(specBranch) {
 			t.Errorf("PROOF BRANCH DIVERGENCE %s %s gindex %d:\n  go=%s\n  spec=%s", ctx, name, gi,
 				hexListOrDash(goProof.Hashes), hexListOrDash(specBranch))
@@ -302,6 +308,15 @@ func (o *specOracle) checkValue(ctx, name string, v any, raw []byte, specRoot st
 			ok, err := treeproof.VerifyMultiproof(rootGen, specProof, specLeaves, idx)
 			if err != nil || !ok {
 				t.Errorf("MULTIPROOF CROSS-VERIFY %s %s %v: Go rejects spec multiproof (ok=%v err=%v)", ctx, name, idx, ok, err)
+			}
+			// Compression round trip: a compressed multiproof decompresses to
+			// the same proof and still verifies.
+			back := goMulti.Compress().Decompress()
+			if hexListOrDash(back.Hashes) != hexListOrDash(goMulti.Hashes) || hexListOrDash(back.Leaves) != hexListOrDash(goMulti.Leaves) ||
+				intsCSV(back.Indices) != intsCSV(goMulti.Indices) {
+				t.Errorf("MULTIPROOF COMPRESSION %s %s %v: decompressed proof differs", ctx, name, idx)
+			} else if ok, err := treeproof.VerifyMultiproof(rootGen, back.Hashes, back.Leaves, back.Indices); err != nil || !ok {
+				t.Errorf("MULTIPROOF COMPRESSION %s %s %v: decompressed proof does not verify (ok=%v err=%v)", ctx, name, idx, ok, err)
 			}
 			st.multiproofs++
 		}

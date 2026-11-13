@@ -46,6 +46,7 @@ type Emitter struct {
 	count   int
 	imports map[string]bool
 	self    string // the root being emitted (what a SelfRef points to)
+	customs map[uint64]bool
 }
 
 // NewEmitter returns an empty emitter.
@@ -63,7 +64,7 @@ func (e *Emitter) fresh(prefix string) string {
 // one-field container at the top level.
 func embedOnly(s *Shape) bool {
 	switch s.Kind {
-	case CompatUnion, Union, Wrapper, Optional, OptionalList, BigInt, Time:
+	case CompatUnion, Union, Wrapper, Optional, OptionalList, BigInt, Time, Custom:
 		return true
 	default:
 		return false
@@ -140,6 +141,8 @@ func (e *Emitter) elemExpr(s *Shape) string {
 		return typ
 	case SelfRef:
 		return "*" + e.self
+	case Custom:
+		return e.customType(s.N)
 	case ByteVector:
 		if s.Rep == RepDefault && s.Spec == "" {
 			return fmt.Sprintf("[%d]byte", s.N)
@@ -380,8 +383,61 @@ func (e *Emitter) typeExpr(s *Shape) (string, string) {
 		return e.named(s, "C"), ""
 	case SelfRef:
 		return "*" + e.self, ""
+	case Custom:
+		// the custom type carries its own annotation (Annotate on the type)
+		return e.customType(s.N), ""
 	}
 	panic("unreachable")
+}
+
+// customType declares (once) a type of n bytes serialized by its own
+// methods: n little-endian bytes of a counter, hashed as the padded chunk.
+func (e *Emitter) customType(n uint64) string {
+	name := fmt.Sprintf("Cu%d", n)
+	if e.customs == nil {
+		e.customs = map[uint64]bool{}
+	}
+	if e.customs[n] {
+		return name
+	}
+	e.customs[n] = true
+	e.imports["github.com/pk910/dynamic-ssz/sszutils"] = true
+	e.imports["errors"] = true
+	e.decls = append(e.decls, fmt.Sprintf(`// %s is a custom type of %d bytes: its own methods serialize it.
+type %s struct {
+	X [%d]byte
+}
+
+func (c *%s) MarshalSSZ() ([]byte, error) { return append([]byte(nil), c.X[:]...), nil }
+
+func (c *%s) MarshalSSZTo(dst []byte) ([]byte, error) { return append(dst, c.X[:]...), nil }
+
+func (c *%s) SizeSSZ() int { return %d }
+
+func (c *%s) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != %d {
+		return errors.New("%s: wrong size")
+	}
+	copy(c.X[:], buf)
+	return nil
+}
+
+func (c *%s) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	copy(root[:], c.X[:])
+	return root, nil
+}
+
+// HashTreeRootWith leaves exactly the value's bytes: in a packed scope that
+// is what packing needs, elsewhere the walker pads the chunk.
+func (c *%s) HashTreeRootWith(hw sszutils.HashWalker) error {
+	hw.Append(c.X[:])
+	return nil
+}
+
+var _ = sszutils.Annotate[%s](`+"`"+`ssz-type:"custom" ssz-size:"%d"`+"`"+`)
+`, name, n, name, n, name, name, name, n, name, n, name, name, name, name, n))
+	return name
 }
 
 // optionalElem returns the pointee type of an optional and the tags that
@@ -616,8 +672,8 @@ func Registry(pkg string, roots []*Root) (string, error) {
 		if r.Shape.Recursive() {
 			unrolled, certUnrolled = quoteList(r.Shape.Unrolled()), quoteList(r.Shape.CertUnrolled())
 		}
-		fmt.Fprintf(&b, "\t\tEntry{Name: %q, Stage: %q, Shape: %q, Decl: %q, DeclStatic: %q, CertDecl: %q, CertDeclStatic: %q, Extended: %v, IllFormed: %v, Recursive: %v, Unrolled: %s, CertUnrolled: %s, New: func() any { return new(%s) }},\n",
-			r.Name, r.Stage, r.Desc, r.Shape.Decl(), r.Shape.DeclStatic(), r.Shape.CertDecl(), r.Shape.CertDeclStatic(), r.Shape.Extended(), r.IllFormed, r.Shape.Recursive(), unrolled, certUnrolled, r.Name)
+		fmt.Fprintf(&b, "\t\tEntry{Name: %q, Stage: %q, Shape: %q, Decl: %q, DeclStatic: %q, CertDecl: %q, CertDeclStatic: %q, Extended: %v, IllFormed: %v, Recursive: %v, Unrolled: %s, CertUnrolled: %s, Opaque: %v, New: func() any { return new(%s) }},\n",
+			r.Name, r.Stage, r.Desc, r.Shape.Decl(), r.Shape.DeclStatic(), r.Shape.CertDecl(), r.Shape.CertDeclStatic(), r.Shape.Extended(), r.IllFormed, r.Shape.Recursive(), unrolled, certUnrolled, r.Shape.Opaque(), r.Name)
 	}
 	b.WriteString("\t)\n}\n")
 	out, err := format.Source([]byte(b.String()))

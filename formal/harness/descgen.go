@@ -135,6 +135,11 @@ func genDesc(rt *rapid.T, desc *ssztypes.TypeDescriptor, v reflect.Value, cfg *G
 	}
 
 	switch desc.SszType {
+	case ssztypes.SszCustomType:
+		// A type serialized by its own methods: fill its Go representation
+		// structurally (byte arrays and integers at random).
+		fillStructural(rt, v, "custom")
+		return nil
 	case ssztypes.SszBoolType:
 		v.SetBool(rapid.Bool().Draw(rt, "bool"))
 	case ssztypes.SszUint8Type, ssztypes.SszUint16Type, ssztypes.SszUint32Type, ssztypes.SszUint64Type:
@@ -256,6 +261,36 @@ func genDesc(rt *rapid.T, desc *ssztypes.TypeDescriptor, v reflect.Value, cfg *G
 		return fmt.Errorf("no generator for SSZ type %v (%v)", desc.SszType, desc.Type)
 	}
 	return nil
+}
+
+// fillStructural fills a Go value structurally: byte arrays with random
+// bytes, integers at random, structs field by field.
+func fillStructural(rt *rapid.T, v reflect.Value, label string) {
+	for v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			v.Set(reflect.New(v.Type().Elem()))
+		}
+		v = v.Elem()
+	}
+	switch v.Kind() {
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			if v.Type().Field(i).IsExported() {
+				fillStructural(rt, v.Field(i), label)
+			}
+		}
+	case reflect.Array:
+		for i := 0; i < v.Len(); i++ {
+			fillStructural(rt, v.Index(i), label)
+		}
+	case reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uint:
+		v.SetUint(rapid.Uint64().Draw(rt, label))
+	case reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Int:
+		v.SetInt(rapid.Int64().Draw(rt, label))
+	case reflect.Bool:
+		v.SetBool(rapid.Bool().Draw(rt, label))
+	default:
+	}
 }
 
 // genSeq fills an array (n must equal its length) or makes a slice of n

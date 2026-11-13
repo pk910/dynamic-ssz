@@ -28,7 +28,10 @@ type Entry struct {
 	Recursive    bool
 	Unrolled     []string
 	CertUnrolled []string
-	New          func() any
+	// Opaque: the shape holds a custom type, whose declaration dynamic-ssz
+	// cannot derive; the link relies on the intended one.
+	Opaque bool
+	New    func() any
 }
 
 // Registry lists the generated types; empty when the corpus is not generated.

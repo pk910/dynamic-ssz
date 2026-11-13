@@ -135,6 +135,13 @@ func Leaves() []*Shape {
 	add("WrapperVector3Uint16", WrapperOf(VectorOf(Basic(Uint16), 3)))
 	add("WrapperUint64", WrapperOf(Basic(Uint64)))
 	add("WrapperList4Uint32Spec", WrapperOf(ListOf(Basic(Uint32), 0).WithSpec(0)))
+	add("Custom8", CustomOf(8))
+	add("Custom12", CustomOf(12))
+	add("Custom32", CustomOf(32))
+	add("ContainerCustoms", ContainerOf(Basic(Uint8), CustomOf(8), ByteListOf(3), CustomOf(12)))
+	add("List3Custom8", ListOf(CustomOf(8), 3))
+	add("List3Custom12", ListOf(CustomOf(12), 3))
+	add("Vector2Custom8", VectorOf(CustomOf(8), 2))
 	return out
 }
 
@@ -193,6 +200,8 @@ func ChildClasses() []*Shape {
 	add("OptionalListProgList", OptionalListOf(ProgListOf(Basic(Uint64), 0)))
 	add("OptionalBitList9", OptionalOf(BitListOf(9)))
 	add("WrapperByteList8", WrapperOf(ByteListOf(8)))
+	add("Custom8", CustomOf(8))
+	add("Custom12", CustomOf(12))
 	return out
 }
 
