@@ -170,7 +170,7 @@ jobs:
       working-directory: formal/harness
       run: |
         chmod +x ../../oracles/ssz-oracle/ssz-oracle ../../oracles/ssz-spec-oracle/ssz-spec-oracle
-        go test -count=1 -v -run 'TestProp|TestOracleLink|TestSpecLink|TestExtendedEdgeCases|TestHasherAPILink' ./... | grep -v -e '^=== ' -e '^    --- PASS'
+        go test -count=1 -v -run 'TestProp|TestOracleLink|TestSpecLink|TestSpecLinkInline|TestExtendedEdgeCases|TestHasherAPILink|TestTagRefusals' ./... | grep -v -e '^=== ' -e '^    --- PASS'
       shell: bash -o pipefail {0}
       env:
         SSZ_ORACLE: ${{ github.workspace }}/oracles/ssz-oracle/ssz-oracle

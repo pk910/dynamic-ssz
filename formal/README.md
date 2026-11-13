@@ -161,7 +161,20 @@ of `hasher.go`/`async.go` that the Go hasher is held to call by call):
   the proof-carrying combinators, so it carries the theorems), and every
   corpus type — the extended shapes included, which have no specification —
   is linked to it on verdicts and roots; for spec-defined shapes the two
-  formalizations' roots must agree.
+  formalizations' roots must agree. Further stages: `deleg` (method-less
+  wrappers of every stage-1 root, which the engines walk by reflection and
+  reach through delegation), `rec` (recursive shapes — cycles through
+  lists, progressive lists, optionals, optional-lists and a second
+  container — linked by the unrolling at each value's depth, with the
+  nesting bound checked), `views` (two schema views of every container
+  root of stages 1 and 2, serialized through `WithViewDescriptor` with
+  generated view methods and by reflection), and `random`. Over every
+  stage: both engines on every API path, the generated methods called
+  directly, writers and readers that fail halfway, verbose and stream-capped
+  engines, misuse values (nil roots, over-limit lists, long slice vectors
+  and bit lists), and treeproof's public tree builders over the chunks of
+  basic collections. Library defects the corpus finds are listed in the
+  verification project's ISSUES.md and gated as known issues until fixed.
 
 * **Every public API path, both engines.** `MarshalSSZ`, `MarshalSSZTo`,
   `MarshalSSZWriter` (also with a one-byte writer), `SizeSSZ`,
