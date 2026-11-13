@@ -310,6 +310,97 @@ func (s *Shape) decl() string {
 	panic("extended shape has no declaration")
 }
 
+// CertDecl is the declaration for the in-house oracle: the spec spelling
+// extended with the dynamic-ssz kinds (formal/lean/SszCert/Declare.lean).
+// Every shape has one. Unbounded limits are written null.
+func (s *Shape) CertDecl() string {
+	switch s.Kind {
+	case Int8:
+		return `{"kind":"Uint8","bits":8}`
+	case Int16:
+		return `{"kind":"Uint16","bits":16}`
+	case Int32, Float32:
+		return `{"kind":"Uint32","bits":32}`
+	case Int64, Float64, Time:
+		return `{"kind":"Uint64","bits":64}`
+	case BigInt:
+		if s.Limited {
+			return fmt.Sprintf(`{"kind":"BigInt","limit":%d}`, s.N)
+		}
+		return `{"kind":"BigInt"}`
+	case Optional:
+		return `{"kind":"Optional","elementType":` + s.Elem.CertDecl() + `}`
+	case Union:
+		opts := make([]string, len(s.Options))
+		for i, o := range s.Options {
+			if o.Shape == nil {
+				opts[i] = fmt.Sprintf(`{"selector":%d,"type":null}`, o.Selector)
+			} else {
+				opts[i] = fmt.Sprintf(`{"selector":%d,"type":%s}`, o.Selector, o.Shape.CertDecl())
+			}
+		}
+		return `{"kind":"Union","options":[` + strings.Join(opts, ",") + `]}`
+	case ProgBitList:
+		if s.Limited {
+			return fmt.Sprintf(`{"kind":"ProgressiveBitList","limit":%d}`, s.Size())
+		}
+		return `{"kind":"ProgressiveBitList"}`
+	case ProgList:
+		limit := ""
+		if s.Limited {
+			limit = fmt.Sprintf(`,"limit":%d`, s.Size())
+		}
+		return `{"kind":"ProgressiveList"` + limit + `,"elementType":` + s.Elem.CertDecl() + `}`
+	case Vector:
+		if s.Elem.Kind == Uint8 {
+			return fmt.Sprintf(`{"kind":"ByteVector","length":%d}`, s.Size())
+		}
+		return fmt.Sprintf(`{"kind":"Vector","length":%d,"elementType":%s}`, s.Size(), s.Elem.CertDecl())
+	case List:
+		if s.Elem.Kind == Uint8 {
+			return fmt.Sprintf(`{"kind":"ByteList","limit":%d}`, s.Size())
+		}
+		return fmt.Sprintf(`{"kind":"List","limit":%d,"elementType":%s}`, s.Size(), s.Elem.CertDecl())
+	case OptionalList:
+		if s.Elem.Kind == Uint8 {
+			return `{"kind":"ByteList","limit":1}`
+		}
+		return `{"kind":"List","limit":1,"elementType":` + s.Elem.CertDecl() + `}`
+	case Wrapper:
+		return s.Elem.CertDecl()
+	case Container, ProgContainer:
+		fields := make([]string, len(s.Fields))
+		maxIdx := -1
+		for i, f := range s.Fields {
+			fields[i] = `{"name":` + strconv.Quote(f.Name) + `,"type":` + f.Shape.CertDecl() + `}`
+			if f.Index > maxIdx {
+				maxIdx = f.Index
+			}
+		}
+		if s.Kind == ProgContainer {
+			layout := make([]string, maxIdx+1)
+			for i := range layout {
+				layout[i] = "0"
+			}
+			for _, f := range s.Fields {
+				layout[f.Index] = "1"
+			}
+			return `{"kind":"ProgressiveContainer","activeFields":[` + strings.Join(layout, ",") +
+				`],"fields":[` + strings.Join(fields, ",") + `]}`
+		}
+		return `{"kind":"Container","fields":[` + strings.Join(fields, ",") + `]}`
+	case CompatUnion:
+		opts := make([]string, len(s.Options))
+		for i, o := range s.Options {
+			opts[i] = fmt.Sprintf(`{"selector":%d,"type":%s}`, o.Selector, o.Shape.CertDecl())
+		}
+		return `{"kind":"CompatibleUnion","options":[` + strings.Join(opts, ",") + `]}`
+	default:
+		// the spec-defined leaves spell the same in both declarations
+		return s.decl()
+	}
+}
+
 // Describe renders the shape for a report.
 func (s *Shape) Describe() string {
 	var b strings.Builder

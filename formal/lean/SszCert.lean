@@ -29,4 +29,5 @@ import SszCert.Hasher.Tree
 import SszCert.Sha256
 import SszCert.Merkle
 import SszCert.Certified
+import SszCert.Declare
 import SszCert.Eth

@@ -190,6 +190,8 @@ func ChildClasses() []*Shape {
 	add("OptionalUint32", OptionalOf(Basic(Uint32)))
 	add("OptionalContainerVar", OptionalOf(ContainerOf(Basic(Uint8), ByteListOf(4))))
 	add("OptionalListUint32", OptionalListOf(Basic(Uint32)))
+	add("OptionalListProgList", OptionalListOf(ProgListOf(Basic(Uint64), 0)))
+	add("OptionalBitList9", OptionalOf(BitListOf(9)))
 	add("WrapperByteList8", WrapperOf(ByteListOf(8)))
 	return out
 }

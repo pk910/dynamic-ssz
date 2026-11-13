@@ -116,7 +116,7 @@ func CertExpr(desc *ssztypes.TypeDescriptor) (string, error) {
 			return "", fmt.Errorf("progressive list without element descriptor")
 		}
 		if elem.SszType == ssztypes.SszUint8Type {
-			return "(progListPackedCodec (uintCodec 1) 1 (by rfl) (by decide))", nil
+			return "(progListPackedCodec (uintCodec 1) 1 (by rfl) (by decide)" + progLimitArg(desc) + ")", nil
 		}
 		e, err := CertExpr(elem)
 		if err != nil {
@@ -127,11 +127,11 @@ func CertExpr(desc *ssztypes.TypeDescriptor) (string, error) {
 				return "", fmt.Errorf("fixed-size list element with size %d", elem.Size)
 			}
 			if isBasic(elem) {
-				return fmt.Sprintf("(progListPackedCodec %s %d (by rfl) (by decide))", e, elem.Size), nil
+				return fmt.Sprintf("(progListPackedCodec %s %d (by rfl) (by decide)%s)", e, elem.Size, progLimitArg(desc)), nil
 			}
-			return fmt.Sprintf("(progListFixedCodec %s %d (by rfl) (by decide))", e, elem.Size), nil
+			return fmt.Sprintf("(progListFixedCodec %s %d (by rfl) (by decide)%s)", e, elem.Size, progLimitArg(desc)), nil
 		}
-		return fmt.Sprintf("(progListVarCodec %s)", e), nil
+		return fmt.Sprintf("(progListVarCodec %s%s)", e, progLimitArg(desc)), nil
 
 	case ssztypes.SszBitvectorType:
 		bits := desc.BitSize
@@ -147,6 +147,9 @@ func CertExpr(desc *ssztypes.TypeDescriptor) (string, error) {
 		return fmt.Sprintf("(bitlistCodec %s)", limitExpr(desc)), nil
 
 	case ssztypes.SszProgressiveBitlistType:
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
+			return fmt.Sprintf("(progBitlistCodec %d)", desc.Limit), nil
+		}
 		return "progBitlistCodec", nil
 
 	case ssztypes.SszCompatibleUnionType:
@@ -210,6 +213,15 @@ func CertExpr(desc *ssztypes.TypeDescriptor) (string, error) {
 
 // isBasic reports whether a descriptor denotes an SSZ basic type (uintN or
 // boolean) — the element kinds whose sequences merkleize packed.
+// progLimitArg renders the bound of a progressive collection as the trailing
+// combinator argument, empty (the unbounded default) without one.
+func progLimitArg(desc *ssztypes.TypeDescriptor) string {
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
+		return fmt.Sprintf(" %d", desc.Limit)
+	}
+	return ""
+}
+
 func isBasic(d *ssztypes.TypeDescriptor) bool {
 	d = unwrap(d)
 	return d.SszType.IsBasic()

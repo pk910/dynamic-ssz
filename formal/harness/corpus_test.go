@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"fmt"
 	"math/rand"
 	"reflect"
 	"strings"
@@ -35,6 +36,11 @@ func TestCorpusDeclarations(t *testing.T) {
 			t.Errorf("%s (%s): descriptor: %v", e.Name, e.Shape, err)
 			continue
 		}
+		if cert, err := certlib.CertJSON(desc); err != nil {
+			t.Errorf("%s (%s): no in-house declaration: %v", e.Name, e.Shape, err)
+		} else if cert != e.CertDecl {
+			t.Errorf("DECLARATION DIVERGENCE (in-house) %s (%s):\n  dynamic-ssz %s\n  intended    %s", e.Name, e.Shape, cert, e.CertDecl)
+		}
 		got, err := certlib.SpecJSON(desc)
 		switch {
 		case e.IllFormed:
@@ -61,6 +67,7 @@ func TestCorpusDeclarations(t *testing.T) {
 func TestCorpusLink(t *testing.T) {
 	entries := corpusEntries(t)
 	o := startSpecOracle(t)
+	c := startCertOracle(t)
 	eng := newEngineSet(typegen.Specs())
 	rng := rand.New(rand.NewSource(20261113))
 	st := &specStats{}
@@ -74,6 +81,12 @@ func TestCorpusLink(t *testing.T) {
 			continue
 		}
 		sub := subject{name: e.Name, newFn: e.New, spec: !e.Extended && !e.IllFormed}
+		// Every shape has an in-house codec, built from the proof-carrying
+		// combinators at run time.
+		if ans := c.declare(e.Name, e.CertDecl); ans != "OK" {
+			t.Errorf("%s (%s): in-house declaration refused: %s", e.Name, e.Shape, ans)
+			continue
+		}
 		if e.IllFormed {
 			// A shape the specification forbids: the oracle must say so; the
 			// engines are then only held to agree with each other.
@@ -89,8 +102,26 @@ func TestCorpusLink(t *testing.T) {
 		}
 		t.Run(e.Stage+"/"+e.Name, func(t *testing.T) {
 			o.t = t
-			defer func() { o.t = t }()
+			c.t = t
+			defer func() { o.t = t; c.t = t }()
 			ctx := e.Stage + "/" + e.Name
+			// inHouse holds the engines to the in-house certified codec:
+			// verdict agreement, and the root on every path; for spec-defined
+			// shapes also agreement of the two formalizations' roots.
+			inHouse := func(what string, raw []byte, goAccept bool, decoded any, specRoot string) {
+				accepted, root := c.decode(e.Name, raw)
+				if accepted != goAccept {
+					t.Errorf("VERDICT DIVERGENCE %s %s (in-house): go=%v model=%v (bytes 0x%s)", ctx, what, goAccept, accepted, shortHex(raw))
+					return
+				}
+				if !accepted {
+					return
+				}
+				if specRoot != "" && specRoot != root {
+					t.Errorf("MODEL DIVERGENCE %s %s: in-house root %s, specification root %s", ctx, what, root, specRoot)
+				}
+				eng.rootPaths(failer(t, ctx+" "+what), decoded, root)
+			}
 			rapid.Check(t, func(rt *rapid.T) {
 				v := sub.genValue(t, rt, eng)
 				enc, ok := eng.encodePaths(failer(t, ctx), v)
@@ -98,56 +129,59 @@ func TestCorpusLink(t *testing.T) {
 					t.Fatalf("%s: generated value is not encodable", ctx)
 				}
 				mut := mutateBytes(rt, enc)
+				goAccept, mutDecoded := eng.decodePaths(failer(t, ctx+" mutation"), e.New, mut)
+				specRoot, mutRoot := "", ""
 				if sub.spec {
-					accepted, specRoot := o.decode(e.Name, enc)
+					accepted, root := o.decode(e.Name, enc)
 					if !accepted {
 						t.Errorf("VERDICT DIVERGENCE %s: spec rejects generated encoding 0x%s", ctx, shortHex(enc))
 					} else {
+						specRoot = root
 						o.checkValue(e.Stage, e.Name, v, enc, specRoot, eng, rng, st)
 					}
-					goAccept, mutDecoded := eng.decodePaths(failer(t, ctx+" mutation"), e.New, mut)
-					specAccept, mutRoot := o.decode(e.Name, mut)
+					specAccept, root := o.decode(e.Name, mut)
 					if goAccept != specAccept {
 						t.Errorf("VERDICT DIVERGENCE %s mutation: go=%v spec=%v (bytes 0x%s)", ctx, goAccept, specAccept, shortHex(mut))
 					}
 					if goAccept && specAccept {
+						mutRoot = root
 						o.checkValue(e.Stage+"-mut", e.Name, mutDecoded, mut, mutRoot, eng, rng, st)
 					}
 				} else {
-					// No specification: both engines on every path must agree
-					// with each other, round-trip the value, and accept only
-					// canonical bytes.
+					// No specification: the engines must round-trip the value
+					// and accept only canonical bytes (the in-house codec then
+					// answers for verdicts and roots).
 					okDec, back := eng.decodePaths(failer(t, ctx), e.New, enc)
 					if !okDec {
 						t.Errorf("ROUNDTRIP %s: engines reject their own encoding 0x%s", ctx, shortHex(enc))
 					} else if diff := EqualNormalized(v, back); diff != "" {
 						t.Errorf("ROUNDTRIP %s: decoded value differs: %s", ctx, diff)
 					}
-					eng.rootPaths(failer(t, ctx), v, "")
-					goAccept, mutDecoded := eng.decodePaths(failer(t, ctx+" mutation"), e.New, mut)
 					if goAccept {
 						again, ok := eng.encodePaths(failer(t, ctx+" mutation re-encode"), mutDecoded)
 						if ok && string(again) != string(mut) {
 							t.Errorf("CANONICITY %s: accepted 0x%s but re-encodes as 0x%s", ctx, shortHex(mut), shortHex(again))
 						}
-						eng.rootPaths(failer(t, ctx+" mutation"), mutDecoded, "")
 					}
 				}
+				inHouse("value", enc, true, v, specRoot)
+				inHouse("mutation", mut, goAccept, mutDecoded, mutRoot)
 				linked[e.Name]++
 			})
 			for i, probe := range limitProbes(desc) {
 				goAccept, decoded := eng.decodePaths(failer(t, ctx+" limit probe"), e.New, probe)
+				root := ""
 				if sub.spec {
-					specAccept, root := o.decode(e.Name, probe)
+					specAccept, specRoot := o.decode(e.Name, probe)
 					if goAccept != specAccept {
 						t.Errorf("VERDICT DIVERGENCE %s limit probe %d: go=%v spec=%v (%d bytes)", ctx, i, goAccept, specAccept, len(probe))
 					}
 					if goAccept && specAccept {
+						root = specRoot
 						o.checkValue(e.Stage+"-limit", e.Name, decoded, probe, root, eng, rng, st)
 					}
-				} else if goAccept {
-					eng.rootPaths(failer(t, ctx+" limit probe"), decoded, "")
 				}
+				inHouse(fmt.Sprintf("limit probe %d", i), probe, goAccept, decoded, root)
 			}
 		})
 	}

@@ -1,6 +1,7 @@
 import SszCert
 import SszCert.Certified
 import SszCert.Eth
+import SszCert.Declare
 
 /-!
 # ssz-oracle
@@ -16,6 +17,10 @@ answers per line:
   the theorems, so a `MISMATCH`/`MISMATCH-TREE` answer would indicate a
   compiler/runtime defect, not a model question;
 * `REJECT` — the certified strict decoder rejects the bytes;
+* `T <name> <json>` — declare a type for this session (`SszCert.Declare`:
+  the ssz-specs JSON spelling plus dynamic-ssz's extended kinds), answered
+  `OK`; its codec is built from the certified combinators, so it carries the
+  theorems. A declared name shadows a compiled one.
 * `ERR ...` — malformed input line or unknown type name.
 -/
 
@@ -43,12 +48,12 @@ def hexOf (bs : List UInt8) : String :=
     let d := "0123456789abcdef".toList
     (s.push d[b.toNat / 16]!).push d[b.toNat % 16]!) ""
 
-def handle (name : String) (hex : String) : String :=
+def handle (declaredHere : List (String × Codec)) (name : String) (hex : String) : String :=
   let bytes? := if hex == "-" then some [] else parseHex hex
   match bytes? with
   | none => "ERR badhex"
   | some bytes =>
-    match (certified ++ certifiedEth).lookup name with
+    match (declaredHere.lookup name).orElse fun _ => (certified ++ certifiedEth).lookup name with
     | none => s!"ERR unknown {name}"
     | some c =>
       match c.dec bytes with
@@ -63,23 +68,34 @@ def handle (name : String) (hex : String) : String :=
           "MISMATCH"
       | none => "REJECT"
 
-partial def loop (stdin : IO.FS.Stream) (stdout : IO.FS.Stream) : IO Unit := do
+partial def loop (stdin : IO.FS.Stream) (stdout : IO.FS.Stream)
+    (declaredHere : List (String × Codec)) : IO Unit := do
   let line ← stdin.getLine
   if line == "" then
     return
   let line := line.trim
   if line == "" then
-    loop stdin stdout
+    loop stdin stdout declaredHere
   else
     match line.splitOn " " with
+    | ["T", name, text] =>
+      match parseShape text with
+      | .error fault =>
+        stdout.putStrLn s!"ERR baddesc {fault}"
+        stdout.flush
+        loop stdin stdout declaredHere
+      | .ok shape =>
+        stdout.putStrLn "OK"
+        stdout.flush
+        loop stdin stdout ((name, shape.codec) :: declaredHere)
     | [name, hex] =>
-      stdout.putStrLn (handle name hex)
+      stdout.putStrLn (handle declaredHere name hex)
       stdout.flush
-      loop stdin stdout
+      loop stdin stdout declaredHere
     | _ =>
       stdout.putStrLn "ERR badline"
       stdout.flush
-      loop stdin stdout
+      loop stdin stdout declaredHere
 
 def main : IO Unit := do
-  loop (← IO.getStdin) (← IO.getStdout)
+  loop (← IO.getStdin) (← IO.getStdout) []

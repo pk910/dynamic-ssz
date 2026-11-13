@@ -156,9 +156,12 @@ of `hasher.go`/`async.go` that the Go hasher is held to call by call):
   certified ones are (values, mutations, limit probes; verdicts, bytes,
   roots, branches, multiproofs; every API path of both engines). Shapes the
   specification forbids but dynamic-ssz accepts are declared as such: the
-  oracle must refuse them (`ILLFORMED`). Extended shapes, which have no
-  specification, are held to agree across engines and paths, to round-trip,
-  and to accept only canonical bytes.
+  oracle must refuse them (`ILLFORMED`). The in-house oracle takes
+  declarations at run time as well (`SszCert.Declare`: a codec is built from
+  the proof-carrying combinators, so it carries the theorems), and every
+  corpus type — the extended shapes included, which have no specification —
+  is linked to it on verdicts and roots; for spec-defined shapes the two
+  formalizations' roots must agree.
 
 * **Every public API path, both engines.** `MarshalSSZ`, `MarshalSSZTo`,
   `MarshalSSZWriter` (also with a one-byte writer), `SizeSSZ`,

@@ -1,71 +1,9 @@
 package harness
 
 import (
-	"bufio"
 	"encoding/hex"
-	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strings"
 	"testing"
 )
-
-// certOracle is a minimal client of ssz-oracle (formal/lean).
-type certOracle struct {
-	t  *testing.T
-	wr *bufio.Writer
-	rd *bufio.Reader
-}
-
-func startCertOracle(t *testing.T) *certOracle {
-	path := os.Getenv("SSZ_ORACLE")
-	if path == "" {
-		path = filepath.Join("..", "lean", ".lake", "build", "bin", "ssz-oracle")
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Skipf("ssz-oracle not built: %v", err)
-	}
-	cmd := exec.Command("bash", "-c", "ulimit -s unlimited 2>/dev/null; exec '"+path+"'")
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start oracle: %v", err)
-	}
-	t.Cleanup(func() { _ = cmd.Process.Kill() })
-	return &certOracle{t: t, wr: bufio.NewWriterSize(stdin, 1<<20), rd: bufio.NewReaderSize(stdout, 1<<20)}
-}
-
-// verdict returns whether the certified decoder accepts raw, and the root.
-func (o *certOracle) verdict(name string, raw []byte) (bool, string) {
-	h := "-"
-	if len(raw) > 0 {
-		h = hex.EncodeToString(raw)
-	}
-	fmt.Fprintf(o.wr, "%s %s\n", name, h)
-	if err := o.wr.Flush(); err != nil {
-		o.t.Fatalf("write to oracle: %v", err)
-	}
-	line, err := o.rd.ReadString('\n')
-	if err != nil {
-		o.t.Fatalf("oracle died on %s: %v", name, err)
-	}
-	line = strings.TrimSpace(line)
-	if root, ok := strings.CutPrefix(line, "ACCEPT "); ok {
-		return true, root
-	}
-	if line != "REJECT" {
-		o.t.Fatalf("oracle answered %q for %s", line, name)
-	}
-	return false, ""
-}
 
 // TestExtendedEdgeCases pins the non-canonical encodings of the extended
 // types: every engine path must reach the certified model's verdict.

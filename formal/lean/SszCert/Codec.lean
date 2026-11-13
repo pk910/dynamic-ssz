@@ -1236,11 +1236,11 @@ def vectorPackedCodec (c : Codec) (k n : Nat) (hk : c.kind = some k) :
       case seq vs => exact Merkle.root_merkleTree_chunks _ _
       all_goals rfl }
 
-/-- EIP-7916 `ProgressiveList[T]` with basic `T`: list wire format (no
-    limit), progressive packed merkleization. -/
+/-- EIP-7916 `ProgressiveList[T]` with basic `T`: list wire format (bounded
+    by `lim`, unbounded by default), progressive packed merkleization. -/
 def progListPackedCodec (c : Codec) (k : Nat) (hk : c.kind = some k)
-    (hkpos : 0 < k) : Codec :=
-  { listFixedCodec c k noLimit hk hkpos with
+    (hkpos : 0 < k) (lim : Nat := noLimit) : Codec :=
+  { listFixedCodec c k lim hk hkpos with
     htr := fun v => match v with
       | .seq vs => Merkle.mixIn
           (Merkle.progRoot (Merkle.packBytes (Sch.cat (serElems c vs))))
@@ -1264,8 +1264,8 @@ def progListPackedCodec (c : Codec) (k : Nat) (hk : c.kind = some k)
 /-- EIP-7916 `ProgressiveList[T]` with fixed-size composite `T`: one root
     per element on the progressive spine. -/
 def progListFixedCodec (c : Codec) (k : Nat) (hk : c.kind = some k)
-    (hkpos : 0 < k) : Codec :=
-  { listFixedCodec c k noLimit hk hkpos with
+    (hkpos : 0 < k) (lim : Nat := noLimit) : Codec :=
+  { listFixedCodec c k lim hk hkpos with
     htr := fun v => match v with
       | .seq vs => Merkle.mixIn (Merkle.progRoot (vs.map c.htr))
           (Merkle.lengthWord vs.length)
@@ -1278,15 +1278,15 @@ def progListFixedCodec (c : Codec) (k : Nat) (hk : c.kind = some k)
       intro v hwt
       cases v
       case seq vs =>
-        have hwt' : WTElems c vs ∧ vs.length ≤ noLimit := hwt
+        have hwt' : WTElems c vs ∧ vs.length ≤ lim := hwt
         show Merkle.hashPair _ _ = _
         rw [Merkle.root_progTree, map_root_treeElems hwt'.1]
         rfl
       all_goals rfl }
 
 /-- EIP-7916 `ProgressiveList[T]` with variable-size `T`. -/
-def progListVarCodec (c : Codec) : Codec :=
-  { listVarCodec c noLimit with
+def progListVarCodec (c : Codec) (lim : Nat := noLimit) : Codec :=
+  { listVarCodec c lim with
     htr := fun v => match v with
       | .seq vs => Merkle.mixIn (Merkle.progRoot (vs.map c.htr))
           (Merkle.lengthWord vs.length)
@@ -1299,15 +1299,15 @@ def progListVarCodec (c : Codec) : Codec :=
       intro v hwt
       cases v
       case seq vs =>
-        have hwt' : WTElems c vs ∧ vs.length ≤ noLimit := hwt
+        have hwt' : WTElems c vs ∧ vs.length ≤ lim := hwt
         show Merkle.hashPair _ _ = _
         rw [Merkle.root_progTree, map_root_treeElems hwt'.1]
         rfl
       all_goals rfl }
 
 /-- EIP-7916 `ProgressiveBitList`. -/
-def progBitlistCodec : Codec :=
-  { bitlistCodec noLimit with
+def progBitlistCodec (lim : Nat := noLimit) : Codec :=
+  { bitlistCodec lim with
     htr := fun v => match v with
       | .bits l => Merkle.mixIn (Merkle.progRoot (Merkle.packBits l))
           (Merkle.lengthWord l.length)

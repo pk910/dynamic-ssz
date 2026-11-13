@@ -14,7 +14,10 @@ type Entry struct {
 	// DeclStatic is Decl with spec-parametric sizes at their static defaults
 	// (the code generator's view before spec values are resolved).
 	DeclStatic string
-	Extended   bool
+	// CertDecl is the declaration for the in-house oracle (spec spelling plus
+	// the extended kinds); every shape has one.
+	CertDecl string
+	Extended bool
 	// IllFormed: the SSZ specification declares the shape illegal (the spec
 	// oracle must refuse its declaration) although dynamic-ssz accepts it.
 	IllFormed bool
