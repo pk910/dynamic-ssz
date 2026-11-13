@@ -1,7 +1,9 @@
 package harness
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 	"testing"
 
 	"github.com/pk910/dynamic-ssz/hasher"
@@ -21,6 +23,16 @@ func TestHasherAPILink(t *testing.T) {
 	hashers := map[string]func() *hasher.Hasher{
 		"fast":   func() *hasher.Hasher { return hasher.FastHasherPool.Get() },
 		"native": hasher.NewHasher,
+		// a hasher over the standard library's hash.Hash
+		"stdlib": func() *hasher.Hasher { return hasher.NewHasherWithHash(sha256.New()) },
+		// a hasher reused after Reset: the previous value must leave no trace
+		"reset": func() *hasher.Hasher {
+			h := hasher.NewHasher()
+			h.PutUint64(0xdeadbeef)
+			h.PutBytes(make([]byte, 100))
+			h.Reset()
+			return h
+		},
 	}
 	type apiCase struct {
 		name  string
@@ -91,6 +103,51 @@ func TestHasherAPILink(t *testing.T) {
 			h.PutBool(bool(*v.(*BasicBool)))
 			return nil
 		}},
+		// The Append* family packs raw words; FillUpTo32 completes the chunk.
+		{"BasicUint64Vector4/Append", func() any { return new(BasicUint64Vector4) }, func(h *hasher.Hasher, v any) error {
+			for _, x := range *v.(*BasicUint64Vector4) {
+				h.AppendUint64(x)
+			}
+			h.FillUpTo32()
+			return nil
+		}},
+		{"BasicUint16Vector3/Append", func() any { return new(BasicUint16Vector3) }, func(h *hasher.Hasher, v any) error {
+			for _, x := range *v.(*BasicUint16Vector3) {
+				h.AppendUint16(x)
+			}
+			h.FillUpTo32()
+			return nil
+		}},
+		{"BasicUint32/Append", func() any { return new(BasicUint32) }, func(h *hasher.Hasher, v any) error {
+			h.AppendUint32(uint32(*v.(*BasicUint32)))
+			h.FillUpTo32()
+			return nil
+		}},
+		{"BasicUint8/Append", func() any { return new(BasicUint8) }, func(h *hasher.Hasher, v any) error {
+			h.AppendUint8(uint8(*v.(*BasicUint8)))
+			h.FillUpTo32()
+			return nil
+		}},
+		{"BasicBool/Append", func() any { return new(BasicBool) }, func(h *hasher.Hasher, v any) error {
+			h.AppendBool(bool(*v.(*BasicBool)))
+			h.FillUpTo32()
+			return nil
+		}},
+		{"BasicBytes32/Append", func() any { return new(BasicBytes32) }, func(h *hasher.Hasher, v any) error {
+			b := *v.(*BasicBytes32)
+			h.AppendBytes32(b[:])
+			return nil
+		}},
+		// WithTemp lends scratch space; the value built there is appended.
+		{"BasicBytes32/WithTemp", func() any { return new(BasicBytes32) }, func(h *hasher.Hasher, v any) error {
+			b := *v.(*BasicBytes32)
+			h.WithTemp(func(tmp []byte) []byte {
+				tmp = append(tmp[:0], b[:]...)
+				h.Append(tmp)
+				return tmp
+			})
+			return nil
+		}},
 	}
 	for _, c := range cases {
 		c := c
@@ -105,7 +162,8 @@ func TestHasherAPILink(t *testing.T) {
 				if err != nil {
 					t.Fatalf("marshal: %v", err)
 				}
-				ok, want := o.verdict(c.name, enc)
+				typeName, _, _ := strings.Cut(c.name, "/")
+				ok, want := o.verdict(typeName, enc)
 				if !ok {
 					t.Fatalf("model rejects 0x%s", shortHex(enc))
 				}
