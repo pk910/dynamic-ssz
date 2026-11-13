@@ -74,6 +74,25 @@ test constants are both shown to). It covers batch collapse,
 `collapseAllDepths`, the progressive rounds with Go's depth-greedy group
 count, background group jobs, compaction, and `collapseProgressiveLayer`.
 
+## The generic link
+
+The link is not confined to a hand-picked set of types. The spec oracle
+accepts a declaration at run time and proves it well-formed by evaluation
+before answering for it, and EthLib's theorems hold for every well-formed
+declaration — so any Go type can be linked without a certificate file.
+`formal/corpus.sh` generates a corpus from a grammar of SSZ shapes
+(`formal/harness/typegen`): every kind dynamic-ssz encodes in every Go
+representation and size class as a root type; every class of child under
+every parent context (containers, progressive containers, vectors, lists,
+progressive lists, both unions, optionals, wrappers); the inherited
+properties — variable size, spec-parametric size — through a middle type;
+and random shapes drawn deeper. Each generated type carries the declaration
+it is meant to have, computed from the shape alone; both descriptor builders
+of dynamic-ssz (reflection and go/types) must read exactly that declaration
+out of the generated struct tags, and the type is then linked like a
+certified one. Shapes the specification forbids but the library accepts are
+declared as such and the oracle must refuse them.
+
 ## What the link checks
 
 For every certified type, on ssz-specs fixtures (when configured), on

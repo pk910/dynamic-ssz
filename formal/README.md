@@ -49,8 +49,14 @@ formal/
   certify/                 dynssz-certify (go/types descriptors, as dynssz-gen)
   certify/certlib/         descriptor → Lean term translation (shared)
   harness/                 the differential links (own Go module)
+  harness/typegen/         the type-shape grammar: every kind, representation
+                           and size class; the staged enumeration; the
+                           declaration each shape is meant to have
+  harness/corpus/          the generated type corpus of the generic link
+                           (gen-corpus + dynssz-gen; not committed)
   mutation/                planted bugs the links must catch, and their runner
   certify.sh               regenerates harness methods + certificates (CI: no diff)
+  corpus.sh                generates the corpus of a stage and links it
   audit-axioms.sh          enforces standard axioms for every theorem
 ```
 
@@ -124,6 +130,35 @@ of `hasher.go`/`async.go` that the Go hasher is held to call by call):
 ## What is linked
 
 `harness/` (Go module; `go test` with the oracles built):
+
+* **The generic link (`corpus.sh`).** The spec oracle takes a declaration
+  at run time (`T <name> <json>`, the JSON spelling of the ssz-specs
+  conformance vectors) and evaluates `Desc.wellFormed` before answering for
+  it, so a type needs no certificate file: EthLib's theorems are generic in
+  the declaration. On that, `typegen` enumerates the shape space instead of
+  a hand-picked zoo — stage 1: every leaf shape as a root type (every kind
+  dynamic-ssz encodes, in every Go representation — arrays, slices with
+  `ssz-size`, strings, `[2]uint64` words, pointer elements, dimension tags —
+  at every size class the engines special-case: byte, chunk, power-of-two
+  chunk and 256-chunk boundaries, aligned and unaligned bit widths, static
+  and spec-parametric sizes, bounded and unbounded); stage 2: every child
+  class under every parent context (container alone / between fixed fields /
+  after a variable field, progressive container, vectors of three
+  representations, lists with small, huge and spec-parametric limits,
+  progressive list, both unions, optional, optional-list, wrapper); stage 3:
+  the properties a type inherits from below (variable size, spec-parametric
+  size) through every pair of parents; `random`: shapes drawn from the same
+  grammar at depth 4+. Each generated type comes with the declaration it is
+  *meant* to have, computed from the shape alone, and both descriptor
+  builders of dynamic-ssz (reflection, and go/types as dynssz-gen uses)
+  must derive exactly that declaration from the generated struct tags —
+  the tag language, checked generically. Every type is then linked as the
+  certified ones are (values, mutations, limit probes; verdicts, bytes,
+  roots, branches, multiproofs; every API path of both engines). Shapes the
+  specification forbids but dynamic-ssz accepts are declared as such: the
+  oracle must refuse them (`ILLFORMED`). Extended shapes, which have no
+  specification, are held to agree across engines and paths, to round-trip,
+  and to accept only canonical bytes.
 
 * **Every public API path, both engines.** `MarshalSSZ`, `MarshalSSZTo`,
   `MarshalSSZWriter` (also with a one-byte writer), `SizeSSZ`,

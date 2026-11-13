@@ -7,14 +7,14 @@ package corpus
 
 // Entry is one corpus type.
 type Entry struct {
-	Name     string
-	Stage    string
-	Shape    string // the shape, described
-	Decl     string // the declaration the shape is meant to have (spec oracle JSON), "" if extended
+	Name  string
+	Stage string
+	Shape string // the shape, described
+	Decl  string // the declaration the shape is meant to have (spec oracle JSON), "" if extended
 	// DeclStatic is Decl with spec-parametric sizes at their static defaults
 	// (the code generator's view before spec values are resolved).
 	DeclStatic string
-	Extended bool
+	Extended   bool
 	// IllFormed: the SSZ specification declares the shape illegal (the spec
 	// oracle must refuse its declaration) although dynamic-ssz accepts it.
 	IllFormed bool

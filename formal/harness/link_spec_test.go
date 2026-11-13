@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pk910/dynamic-ssz/treeproof"
 	"pgregory.net/rapid"
@@ -51,20 +53,50 @@ func startSpecOracle(t *testing.T) *specOracle {
 	return &specOracle{t: t, wr: bufio.NewWriterSize(stdin, 1<<20), rd: bufio.NewReaderSize(stdout, 1<<20)}
 }
 
+// oracleTrace echoes requests to stderr: SSZ_ORACLE_TRACE=1 every request,
+// SSZ_ORACLE_TRACE=slow only answers that took longer than two seconds.
+var oracleTrace = os.Getenv("SSZ_ORACLE_TRACE")
+
+// oracleAnswerTimeout bounds one oracle answer; the request is reported in full.
+const oracleAnswerTimeout = 5 * time.Minute
+
 func (o *specOracle) ask(line string) string {
+	if oracleTrace == "1" {
+		fmt.Fprintln(os.Stderr, "oracle<", line)
+	}
+	start := time.Now()
 	fmt.Fprintln(o.wr, line)
 	if err := o.wr.Flush(); err != nil {
 		o.t.Fatalf("write to oracle: %v", err)
 	}
-	ans, err := o.rd.ReadString('\n')
-	if err != nil {
-		o.t.Fatalf("oracle died on %q: %v", line, err)
+	type answer struct {
+		text string
+		err  error
 	}
-	ans = strings.TrimSpace(ans)
-	if strings.HasPrefix(ans, "ERR") || strings.HasPrefix(ans, "MISMATCH") {
-		o.t.Fatalf("oracle answered %q for %q", ans, line)
+	done := make(chan answer, 1)
+	go func() {
+		text, err := o.rd.ReadString('\n')
+		done <- answer{text, err}
+	}()
+	var ans answer
+	select {
+	case ans = <-done:
+	case <-time.After(oracleAnswerTimeout):
+		o.t.Fatalf("oracle did not answer within %s to: %s", oracleAnswerTimeout, line)
 	}
-	return ans
+	if ans.err != nil {
+		o.t.Fatalf("oracle died on %q: %v", line, ans.err)
+	}
+	if oracleTrace != "" {
+		if d := time.Since(start); d > 2*time.Second {
+			fmt.Fprintf(os.Stderr, "oracle: slow answer (%s) to %s\n", d, line)
+		}
+	}
+	text := strings.TrimSpace(ans.text)
+	if strings.HasPrefix(text, "ERR") || strings.HasPrefix(text, "MISMATCH") {
+		o.t.Fatalf("oracle answered %q for %q", text, line)
+	}
+	return text
 }
 
 func hexOrDash(b []byte) string {
@@ -137,6 +169,11 @@ func treeIndices(root *treeproof.Node, limit int) (leaves, inner []int) {
 		}
 		if it.gi > 1 {
 			inner = append(inner, it.gi)
+		}
+		// Generalized indices are Go ints in treeproof: nodes deeper than 62
+		// levels have none (nested huge-limit collections reach that).
+		if it.gi > math.MaxInt64/4 {
+			continue
 		}
 		queue = append(queue, item{it.n.Left(), 2 * it.gi}, item{it.n.Right(), 2*it.gi + 1})
 	}

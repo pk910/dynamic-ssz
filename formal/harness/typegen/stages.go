@@ -213,6 +213,17 @@ func plain(s *Shape) *Shape {
 	return s
 }
 
+// singlePointer: an optional of a pointer-represented shape would be a
+// multi-level pointer, which Go SSZ types do not have.
+func singlePointer(s *Shape) bool {
+	switch s.Kind {
+	case Optional, OptionalList, BigInt:
+		return false
+	default:
+		return s.Rep != RepDims
+	}
+}
+
 // elementOK: collections take any element but an unbounded big.Int (no
 // element width) and dimension-tagged shapes (their tags describe one level).
 func elementOK(s *Shape) bool {
@@ -221,6 +232,9 @@ func elementOK(s *Shape) bool {
 	}
 	if s.Kind == BigInt && !s.Limited {
 		return false
+	}
+	if s.Kind == Time {
+		return false // time.Time is read only as a container field (ISSUES L1)
 	}
 	return true
 }
@@ -242,10 +256,13 @@ func Parents() []Parent {
 		{"InCompatUnion", func(c *Shape) *Shape { return CompatUnionOf([]int{1, 2}, plain(c), plain(c)) },
 			func(c *Shape) bool { return c.Rep != RepDims }},
 		{"InUnion", func(c *Shape) *Shape { return UnionOf(true, plain(c)) }, func(c *Shape) bool { return c.Rep != RepDims }},
-		{"InOptional", func(c *Shape) *Shape { return OptionalOf(plain(c)) }, func(c *Shape) bool { return c.Rep != RepDims }},
-		{"InOptionalList", func(c *Shape) *Shape { return OptionalListOf(plain(c)) }, func(c *Shape) bool { return c.Rep != RepDims }},
+		{"InOptional", func(c *Shape) *Shape { return OptionalOf(plain(c)) }, singlePointer},
+		{"InOptionalList", func(c *Shape) *Shape { return OptionalListOf(plain(c)) },
+			func(c *Shape) bool { return singlePointer(c) && c.Kind != BitVector }}, // ISSUES L5
 		{"InWrapper", func(c *Shape) *Shape { return WrapperOf(plain(c)) },
-			func(c *Shape) bool { return c.Rep != RepDims && c.Kind != Wrapper && c.Kind != Union && c.Kind != CompatUnion && c.Kind != Optional && c.Kind != OptionalList }},
+			func(c *Shape) bool {
+				return c.Rep != RepDims && c.Kind != Wrapper && c.Kind != Union && c.Kind != CompatUnion && c.Kind != Optional && c.Kind != OptionalList
+			}},
 	}
 }
 

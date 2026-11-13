@@ -173,6 +173,9 @@ func (e *Emitter) fieldExpr(s *Shape) (string, string) {
 // typeExpr returns the Go type expression and the tags that give it s's
 // SSZ meaning (as struct tags or an Annotate string).
 func (e *Emitter) typeExpr(s *Shape) (string, string) {
+	if (s.Kind == Vector || s.Kind == List || s.Kind == ProgList) && dimmed(s.Elem) {
+		return e.dimmedCollection(s)
+	}
 	var t tagSet
 	spec := func(key string) {
 		if s.Spec != "" {
@@ -312,10 +315,12 @@ func (e *Emitter) typeExpr(s *Shape) (string, string) {
 		// The optional is a dimension of its own: the payload's size tags
 		// move one dimension right and its kind joins ssz-type.
 		typ, tags := e.optionalElem(s.Elem)
-		return "*" + typ, shiftTags(tags, "optional")
+		return "*" + typ, shiftTags(tags, "optional", true)
 	case OptionalList:
+		// optional-list is transparent to dimensions: the payload's size tags
+		// stay in place, only its kind joins ssz-type.
 		typ, tags := e.optionalElem(s.Elem)
-		return "*" + typ, shiftTags(tags, "optional-list")
+		return "*" + typ, shiftTags(tags, "optional-list", false)
 	case Wrapper:
 		e.imports["github.com/pk910/dynamic-ssz"] = true
 		typ, tags := e.fieldExpr(s.Elem)
@@ -370,10 +375,126 @@ func (e *Emitter) optionalElem(s *Shape) (string, string) {
 	}
 }
 
+// dimmed reports whether a collection element must be declared through the
+// collection's own dimension tags (it has no Go type of its own to annotate).
+func dimmed(elem *Shape) bool {
+	switch elem.Kind {
+	case Optional, OptionalList, Wrapper, BigInt:
+		return true
+	default:
+		return false
+	}
+}
+
+// dimTags accumulates per-dimension tag values.
+type dimTags struct {
+	keys  []string
+	vals  map[string][]string
+	depth int
+}
+
+func (d *dimTags) set(dim int, key, value string) {
+	if d.vals == nil {
+		d.vals = map[string][]string{}
+	}
+	if _, ok := d.vals[key]; !ok {
+		d.keys = append(d.keys, key)
+	}
+	for len(d.vals[key]) <= dim {
+		d.vals[key] = append(d.vals[key], "?")
+	}
+	d.vals[key][dim] = value
+	if dim+1 > d.depth {
+		d.depth = dim + 1
+	}
+}
+
+func (d *dimTags) String() string {
+	var out []string
+	for _, k := range d.keys {
+		v := d.vals[k]
+		for len(v) < d.depth {
+			v = append(v, "?")
+		}
+		// trailing placeholders carry no information
+		for len(v) > 1 && v[len(v)-1] == "?" {
+			v = v[:len(v)-1]
+		}
+		out = append(out, fmt.Sprintf("%s:%q", k, strings.Join(v, ",")))
+	}
+	return strings.Join(out, " ")
+}
+
+// dimmedCollection declares a collection of optional (or wrapped) elements:
+// the collection is dimension 0, the optional dimension 1, its payload
+// dimension 2, all in the field's tags.
+func (e *Emitter) dimmedCollection(s *Shape) (string, string) {
+	var d dimTags
+	switch s.Kind {
+	case Vector:
+		d.set(0, "ssz-type", "vector")
+		d.set(0, "ssz-size", fmt.Sprint(s.N))
+		if s.Spec != "" {
+			d.set(0, "dynssz-size", s.Spec)
+		}
+	case List:
+		d.set(0, "ssz-type", "list")
+		d.set(0, "ssz-max", fmt.Sprint(s.N))
+		if s.Spec != "" {
+			d.set(0, "dynssz-max", s.Spec)
+		}
+	case ProgList:
+		d.set(0, "ssz-type", "progressive-list")
+		if s.Limited {
+			d.set(0, "ssz-max", fmt.Sprint(s.N))
+			if s.Spec != "" {
+				d.set(0, "dynssz-max", s.Spec)
+			}
+		}
+	default:
+		panic("not a collection")
+	}
+	elem := s.Elem
+	var payloadType, payloadTags string
+	payloadDim := 2
+	switch elem.Kind {
+	case Optional:
+		d.set(1, "ssz-type", "optional")
+		payloadType, payloadTags = e.optionalElem(elem.Elem)
+		payloadType = "*" + payloadType
+	case OptionalList:
+		// transparent to dimensions: the payload's tags sit at the optional's dimension
+		d.set(1, "ssz-type", "optional-list")
+		payloadType, payloadTags = e.optionalElem(elem.Elem)
+		payloadType = "*" + payloadType
+		payloadDim = 1
+	case Wrapper:
+		d.set(1, "ssz-type", "wrapper")
+		payloadType = e.named(elem, "E")
+	case BigInt:
+		e.imports["math/big"] = true
+		payloadType = "*big.Int"
+		if elem.Limited {
+			d.set(1, "ssz-max", fmt.Sprint(elem.N))
+		}
+	default:
+		panic("not a dimmed element")
+	}
+	for _, pair := range strings.Fields(payloadTags) {
+		key, value, _ := strings.Cut(pair, ":")
+		d.set(payloadDim, key, strings.Trim(value, `"`))
+	}
+	prefix := "[]"
+	if s.Kind == Vector && s.Rep != RepSlice && s.Spec == "" {
+		prefix = fmt.Sprintf("[%d]", s.N)
+	}
+	return prefix + payloadType, d.String()
+}
+
 // shiftTags rewrites a payload's tags for a field whose outer dimension is
 // the given kind (optional, optional-list): size, limit and bit-size tags
 // get a leading `?,`, and the payload's ssz-type follows the outer kind.
-func shiftTags(tags, outer string) string {
+func shiftTags(tags, outer string, shift bool) string {
 	var out []string
 	kind := ""
 	for _, pair := range strings.Fields(tags) {
@@ -383,7 +504,10 @@ func shiftTags(tags, outer string) string {
 		case "ssz-type":
 			kind = value
 		case "ssz-size", "ssz-max", "ssz-bitsize", "dynssz-size", "dynssz-max", "dynssz-bitsize":
-			out = append(out, fmt.Sprintf("%s:%q", key, "?,"+value))
+			if shift {
+				value = "?," + value
+			}
+			out = append(out, fmt.Sprintf("%s:%q", key, value))
 		default:
 			out = append(out, pair)
 		}

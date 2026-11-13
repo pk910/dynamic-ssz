@@ -19,4 +19,4 @@ for _ in 1 2 3 4 5 6 7 8; do
   [ "$before" = "$(sha256sum corpus/generated_ssz.go)" ] && break
 done
 go vet ./corpus/
-go test -count=1 -run 'TestCorpusDeclarations|TestCorpusLink' ${CORPUS_TEST_FLAGS:-} .
+go test -count=1 -timeout 120m ${CORPUS_TEST_FLAGS:-} -run 'TestCorpusDeclarations|TestCorpusBuildersAgree|TestCorpusLink' . | grep -v -e '^=== ' -e '^    --- PASS'
