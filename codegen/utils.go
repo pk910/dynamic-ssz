@@ -123,6 +123,11 @@ func formatGoSource(code string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("generated code is not valid Go: %w", err)
 	}
+	// One pass can join a func literal's body onto its signature when the
+	// signature holds a struct inside a type argument; a second pass settles it.
+	if again, err := format.Source(formatted); err == nil {
+		formatted = again
+	}
 
 	return string(formatted), nil
 }

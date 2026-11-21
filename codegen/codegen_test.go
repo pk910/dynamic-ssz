@@ -7,6 +7,7 @@ package codegen
 import (
 	"encoding/binary"
 	"errors"
+	"go/format"
 	"go/token"
 	"go/types"
 	"math"
@@ -2835,6 +2836,32 @@ func TestGenerateOptionalListZeroWidthGuard(t *testing.T) {
 	}
 	if !strings.Contains(sizeBody, "== 0 {\n\t\t\treturn 0\n") {
 		t.Errorf("size method lacks the zero-width guard:\n%s", sizeBody)
+	}
+}
+
+type genUnionList struct {
+	Unions []dynssz.CompatibleUnion[struct {
+		A uint32
+		B uint64
+	}] `ssz-max:"4"`
+}
+
+// The streaming encoder sizes a union list in a closure whose parameter type
+// holds a struct; the written file must still be what gofmt produces.
+func TestGenerateUnionEncoderIsGofmtCanonical(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_union.go", WithReflectType(reflect.TypeFor[genUnionList](), WithCreateEncoderFn()))
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	code := files["gen_union.go"]
+	formatted, err := format.Source([]byte(code))
+	if err != nil {
+		t.Fatalf("format: %v", err)
+	}
+	if string(formatted) != code {
+		t.Errorf("generated code is not gofmt-canonical:\n%s", code)
 	}
 }
 
