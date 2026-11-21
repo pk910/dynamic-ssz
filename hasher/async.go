@@ -192,6 +192,15 @@ var asyncHandoff = make(chan *asyncJob, 64)
 // outChunks < width. Blocks while all worker slots are busy.
 func (h *Hasher) enqueueReduce(st *asyncShared, start, width, outChunks, dstOff int) {
 	st.sem <- struct{}{}
+	// Getting a buffer or ring slot can drain an earlier job and re-raise its
+	// hash function's panic. The worker slot is shared by all hashers, so
+	// return it unless the job reached a runner.
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			<-st.sem
+		}
+	}()
 
 	need := width * 32
 	in, tokened := h.getJobBuf(st, need)
@@ -212,6 +221,7 @@ func (h *Hasher) enqueueReduce(st *asyncShared, start, width, outChunks, dstOff 
 
 	ensureAsyncRunner(st)
 	asyncHandoff <- slot
+	handedOff = true
 }
 
 // asyncJobRunner is a persistent worker goroutine: it reduces handed-off

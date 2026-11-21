@@ -326,6 +326,47 @@ func TestAsyncPanicReachesCaller(t *testing.T) {
 	hh.Reset()
 }
 
+// Enqueueing can drain an earlier job and re-raise its hash function's panic.
+// The worker slot it took must be returned, or every async hasher blocks on it.
+func TestAsyncPanicReleasesWorkerSlot(t *testing.T) {
+	EnableAsyncHashing(1)
+	defer DisableAsyncHashing()
+
+	// With one worker and two buffers, the third of four jobs drains the first
+	// and re-raises its panic.
+	s := asyncSequence{elemChunks: 8, n: 4 * 4096, cadence: 256, limit: 1 << 40}
+
+	failing := NewHasherWithHashFn(func(dst, src []byte) error {
+		if len(src) >= 1024*32 {
+			panic("hash function failed")
+		}
+		return hashtree.HashByteSlice(dst, src)
+	})
+	func() {
+		defer func() {
+			if r := recover(); r != "hash function failed" {
+				t.Fatalf("got %v, want the hash function's panic", r)
+			}
+		}()
+		runAsyncSequence(t, failing, s, 42, true)
+	}()
+	failing.Reset()
+
+	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 42, false)
+	got := make(chan [32]byte, 1)
+	go func() {
+		got <- runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 42, true)
+	}()
+	select {
+	case root := <-got:
+		if root != want {
+			t.Errorf("async root %x != sync root %x", root, want)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("a healthy hasher is blocked on the worker slot the panicking one kept")
+	}
+}
+
 // TestAsyncGate verifies the two-level gating: the process-wide toggle and
 // the per-hasher SetAsyncHashing flag must both be set, and Reset clears the
 // per-hasher flag so pooled hashers never leak the setting to another user.
