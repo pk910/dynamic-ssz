@@ -1089,6 +1089,45 @@ func TestWrapperRegionLeaves(t *testing.T) {
 			t.Errorf("50 bytes at offset 5 gave %d leaves, want 2", len(leaves))
 		}
 	})
+
+	t.Run("subtree roots between byte chunks", func(t *testing.T) {
+		w := NewWrapper()
+		w.Append(bytes.Repeat([]byte{0xEE}, 32)) // before the region
+		a := bytes.Repeat([]byte{0xA1}, 32)
+		b := bytes.Repeat([]byte{0xB2}, 40)
+		sub := NewNodeWithValue([]byte{0x5B})
+		w.Append(a)
+		w.AddNode(sub)
+		w.Append(b)
+		w.AddNode(nil)
+
+		leaves := w.regionLeaves(32)
+		if len(leaves) != 5 {
+			t.Fatalf("got %d leaves, want 5", len(leaves))
+		}
+		if leaves[1] != sub {
+			t.Error("a subtree root was not kept as its own node")
+		}
+		if leaves[4] != nil {
+			t.Error("a nil node was replaced; the tree builder has to see it to refuse it")
+		}
+		want := map[int][]byte{0: a, 2: b[:32], 3: append(b[32:40:40], make([]byte, 24)...)}
+		for k, chunk := range want {
+			leaf := leaves[k]
+			if leaf == nil || !leaf.IsLeaf() || leaf.IsEmpty() || !bytes.Equal(leaf.Value(), chunk) {
+				t.Fatalf("leaf %d does not hold its chunk", k)
+			}
+		}
+		if leaves[0] == leaves[2] || leaves[2] == leaves[3] {
+			t.Error("byte chunks share a leaf")
+		}
+
+		// Leaves hold copies: reusing the buffer must not change them.
+		clear(w.buf)
+		if !bytes.Equal(leaves[0].Value(), a) || !bytes.Equal(leaves[2].Value(), b[:32]) {
+			t.Error("a leaf aliases the wrapper buffer")
+		}
+	})
 }
 
 func TestChunkLimitDepth(t *testing.T) {
