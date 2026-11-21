@@ -278,7 +278,8 @@ jobs:
   # to catch endianness bugs in the unsafe bulk encoding helpers, which would
   # otherwise produce silently wrong SSZ on big-endian platforms.
   big-endian-tests:
-    runs-on: ubuntu-latest
+    # ubuntu-26.04 has no installable qemu-user-static package.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
 
     steps:
