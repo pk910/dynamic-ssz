@@ -313,9 +313,6 @@ func (h *Hasher) finishOldestJob(copyResult bool) {
 	slot.panicked = nil
 	jobErr := slot.err
 	slot.err = nil
-	if copyResult {
-		h.setHashErr(jobErr)
-	}
 	if copyResult && panicked == nil {
 		// The destination is expected to exist: every path that shrinks the
 		// buffer below a hole drains or discards first, so an out-of-range
@@ -335,6 +332,11 @@ func (h *Hasher) finishOldestJob(copyResult bool) {
 	slot.in = nil
 	h.jobHead = (h.jobHead + 1) % len(h.jobRing)
 	h.jobCount--
+	if copyResult {
+		// Recorded once the slot is released: recording can hash pending
+		// climbs, and a panic there must not leave the ring half-updated.
+		h.setHashErr(jobErr)
+	}
 	if panicked != nil && copyResult {
 		panic(panicked)
 	}

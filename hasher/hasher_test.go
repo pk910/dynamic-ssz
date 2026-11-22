@@ -10,8 +10,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math/bits"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
@@ -2501,5 +2503,766 @@ func TestDeferredRunFlushedOnShapeChange(t *testing.T) {
 				t.Fatalf("deferred root %x != in-place root %x", got[:8], want[:8])
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Deferred list climbs
+// ---------------------------------------------------------------------------
+
+// strictH is newH with a hash function that fails the test on a call that is
+// empty or not whole pairs.
+func strictH(t *testing.T) *Hasher {
+	t.Helper()
+	return NewHasherWithHashFn(func(dst, in []byte) error {
+		if len(in) == 0 || len(in)%64 != 0 || len(dst) < len(in)/2 {
+			t.Errorf("hash call with dst=%d in=%d", len(dst), len(in))
+		}
+		return FastHasherPool.HashFn(dst, in)
+	})
+}
+
+// sha256Merkle is the binary merkle root of chunks in a tree sized for limit
+// chunks, built with sha256 alone.
+func sha256Merkle(chunks [][32]byte, limit uint64) [32]byte {
+	depth := 0
+	if limit > 1 {
+		depth = bits.Len64(limit - 1)
+	}
+	layer := append([][32]byte(nil), chunks...)
+	var zero [32]byte
+	for d := 0; d < depth; d++ {
+		if len(layer)%2 == 1 {
+			layer = append(layer, zero)
+		}
+		for i := 0; i < len(layer)/2; i++ {
+			layer[i] = sha256.Sum256(append(layer[2*i][:], layer[2*i+1][:]...))
+		}
+		layer = layer[:len(layer)/2]
+		zero = sha256.Sum256(append(zero[:], zero[:]...))
+	}
+	if len(layer) == 0 {
+		return zero
+	}
+	return layer[0]
+}
+
+func sha256Mixin(root [32]byte, n uint64) [32]byte {
+	var buf [64]byte
+	copy(buf[:], root[:])
+	binary.LittleEndian.PutUint64(buf[32:], n)
+	return sha256.Sum256(buf[:])
+}
+
+func chunksOf(b []byte) [][32]byte {
+	out := make([][32]byte, (len(b)+31)/32)
+	for i := range out {
+		copy(out[i][:], b[i*32:])
+	}
+	return out
+}
+
+// byteLists returns n byte lists of 0 to 96 bytes.
+func byteLists(n int) [][]byte {
+	out := make([][]byte, n)
+	for i := range out {
+		out[i] = make([]byte, i*7%97)
+		for j := range out[i] {
+			out[i][j] = byte(i + j)
+		}
+	}
+	return out
+}
+
+// A list closed inside another scope leaves its climb to the limit depth and
+// its length mixin pending, and sibling lists settle theirs together. The
+// roots must match a plain sha256 reference, whatever the collapse cadence,
+// and a caller reading the root it just closed must get the final one.
+func TestDeferredClimbsMatchReference(t *testing.T) {
+	t.Parallel()
+	t.Run("sibling lists", func(t *testing.T) {
+		t.Parallel()
+		for _, n := range []int{0, 1, 2, 255, 256, 257, 700} {
+			for _, cadence := range []int{0, 1, 256} {
+				lists := byteLists(n)
+				roots := make([][32]byte, n)
+				for i, l := range lists {
+					roots[i] = sha256Mixin(sha256Merkle(chunksOf(l), 1<<25), uint64(len(l)))
+				}
+				want := sha256Mixin(sha256Merkle(roots, 1<<20), uint64(n))
+
+				h := strictH(t)
+				idx := h.StartTree(sszutils.TreeTypeBinary)
+				for i, l := range lists {
+					lidx := h.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+					h.AppendBytes32(l)
+					h.MerkleizeWithMixin(lidx, uint64(len(l)), 1<<25)
+					if i%50 == 7 {
+						if got := h.Hash(); !bytes.Equal(got, roots[i][:]) {
+							t.Fatalf("n=%d cadence=%d: Hash after list %d = %x, want %x", n, cadence, i, got, roots[i])
+						}
+					}
+					if cadence > 0 && (i+1)%cadence == 0 {
+						h.Collapse()
+					}
+					if len(h.climbs) >= climbBatch {
+						t.Fatalf("n=%d cadence=%d: %d climbs pending, the batch bound is %d", n, cadence, len(h.climbs), climbBatch)
+					}
+				}
+				h.MerkleizeWithMixin(idx, uint64(n), 1<<20)
+				got, err := h.HashRoot()
+				if err != nil || got != want {
+					t.Fatalf("n=%d cadence=%d: root %x (%v), want %x", n, cadence, got, err, want)
+				}
+			}
+		}
+	})
+
+	t.Run("limits", func(t *testing.T) {
+		t.Parallel()
+		h := strictH(t)
+		var fields [][32]byte
+		idx := h.StartTree(sszutils.TreeTypeNone)
+		for _, limit := range []uint64{0, 1, 2, 3, 4, 5, 1 << 63, 1<<63 + 1, ^uint64(0)} {
+			for k := uint64(0); k <= 3; k++ {
+				if limit != 0 && k > limit {
+					continue
+				}
+				chunks := make([][32]byte, k)
+				lidx := h.StartTree(sszutils.TreeTypeBinary)
+				for i := range chunks {
+					binary.LittleEndian.PutUint64(chunks[i][:], limit^k+uint64(i))
+					h.PutUint64(limit ^ k + uint64(i))
+				}
+				h.MerkleizeWithMixin(lidx, k, limit)
+				depthLimit := limit
+				if limit == 0 {
+					depthLimit = k
+				}
+				fields = append(fields, sha256Mixin(sha256Merkle(chunks, depthLimit), k))
+			}
+		}
+		h.PutUint64(99)
+		var raw [32]byte
+		binary.LittleEndian.PutUint64(raw[:], 99)
+		fields = append(fields, raw)
+		h.Merkleize(idx)
+		want := sha256Merkle(fields, uint64(len(fields)))
+		got, err := h.HashRoot()
+		if err != nil || got != want {
+			t.Fatalf("root %x (%v), want %x", got, err, want)
+		}
+	})
+
+	t.Run("over capacity", func(t *testing.T) {
+		t.Parallel()
+		h := strictH(t)
+		idx := h.StartTree(sszutils.TreeTypeNone)
+		lidx := h.StartTree(sszutils.TreeTypeBinary)
+		for i := range 3 {
+			h.PutUint64(uint64(i))
+		}
+		h.MerkleizeWithMixin(lidx, 3, 2)
+		h.Merkleize(idx)
+		if _, err := h.HashRoot(); err == nil {
+			t.Fatal("a list over its limit was not reported")
+		}
+	})
+
+	t.Run("reset with pending climbs", func(t *testing.T) {
+		t.Parallel()
+		h := strictH(t)
+		h.StartTree(sszutils.TreeTypeBinary)
+		for _, l := range byteLists(10) {
+			lidx := h.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+			h.AppendBytes32(l)
+			h.MerkleizeWithMixin(lidx, uint64(len(l)), 1<<25)
+		}
+		h.Reset()
+
+		// Raw chunks first, so a climb left over from before the reset would
+		// sit below every list of the new walk.
+		fields := make([][32]byte, 0, 17)
+		idx := h.StartTree(sszutils.TreeTypeNone)
+		for i := range 12 {
+			var c [32]byte
+			binary.LittleEndian.PutUint64(c[:], uint64(i))
+			fields = append(fields, c)
+			h.PutUint64(uint64(i))
+		}
+		for _, l := range byteLists(5) {
+			fields = append(fields, sha256Mixin(sha256Merkle(chunksOf(l), 1<<25), uint64(len(l))))
+			lidx := h.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+			h.AppendBytes32(l)
+			h.MerkleizeWithMixin(lidx, uint64(len(l)), 1<<25)
+		}
+		h.Merkleize(idx)
+		want := sha256Merkle(fields, uint64(len(fields)))
+		got, err := h.HashRoot()
+		if err != nil || got != want {
+			t.Fatalf("root %x (%v), want %x", got, err, want)
+		}
+	})
+
+	t.Run("progressive parents", func(t *testing.T) {
+		t.Parallel()
+		for _, n := range []int{1, 5, 300} {
+			for _, cadence := range []int{0, 256} {
+				for _, mixin := range []bool{true, false} {
+					lists := byteLists(n)
+					roots := make([][32]byte, n)
+					h := strictH(t)
+					idx := h.StartTree(sszutils.TreeTypeProgressive)
+					for i, l := range lists {
+						roots[i] = sha256Mixin(sha256Merkle(chunksOf(l), 1<<25), uint64(len(l)))
+						lidx := h.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+						h.AppendBytes32(l)
+						h.MerkleizeWithMixin(lidx, uint64(len(l)), 1<<25)
+						if cadence > 0 && (i+1)%cadence == 0 {
+							h.Collapse()
+						}
+					}
+					if mixin {
+						h.MerkleizeProgressiveWithMixin(idx, uint64(n))
+					} else {
+						h.MerkleizeProgressive(idx)
+					}
+					want := referenceProgressiveRoot(t, roots, mixin)
+					got, err := h.HashRoot()
+					if err != nil || got != want {
+						t.Fatalf("n=%d cadence=%d mixin=%v: root %x (%v), want %x", n, cadence, mixin, got, err, want)
+					}
+				}
+			}
+		}
+
+		// A progressive container whose fields are lists.
+		lists := byteLists(6)
+		active := []byte{0x7f}
+		ref := strictH(t)
+		ridx := ref.Index()
+		h := strictH(t)
+		idx := h.StartTree(sszutils.TreeTypeNone)
+		for _, l := range lists {
+			root := sha256Mixin(sha256Merkle(chunksOf(l), 1<<12), uint64(len(l)))
+			ref.AppendBytes32(root[:])
+			lidx := h.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+			h.AppendBytes32(l)
+			h.MerkleizeWithMixin(lidx, uint64(len(l)), 1<<12)
+		}
+		ref.MerkleizeProgressiveWithActiveFields(ridx, active)
+		h.MerkleizeProgressiveWithActiveFields(idx, active)
+		want, werr := ref.HashRoot()
+		got, err := h.HashRoot()
+		if werr != nil || err != nil || got != want {
+			t.Fatalf("progressive container: root %x (%v), want %x (%v)", got, err, want, werr)
+		}
+	})
+
+	t.Run("list behind deferred containers", func(t *testing.T) {
+		t.Parallel()
+		h := strictH(t)
+		var roots [][32]byte
+		container := func(v uint64) {
+			var a, b [32]byte
+			binary.LittleEndian.PutUint64(a[:], v)
+			binary.LittleEndian.PutUint64(b[:], v+1)
+			roots = append(roots, sha256Merkle([][32]byte{a, b}, 2))
+			c := h.StartTree(sszutils.TreeTypeNone)
+			h.PutUint64(v)
+			h.PutUint64(v + 1)
+			h.Merkleize(c)
+		}
+		idx := h.StartTree(sszutils.TreeTypeBinary)
+		container(1)
+		container(3)
+		// A list scope opened without a tree shape, as the reflection engine
+		// opens a bitlist, does not flush the containers deferred before it.
+		chunks := make([][32]byte, 3)
+		lidx := h.StartTree(sszutils.TreeTypeNone)
+		for i := range chunks {
+			binary.LittleEndian.PutUint64(chunks[i][:], uint64(10+i))
+			h.PutUint64(uint64(10 + i))
+		}
+		h.MerkleizeWithMixin(lidx, 3, 1<<10)
+		roots = append(roots, sha256Mixin(sha256Merkle(chunks, 1<<10), 3))
+		container(5)
+		container(7)
+		h.MerkleizeWithMixin(idx, uint64(len(roots)), 1<<8)
+		want := sha256Mixin(sha256Merkle(roots, 1<<8), uint64(len(roots)))
+		got, err := h.HashRoot()
+		if err != nil || got != want {
+			t.Fatalf("root %x (%v), want %x", got, err, want)
+		}
+	})
+
+	t.Run("empty lists", func(t *testing.T) {
+		t.Parallel()
+		pairs := 0
+		h := NewHasherWithHashFn(func(dst, in []byte) error {
+			pairs += len(in) / 64
+			return FastHasherPool.HashFn(dst, in)
+		})
+		fields := make([][32]byte, 0, 8)
+		idx := h.StartTree(sszutils.TreeTypeNone)
+		for range 8 {
+			fields = append(fields, sha256Mixin(sha256Merkle(nil, 1<<40), 0))
+			lidx := h.StartTree(sszutils.TreeTypeBinary)
+			h.MerkleizeWithMixin(lidx, 0, 1<<40)
+		}
+		h.Merkleize(idx)
+		want := sha256Merkle(fields, uint64(len(fields)))
+		got, err := h.HashRoot()
+		if err != nil || got != want {
+			t.Fatalf("root %x (%v), want %x", got, err, want)
+		}
+		// An empty list is the zero hash of its depth: only the 8 mixins and
+		// the container's 7 pairs are hashed.
+		if pairs != 15 {
+			t.Fatalf("hashed %d pairs, want 15", pairs)
+		}
+	})
+
+	t.Run("lists settled alone", func(t *testing.T) {
+		t.Parallel()
+		// A list alone in its container climbs by itself: the same calls and
+		// pairs as the list closed at the top, which is never deferred, plus
+		// the container's one.
+		var tail [32]byte
+		binary.LittleEndian.PutUint64(tail[:], 77)
+		for _, limit := range []uint64{0, 1, 2, 3, 5, 1 << 25, 1<<63 + 1, ^uint64(0)} {
+			for _, l := range byteLists(14) {
+				chunks := chunksOf(l)
+				if limit != 0 && uint64(len(chunks)) > limit {
+					continue
+				}
+				calls, pairs := 0, 0
+				h := NewHasherWithHashFn(func(dst, in []byte) error {
+					calls++
+					pairs += len(in) / 64
+					return FastHasherPool.HashFn(dst, in)
+				})
+				list := func() {
+					lidx := h.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+					h.AppendBytes32(l)
+					h.MerkleizeWithMixin(lidx, uint64(len(l)), limit)
+				}
+				list()
+				top, err := h.HashRoot()
+				topCalls, topPairs := calls, pairs
+				depthLimit := limit
+				if limit == 0 {
+					depthLimit = uint64(len(chunks))
+				}
+				if want := sha256Mixin(sha256Merkle(chunks, depthLimit), uint64(len(l))); err != nil || top != want {
+					t.Fatalf("limit=%d len=%d: top-level root %x (%v), want %x", limit, len(l), top, err, want)
+				}
+
+				h.Reset()
+				calls, pairs = 0, 0
+				idx := h.StartTree(sszutils.TreeTypeNone)
+				list()
+				h.PutUint64(77)
+				h.Merkleize(idx)
+				got, err := h.HashRoot()
+				if want := sha256Merkle([][32]byte{top, tail}, 2); err != nil || got != want {
+					t.Fatalf("limit=%d len=%d: root %x (%v), want %x", limit, len(l), got, err, want)
+				}
+				if calls != topCalls+1 || pairs != topPairs+1 {
+					t.Fatalf("limit=%d len=%d: %d calls hashing %d pairs, want %d hashing %d", limit, len(l), calls, pairs, topCalls+1, topPairs+1)
+				}
+			}
+		}
+	})
+
+	t.Run("first error", func(t *testing.T) {
+		t.Parallel()
+		// The hash function fails only on the length mixin of 0xdeadbeef, a
+		// call the list defers. That failure still has to be the first one.
+		errMarked := errors.New("marked pair")
+		var mark [32]byte
+		binary.LittleEndian.PutUint64(mark[:], 0xdeadbeef)
+		marked := func() *Hasher {
+			return NewHasherWithHashFn(func(dst, in []byte) error {
+				for i := 0; i+64 <= len(in); i += 64 {
+					if bytes.Equal(in[i+32:i+64], mark[:]) {
+						return errMarked
+					}
+				}
+				return FastHasherPool.HashFn(dst, in)
+			})
+		}
+		open := func(h *Hasher) int {
+			idx := h.StartTree(sszutils.TreeTypeNone)
+			lidx := h.StartTree(sszutils.TreeTypeBinary)
+			h.PutUint64(1)
+			h.MerkleizeWithMixin(lidx, 0xdeadbeef, 1<<10)
+			return idx
+		}
+
+		h := marked()
+		open(h)
+		if err := h.HashErr(); !errors.Is(err, errMarked) {
+			t.Fatalf("HashErr with the parent open: %v", err)
+		}
+
+		h = marked()
+		idx := open(h)
+		lidx := h.StartTree(sszutils.TreeTypeBinary)
+		for range 3 {
+			h.PutUint64(2)
+		}
+		h.MerkleizeWithMixin(lidx, 3, 2)
+		h.Merkleize(idx)
+		if _, err := h.HashRoot(); !errors.Is(err, errMarked) {
+			t.Fatalf("HashRoot after a later list over its limit: %v", err)
+		}
+
+		h = marked()
+		open(h)
+		if _, err := h.HashRoot(); !errors.Is(err, errMarked) {
+			t.Fatalf("HashRoot with the parent open: %v", err)
+		}
+
+		// Two lists fail in calls they share: A in its mixin, B in its first
+		// climb level. A comes first in the walk, so its failure is the one.
+		errA, errB := errors.New("list A"), errors.New("list B")
+		var markA, markB [32]byte
+		binary.LittleEndian.PutUint64(markA[:], 0xaaaa)
+		binary.LittleEndian.PutUint64(markB[:], 0xbbbb)
+		h = NewHasherWithHashFn(func(dst, in []byte) error {
+			for i := 0; i+64 <= len(in); i += 64 {
+				switch {
+				case bytes.Equal(in[i+32:i+64], markA[:]):
+					return errA
+				case bytes.Equal(in[i:i+32], markB[:]):
+					return errB
+				}
+			}
+			return FastHasherPool.HashFn(dst, in)
+		})
+		idx = h.StartTree(sszutils.TreeTypeNone)
+		lidx = h.StartTree(sszutils.TreeTypeBinary)
+		h.PutUint64(1)
+		h.MerkleizeWithMixin(lidx, 0xaaaa, 4)
+		lidx = h.StartTree(sszutils.TreeTypeBinary)
+		h.PutUint64(0xbbbb)
+		h.MerkleizeWithMixin(lidx, 1, 4)
+		h.Merkleize(idx)
+		if _, err := h.HashRoot(); !errors.Is(err, errA) {
+			t.Fatalf("HashRoot with two failing lists: %v", err)
+		}
+
+		// B is settled alone by its container while A, earlier in the walk, is
+		// still pending. A's failure still comes first; without it, B's first
+		// failure (its first climb level) wins over its later ones (its third
+		// level, which only B reaches, and its mixin). The failing calls still
+		// hash, so B's climb goes on as before.
+		errB1, errB2 := errors.New("list B level 2"), errors.New("list B mixin")
+		var markB2 [32]byte
+		binary.LittleEndian.PutUint64(markB2[:], 0xbbb2)
+		for _, failA := range []bool{true, false} {
+			h = NewHasherWithHashFn(func(dst, in []byte) error {
+				var err error
+				for i := 0; i+64 <= len(in) && err == nil; i += 64 {
+					switch {
+					case failA && bytes.Equal(in[i+32:i+64], markA[:]):
+						err = errA
+					case bytes.Equal(in[i:i+32], markB[:]):
+						err = errB
+					case bytes.Equal(in[i+32:i+64], zeroHashes[2][:]):
+						err = errB1
+					case bytes.Equal(in[i+32:i+64], markB2[:]):
+						err = errB2
+					}
+				}
+				if herr := FastHasherPool.HashFn(dst, in); herr != nil {
+					return herr
+				}
+				return err
+			})
+			idx = h.StartTree(sszutils.TreeTypeNone)
+			lidx = h.StartTree(sszutils.TreeTypeBinary)
+			h.PutUint64(1)
+			h.MerkleizeWithMixin(lidx, 0xaaaa, 4)
+			inner := h.StartTree(sszutils.TreeTypeNone)
+			lidx = h.StartTree(sszutils.TreeTypeBinary)
+			h.PutUint64(0xbbbb)
+			h.MerkleizeWithMixin(lidx, 0xbbb2, 8)
+			h.PutUint64(3)
+			if len(h.climbs) != 2 {
+				t.Fatalf("failA=%v: %d climbs pending before B's container closes, want 2", failA, len(h.climbs))
+			}
+			h.Merkleize(inner)
+			h.Merkleize(idx)
+			want := errB
+			if failA {
+				want = errA
+			}
+			if _, err := h.HashRoot(); !errors.Is(err, want) {
+				t.Fatalf("failA=%v: HashRoot with B settled alone: %v, want %v", failA, err, want)
+			}
+		}
+	})
+
+	t.Run("reads inside a pending root", func(t *testing.T) {
+		t.Parallel()
+		// A pending list root reads like its finished root, also to a read
+		// that starts inside it.
+		l := byteLists(20)[19]
+		root := sha256Mixin(sha256Merkle(chunksOf(l), 1<<25), uint64(len(l)))
+		walk := func(deferred bool, rest func(h *Hasher, p int) []byte) ([]byte, [32]byte, error) {
+			h := strictH(t)
+			p := h.StartTree(sszutils.TreeTypeNone)
+			if deferred {
+				lidx := h.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+				h.AppendBytes32(l)
+				h.MerkleizeWithMixin(lidx, uint64(len(l)), 1<<25)
+			} else {
+				h.Append(root[:])
+			}
+			read := rest(h, p)
+			got, err := h.HashRoot()
+			return read, got, err
+		}
+		for name, rest := range map[string]func(h *Hasher, p int) []byte{
+			"Hash after an unaligned tail": func(h *Hasher, p int) []byte {
+				h.AppendUint8(7)
+				read := append([]byte(nil), h.Hash()...)
+				h.Merkleize(p)
+				return read
+			},
+			"Merkleize from inside the root": func(h *Hasher, p int) []byte {
+				h.PutUint64(9)
+				h.Merkleize(p + 16)
+				read := append([]byte(nil), h.Hash()...)
+				h.Merkleize(p)
+				return read
+			},
+		} {
+			gotRead, got, err := walk(true, rest)
+			wantRead, want, _ := walk(false, rest)
+			if err != nil || got != want || !bytes.Equal(gotRead, wantRead) {
+				t.Fatalf("%s: root %x (%v) read %x, want %x read %x", name, got, err, gotRead, want, wantRead)
+			}
+		}
+	})
+
+	t.Run("bitlist parsed before a scope opens", func(t *testing.T) {
+		t.Parallel()
+		// ParseBitlistWithHasher leaves the bits in the buffer's spare
+		// capacity. Opening a scope there flushes a pending run and so
+		// finishes the climb after it, which must not write past the buffer.
+		bl := []byte{0xab, 0xcd, 0x01}
+		walk := func(h *Hasher, parse func() ([]byte, uint64)) ([32]byte, error) {
+			p := h.StartTree(sszutils.TreeTypeBinary)
+			for i := range 2 {
+				c := h.StartTree(sszutils.TreeTypeNone)
+				h.PutUint64(uint64(i))
+				h.PutUint64(uint64(i + 10))
+				h.Merkleize(c)
+			}
+			lidx := h.StartTree(sszutils.TreeTypeNone)
+			h.PutUint64(5)
+			h.MerkleizeWithMixin(lidx, 1, 1024)
+			bits, size := parse()
+			x := h.StartTree(sszutils.TreeTypeBinary)
+			h.AppendBytes32(bits)
+			h.MerkleizeWithMixin(x, size, 4)
+			h.MerkleizeWithMixin(p, 4, 16)
+			return h.HashRoot()
+		}
+		h := strictH(t)
+		got, err := walk(h, func() ([]byte, uint64) { return ParseBitlistWithHasher(h, bl) })
+		want, _ := walk(strictH(t), func() ([]byte, uint64) { return ParseBitlist(nil, bl) })
+		if err != nil || got != want {
+			t.Fatalf("root %x (%v), want %x", got, err, want)
+		}
+	})
+
+	t.Run("hash calls", func(t *testing.T) {
+		t.Parallel()
+		// 16 one-chunk lists with a limit of 2^20 chunks in a container: 20
+		// calls climb all of them a level at a time, one mixes in their
+		// lengths and 4 reduce the container. One list alone takes 21 calls.
+		calls, pairs := 0, 0
+		h := NewHasherWithHashFn(func(dst, in []byte) error {
+			calls++
+			pairs += len(in) / 64
+			return FastHasherPool.HashFn(dst, in)
+		})
+		fields := make([][32]byte, 0, 16)
+		idx := h.StartTree(sszutils.TreeTypeNone)
+		for i := range 16 {
+			var c [32]byte
+			binary.LittleEndian.PutUint64(c[:], uint64(i))
+			fields = append(fields, sha256Mixin(sha256Merkle([][32]byte{c}, 1<<20), 1))
+			lidx := h.StartTree(sszutils.TreeTypeBinary)
+			h.PutUint64(uint64(i))
+			h.MerkleizeWithMixin(lidx, 1, 1<<20)
+		}
+		h.Merkleize(idx)
+		want := sha256Merkle(fields, 16)
+		got, err := h.HashRoot()
+		if err != nil || got != want {
+			t.Fatalf("root %x (%v), want %x", got, err, want)
+		}
+		if calls != 25 || pairs != 16*21+15 {
+			t.Fatalf("%d calls hashing %d pairs, want 25 calls hashing %d", calls, pairs, 16*21+15)
+		}
+	})
+}
+
+// Containers that each hold a list settle their own climb when they close,
+// while the list of containers around them reduces in background jobs.
+func TestDeferredClimbsAsync(t *testing.T) { //nolint:paralleltest // async hashing is a process-wide switch
+	EnableAsyncHashing(2)
+	defer DisableAsyncHashing()
+
+	const n = 20000
+	lists := byteLists(n)
+	roots := make([][32]byte, n)
+	h := strictH(t)
+	h.SetAsyncHashing(true)
+	jobs := false
+	idx := h.StartTree(sszutils.TreeTypeBinary)
+	for i, l := range lists {
+		var num [32]byte
+		binary.LittleEndian.PutUint64(num[:], uint64(i))
+		roots[i] = sha256Merkle([][32]byte{sha256Mixin(sha256Merkle(chunksOf(l), 1<<10), uint64(len(l))), num}, 2)
+
+		c := h.StartTree(sszutils.TreeTypeNone)
+		lidx := h.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+		h.AppendBytes32(l)
+		h.MerkleizeWithMixin(lidx, uint64(len(l)), 1<<10)
+		h.PutUint64(uint64(i))
+		h.Merkleize(c)
+		if (i+1)%256 == 0 {
+			h.Collapse()
+			jobs = jobs || h.jobCount > 0
+		}
+	}
+	if !jobs {
+		t.Fatal("no background reduction ran")
+	}
+	h.MerkleizeWithMixin(idx, n, 1<<30)
+	want := sha256Mixin(sha256Merkle(roots, 1<<30), n)
+	got, err := h.HashRoot()
+	if err != nil || got != want {
+		t.Fatalf("root %x (%v), want %x", got, err, want)
+	}
+}
+
+// Lists straight under a list batch their climbs while the list around them
+// reduces in background jobs.
+func TestDeferredClimbsAsyncLists(t *testing.T) { //nolint:paralleltest // async hashing is a process-wide switch
+	EnableAsyncHashing(2)
+	defer DisableAsyncHashing()
+
+	const n = 40000
+	lists := byteLists(n)
+	roots := make([][32]byte, n)
+	h := strictH(t)
+	h.SetAsyncHashing(true)
+	jobs := false
+	idx := h.StartTree(sszutils.TreeTypeBinary)
+	for i, l := range lists {
+		roots[i] = sha256Mixin(sha256Merkle(chunksOf(l), 1<<25), uint64(len(l)))
+		lidx := h.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+		h.AppendBytes32(l)
+		h.MerkleizeWithMixin(lidx, uint64(len(l)), 1<<25)
+		if (i+1)%256 == 0 {
+			h.Collapse()
+			jobs = jobs || h.jobCount > 0
+		}
+	}
+	if !jobs {
+		t.Fatal("no background reduction ran")
+	}
+	h.MerkleizeWithMixin(idx, n, 1<<20)
+	want := sha256Mixin(sha256Merkle(roots, 1<<20), n)
+	got, err := h.HashRoot()
+	if err != nil || got != want {
+		t.Fatalf("root %x (%v), want %x", got, err, want)
+	}
+}
+
+// A failed background job is recorded once its slot is released: recording
+// hashes the pending climbs, and a hash function panicking there must leave
+// Reset working.
+func TestDeferredClimbsPanicInDrain(t *testing.T) { //nolint:paralleltest // async hashing is a process-wide switch
+	EnableAsyncHashing(2)
+	defer DisableAsyncHashing()
+
+	var mark [32]byte
+	binary.LittleEndian.PutUint64(mark[:], 0xdead)
+	h := NewHasherWithHashFn(func(dst, in []byte) error {
+		if len(in) >= 32*1024 {
+			return errors.New("job failed")
+		}
+		for i := 0; i+64 <= len(in); i += 64 {
+			if bytes.Equal(in[i:i+32], mark[:]) {
+				panic("marked pair")
+			}
+		}
+		return FastHasherPool.HashFn(dst, in)
+	})
+	h.SetAsyncHashing(true)
+	panicked := func() (p bool) {
+		defer func() { p = recover() != nil }()
+		h.StartTree(sszutils.TreeTypeNone)
+		lidx := h.StartTree(sszutils.TreeTypeBinary)
+		h.PutUint64(0xdead)
+		h.MerkleizeWithMixin(lidx, 1, 1<<20)
+		q := h.StartTree(sszutils.TreeTypeBinary)
+		var chunk [32]byte
+		for i := range 1 << 16 {
+			binary.LittleEndian.PutUint64(chunk[:], uint64(i+1))
+			h.Append(chunk[:])
+			if (i+1)%256 == 0 {
+				h.Collapse()
+			}
+		}
+		h.MerkleizeWithMixin(q, 1<<16, 1<<20)
+		return false
+	}()
+	if !panicked {
+		t.Fatal("the marked pair was never hashed")
+	}
+	done := make(chan struct{})
+	go func() {
+		h.Reset()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Reset still blocked 10s after the panic")
+	}
+}
+
+// Deferring climbs allocates nothing once a hasher is warm.
+func TestDeferredClimbsAllocs(t *testing.T) { //nolint:paralleltest // AllocsPerRun counts the whole process
+	lists := byteLists(600)
+	h := NewHasherWithHashFn(NativeHashWrapper(sha256.New()))
+	walk := func() {
+		idx := h.StartTree(sszutils.TreeTypeBinary)
+		for i, l := range lists {
+			lidx := h.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+			h.AppendBytes32(l)
+			h.MerkleizeWithMixin(lidx, uint64(len(l)), 1<<25)
+			if (i+1)%256 == 0 {
+				h.Collapse()
+			}
+		}
+		h.MerkleizeWithMixin(idx, uint64(len(lists)), 1<<20)
+		if _, err := h.HashRoot(); err != nil {
+			t.Fatal(err)
+		}
+		h.Reset()
+	}
+	walk()
+	if n := testing.AllocsPerRun(10, walk); n != 0 {
+		t.Fatalf("%v allocations per walk on a warm hasher", n)
 	}
 }

@@ -30,6 +30,18 @@ const incrementalBatchSize = 256
 // 40 levels covers trees up to 2^40 ≈ 1 trillion leaves.
 const maxTreeDepth = 40
 
+// climbBatch bounds the deferred list climbs held at once.
+const climbBatch = 256
+
+// pendingClimb is a list root waiting for its climb to the depth of the list's
+// limit and its length mixin, so sibling lists can share those hash calls.
+type pendingClimb struct {
+	off   int    // buffer offset of the root
+	num   uint64 // list length to mix in
+	level uint8  // depth the root sits at
+	depth uint8  // depth of the list's limit
+}
+
 // treeLayer tracks the state of one open SSZ object scope (container, list,
 // vector, etc.) during hash tree root computation.
 //
@@ -102,6 +114,12 @@ type Hasher struct {
 	layers     []treeLayer
 	layerCount int           // index of the current top layer, -1 when empty
 	layerBuf   [16]treeLayer // inline backing to avoid heap allocation
+
+	// climbs holds the deferred list climbs in buffer order (see deferClimb).
+	// Anything that reads, moves or drops a region first settles the climbs
+	// whose roots reach into it. climbPairs is the scratch they are hashed in.
+	climbs     []pendingClimb
+	climbPairs []byte
 
 	// async gates this hasher into background subtree reduction (see
 	// SetAsyncHashing). Cleared on Reset so pooled hashers never carry the
@@ -189,6 +207,17 @@ func (h *Hasher) WithTemp(fn func(tmp []byte) []byte) {
 // after it ran over bytes it never properly produced.
 func (h *Hasher) setHashErr(err error) {
 	if err != nil && h.hashErr == nil {
+		h.firstHashErr(err)
+	}
+}
+
+// firstHashErr records err after hashing the pending climbs: they come earlier
+// in the walk, so a failure among them stays the first one.
+//
+//go:noinline
+func (h *Hasher) firstHashErr(err error) {
+	h.finishClimbs(0)
+	if h.hashErr == nil {
 		h.hashErr = err
 	}
 }
@@ -197,6 +226,7 @@ func (h *Hasher) setHashErr(err error) {
 // Outstanding background reductions are awaited and their results discarded.
 func (h *Hasher) Reset() {
 	h.buf = h.buf[:0]
+	h.climbs = h.climbs[:0]
 	h.hashErr = nil
 	h.discardJobs()
 	h.layerCount = -1
@@ -530,6 +560,9 @@ func deferrableElemChunks(scopeBytes int) (int, bool) {
 // the run is reduced in cap-sized background jobs instead, with any sub-cap
 // remainder left pending for the next round.
 func (h *Hasher) flushPending(layer *treeLayer, allowAsync bool) {
+	if layer.pendCount > 0 {
+		h.settleClimbs(layer.pendStart)
+	}
 	elem := layer.pendElemChunks
 	if allowAsync && layer.pendCount > 0 &&
 		elem > 0 && elem <= lazyFlushChunks && elem&(elem-1) == 0 {
@@ -637,6 +670,7 @@ func (h *Hasher) Collapse() {
 	if !layer.incremental {
 		return
 	}
+	h.settleClimbs(layer.bufIdx)
 
 	ast := h.asyncShared()
 	async := ast != nil
@@ -1174,6 +1208,7 @@ func (h *Hasher) clampMerkleizeIndex(indx int) int {
 // if one exists.
 func (h *Hasher) Merkleize(indx int) {
 	indx = h.clampMerkleizeIndex(indx)
+	h.settleClimbs(indx)
 	// The scope is reduced as whole chunks, and a scope of packed values ends
 	// on a partial one; padding it first keeps the scope eligible for the
 	// batched reduction below, which counts whole chunks.
@@ -1280,6 +1315,7 @@ func (h *Hasher) Merkleize(indx int) {
 // a hash method leaving more than one leaf per value.
 func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 	indx = h.clampMerkleizeIndex(indx)
+	h.settleClimbs(indx)
 	h.fillRegionUpTo32(indx)
 
 	layer := h.getMatchingLayer(indx)
@@ -1301,6 +1337,9 @@ func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 	} else {
 		if layer != nil {
 			h.popTopLayer()
+			if h.deferClimb(layer, indx, num, limit) {
+				return
+			}
 		}
 		// Standard merkleize
 		input := h.buf[indx:]
@@ -1332,6 +1371,7 @@ func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 // used.
 func (h *Hasher) MerkleizeProgressive(indx int) {
 	indx = h.clampMerkleizeIndex(indx)
+	h.settleClimbs(indx)
 	layer := h.getMatchingLayer(indx)
 
 	if layer != nil {
@@ -1379,6 +1419,7 @@ func (h *Hasher) MerkleizeProgressive(indx int) {
 // indx and mixes in num as the list length.
 func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 	indx = h.clampMerkleizeIndex(indx)
+	h.settleClimbs(indx)
 	layer := h.getMatchingLayer(indx)
 
 	if layer != nil {
@@ -1431,6 +1472,7 @@ func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 // from indx and mixes in the active fields bitvector.
 func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []byte) {
 	indx = h.clampMerkleizeIndex(indx)
+	h.settleClimbs(indx)
 	layer := h.getMatchingLayer(indx)
 
 	if layer != nil {
@@ -1498,6 +1540,143 @@ func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []b
 
 	if debug {
 		logfn("-> %x\n", input[:32])
+	}
+}
+
+// deferClimb reduces the closed list scope at indx to the root of its chunks
+// and leaves the rest pending: the climb through zero hashes to the depth of
+// the list's limit, and the length mixin. Pending climbs of sibling lists are
+// then taken one tree level per hash call (climbTogether) instead of one hash
+// call per level and list. The root is the same: past the depth its chunks
+// need, the tree is that one node paired with zero hashes level by level,
+// which is what merkleizeImpl does too. Only a list scope opened through
+// StartTree and reduced from plain chunks, inside a scope not opened through
+// Index, is deferred, and only when its chunks fit its limit.
+func (h *Hasher) deferClimb(layer *treeLayer, indx int, num, limit uint64) bool {
+	if debug || layer.legacy || layer.progressive || h.layerCount < 0 || h.layers[h.layerCount].legacy {
+		return false
+	}
+	count := uint64(len(h.buf)-indx) / 32
+	if limit == 0 {
+		limit = count
+	}
+	if count > limit {
+		return false
+	}
+	depth := h.getDepth(limit)
+	level := h.getDepth(count)
+	if count == 0 {
+		// An empty list is the zero hash of its depth; only the mixin is left.
+		h.buf = append(h.buf[:indx], zeroHashes[depth][:]...)
+		level = depth
+	} else {
+		input := h.buf[indx:]
+		input = h.merkleizeImpl(input[:0], input, 0)
+		h.buf = append(h.buf[:indx], input...)
+	}
+	if h.climbs == nil {
+		h.climbs = make([]pendingClimb, 0, climbBatch)
+		h.climbPairs = make([]byte, climbBatch*64)
+	}
+	h.climbs = append(h.climbs, pendingClimb{off: indx, num: num, level: level, depth: depth})
+	if len(h.climbs) >= climbBatch {
+		h.finishClimbs(h.climbs[0].off)
+	}
+	return true
+}
+
+// settleClimbs finishes the pending climbs whose roots reach past from.
+func (h *Hasher) settleClimbs(from int) {
+	if len(h.climbs) > 0 {
+		h.finishClimbs(from)
+	}
+}
+
+// finishClimbs is the work of settleClimbs, kept out of line so that
+// settleClimbs inlines.
+//
+//go:noinline
+func (h *Hasher) finishClimbs(from int) {
+	i := len(h.climbs)
+	for i > 0 && h.climbs[i-1].off+32 > from {
+		i--
+	}
+	if i == len(h.climbs) {
+		return
+	}
+	climbs := h.climbs[i:]
+	h.climbs = h.climbs[:i]
+	if len(climbs) == 1 || !h.climbTogether(climbs) {
+		// One list, or a shared call failed: take each list alone, in walk
+		// order, so a failure recorded is the one its own calls give.
+		for j := range climbs {
+			h.climbOne(climbs[j])
+		}
+	}
+}
+
+// climbOne takes a single list to its limit depth and mixes in its length, a
+// call per level like merkleizeImpl, with the pair kept in place between
+// levels. Its first failure is recorded once the list is done, as recording
+// can hash the other pending climbs in climbPairs.
+func (h *Hasher) climbOne(c pendingClimb) {
+	pair := h.climbPairs[:64]
+	copy(pair, h.buf[c.off:c.off+32])
+	var err error
+	for ; c.level < c.depth; c.level++ {
+		copy(pair[32:], zeroHashes[c.level][:])
+		if e := h.hash(pair[:32], pair); err == nil {
+			err = e
+		}
+	}
+	binary.LittleEndian.PutUint64(pair[32:], c.num)
+	clear(pair[40:])
+	if e := h.hash(pair[:32], pair); err == nil {
+		err = e
+	}
+	copy(h.buf[c.off:c.off+32], pair[:32])
+	h.setHashErr(err)
+}
+
+// climbTogether takes two or more climbs to their limit depth, one level
+// across all of them per hash call, and then mixes in their lengths in one
+// more call. If a call fails before any failure is recorded, it stops there
+// and returns false, each root left at the level it reached.
+func (h *Hasher) climbTogether(climbs []pendingClimb) bool {
+	for mixin := false; ; {
+		pairs := h.climbPairs[:0]
+		for j := range climbs {
+			c := &climbs[j]
+			switch {
+			case mixin:
+				pairs = append(pairs, h.buf[c.off:c.off+32]...)
+				pairs = binary.LittleEndian.AppendUint64(pairs, c.num)
+				pairs = append(pairs, zeroBytes[:24]...)
+			case c.level < c.depth:
+				pairs = append(pairs, h.buf[c.off:c.off+32]...)
+				pairs = append(pairs, zeroHashes[c.level][:]...)
+			}
+		}
+		if len(pairs) == 0 && !mixin {
+			mixin = true
+			continue
+		}
+		err := h.hash(pairs[:len(pairs)/2], pairs)
+		if err != nil && h.hashErr == nil {
+			return false
+		}
+		n := 0
+		for j := range climbs {
+			if c := &climbs[j]; mixin || c.level < c.depth {
+				copy(h.buf[c.off:c.off+32], pairs[n*32:])
+				c.level++
+				n++
+			}
+		}
+		h.setHashErr(err)
+		if mixin {
+			return true
+		}
 	}
 }
 
@@ -1655,7 +1834,7 @@ func (h *Hasher) merkleizeProgressiveImpl(dst, chunks []byte, depth uint8) []byt
 }
 
 // Hash returns the last 32 bytes of the buffer, flushing pending deferred
-// chunks first so the tail holds the latest merkleize result. Outstanding
+// chunks and list climbs first so the tail holds the latest merkleize result. Outstanding
 // background reductions are awaited only when their hole can overlap the
 // tail; holes below it are left to fill in the background. The returned
 // slice is only valid until the next hasher operation.
@@ -1675,6 +1854,7 @@ func (h *Hasher) Hash() []byte {
 	if len(h.buf) > 32 {
 		start = len(h.buf) - 32
 	}
+	h.settleClimbs(start)
 	h.drainJobsFor(start)
 	return h.buf[start:]
 }
@@ -1687,6 +1867,7 @@ func (h *Hasher) Hash() []byte {
 // finished computation.
 func (h *Hasher) HashRoot() (res [32]byte, err error) {
 	h.drainJobs()
+	h.settleClimbs(0)
 	if h.hashErr != nil {
 		err = h.hashErr
 		return
@@ -1707,7 +1888,9 @@ func (h *Hasher) HashRoot() (res [32]byte, err error) {
 // nil. A failed hash leaves the bytes it would have written untouched, so a
 // caller reading the buffer -- through Hash, or by caching a scope root -- takes
 // a value that was never produced. HashRoot reports the same error, but a walk
-// that ends without asking for the root has nothing else to consult.
+// that ends without asking for the root has nothing else to consult. Pending
+// list climbs come earlier in the walk, so they are hashed first.
 func (h *Hasher) HashErr() error {
+	h.settleClimbs(0)
 	return h.hashErr
 }
