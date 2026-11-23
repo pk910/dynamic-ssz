@@ -570,11 +570,13 @@ func (h *Hasher) StartTree(treeType sszutils.TreeType) int {
 	packed := treeType&sszutils.TreeTypePacked != 0
 	treeType &^= sszutils.TreeTypePacked
 
-	// An incremental child is merkleized immediately (it never defers into this
-	// parent), so it would append a root after any deferred siblings and break
-	// the "pending chunks are a contiguous tail run" invariant. Flush first.
-	// This cannot happen for uniform list/vector elements (all defer or none),
-	// so batching is unaffected; it only guards interleaved API usage.
+	// An incremental child may be merkleized in place rather than deferred into
+	// this parent (Merkleize defers it only while it is still untouched by any
+	// collapse or deferral of its own), and a root reduced in place would land
+	// after any deferred siblings and break the "pending chunks are a
+	// contiguous tail run" invariant. Flush first. Uniform list/vector elements
+	// all defer or none, so batching is unaffected; this only guards
+	// interleaved API usage.
 	if treeType != sszutils.TreeTypeNone && h.layerCount >= 0 {
 		if top := &h.layers[h.layerCount]; top.pendCount > 0 {
 			h.flushPending(top, false)

@@ -70,7 +70,7 @@ These combinations work with any spec values:
 | Handler | Order |
 |---|---|
 | dynamic buffer marshal and unmarshal | static, then dynamic, then streaming through a buffer encoder or decoder |
-| dynamic buffer size and hash | dynamic, then static, in generated code; static, then dynamic, in the reflection engine |
+| dynamic buffer size and hash | static, then dynamic |
 | streaming marshal and unmarshal | static through the buffer, then streaming, then dynamic through the buffer |
 | static buffer methods | static, otherwise the child is inlined |
 | static build's streaming methods | static through the buffer, then streaming, otherwise the child is inlined |

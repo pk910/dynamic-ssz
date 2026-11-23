@@ -6927,3 +6927,175 @@ func TestCodegenWordUint128Element(t *testing.T) {
 		}
 	}
 }
+
+// unknownViewHolder nests UnknownView_Base; its view swaps in a generated type
+// UnknownView_Base was not generated for.
+type unknownViewHolder struct {
+	X UnknownView_Base
+	Y uint8
+}
+
+type unknownViewHolderView struct {
+	X UnknownView_Dyn
+	Y uint8
+}
+
+// A generated type passed as a view its data type was not generated for falls
+// back to the reflection walk, at the top level and as a field, while the
+// type's own view still runs its generated code.
+func TestCodegenUnknownGeneratedView(t *testing.T) {
+	if _, generated := any(&UnknownView_Base{}).(sszutils.DynamicViewSizer); !generated {
+		t.Skip("no generated code present")
+	}
+	value := &UnknownView_Base{A: 0x0102030405060708, B: []byte{0xaa, 0xbb}, C: 0x090a0b0c, D: [2]uint64{7, 8}}
+
+	chunk := func(b []byte) []byte { return append(append([]byte{}, b...), make([]byte, 32-len(b))...) }
+	le64 := func(v uint64) []byte { return binary.LittleEndian.AppendUint64(nil, v) }
+	le32 := func(v uint32) []byte { return binary.LittleEndian.AppendUint32(nil, v) }
+	hash := func(a, b []byte) []byte { h := sha256.Sum256(append(append([]byte{}, a...), b...)); return h[:] }
+	rootB := hash(chunk(value.B), chunk([]byte{2}))
+	root := func(r []byte) (out [32]byte) { copy(out[:], r); return out }
+
+	for _, tc := range []struct {
+		name      string
+		view      any
+		wantBytes []byte
+		wantRoot  [32]byte
+	}{
+		{"dynamic", (*UnknownView_Dyn)(nil),
+			bytes.Join([][]byte{le64(value.A), le32(16), le32(value.C), value.B}, nil),
+			root(hash(hash(chunk(le64(value.A)), rootB), hash(chunk(le32(value.C)), make([]byte, 32))))},
+		{"static", (*UnknownView_Static)(nil),
+			append(le64(value.A), le32(value.C)...),
+			root(hash(chunk(le64(value.A)), chunk(le32(value.C))))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for name, ds := range map[string]*dynssz.DynSsz{
+				"generated":  dynssz.NewDynSsz(nil),
+				"reflection": dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz()),
+			} {
+				opt := dynssz.WithViewDescriptor(tc.view)
+				call := func(op string, fn func() error) {
+					t.Helper()
+					defer func() {
+						if r := recover(); r != nil {
+							t.Errorf("%s %s: panic: %v", name, op, r)
+						}
+					}()
+					if err := fn(); err != nil {
+						t.Errorf("%s %s: %v", name, op, err)
+					}
+				}
+				call("MarshalSSZ", func() error {
+					got, err := ds.MarshalSSZ(value, opt)
+					if err == nil && !bytes.Equal(got, tc.wantBytes) {
+						err = fmt.Errorf("got %x, want %x", got, tc.wantBytes)
+					}
+					return err
+				})
+				call("MarshalSSZTo", func() error {
+					got, err := ds.MarshalSSZTo(value, []byte{0xee}, opt)
+					if err == nil && !bytes.Equal(got, append([]byte{0xee}, tc.wantBytes...)) {
+						err = fmt.Errorf("got %x", got)
+					}
+					return err
+				})
+				call("MarshalSSZWriter", func() error {
+					var buf bytes.Buffer
+					err := ds.MarshalSSZWriter(value, &buf, opt)
+					if err == nil && !bytes.Equal(buf.Bytes(), tc.wantBytes) {
+						err = fmt.Errorf("got %x", buf.Bytes())
+					}
+					return err
+				})
+				call("SizeSSZ", func() error {
+					size, err := ds.SizeSSZ(value, opt)
+					if err == nil && size != len(tc.wantBytes) {
+						err = fmt.Errorf("got %d, want %d", size, len(tc.wantBytes))
+					}
+					return err
+				})
+				call("HashTreeRoot", func() error {
+					got, err := ds.HashTreeRoot(value, opt)
+					if err == nil && got != tc.wantRoot {
+						err = fmt.Errorf("got %x, want %x", got, tc.wantRoot)
+					}
+					return err
+				})
+				call("GetTree", func() error {
+					tree, err := ds.GetTree(value, opt)
+					if err == nil && !bytes.Equal(tree.Hash(), tc.wantRoot[:]) {
+						err = fmt.Errorf("got %x, want %x", tree.Hash(), tc.wantRoot)
+					}
+					return err
+				})
+				for _, reader := range []bool{false, true} {
+					call(fmt.Sprintf("Unmarshal(reader=%v)", reader), func() error {
+						decoded := &UnknownView_Base{}
+						var err error
+						if reader {
+							err = ds.UnmarshalSSZReader(decoded, bytes.NewReader(tc.wantBytes), len(tc.wantBytes), opt)
+						} else {
+							err = ds.UnmarshalSSZ(decoded, tc.wantBytes, opt)
+						}
+						if err == nil && (decoded.A != value.A || decoded.C != value.C || (tc.name == "dynamic" && !bytes.Equal(decoded.B, value.B))) {
+							err = fmt.Errorf("decoded %+v", decoded)
+						}
+						return err
+					})
+				}
+			}
+		})
+	}
+
+	t.Run("nested field", func(t *testing.T) {
+		holder := &unknownViewHolder{X: *value, Y: 9}
+		ref := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+		opt := dynssz.WithViewDescriptor((*unknownViewHolderView)(nil))
+		want, err := ref.MarshalSSZ(holder, opt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantRoot, err := ref.HashTreeRoot(holder, opt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ds := dynssz.NewDynSsz(nil)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("panic: %v", r)
+				}
+			}()
+			if got, err := ds.MarshalSSZ(holder, opt); err != nil || !bytes.Equal(got, want) {
+				t.Errorf("MarshalSSZ = %x, %v; want %x", got, err, want)
+			}
+			if got, err := ds.HashTreeRoot(holder, opt); err != nil || got != wantRoot {
+				t.Errorf("HashTreeRoot = %x, %v; want %x", got, err, wantRoot)
+			}
+		}()
+	})
+
+	t.Run("own view stays delegated", func(t *testing.T) {
+		ds := dynssz.NewDynSsz(nil)
+		base := reflect.TypeOf(&UnknownView_Base{})
+		own, err := ds.GetTypeCache().GetTypeDescriptorWithSchema(base, reflect.TypeOf(&UnknownView_Own{}), nil, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if own.ContainerDesc != nil {
+			t.Error("the type's own view was walked instead of delegated")
+		}
+		unknown, err := ds.GetTypeCache().GetTypeDescriptorWithSchema(base, reflect.TypeOf(&UnknownView_Dyn{}), nil, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if unknown.ContainerDesc == nil {
+			t.Error("an unknown view was not walked")
+		}
+		got, err := ds.MarshalSSZ(value, dynssz.WithViewDescriptor((*UnknownView_Own)(nil)))
+		if want := append(binary.LittleEndian.AppendUint64(nil, value.A), binary.LittleEndian.AppendUint32(nil, value.C)...); err != nil || !bytes.Equal(got, want) {
+			t.Errorf("own view MarshalSSZ = %x, %v; want %x", got, err, want)
+		}
+	})
+}

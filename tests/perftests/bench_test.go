@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	ssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/sszutils"
 	"gopkg.in/yaml.v2"
 )
 
@@ -397,19 +398,33 @@ func verifyStateHTR(b *testing.B, ds *ssz.DynSsz, state *BeaconState, expected [
 
 // ========================= CODEGEN BENCHMARKS =========================
 
+// skipWithoutCodegen skips a codegen benchmark when gen_ssz.go has not been
+// generated. The types would have no generated methods, and the benchmark
+// would measure the reflection engine instead.
+func skipWithoutCodegen(b *testing.B) {
+	b.Helper()
+	if _, ok := any(new(BeaconState)).(sszutils.DynamicMarshaler); !ok {
+		b.Skip("gen_ssz.go is missing, run go generate first")
+	}
+}
+
 func BenchmarkCodegen_BlockMainnet(b *testing.B) {
+	skipWithoutCodegen(b)
 	runBlockBenchmarks(b, dynSszCodegenMainnet, blockMainnetData, blockMainnetHTR)
 }
 
 func BenchmarkCodegen_StateMainnet(b *testing.B) {
+	skipWithoutCodegen(b)
 	runStateBenchmarks(b, dynSszCodegenMainnet, stateMainnetData, stateMainnetHTR)
 }
 
 func BenchmarkCodegen_BlockMinimal(b *testing.B) {
+	skipWithoutCodegen(b)
 	runBlockBenchmarks(b, dynSszCodegenMinimal, blockMinimalData, blockMinimalHTR)
 }
 
 func BenchmarkCodegen_StateMinimal(b *testing.B) {
+	skipWithoutCodegen(b)
 	runStateBenchmarks(b, dynSszCodegenMinimal, stateMinimalData, stateMinimalHTR)
 }
 
@@ -502,6 +517,7 @@ func runSliceVectorBenchmarks(b *testing.B, ds *ssz.DynSsz, data []byte) {
 }
 
 func BenchmarkCodegen_SliceVectors(b *testing.B) {
+	skipWithoutCodegen(b)
 	runSliceVectorBenchmarks(b, dynSszCodegenMainnet, sliceVectorData)
 }
 

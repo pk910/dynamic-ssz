@@ -3918,9 +3918,59 @@ func TestParserWalkerParameterSignatures(t *testing.T) {
 	}
 }
 
-// The library's own walker interface qualifies as a walker parameter: every
+// reflectTypeKey spells a reflect type the way goTypeKey spells the same
+// go/types type, so a signature seen through either can be compared. It lives
+// in the tests because the generator must not look methods up through reflect
+// (see hashWalkerMethods).
+func reflectTypeKey(t reflect.Type) string {
+	switch t.Kind() {
+	case reflect.Pointer:
+		return "*" + reflectTypeKey(t.Elem())
+	case reflect.Slice:
+		return "[]" + reflectTypeKey(t.Elem())
+	case reflect.Array:
+		return fmt.Sprintf("[%d]%s", t.Len(), reflectTypeKey(t.Elem()))
+	case reflect.Func:
+		params := make([]string, t.NumIn())
+		for i := range params {
+			params[i] = reflectTypeKey(t.In(i))
+			if t.IsVariadic() && i == t.NumIn()-1 {
+				params[i] = "..." + params[i][2:]
+			}
+		}
+		results := make([]string, t.NumOut())
+		for i := range results {
+			results[i] = reflectTypeKey(t.Out(i))
+		}
+		return "func(" + strings.Join(params, ",") + ")(" + strings.Join(results, ",") + ")"
+	default:
+		// A named type, including a universe type such as error, is spelled
+		// by its name; an unnamed type of another kind by the kind.
+		if t.PkgPath() != "" {
+			return t.PkgPath() + "." + t.Name()
+		}
+		if t.Name() != "" {
+			return t.Name()
+		}
+		return t.Kind().String()
+	}
+}
+
+// The library's own walker interface qualifies as a walker parameter: the
+// hand-written method table lists exactly the interface's methods, and every
 // method spelled through go/types matches its reflect spelling.
 func TestParserWalkerParameterAcceptsHashWalker(t *testing.T) {
+	walkerType := reflect.TypeOf((*sszutils.HashWalker)(nil)).Elem()
+	if got, want := len(hashWalkerMethods), walkerType.NumMethod(); got != want {
+		t.Errorf("hashWalkerMethods lists %d methods, HashWalker has %d", got, want)
+	}
+	for i := range walkerType.NumMethod() {
+		method := walkerType.Method(i)
+		if got, want := hashWalkerMethods[method.Name], reflectTypeKey(method.Type); got != want {
+			t.Errorf("%s: hashWalkerMethods key %q != reflect key %q", method.Name, got, want)
+		}
+	}
+
 	pkgs, err := packages.Load(&packages.Config{Mode: packages.NeedTypes | packages.NeedDeps | packages.NeedName}, "github.com/pk910/dynamic-ssz/sszutils")
 	if err != nil {
 		t.Fatalf("failed to load package: %v", err)
@@ -3936,7 +3986,7 @@ func TestParserWalkerParameterAcceptsHashWalker(t *testing.T) {
 	for i := range iface.NumMethods() {
 		method := iface.Method(i)
 		if got, want := goTypeKey(method.Type()), hashWalkerMethods[method.Name()]; got != want {
-			t.Errorf("%s: go/types key %q != reflect key %q", method.Name(), got, want)
+			t.Errorf("%s: go/types key %q != table key %q", method.Name(), got, want)
 		}
 	}
 	if !NewParser().typeMatches(walker.Type(), typeNameHashWalkerParam) {

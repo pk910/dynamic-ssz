@@ -623,7 +623,7 @@ type ElectraAttestation struct {
 	AggregationBits bitfield.Bitlist `dynssz-max:"MAX_VALIDATORS_PER_COMMITTEE*MAX_COMMITTEES_PER_SLOT" ssz-max:"131072"`
 	Data            *AttestationData
 	Signature       BLSSignature         `ssz-size:"96"`
-	CommitteeBits   bitfield.Bitvector64 `dynssz-size:"MAX_COMMITTEES_PER_SLOT/8" ssz-size:"8"`
+	CommitteeBits   bitfield.Bitvector64 `ssz-type:"bitvector" ssz-bitsize:"64" dynssz-bitsize:"MAX_COMMITTEES_PER_SLOT"`
 }
 
 type ElectraAttesterSlashing struct {
@@ -815,7 +815,7 @@ type GloasAttestation struct {
 	AggregationBits bitfield.Bitlist     `ssz-index:"0" ssz-type:"progressive-bitlist"`
 	Data            *AttestationData     `ssz-index:"1"`
 	Signature       BLSSignature         `ssz-index:"2" ssz-size:"96"`
-	CommitteeBits   bitfield.Bitvector64 `ssz-index:"3" dynssz-size:"MAX_COMMITTEES_PER_SLOT/8" ssz-size:"8"`
+	CommitteeBits   bitfield.Bitvector64 `ssz-index:"3" ssz-type:"bitvector" ssz-bitsize:"64" dynssz-bitsize:"MAX_COMMITTEES_PER_SLOT"`
 }
 
 type GloasAttesterSlashing struct {

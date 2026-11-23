@@ -53,6 +53,54 @@ var delegationMethodNames = []string{
 	"MarshalSSZ", "MarshalSSZTo", "UnmarshalSSZ", "SizeSSZ", "HashTreeRoot", "HashTreeRootWith",
 }
 
+// delegationMethodByName looks one of delegationMethodNames up on a type.
+// Every lookup spells its name as a literal on purpose: the compiler then
+// asks the linker to keep only methods of that name, whereas a MethodByName
+// call with a variable name makes it keep every exported method of every type
+// in the program, which costs a consumer binary around a megabyte.
+func delegationMethodByName(t reflect.Type, name string) (reflect.Method, bool) {
+	switch name {
+	case "MarshalSSZDyn":
+		return t.MethodByName("MarshalSSZDyn")
+	case "UnmarshalSSZDyn":
+		return t.MethodByName("UnmarshalSSZDyn")
+	case "SizeSSZDyn":
+		return t.MethodByName("SizeSSZDyn")
+	case "HashTreeRootWithDyn":
+		return t.MethodByName("HashTreeRootWithDyn")
+	case "MarshalSSZEncoder":
+		return t.MethodByName("MarshalSSZEncoder")
+	case "UnmarshalSSZDecoder":
+		return t.MethodByName("UnmarshalSSZDecoder")
+	case "MarshalSSZDynView":
+		return t.MethodByName("MarshalSSZDynView")
+	case "UnmarshalSSZDynView":
+		return t.MethodByName("UnmarshalSSZDynView")
+	case "SizeSSZDynView":
+		return t.MethodByName("SizeSSZDynView")
+	case "HashTreeRootWithDynView":
+		return t.MethodByName("HashTreeRootWithDynView")
+	case "MarshalSSZEncoderView":
+		return t.MethodByName("MarshalSSZEncoderView")
+	case "UnmarshalSSZDecoderView":
+		return t.MethodByName("UnmarshalSSZDecoderView")
+	case "MarshalSSZ":
+		return t.MethodByName("MarshalSSZ")
+	case "MarshalSSZTo":
+		return t.MethodByName("MarshalSSZTo")
+	case "UnmarshalSSZ":
+		return t.MethodByName("UnmarshalSSZ")
+	case "SizeSSZ":
+		return t.MethodByName("SizeSSZ")
+	case "HashTreeRoot":
+		return t.MethodByName("HashTreeRoot")
+	case "HashTreeRootWith":
+		return t.MethodByName("HashTreeRootWith")
+	default:
+		return reflect.Method{}, false
+	}
+}
+
 // PromotedDelegationMethods returns the SSZ delegation methods a struct type
 // only satisfies through a wrapper promoted from an embedded (anonymous)
 // field, rather than a declaration of its own. Go promotes an embedded field's
@@ -126,7 +174,7 @@ func structPromotedDelegationMethods(targetType reflect.Type) map[string]bool {
 	var promoted map[string]bool
 	ptrType := reflect.PointerTo(targetType)
 	for _, name := range delegationMethodNames {
-		ptrMethod, ok := ptrType.MethodByName(name)
+		ptrMethod, ok := delegationMethodByName(ptrType, name)
 		if !ok || !methodIsPromotedWrapper(&ptrMethod) {
 			continue
 		}
@@ -135,7 +183,7 @@ func structPromotedDelegationMethods(targetType reflect.Type) map[string]bool {
 		// holds a compiler adapter for it; a promoted method is a wrapper in
 		// both method sets, or absent from the value one when the embedded
 		// field's method has a pointer receiver.
-		if valueMethod, ok := targetType.MethodByName(name); ok && !methodIsPromotedWrapper(&valueMethod) {
+		if valueMethod, ok := delegationMethodByName(targetType, name); ok && !methodIsPromotedWrapper(&valueMethod) {
 			continue
 		}
 		if promoted == nil {

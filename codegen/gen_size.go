@@ -335,14 +335,15 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 			return fmt.Errorf("cannot generate streaming encoder for %s under without-dynamic-expressions: it lies on a recursive cycle and carries a spec expression, so its size can neither be inlined nor read from its static SizeSSZ; generate it with dynamic expressions or without streaming", ctx.typePrinter.TypeString(desc))
 		}
 		useFastSsz := isFastsszSizer && !hasSpecExpr && !streamSpecSized && (!ctx.options.NoFastSsz || staticBuild)
+		streamCustomSizer := ctx.streamCustomSizer(desc)
 		if desc.SszType == ssztypes.SszCustomType {
 			// A custom type has no structure to inline: it is reached through its
 			// spec-aware method when it has one and dynamic calls are allowed,
-			// otherwise through its static one.
-			useFastSsz = desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer == 0 || (staticBuild && isFastsszSizer)
+			// otherwise through its static one. A static build's streaming
+			// encoder writes it through its spec-aware encoder and sizes it
+			// to match.
+			useFastSsz = desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer == 0 || (staticBuild && isFastsszSizer && !streamCustomSizer)
 		}
-
-		streamCustomSizer := ctx.streamCustomSizer(desc)
 
 		if staticBuild && !streamCustomSizer {
 			if useFastSsz {
@@ -359,16 +360,21 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 				return fmt.Errorf("cannot generate static sizer for %s under without-dynamic-expressions: it provides only dynamic (spec-aware) SSZ methods and has no static SizeSSZ or inlinable structure; add it to the generation set or provide a static sizer", ctx.typePrinter.TypeString(desc))
 			}
 		} else {
+			// The static sizer is taken on the same condition as the static
+			// marshaler and unmarshaler: the child has one and no size or
+			// limit below it depends on the spec. Then it answers without the
+			// spec set, and a parent of such children keeps a static sizer of
+			// its own; any other child is sized with the spec set.
+			if useFastSsz {
+				fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "SizeSSZ")
+				ctx.appendDelegatedSize(indent, sizeVar, fmt.Sprintf("%s.%s(%s)", varName, fn, strings.TrimPrefix(arg, ", ")))
+				return nil
+			}
+
 			if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 {
 				fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "SizeSSZDyn")
 				ctx.appendDelegatedSize(indent, sizeVar, fmt.Sprintf("%s.%s(ds%s)", varName, fn, arg))
 				ctx.usedDynSpecs = true
-				return nil
-			}
-
-			if useFastSsz {
-				fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "SizeSSZ")
-				ctx.appendDelegatedSize(indent, sizeVar, fmt.Sprintf("%s.%s(%s)", varName, fn, strings.TrimPrefix(arg, ", ")))
 				return nil
 			}
 		}

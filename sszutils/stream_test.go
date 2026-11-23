@@ -137,6 +137,77 @@ func TestStreamDecoder_NegativeReadNoPanic(t *testing.T) {
 	})
 }
 
+// overReader serves data but reports extra more bytes than the buffer it was
+// given.
+type overReader struct {
+	data  []byte
+	extra int
+	eof   bool
+}
+
+func (r *overReader) Read(p []byte) (int, error) {
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	if r.eof && len(r.data) == 0 {
+		return len(p) + r.extra, io.EOF
+	}
+	return len(p) + r.extra, nil
+}
+
+// fillReader fills every buffer it is given, the most a reader may report.
+type fillReader struct{}
+
+func (fillReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 0xab
+	}
+	return len(p), nil
+}
+
+// A reader reporting more bytes than it was given must not move the decoder
+// past its buffer; the decoder reports ErrNegativeRead instead.
+func TestStreamDecoder_OverReportedReadNoPanic(t *testing.T) {
+	data := bytes.Repeat([]byte{1}, 8192)
+	for _, extra := range []int{1, 8, 1 << 20} {
+		for _, eof := range []bool{false, true} {
+			name := fmt.Sprintf("extra=%d,eof=%v", extra, eof)
+			check := func(t *testing.T, decode func(*StreamDecoder) error, newDec func(io.Reader) *StreamDecoder) {
+				t.Helper()
+				defer func() {
+					if r := recover(); r != nil {
+						t.Fatalf("over-reported read panicked: %v", r)
+					}
+				}()
+				if err := decode(newDec(&overReader{data: data, extra: extra, eof: eof})); !errors.Is(err, ErrNegativeRead) {
+					t.Errorf("err = %v, want ErrNegativeRead", err)
+				}
+			}
+			t.Run("buffered/"+name, func(t *testing.T) {
+				check(t, func(d *StreamDecoder) error { _, err := d.DecodeUint64(); return err },
+					func(r io.Reader) *StreamDecoder { return NewStreamDecoder(r, len(data), 1024) })
+			})
+			t.Run("direct/"+name, func(t *testing.T) {
+				check(t, func(d *StreamDecoder) error { _, err := d.DecodeBytes(make([]byte, 4096)); return err },
+					func(r io.Reader) *StreamDecoder { return NewStreamDecoder(r, len(data), 64) })
+			})
+			t.Run("unknown/"+name, func(t *testing.T) {
+				check(t, func(d *StreamDecoder) error { d.PushOpenLimit(); _, err := d.DecodeRemaining(-1); return err },
+					func(r io.Reader) *StreamDecoder { return NewUnknownStreamDecoder(r, 1024, 0) })
+			})
+		}
+	}
+
+	// Filling the whole buffer is allowed and still decodes.
+	dec := NewStreamDecoder(fillReader{}, 8192, 64)
+	if v, err := dec.DecodeUint64(); err != nil || v != 0xabababababababab {
+		t.Errorf("buffered full read = %x, %v", v, err)
+	}
+	buf := make([]byte, 4096)
+	if _, err := dec.DecodeBytes(buf); err != nil || !bytes.Equal(buf, bytes.Repeat([]byte{0xab}, 4096)) {
+		t.Errorf("direct full read: %v", err)
+	}
+}
+
 // ============================================================================
 // StreamEncoder Tests
 // ============================================================================

@@ -65,3 +65,11 @@ types:
     output: gen_viewtypes4.go
     views:
       - SpecViewShared_View
+  - name: UnknownView_Base
+    output: gen_viewtypes4.go
+    views:
+      - UnknownView_Own
+  - name: UnknownView_Dyn
+    output: gen_viewtypes4.go
+  - name: UnknownView_Static
+    output: gen_viewtypes4.go

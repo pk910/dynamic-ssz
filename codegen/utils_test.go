@@ -104,6 +104,11 @@ func TestFormatGoSource(t *testing.T) {
 			want:  "package p\n\nfunc f() {\n\tfor i := range vlen - 1 {\n\t\t_ = i\n\t}\n}\n",
 		},
 		{
+			name:  "func literal over a struct type argument keeps its body on separate lines",
+			input: "package p\n\nfunc f() {\n\tctx.sizeFn1 = func(ctx *encoderCtx, t []dynssz.CompatibleUnion[struct{A uint32; B uint64}]) int {\n\t\tvar size int64\n\t\tsize += 4\n\t\treturn int(size)\n\t}\n}\n",
+			want:  "package p\n\nfunc f() {\n\tctx.sizeFn1 = func(ctx *encoderCtx, t []dynssz.CompatibleUnion[struct {\n\t\tA uint32\n\t\tB uint64\n\t}]) int {\n\t\tvar size int64\n\t\tsize += 4\n\t\treturn int(size)\n\t}\n}\n",
+		},
+		{
 			name:  "already formatted code is unchanged",
 			input: "package p\n\nfunc f() {\n\ttotalSize := size5 + 48\n\t_ = totalSize\n}\n",
 			want:  "package p\n\nfunc f() {\n\ttotalSize := size5 + 48\n\t_ = totalSize\n}\n",

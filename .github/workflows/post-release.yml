@@ -60,6 +60,7 @@ jobs:
         GOOS=darwin GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o ../dynssz-gen-darwin-arm64 .
 
     - name: Generate artifact attestations
+      id: attest
       uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v2
       with:
         subject-path: |
@@ -76,12 +77,19 @@ jobs:
         version="${{ steps.version.outputs.version }}"
         tag="${{ steps.version.outputs.tag }}"
 
+        # The attestation bundle is one Sigstore bundle covering all five binaries.
+        # Attaching it to the release (not just the attestation store) is what lets
+        # `gh attestation verify --bundle` work offline and what Scorecard's
+        # Signed-Releases check inspects (asset name must end in .sigstore.json).
+        cp "${{ steps.attest.outputs.bundle-path }}" "dynssz-gen-${version}.sigstore.json"
+
         gh release upload "$tag" \
           "dynssz-gen-linux-amd64#dynssz-gen-${version}-linux-amd64" \
           "dynssz-gen-linux-arm64#dynssz-gen-${version}-linux-arm64" \
           "dynssz-gen-windows-amd64.exe#dynssz-gen-${version}-windows-amd64.exe" \
           "dynssz-gen-darwin-amd64#dynssz-gen-${version}-darwin-amd64" \
-          "dynssz-gen-darwin-arm64#dynssz-gen-${version}-darwin-arm64"
+          "dynssz-gen-darwin-arm64#dynssz-gen-${version}-darwin-arm64" \
+          "dynssz-gen-${version}.sigstore.json"
 
   changelog:
     runs-on: ubuntu-latest

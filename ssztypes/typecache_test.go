@@ -1764,15 +1764,15 @@ func TestTypeCache_DelegatedShallowBuild(t *testing.T) {
 	})
 
 	t.Run("ViewSizerUnusable", func(t *testing.T) {
-		// A static view type whose view sizer yields no size function cannot have
-		// its size resolved, so the shallow build must fail.
+		// A view the runtime type's dispatcher does not serve is walked like any
+		// other view, so the error is the walk's, about the empty field.
 		_, err := cache.GetTypeDescriptorWithSchema(
 			reflect.TypeOf(delegatedViewNilRuntime{}),
 			reflect.TypeOf(delegatedViewNilSchema{}),
 			nil, nil, nil,
 		)
-		if err == nil || !strings.Contains(err.Error(), "does not provide a usable view sizer") {
-			t.Fatalf("expected unusable view sizer error, got: %v", err)
+		if err == nil || !strings.Contains(err.Error(), "has no SSZ fields") {
+			t.Fatalf("expected the view to be walked, got: %v", err)
 		}
 	})
 
@@ -6628,6 +6628,23 @@ func TestPromotedDelegationWalkerMethodAndValueReceivers(t *testing.T) {
 		if !promoted[inherited] {
 			t.Errorf("promoted %s not detected: %v", inherited, promoted)
 		}
+	}
+}
+
+// delegationMethodByName spells every delegation method name as a literal, so
+// a name added to delegationMethodNames without a matching case would fall
+// through to "not found" and silently stop being detected as promoted.
+func TestDelegationMethodByNameCoversAllNames(t *testing.T) {
+	typ := reflect.TypeOf(&valueReceiverOuter{})
+	for _, name := range delegationMethodNames {
+		want, wantOK := typ.MethodByName(name)
+		got, gotOK := delegationMethodByName(typ, name)
+		if gotOK != wantOK || got.Name != want.Name {
+			t.Errorf("%s: delegationMethodByName = (%q, %v), MethodByName = (%q, %v)", name, got.Name, gotOK, want.Name, wantOK)
+		}
+	}
+	if _, ok := delegationMethodByName(typ, "String"); ok {
+		t.Error("a name outside delegationMethodNames was looked up")
 	}
 }
 
