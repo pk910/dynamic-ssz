@@ -3342,3 +3342,167 @@ func TestDeferredClimbsAllocs(t *testing.T) { //nolint:paralleltest // AllocsPer
 		t.Fatalf("%v allocations per walk on a warm hasher", n)
 	}
 }
+
+// pairValue returns a value of 33 to 64 bytes, two chunks.
+func pairValue(i int) []byte {
+	b := make([]byte, 33+i*13%32)
+	for j := range b {
+		b[j] = byte(i*7 + j)
+	}
+	return b
+}
+
+// A two-chunk value inside a scope, put with PutBytes or closed as its own
+// scope, leaves its one hash pending, and the values of sibling containers
+// are hashed together. The roots must match a plain sha256 reference,
+// whatever the collapse cadence, and a caller reading the root of a value
+// it just put must get the final one.
+func TestDeferredPairsMatchReference(t *testing.T) {
+	t.Parallel()
+	for _, scoped := range []bool{false, true} {
+		for _, n := range []int{0, 1, 2, 255, 256, 257, 700} {
+			for _, cadence := range []int{0, 1, 256} {
+				roots := make([][32]byte, n)
+				h := strictH(t)
+				idx := h.StartTree(sszutils.TreeTypeBinary)
+				for i := range n {
+					v := pairValue(i)
+					var num [32]byte
+					binary.LittleEndian.PutUint64(num[:], uint64(i))
+					vroot := sha256Merkle(chunksOf(v), 2)
+					roots[i] = sha256Merkle([][32]byte{vroot, num, vroot}, 4)
+
+					c := h.StartTree(sszutils.TreeTypeNone)
+					if scoped {
+						vidx := h.StartTree(sszutils.TreeTypeNone)
+						h.AppendBytes32(v)
+						h.Merkleize(vidx)
+					} else {
+						h.PutBytes(v)
+					}
+					if i%50 == 7 {
+						if got := h.Hash(); !bytes.Equal(got, vroot[:]) {
+							t.Fatalf("scoped=%v n=%d cadence=%d: Hash after value %d = %x, want %x", scoped, n, cadence, i, got, vroot)
+						}
+					}
+					h.PutUint64(uint64(i))
+					h.PutBytes(v)
+					h.Merkleize(c)
+					if cadence > 0 && (i+1)%cadence == 0 {
+						h.Collapse()
+					}
+					if len(h.climbs) >= climbBatch {
+						t.Fatalf("scoped=%v n=%d cadence=%d: %d values pending, the batch bound is %d", scoped, n, cadence, len(h.climbs), climbBatch)
+					}
+				}
+				h.MerkleizeWithMixin(idx, uint64(n), 1<<20)
+				want := sha256Mixin(sha256Merkle(roots, 1<<20), uint64(n))
+				got, err := h.HashRoot()
+				if err != nil || got != want {
+					t.Fatalf("scoped=%v n=%d cadence=%d: root %x (%v), want %x", scoped, n, cadence, got, err, want)
+				}
+			}
+		}
+	}
+
+	t.Run("not deferred", func(t *testing.T) {
+		t.Parallel()
+		v := pairValue(3)
+		vroot := sha256Merkle(chunksOf(v), 2)
+
+		// Outside any scope.
+		h := strictH(t)
+		h.PutBytes(v)
+		if len(h.climbs) != 0 || !bytes.Equal(h.Hash(), vroot[:]) {
+			t.Fatalf("top-level value: %d pending, hash %x, want %x", len(h.climbs), h.Hash(), vroot)
+		}
+
+		// Inside a scope opened through Index, whose caller may read the
+		// bytes again.
+		h = strictH(t)
+		idx := h.Index()
+		h.PutBytes(v)
+		if len(h.climbs) != 0 || !bytes.Equal(h.buf[idx:idx+32], vroot[:]) {
+			t.Fatalf("Index scope: %d pending, bytes %x, want %x", len(h.climbs), h.buf[idx:idx+32], vroot)
+		}
+		h.Merkleize(idx)
+		vidx := h.Index()
+		h.AppendBytes32(v)
+		h.Merkleize(vidx)
+		if len(h.climbs) != 0 {
+			t.Fatalf("Index-opened two-chunk scope: %d pending", len(h.climbs))
+		}
+	})
+
+	t.Run("hash calls", func(t *testing.T) {
+		t.Parallel()
+		// 16 containers of one two-chunk value and one u64 under a list: one
+		// call hashes the 16 values, one the 16 containers, four reduce the
+		// list and one mixes in its length.
+		calls, pairs := 0, 0
+		h := NewHasherWithHashFn(func(dst, in []byte) error {
+			calls++
+			pairs += len(in) / 64
+			return FastHasherPool.HashFn(dst, in)
+		})
+		roots := make([][32]byte, 16)
+		idx := h.StartTree(sszutils.TreeTypeBinary)
+		for i := range 16 {
+			v := pairValue(i)
+			var num [32]byte
+			binary.LittleEndian.PutUint64(num[:], uint64(i))
+			roots[i] = sha256Merkle([][32]byte{sha256Merkle(chunksOf(v), 2), num}, 2)
+			c := h.StartTree(sszutils.TreeTypeNone)
+			h.PutBytes(v)
+			h.PutUint64(uint64(i))
+			h.Merkleize(c)
+		}
+		h.MerkleizeWithMixin(idx, 16, 16)
+		want := sha256Mixin(sha256Merkle(roots, 16), 16)
+		got, err := h.HashRoot()
+		if err != nil || got != want {
+			t.Fatalf("root %x (%v), want %x", got, err, want)
+		}
+		if calls != 7 || pairs != 16+16+15+1 {
+			t.Fatalf("%d calls hashing %d pairs, want 7 calls hashing %d", calls, pairs, 16+16+15+1)
+		}
+	})
+}
+
+// Validator-like containers batch their two-chunk values while the list
+// around them reduces in background jobs.
+func TestDeferredPairsAsync(t *testing.T) { //nolint:paralleltest // async hashing is a process-wide switch
+	EnableAsyncHashing(2)
+	defer DisableAsyncHashing()
+
+	const n = 20000
+	roots := make([][32]byte, n)
+	h := strictH(t)
+	h.SetAsyncHashing(true)
+	jobs := false
+	idx := h.StartTree(sszutils.TreeTypeBinary)
+	for i := range n {
+		v := pairValue(i)
+		var num [32]byte
+		binary.LittleEndian.PutUint64(num[:], uint64(i))
+		roots[i] = sha256Merkle([][32]byte{sha256Merkle(chunksOf(v), 2), num}, 2)
+
+		c := h.StartTree(sszutils.TreeTypeNone)
+		h.PutBytes(v)
+		h.PutUint64(uint64(i))
+		h.Merkleize(c)
+		if (i+1)%256 == 0 {
+			h.Collapse()
+			jobs = jobs || h.jobCount > 0
+		}
+	}
+	if !jobs {
+		t.Fatal("no background reduction ran")
+	}
+	h.MerkleizeWithMixin(idx, n, 1<<30)
+	want := sha256Mixin(sha256Merkle(roots, 1<<30), n)
+	got, err := h.HashRoot()
+	if err != nil || got != want {
+		t.Fatalf("root %x (%v), want %x", got, err, want)
+	}
+}

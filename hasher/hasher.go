@@ -40,6 +40,10 @@ type pendingClimb struct {
 	num   uint64 // list length to mix in
 	level uint8  // depth the root sits at
 	depth uint8  // depth of the list's limit
+	// pair marks a two-chunk value waiting for its one hash: the root slot
+	// holds its first chunk and right its second, and there is no mixin.
+	pair  bool
+	right [32]byte
 }
 
 // treeLayer tracks the state of one open SSZ object scope (container, list,
@@ -385,6 +389,9 @@ func (h *Hasher) PutBytes(b []byte) {
 	// a single hash, skipping merkleizeImpl's general depth loop. These dominate
 	// validator hashing, so the per-call saving adds up over large lists.
 	if len(b) <= 64 {
+		if h.deferPair(indx) {
+			return
+		}
 		h.setHashErr(h.hash(h.buf[indx:indx+32], h.buf[indx:indx+64]))
 		h.buf = h.buf[:indx+32]
 		return
@@ -1223,7 +1230,6 @@ func (h *Hasher) clampMerkleizeIndex(indx int) int {
 // if one exists.
 func (h *Hasher) Merkleize(indx int) {
 	indx = h.clampMerkleizeIndex(indx)
-	h.settleClimbs(indx)
 	// The scope is reduced as whole chunks, and a scope of packed values ends
 	// on a partial one; padding it first keeps the scope eligible for the
 	// batched reduction below, which counts whole chunks.
@@ -1300,6 +1306,7 @@ func (h *Hasher) Merkleize(indx int) {
 		}
 		h.popTopLayer()
 	}
+	h.settleClimbs(indx)
 	h.drainJobsFor(indx)
 
 	// merkleizeImpl treats the region as whole 32-byte chunks (a single chunk
@@ -1307,6 +1314,12 @@ func (h *Hasher) Merkleize(indx int) {
 	// boundary first — otherwise a sub-32-byte region reads into the buffer's
 	// uninitialized spare capacity.
 	h.fillRegionUpTo32(indx)
+
+	// A two-chunk scope, such as a 48-byte vector, is one pair; it waits for
+	// the pairs of its siblings like PutBytes does.
+	if layer != nil && !layer.legacy && !layer.progressive && len(h.buf)-indx == 64 && h.deferPair(indx) {
+		return
+	}
 
 	input := h.buf[indx:]
 
@@ -1600,6 +1613,27 @@ func (h *Hasher) deferClimb(layer *treeLayer, indx int, num, limit uint64) bool 
 	return true
 }
 
+// deferPair leaves the two chunks at indx, the last in the buffer, pending as
+// one pair, so the pairs of sibling values share a hash call. Only a value
+// inside a scope not opened through Index is deferred.
+func (h *Hasher) deferPair(indx int) bool {
+	if debug || h.layerCount < 0 || h.layers[h.layerCount].legacy {
+		return false
+	}
+	if h.climbs == nil {
+		h.climbs = make([]pendingClimb, 0, climbBatch)
+	}
+	c := pendingClimb{off: indx, depth: 1, pair: true}
+	copy(c.right[:], h.buf[indx+32:indx+64])
+	h.buf = h.buf[:indx+32]
+	h.climbs = append(h.climbs, c)
+	h.climbEnd = indx + 32
+	if len(h.climbs) >= climbBatch {
+		h.finishClimbs(h.climbs[0].off)
+	}
+	return true
+}
+
 // settleClimbs finishes the pending climbs whose roots reach past from.
 func (h *Hasher) settleClimbs(from int) {
 	if h.climbEnd > from {
@@ -1647,15 +1681,21 @@ func (h *Hasher) climbOne(c pendingClimb) {
 	copy(pair, h.buf[c.off:c.off+32])
 	var err error
 	for ; c.level < c.depth; c.level++ {
-		copy(pair[32:], zeroHashes[c.level][:])
+		if c.pair {
+			copy(pair[32:], c.right[:])
+		} else {
+			copy(pair[32:], zeroHashes[c.level][:])
+		}
 		if e := h.hash(pair[:32], pair); err == nil {
 			err = e
 		}
 	}
-	binary.LittleEndian.PutUint64(pair[32:], c.num)
-	clear(pair[40:])
-	if e := h.hash(pair[:32], pair); err == nil {
-		err = e
+	if !c.pair {
+		binary.LittleEndian.PutUint64(pair[32:], c.num)
+		clear(pair[40:])
+		if e := h.hash(pair[:32], pair); err == nil {
+			err = e
+		}
 	}
 	copy(h.buf[c.off:c.off+32], pair[:32])
 	h.setHashErr(err)
@@ -1684,7 +1724,11 @@ func (h *Hasher) climbTogether(climbs []pendingClimb) bool {
 		for _, j := range active[:n] {
 			c := &climbs[j]
 			pairs = append(pairs, h.buf[c.off:c.off+32]...)
-			pairs = append(pairs, zeroHashes[c.level][:]...)
+			if c.pair {
+				pairs = append(pairs, c.right[:]...)
+			} else {
+				pairs = append(pairs, zeroHashes[c.level][:]...)
+			}
 		}
 		if err := h.hash(pairs[:len(pairs)/2], pairs); err != nil && h.hashErr == nil {
 			return false
@@ -1704,16 +1748,27 @@ func (h *Hasher) climbTogether(climbs []pendingClimb) bool {
 	pairs := h.climbPairs[:0]
 	for j := range climbs {
 		c := &climbs[j]
+		if c.pair {
+			continue
+		}
 		pairs = append(pairs, h.buf[c.off:c.off+32]...)
 		pairs = binary.LittleEndian.AppendUint64(pairs, c.num)
 		pairs = append(pairs, zeroBytes[:24]...)
 	}
+	if len(pairs) == 0 {
+		return true
+	}
 	if err := h.hash(pairs[:len(pairs)/2], pairs); err != nil && h.hashErr == nil {
 		return false
 	}
+	k := 0
 	for j := range climbs {
 		c := &climbs[j]
-		copy(h.buf[c.off:c.off+32], pairs[j*32:])
+		if c.pair {
+			continue
+		}
+		copy(h.buf[c.off:c.off+32], pairs[k*32:])
+		k++
 	}
 	return true
 }
