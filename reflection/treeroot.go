@@ -660,14 +660,14 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 
 	// A full byte vector of one or two chunks is put as it is, as the
 	// generated code does: its root is the same, without a scope of its own.
-	if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 && sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsString == 0 &&
-		sourceType.BitSize == 0 && vecLen >= 32 && vecLen <= 64 {
-		if n := sourceValue.Len(); n == int(vecLen) || (n > int(vecLen) && sourceValue.Kind() == reflect.Array) {
-			if sourceValue.Kind() != reflect.Array || sourceValue.CanAddr() {
-				hh.PutBytes(sourceValue.Bytes()[:vecLen])
-				return nil
-			}
-		}
+	// An array is never shorter than its vector, but must be addressable to be
+	// read in place; a slice must hold exactly the vector.
+	isArray := sourceValue.Kind() == reflect.Array
+	if sourceType.GoTypeFlags&(ssztypes.GoTypeFlagIsByteArray|ssztypes.GoTypeFlagIsString) == ssztypes.GoTypeFlagIsByteArray &&
+		sourceType.BitSize == 0 && vecLen >= 32 && vecLen <= 64 &&
+		(isArray && sourceValue.CanAddr() || !isArray && sourceValue.Len() == int(vecLen)) {
+		hh.PutBytes(sourceValue.Bytes()[:vecLen])
+		return nil
 	}
 
 	packed := packedElemSize(sourceType.ElemDesc) > 0
