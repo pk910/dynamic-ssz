@@ -40,10 +40,9 @@ type pendingClimb struct {
 	num   uint64 // list length to mix in
 	level uint8  // depth the root sits at
 	depth uint8  // depth of the list's limit
-	// pair marks a two-chunk value waiting for its one hash: the root slot
-	// holds its first chunk and right its second, and there is no mixin.
-	pair  bool
-	right [32]byte
+	// pair marks a two-chunk value waiting for its one hash, with no mixin.
+	// Its chunks are staged in climbIn at the climb's index.
+	pair bool
 }
 
 // treeLayer tracks the state of one open SSZ object scope (container, list,
@@ -123,11 +122,12 @@ type Hasher struct {
 	// Anything that reads, moves or drops a region first settles the climbs
 	// whose roots reach into it. climbEnd is where the last root ends, or 0.
 	// climbPairs and climbPair are the scratch they are hashed in, together
-	// and alone.
+	// and alone, and climbIn holds the chunks of the pending pairs.
 	climbs     []pendingClimb
 	climbEnd   int
 	climbPairs []byte
 	climbPair  [64]byte
+	climbIn    []byte
 
 	// async gates this hasher into background subtree reduction (see
 	// SetAsyncHashing). Cleared on Reset so pooled hashers never carry the
@@ -1623,10 +1623,13 @@ func (h *Hasher) deferPair(indx int) bool {
 	if h.climbs == nil {
 		h.climbs = make([]pendingClimb, 0, climbBatch)
 	}
-	c := pendingClimb{off: indx, depth: 1, pair: true}
-	copy(c.right[:], h.buf[indx+32:indx+64])
+	if h.climbIn == nil {
+		h.climbIn = make([]byte, climbBatch*64)
+	}
+	j := len(h.climbs)
+	copy(h.climbIn[j*64:j*64+64], h.buf[indx:indx+64])
 	h.buf = h.buf[:indx+32]
-	h.climbs = append(h.climbs, c)
+	h.climbs = append(h.climbs, pendingClimb{off: indx, depth: 1, pair: true})
 	h.climbEnd = indx + 32
 	if len(h.climbs) >= climbBatch {
 		h.finishClimbs(h.climbs[0].off)
@@ -1660,14 +1663,14 @@ func (h *Hasher) finishClimbs(from int) {
 		h.climbEnd = h.climbs[i-1].off + 32
 	}
 	if len(climbs) == 1 {
-		h.climbOne(climbs[0])
+		h.climbOne(climbs[0], i)
 		return
 	}
-	if !h.climbTogether(climbs) {
+	if !h.climbTogether(climbs, i) {
 		// A shared call failed: take each list alone, in walk order, so a
 		// failure recorded is the one its own calls give.
 		for j := range climbs {
-			h.climbOne(climbs[j])
+			h.climbOne(climbs[j], i+j)
 		}
 	}
 }
@@ -1676,26 +1679,27 @@ func (h *Hasher) finishClimbs(from int) {
 // call per level like merkleizeImpl, with the pair kept in place between
 // levels. Its first failure is recorded once the list is done, as recording
 // can hash other pending climbs.
-func (h *Hasher) climbOne(c pendingClimb) {
+func (h *Hasher) climbOne(c pendingClimb, j int) {
 	pair := h.climbPair[:]
+	if c.pair {
+		copy(pair, h.climbIn[j*64:j*64+64])
+		err := h.hash(pair[:32], pair)
+		copy(h.buf[c.off:c.off+32], pair[:32])
+		h.setHashErr(err)
+		return
+	}
 	copy(pair, h.buf[c.off:c.off+32])
 	var err error
 	for ; c.level < c.depth; c.level++ {
-		if c.pair {
-			copy(pair[32:], c.right[:])
-		} else {
-			copy(pair[32:], zeroHashes[c.level][:])
-		}
+		copy(pair[32:], zeroHashes[c.level][:])
 		if e := h.hash(pair[:32], pair); err == nil {
 			err = e
 		}
 	}
-	if !c.pair {
-		binary.LittleEndian.PutUint64(pair[32:], c.num)
-		clear(pair[40:])
-		if e := h.hash(pair[:32], pair); err == nil {
-			err = e
-		}
+	binary.LittleEndian.PutUint64(pair[32:], c.num)
+	clear(pair[40:])
+	if e := h.hash(pair[:32], pair); err == nil {
+		err = e
 	}
 	copy(h.buf[c.off:c.off+32], pair[:32])
 	h.setHashErr(err)
@@ -1706,9 +1710,25 @@ func (h *Hasher) climbOne(c pendingClimb) {
 // in one more call. If a call fails before any failure is recorded, it stops
 // there and returns false, each root left at the level it reached; later
 // failures are not recorded.
-func (h *Hasher) climbTogether(climbs []pendingClimb) bool {
+func (h *Hasher) climbTogether(climbs []pendingClimb, base int) bool {
 	if h.climbPairs == nil {
 		h.climbPairs = make([]byte, climbBatch*64)
+	}
+	// Pairs alone, such as the pubkeys of a run of validators, are hashed in
+	// one call straight from where they are staged.
+	allPairs := true
+	for j := range climbs {
+		allPairs = allPairs && climbs[j].pair
+	}
+	if allPairs {
+		out := h.climbPairs[:len(climbs)*32]
+		if err := h.hash(out, h.climbIn[base*64:(base+len(climbs))*64]); err != nil && h.hashErr == nil {
+			return false
+		}
+		for j := range climbs {
+			copy(h.buf[climbs[j].off:climbs[j].off+32], out[j*32:])
+		}
+		return true
 	}
 	// The climbs still below their depth, in walk order.
 	var active [climbBatch]uint16
@@ -1723,10 +1743,11 @@ func (h *Hasher) climbTogether(climbs []pendingClimb) bool {
 		pairs := h.climbPairs[:0]
 		for _, j := range active[:n] {
 			c := &climbs[j]
-			pairs = append(pairs, h.buf[c.off:c.off+32]...)
 			if c.pair {
-				pairs = append(pairs, c.right[:]...)
+				k := (base + int(j)) * 64
+				pairs = append(pairs, h.climbIn[k:k+64]...)
 			} else {
+				pairs = append(pairs, h.buf[c.off:c.off+32]...)
 				pairs = append(pairs, zeroHashes[c.level][:]...)
 			}
 		}
