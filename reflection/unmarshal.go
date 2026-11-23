@@ -571,12 +571,32 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 // rather than replacing it. Only an empty slot is allocated. Pointer struct
 // fields work the same way in both engines, and so does the generated code for
 // elements.
-func reusePointerElem(slot reflect.Value, elemType reflect.Type) reflect.Value {
+func reusePointerElem(slot reflect.Value, elemType reflect.Type, block *elemBlock, remaining int) reflect.Value {
 	if slot.IsNil() {
-		slot.Set(reflect.New(elemType))
+		slot.Set(block.take(elemType, remaining))
 	}
 
 	return slot
+}
+
+// elemBlock allocates the elements for the empty slots of one decoded slice in
+// blocks, as sszutils.ElemBlock does for the generated code.
+type elemBlock struct {
+	elems reflect.Value // the current block
+	next  int           // its first element not handed out yet
+}
+
+// take returns a pointer to a zeroed element; remaining is the number of slots
+// still to fill, this one included.
+func (b *elemBlock) take(elemType reflect.Type, remaining int) reflect.Value {
+	if !b.elems.IsValid() || b.next == b.elems.Len() {
+		n := sszutils.ElemBlockLen(remaining, uint64(elemType.Size()))
+		b.elems = reflect.MakeSlice(reflect.SliceOf(elemType), n, n)
+		b.next = 0
+	}
+	e := b.elems.Index(b.next).Addr()
+	b.next++
+	return e
 }
 
 // expandSliceValue prepares a slice of the decoded length, keeping what the
@@ -842,6 +862,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 	allocPointerElems := fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && fieldType.SszType != ssztypes.SszOptionalType
 
 	// decode slice items
+	var block elemBlock
 	for i := 0; i < vectorLen; i++ {
 		if targetType.Kind != reflect.Array && i >= newValue.Len() {
 			// Make the whole geometric chunk addressable so this branch is
@@ -854,7 +875,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 
 		var itemVal reflect.Value
 		if allocPointerElems {
-			itemVal = reusePointerElem(newValue.Index(i), fieldType.Type.Elem())
+			itemVal = reusePointerElem(newValue.Index(i), fieldType.Type.Elem(), &block, vectorLen-i)
 		} else {
 			// Non-pointer and optional-pointer elements decode in place via the
 			// addressable slot so an absent optional can be set back to nil.
@@ -943,10 +964,11 @@ func (ctx *ReflectionCtx) unmarshalFixedElements(fieldType *ssztypes.TypeDescrip
 	// absent optional can be set back to a nil pointer.
 	isPointer := fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && fieldType.SszType != ssztypes.SszOptionalType
 
+	var block elemBlock
 	for i := 0; i < count; i++ {
 		var itemVal reflect.Value
 		if isPointer {
-			itemVal = reusePointerElem(newValue.Index(i), fieldType.Type.Elem())
+			itemVal = reusePointerElem(newValue.Index(i), fieldType.Type.Elem(), &block, count-i)
 		} else {
 			itemVal = newValue.Index(i)
 		}
@@ -1375,6 +1397,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 		allocPointerElems := fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && fieldType.SszType != ssztypes.SszOptionalType
 
 		// decode slice items
+		var block elemBlock
 		for i := 0; i < sliceLen; i++ {
 			startOffset := offset
 			var endOffset uint32
@@ -1419,7 +1442,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 
 			var itemVal reflect.Value
 			if allocPointerElems {
-				itemVal = reusePointerElem(newValue.Index(i), fieldType.Type.Elem())
+				itemVal = reusePointerElem(newValue.Index(i), fieldType.Type.Elem(), &block, sliceLen-i)
 			} else {
 				// Non-pointer and optional-pointer elements decode in place via the
 				// addressable slot so an absent optional can be set back to nil.

@@ -1374,3 +1374,60 @@ func TestPushLimitPastAKnownExtentIsRefusedByBothDecoders(t *testing.T) {
 		}
 	})
 }
+
+func TestElemBlockLen(t *testing.T) {
+	tests := []struct {
+		name      string
+		remaining int
+		elemSize  uint64
+		want      int
+	}{
+		{name: "count not known", remaining: 0, elemSize: 8, want: 1},
+		{name: "negative count", remaining: -5, elemSize: 8, want: 1},
+		{name: "within budget", remaining: 32, elemSize: 8, want: 32},
+		{name: "clamped to byte budget", remaining: 10_000, elemSize: 128, want: maxDecodeSlicePreallocationBytes / 128},
+		{name: "one element exceeds budget", remaining: 100, elemSize: maxDecodeSlicePreallocationBytes + 1, want: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := ElemBlockLen(test.remaining, test.elemSize); got != test.want {
+				t.Fatalf("ElemBlockLen(%d, %d) = %d, want %d", test.remaining, test.elemSize, got, test.want)
+			}
+		})
+	}
+}
+
+// ElemBlock hands out distinct zeroed elements, allocating a block only when
+// the last one is used up.
+func TestElemBlock(t *testing.T) {
+	type elem struct {
+		A uint64
+		B [120]byte
+	}
+	const n = 3000 // several blocks of 512
+	var b ElemBlock[elem]
+	seen := make(map[*elem]bool, n)
+	for i := range n {
+		e := b.Next(n - i)
+		if seen[e] {
+			t.Fatalf("element %d handed out twice", i)
+		}
+		seen[e] = true
+		if e.A != 0 || e.B != [120]byte{} {
+			t.Fatalf("element %d is not zeroed", i)
+		}
+		e.A = 1
+		if cap(b.free) > maxDecodeSlicePreallocationBytes/128 {
+			t.Fatalf("block of %d elements exceeds the preallocation bound", cap(b.free))
+		}
+	}
+	allocs := testing.AllocsPerRun(10, func() {
+		var b ElemBlock[elem]
+		for i := range 512 {
+			b.Next(512 - i)
+		}
+	})
+	if allocs != 1 {
+		t.Fatalf("512 elements of 128 bytes took %v allocations, want 1", allocs)
+	}
+}

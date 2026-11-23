@@ -229,6 +229,34 @@ func decodeSlicePreallocation(count int, elemSize uint64) int {
 	return count
 }
 
+// ElemBlock hands out the elements for the empty pointer slots of a decoded
+// slice, allocated in blocks instead of one by one. A block is sized for the
+// slots still to fill and bounded like the preallocation above, so a count no
+// element body has backed yet reserves no more, and an element kept alive
+// holds at most one block.
+type ElemBlock[T any] struct {
+	free []T
+}
+
+// Next returns a zeroed element; remaining is the number of slots still to
+// fill, this one included (below 1 when the count is not known).
+func (b *ElemBlock[T]) Next(remaining int) *T {
+	if len(b.free) == 0 {
+		var zero T
+		b.free = make([]T, ElemBlockLen(remaining, uint64(unsafe.Sizeof(zero))))
+	}
+	e := &b.free[0]
+	b.free = b.free[1:]
+	return e
+}
+
+// ElemBlockLen is the number of elements of elemSize bytes an ElemBlock
+// allocates at once for remaining slots: as many as the preallocation bound
+// allows, and one when the count is not known.
+func ElemBlockLen(remaining int, elemSize uint64) int {
+	return max(decodeSlicePreallocation(remaining, elemSize), 1)
+}
+
 // PreallocateDecodeSlice sizes src for a dynamic list of count elements. A
 // region whose extent is backed by known input (a buffer, a stream with a
 // declared length, or a region that fits in the bytes already read) is sized

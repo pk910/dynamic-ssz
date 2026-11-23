@@ -838,6 +838,7 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 		indexVar, indexDefer := ctx.getIndexVar()
 		defer indexDefer()
 
+		elemBlock := ctx.elemBlock(indent, desc.ElemDesc)
 		ctx.appendCode(indent, "for %s := range %s {\n", indexVar, intLitStr(limitVar))
 
 		valVar := fmt.Sprintf("%s[%s]", indexValueVar, indexVar)
@@ -847,7 +848,7 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 			ctx.appendCode(indent, "\t%s := %s[%s]\n", valVar, indexValueVar, indexVar)
 		}
 		if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
-			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
+			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = %s.Next(%s-%s)\n}\n", valVar, valVar, elemBlock, intLitStr(limitVar), indexVar)
 		}
 
 		fieldPath := typePath.append("[%d]", indexVar)
@@ -915,6 +916,7 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 		}
 
 		expandSlice()
+		elemBlock := ctx.elemBlock(indent, desc.ElemDesc)
 		ctx.appendCode(indent, "for %s := range %s {\n", indexVar, intLitStr(limitVar))
 
 		fieldPath := typePath.append("[%d]", indexVar)
@@ -948,7 +950,7 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 		valVar := ctx.getValVar()
 		ctx.appendCode(indent+1, "%s := %s[%s]\n", valVar, indexValueVar, indexVar)
 		if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
-			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
+			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = %s.Next(%s-%s)\n}\n", valVar, valVar, elemBlock, intLitStr(limitVar), indexVar)
 		}
 
 		if err := ctx.unmarshalType(desc.ElemDesc, valVar, fieldPath, indent+1, false, true); err != nil {
@@ -1130,6 +1132,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		indexVar, indexDefer := ctx.getIndexVar()
 		defer indexDefer()
 
+		elemBlock := ctx.elemBlock(indent, desc.ElemDesc)
 		ctx.appendCode(indent, "for %s := 0; itemCount < 0 || %s < itemCount; %s++ {\n", indexVar, indexVar, indexVar)
 		// Open region: stop at end of input, and bound growth per element.
 		ctx.appendCode(indent+1, "if itemCount < 0 {\n")
@@ -1159,7 +1162,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 			ctx.appendCode(indent+1, "%s := %s[%s]\n", valVar, indexValueVar, indexVar)
 		}
 		if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
-			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
+			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = %s.Next(itemCount-%s)\n}\n", valVar, valVar, elemBlock, indexVar)
 		}
 
 		fieldPath := typePath.append("[%d]", indexVar)
@@ -1273,6 +1276,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		ctx.startPosVarCounter++
 		ctx.appendCode(indent, "%s := itemCount - 1\n", lastIdxVar)
 		ctx.appendCode(indent, "curOffset := int(startOffset)\n")
+		elemBlock := ctx.elemBlock(indent, desc.ElemDesc)
 		ctx.appendCode(indent, "for %s := range itemCount {\n", indexVar)
 
 		ctx.appendCode(indent+1, "var endOffset int\n")
@@ -1310,7 +1314,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		valVar := ctx.getValVar()
 		ctx.appendCode(indent+1, "%s := %s[%s]\n", valVar, indexValueVar, indexVar)
 		if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
-			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
+			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = %s.Next(itemCount-%s)\n}\n", valVar, valVar, elemBlock, indexVar)
 		}
 		if err := ctx.unmarshalType(desc.ElemDesc, valVar, fieldPath, indent+1, false, true); err != nil {
 			return err
@@ -1562,4 +1566,16 @@ func (ctx *decoderContext) unmarshalBigInt(desc *ssztypes.TypeDescriptor, varNam
 	ctx.appendCode(indent+1, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, fmt.Sprintf("*%s", valVar), "big.Int"))
 	ctx.appendCode(indent, "}\n")
 	return nil
+}
+
+// elemBlock declares the block that the empty pointer slots of the slice about
+// to be decoded are filled from, and returns its name; for elements that are
+// not pointers there is none.
+func (ctx *decoderContext) elemBlock(indent int, elem *ssztypes.TypeDescriptor) string {
+	if elem.GoTypeFlags&ssztypes.GoTypeFlagIsPointer == 0 {
+		return ""
+	}
+	name := ctx.getValVar()
+	ctx.appendCode(indent, "var %s sszutils.ElemBlock[%s]\n", name, ctx.typePrinter.InnerTypeString(elem))
+	return name
 }

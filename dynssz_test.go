@@ -10022,3 +10022,110 @@ func TestUnmarshalSSZReaderOverReportedRead(t *testing.T) {
 		}
 	}
 }
+
+type elemBlockFixed struct {
+	A uint64
+	B [4000]byte
+}
+
+type elemBlockDynamic struct {
+	A uint64
+	B []byte `ssz-max:"64"`
+}
+
+type elemBlockLists struct {
+	Fixed   []*elemBlockFixed   `ssz-max:"128"`
+	Dynamic []*elemBlockDynamic `ssz-max:"4096"`
+	Vector  []*elemBlockFixed   `ssz-size:"40"`
+}
+
+// Decoded pointer elements come from shared blocks, a few at a time for large
+// elements. Each must still be its own element, an element already in the
+// target is decoded into, and the value must match a decode into an empty
+// target.
+func TestUnmarshalPointerElementsInBlocks(t *testing.T) {
+	source := &elemBlockLists{Vector: make([]*elemBlockFixed, 40)}
+	for i := range 100 {
+		source.Fixed = append(source.Fixed, &elemBlockFixed{A: uint64(i + 1), B: [4000]byte{byte(i)}})
+	}
+	for i := range 3000 {
+		source.Dynamic = append(source.Dynamic, &elemBlockDynamic{A: uint64(i + 1), B: []byte{byte(i), byte(i >> 8)}})
+	}
+	for i := range source.Vector {
+		source.Vector[i] = &elemBlockFixed{A: uint64(i + 1000)}
+	}
+
+	ds := NewDynSsz(nil)
+	enc, err := ds.MarshalSSZ(source)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	fresh := new(elemBlockLists)
+	if err := ds.UnmarshalSSZ(fresh, enc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for i, e := range fresh.Fixed {
+		if e.A != uint64(i+1) || e.B[0] != byte(i) {
+			t.Fatalf("Fixed[%d] = %d/%d", i, e.A, e.B[0])
+		}
+	}
+	for i, e := range fresh.Dynamic {
+		if e.A != uint64(i+1) || len(e.B) != 2 || e.B[0] != byte(i) {
+			t.Fatalf("Dynamic[%d] = %d/%v", i, e.A, e.B)
+		}
+	}
+	// Every element is its own: changing one changes no other.
+	fresh.Fixed[0].A = 0
+	fresh.Dynamic[0].A = 0
+	fresh.Vector[0].A = 0
+	if fresh.Fixed[1].A != 2 || fresh.Dynamic[1].A != 2 || fresh.Vector[1].A != 1001 {
+		t.Fatal("elements share memory")
+	}
+	fresh.Fixed[0].A, fresh.Dynamic[0].A, fresh.Vector[0].A = 1, 1, 1000
+
+	// A target holding some elements, with references kept to them, and room
+	// for the rest (past its capacity a slice is replaced, elements and all).
+	held := []*elemBlockFixed{{A: 99}, {A: 99}, {A: 99}}
+	target := &elemBlockLists{
+		Fixed:   append(make([]*elemBlockFixed, 0, 128), held...),
+		Dynamic: []*elemBlockDynamic{{A: 99}},
+	}
+	if err := ds.UnmarshalSSZ(target, enc); err != nil {
+		t.Fatalf("unmarshal into a populated target: %v", err)
+	}
+	for i, h := range held {
+		if target.Fixed[i] != h || h.A != uint64(i+1) {
+			t.Fatalf("Fixed[%d] was not decoded into the element already there", i)
+		}
+	}
+	// Decoding again into the same target reuses every element.
+	last := target.Fixed[99]
+	if err := ds.UnmarshalSSZ(target, enc); err != nil {
+		t.Fatalf("second unmarshal: %v", err)
+	}
+	if target.Fixed[99] != last {
+		t.Fatal("second decode replaced an element")
+	}
+
+	// The 3000 dynamic elements take a handful of blocks, not an allocation each
+	// (their byte slices are allocated on their own either way).
+	allocs := testing.AllocsPerRun(5, func() {
+		if err := ds.UnmarshalSSZ(new(elemBlockLists), enc); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if allocs > 3000+100 {
+		t.Fatalf("decode took %v allocations, want the elements allocated in blocks", allocs)
+	}
+
+	for name, v := range map[string]*elemBlockLists{"populated": target, "fresh": fresh} {
+		got, err := ds.MarshalSSZ(v)
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", name, err)
+		}
+		if !bytes.Equal(got, enc) {
+			t.Fatalf("%s: decoded value differs from the source", name)
+		}
+	}
+}
