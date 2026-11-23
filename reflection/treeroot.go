@@ -658,6 +658,18 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 		return sszutils.ErrPlatformOverflowWidthFn("vector length", uint64(sourceType.Len))
 	}
 
+	// A full byte vector of one or two chunks is put as it is, as the
+	// generated code does: its root is the same, without a scope of its own.
+	if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 && sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsString == 0 &&
+		sourceType.BitSize == 0 && vecLen >= 32 && vecLen <= 64 {
+		if n := sourceValue.Len(); n == int(vecLen) || (n > int(vecLen) && sourceValue.Kind() == reflect.Array) {
+			if sourceValue.Kind() != reflect.Array || sourceValue.CanAddr() {
+				hh.PutBytes(sourceValue.Bytes()[:vecLen])
+				return nil
+			}
+		}
+	}
+
 	packed := packedElemSize(sourceType.ElemDesc) > 0
 	treeType := sszutils.TreeTypeBinary
 	if packed {
