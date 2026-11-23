@@ -117,9 +117,13 @@ type Hasher struct {
 
 	// climbs holds the deferred list climbs in buffer order (see deferClimb).
 	// Anything that reads, moves or drops a region first settles the climbs
-	// whose roots reach into it. climbPairs is the scratch they are hashed in.
+	// whose roots reach into it. climbEnd is where the last root ends, or 0.
+	// climbPairs and climbPair are the scratch they are hashed in, together
+	// and alone.
 	climbs     []pendingClimb
+	climbEnd   int
 	climbPairs []byte
+	climbPair  [64]byte
 
 	// async gates this hasher into background subtree reduction (see
 	// SetAsyncHashing). Cleared on Reset so pooled hashers never carry the
@@ -227,6 +231,7 @@ func (h *Hasher) firstHashErr(err error) {
 func (h *Hasher) Reset() {
 	h.buf = h.buf[:0]
 	h.climbs = h.climbs[:0]
+	h.climbEnd = 0
 	h.hashErr = nil
 	h.discardJobs()
 	h.layerCount = -1
@@ -1045,6 +1050,16 @@ func (h *Hasher) collapseAllDepths(layer *treeLayer, indx, bufEnd int, limit uin
 
 	h.syncCollapseStateWithEnd(layer, bufEnd)
 
+	// The nodes are read back from bufEnd, which for a scope closed out of
+	// order can start below indx, so the climbs there are finished first.
+	if len(h.climbs) > 0 {
+		from := bufEnd
+		for d := 0; d <= layer.maxDepth; d++ {
+			from -= int(layer.counts[d]) * 32
+		}
+		h.finishClimbs(min(from, indx))
+	}
+
 	// A limit below the chunks the scope holds is what merkleizeImpl reports
 	// for a scope that was never collapsed. A node tracked at depth d stands
 	// for 1<<d of those chunks, so the figure is the same one either path
@@ -1576,9 +1591,9 @@ func (h *Hasher) deferClimb(layer *treeLayer, indx int, num, limit uint64) bool 
 	}
 	if h.climbs == nil {
 		h.climbs = make([]pendingClimb, 0, climbBatch)
-		h.climbPairs = make([]byte, climbBatch*64)
 	}
 	h.climbs = append(h.climbs, pendingClimb{off: indx, num: num, level: level, depth: depth})
+	h.climbEnd = indx + 32
 	if len(h.climbs) >= climbBatch {
 		h.finishClimbs(h.climbs[0].off)
 	}
@@ -1587,7 +1602,7 @@ func (h *Hasher) deferClimb(layer *treeLayer, indx int, num, limit uint64) bool 
 
 // settleClimbs finishes the pending climbs whose roots reach past from.
 func (h *Hasher) settleClimbs(from int) {
-	if len(h.climbs) > 0 {
+	if h.climbEnd > from {
 		h.finishClimbs(from)
 	}
 }
@@ -1606,9 +1621,17 @@ func (h *Hasher) finishClimbs(from int) {
 	}
 	climbs := h.climbs[i:]
 	h.climbs = h.climbs[:i]
-	if len(climbs) == 1 || !h.climbTogether(climbs) {
-		// One list, or a shared call failed: take each list alone, in walk
-		// order, so a failure recorded is the one its own calls give.
+	h.climbEnd = 0
+	if i > 0 {
+		h.climbEnd = h.climbs[i-1].off + 32
+	}
+	if len(climbs) == 1 {
+		h.climbOne(climbs[0])
+		return
+	}
+	if !h.climbTogether(climbs) {
+		// A shared call failed: take each list alone, in walk order, so a
+		// failure recorded is the one its own calls give.
 		for j := range climbs {
 			h.climbOne(climbs[j])
 		}
@@ -1618,9 +1641,9 @@ func (h *Hasher) finishClimbs(from int) {
 // climbOne takes a single list to its limit depth and mixes in its length, a
 // call per level like merkleizeImpl, with the pair kept in place between
 // levels. Its first failure is recorded once the list is done, as recording
-// can hash the other pending climbs in climbPairs.
+// can hash other pending climbs.
 func (h *Hasher) climbOne(c pendingClimb) {
-	pair := h.climbPairs[:64]
+	pair := h.climbPair[:]
 	copy(pair, h.buf[c.off:c.off+32])
 	var err error
 	for ; c.level < c.depth; c.level++ {
@@ -1639,45 +1662,60 @@ func (h *Hasher) climbOne(c pendingClimb) {
 }
 
 // climbTogether takes two or more climbs to their limit depth, one level
-// across all of them per hash call, and then mixes in their lengths in one
-// more call. If a call fails before any failure is recorded, it stops there
-// and returns false, each root left at the level it reached.
+// across those still below it per hash call, and then mixes in their lengths
+// in one more call. If a call fails before any failure is recorded, it stops
+// there and returns false, each root left at the level it reached; later
+// failures are not recorded.
 func (h *Hasher) climbTogether(climbs []pendingClimb) bool {
-	for mixin := false; ; {
-		pairs := h.climbPairs[:0]
-		for j := range climbs {
-			c := &climbs[j]
-			switch {
-			case mixin:
-				pairs = append(pairs, h.buf[c.off:c.off+32]...)
-				pairs = binary.LittleEndian.AppendUint64(pairs, c.num)
-				pairs = append(pairs, zeroBytes[:24]...)
-			case c.level < c.depth:
-				pairs = append(pairs, h.buf[c.off:c.off+32]...)
-				pairs = append(pairs, zeroHashes[c.level][:]...)
-			}
-		}
-		if len(pairs) == 0 && !mixin {
-			mixin = true
-			continue
-		}
-		err := h.hash(pairs[:len(pairs)/2], pairs)
-		if err != nil && h.hashErr == nil {
-			return false
-		}
-		n := 0
-		for j := range climbs {
-			if c := &climbs[j]; mixin || c.level < c.depth {
-				copy(h.buf[c.off:c.off+32], pairs[n*32:])
-				c.level++
-				n++
-			}
-		}
-		h.setHashErr(err)
-		if mixin {
-			return true
+	if h.climbPairs == nil {
+		h.climbPairs = make([]byte, climbBatch*64)
+	}
+	// The climbs still below their depth, in walk order.
+	var active [climbBatch]uint16
+	n := 0
+	for j := range climbs {
+		if climbs[j].level < climbs[j].depth {
+			active[n] = uint16(j)
+			n++
 		}
 	}
+	for n > 0 {
+		pairs := h.climbPairs[:0]
+		for _, j := range active[:n] {
+			c := &climbs[j]
+			pairs = append(pairs, h.buf[c.off:c.off+32]...)
+			pairs = append(pairs, zeroHashes[c.level][:]...)
+		}
+		if err := h.hash(pairs[:len(pairs)/2], pairs); err != nil && h.hashErr == nil {
+			return false
+		}
+		k := 0
+		for i, j := range active[:n] {
+			c := &climbs[j]
+			copy(h.buf[c.off:c.off+32], pairs[i*32:])
+			c.level++
+			if c.level < c.depth {
+				active[k] = j
+				k++
+			}
+		}
+		n = k
+	}
+	pairs := h.climbPairs[:0]
+	for j := range climbs {
+		c := &climbs[j]
+		pairs = append(pairs, h.buf[c.off:c.off+32]...)
+		pairs = binary.LittleEndian.AppendUint64(pairs, c.num)
+		pairs = append(pairs, zeroBytes[:24]...)
+	}
+	if err := h.hash(pairs[:len(pairs)/2], pairs); err != nil && h.hashErr == nil {
+		return false
+	}
+	for j := range climbs {
+		c := &climbs[j]
+		copy(h.buf[c.off:c.off+32], pairs[j*32:])
+	}
+	return true
 }
 
 // getDepth returns the tree depth needed to hold d leaves

@@ -2796,6 +2796,51 @@ func TestDeferredClimbsMatchReference(t *testing.T) {
 		}
 	})
 
+	t.Run("scope closed out of order", func(t *testing.T) {
+		t.Parallel()
+		// Closing a scope that is not the open one leaves a collapsed
+		// progressive scope with more nodes than it holds, and its reduction
+		// then reads below its own index, over the lists before it. The root
+		// must be the one given when those lists are finished first (HashErr
+		// finishes them).
+		walk := func(nLists, nChunks, at int, settle bool) (out []byte) {
+			defer func() {
+				if r := recover(); r != nil {
+					out = []byte("panic")
+				}
+			}()
+			h := NewHasher()
+			idx := h.StartTree(sszutils.TreeTypeBinary)
+			for _, b := range byteLists(nLists) {
+				l := h.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+				h.AppendBytes32(b)
+				h.MerkleizeWithMixin(l, uint64(len(b)), 1<<25)
+			}
+			p := h.StartTree(sszutils.TreeTypeProgressive)
+			for i := 0; i < nChunks; i++ {
+				h.PutUint64(uint64(i))
+			}
+			h.Collapse()
+			h.Merkleize(p + at*32)
+			if settle {
+				_ = h.HashErr()
+			}
+			h.MerkleizeProgressive(p)
+			h.Merkleize(idx)
+			return append([]byte(nil), h.Hash()...)
+		}
+		for nLists := 1; nLists <= 4; nLists++ {
+			for nChunks := 2; nChunks <= 24; nChunks++ {
+				for at := 1; at < nChunks; at++ {
+					got, want := walk(nLists, nChunks, at, false), walk(nLists, nChunks, at, true)
+					if !bytes.Equal(got, want) {
+						t.Fatalf("%d lists, %d chunks, closed at %d: root %x, want %x", nLists, nChunks, at, got, want)
+					}
+				}
+			}
+		}
+	})
+
 	t.Run("empty lists", func(t *testing.T) {
 		t.Parallel()
 		pairs := 0
@@ -2951,6 +2996,30 @@ func TestDeferredClimbsMatchReference(t *testing.T) {
 		h.Merkleize(idx)
 		if _, err := h.HashRoot(); !errors.Is(err, errA) {
 			t.Fatalf("HashRoot with two failing lists: %v", err)
+		}
+
+		// One failure in a call two lists share, in a climb level or in the
+		// mixins, is the one reported.
+		for _, failMixin := range []bool{false, true} {
+			h = NewHasherWithHashFn(func(dst, in []byte) error {
+				for i := 0; i+64 <= len(in); i += 64 {
+					if (!failMixin && bytes.Equal(in[i:i+32], markB[:])) || (failMixin && bytes.Equal(in[i+32:i+64], markA[:])) {
+						return errB
+					}
+				}
+				return FastHasherPool.HashFn(dst, in)
+			})
+			idx = h.StartTree(sszutils.TreeTypeNone)
+			lidx = h.StartTree(sszutils.TreeTypeBinary)
+			h.PutUint64(1)
+			h.MerkleizeWithMixin(lidx, 1, 4)
+			lidx = h.StartTree(sszutils.TreeTypeBinary)
+			h.PutUint64(0xbbbb)
+			h.MerkleizeWithMixin(lidx, 0xaaaa, 4)
+			h.Merkleize(idx)
+			if _, err := h.HashRoot(); !errors.Is(err, errB) {
+				t.Fatalf("failMixin=%v: HashRoot with one failing list of two: %v", failMixin, err)
+			}
 		}
 
 		// B is settled alone by its container while A, earlier in the walk, is
@@ -3208,36 +3277,43 @@ func TestDeferredClimbsPanicInDrain(t *testing.T) { //nolint:paralleltest // asy
 		return FastHasherPool.HashFn(dst, in)
 	})
 	h.SetAsyncHashing(true)
-	panicked := func() (p bool) {
-		defer func() { p = recover() != nil }()
-		h.StartTree(sszutils.TreeTypeNone)
-		lidx := h.StartTree(sszutils.TreeTypeBinary)
-		h.PutUint64(0xdead)
-		h.MerkleizeWithMixin(lidx, 1, 1<<20)
-		q := h.StartTree(sszutils.TreeTypeBinary)
-		var chunk [32]byte
-		for i := range 1 << 16 {
-			binary.LittleEndian.PutUint64(chunk[:], uint64(i+1))
-			h.Append(chunk[:])
-			if (i+1)%256 == 0 {
-				h.Collapse()
+	// With six jobs' worth of chunks the panic is raised by a drain inside
+	// the job enqueue.
+	for _, n := range []int{6 << 15, 1 << 16} {
+		panicked := func() (p bool) {
+			defer func() { p = recover() != nil }()
+			h.StartTree(sszutils.TreeTypeNone)
+			lidx := h.StartTree(sszutils.TreeTypeBinary)
+			h.PutUint64(0xdead)
+			h.MerkleizeWithMixin(lidx, 1, 1<<20)
+			q := h.StartTree(sszutils.TreeTypeBinary)
+			var chunk [32]byte
+			for i := range n {
+				binary.LittleEndian.PutUint64(chunk[:], uint64(i+1))
+				h.Append(chunk[:])
+				if (i+1)%256 == 0 {
+					h.Collapse()
+				}
 			}
+			h.MerkleizeWithMixin(q, uint64(n), 1<<20)
+			return false
+		}()
+		if !panicked {
+			t.Fatalf("n=%d: the marked pair was never hashed", n)
 		}
-		h.MerkleizeWithMixin(q, 1<<16, 1<<20)
-		return false
-	}()
-	if !panicked {
-		t.Fatal("the marked pair was never hashed")
-	}
-	done := make(chan struct{})
-	go func() {
-		h.Reset()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("Reset still blocked 10s after the panic")
+		done := make(chan struct{})
+		go func() {
+			h.Reset()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("n=%d: Reset still blocked 10s after the panic", n)
+		}
+		if held := len(asyncState.Load().sem); held != 0 {
+			t.Fatalf("n=%d: %d worker slots still held after Reset", n, held)
+		}
 	}
 }
 

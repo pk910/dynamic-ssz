@@ -191,8 +191,6 @@ var asyncHandoff = make(chan *asyncJob, 64)
 // must copy the result. width and outChunks must be powers of two with
 // outChunks < width. Blocks while all worker slots are busy.
 func (h *Hasher) enqueueReduce(st *asyncShared, start, width, outChunks, dstOff int) {
-	st.sem <- struct{}{}
-
 	need := width * 32
 	in, tokened := h.getJobBuf(st, need)
 	in = in[:need]
@@ -210,6 +208,9 @@ func (h *Hasher) enqueueReduce(st *asyncShared, start, width, outChunks, dstOff 
 		h.jobMaxEnd = end
 	}
 
+	// The worker slot is taken last: claiming the buffer and the ring slot
+	// can drain jobs, and a panic raised there must not hold it.
+	st.sem <- struct{}{}
 	ensureAsyncRunner(st)
 	asyncHandoff <- slot
 }
