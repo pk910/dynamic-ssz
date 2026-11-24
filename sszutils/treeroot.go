@@ -94,3 +94,28 @@ const sharedAppendMin = 1 << 21
 type sharedAppender interface {
 	AppendShared(b []byte)
 }
+
+// ParallelWalkMin is the element count from which the elements of a list are
+// offered to the hasher for a parallel walk.
+const ParallelWalkMin = 2048
+
+// ParallelWalker is an optional capability of a HashWalker: walking the
+// elements of the innermost open scope on several goroutines. Each element
+// must leave exactly one chunk in the scope, and walk must hash the elements
+// [from, to) into the walker it is given without changing the value.
+type ParallelWalker interface {
+	WalkParallel(n int, walk func(hh HashWalker, from, to int) error) error
+}
+
+// WalkElements hashes the n single-leaf elements of the innermost open scope
+// of hh by calling walk for ranges of them. A long list goes to the walker's
+// parallel walk when it has one; otherwise walk is called once, for all
+// elements, with hh.
+func WalkElements(hh HashWalker, n int, walk func(hh HashWalker, from, to int) error) error {
+	if n >= ParallelWalkMin {
+		if pw, ok := hh.(ParallelWalker); ok {
+			return pw.WalkParallel(n, walk)
+		}
+	}
+	return walk(hh, 0, n)
+}
