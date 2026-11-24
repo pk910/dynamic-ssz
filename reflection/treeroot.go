@@ -805,16 +805,22 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 	} else {
 		// For other types, process each element
 		arrayLen := sourceValue.Len()
-		for i := ctx.hashBulkElements(sourceType.ElemDesc, sourceValue, arrayLen, hh); i < arrayLen; i++ {
-			fieldValue := sourceValue.Index(i)
+		first := ctx.hashBulkElements(sourceType.ElemDesc, sourceValue, arrayLen, hh)
 
-			err := ctx.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, itemSize > 0, depth)
+		// A long binary list of single-leaf elements is offered to the hasher
+		// for a parallel walk: the elements are hashed in ranges, each into
+		// the walker the range is called with.
+		pw, parallel := hh.(sszutils.ParallelWalker)
+		if parallel && first == 0 && itemSize == 0 && arrayLen >= sszutils.ParallelWalkMin &&
+			treeType == sszutils.TreeTypeBinary && !ctx.verbose {
+			err := pw.WalkParallel(arrayLen, func(hh sszutils.HashWalker, from, to int) error {
+				return ctx.buildRootFromListRange(sourceType, sourceValue, hh, from, to, false, depth)
+			})
 			if err != nil {
-				return sszutils.ErrorWithPathf(err, "[%d]", i)
+				return err
 			}
-			if (i+1)%256 == 0 {
-				hh.Collapse()
-			}
+		} else if err := ctx.buildRootFromListRange(sourceType, sourceValue, hh, first, arrayLen, itemSize > 0, depth); err != nil {
+			return err
 		}
 	}
 
@@ -861,6 +867,22 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 		hh.MerkleizeWithMixin(hashIndex, uint64(sliceLen), 0)
 	}
 
+	return nil
+}
+
+// buildRootFromListRange hashes the elements [from, to) of a list into hh.
+func (ctx *ReflectionCtx) buildRootFromListRange(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, from, to int, pack bool, depth reflectionDepth) error {
+	for i := from; i < to; i++ {
+		fieldValue := sourceValue.Index(i)
+
+		err := ctx.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, pack, depth)
+		if err != nil {
+			return sszutils.ErrorWithPathf(err, "[%d]", i)
+		}
+		if (i+1)%256 == 0 {
+			hh.Collapse()
+		}
+	}
 	return nil
 }
 

@@ -66,6 +66,19 @@ const (
 	// asyncRingInline is the job-ring size served by the hasher's inline
 	// backing array; larger rings (workers > 8) allocate once.
 	asyncRingInline = 16
+
+	// pairStageCap bounds the two-chunk values staged at once: the pairs of
+	// a full run of eight-chunk elements, such as the pubkeys of a run of
+	// validators.
+	pairStageCap = lazyFlushChunks / 8
+
+	// asyncSwapPrefix is the most buffer in front of a run for which the
+	// run is handed to its job in place: the job takes the hasher's buffer
+	// and the hasher carries on in a fresh one, with the front copied over,
+	// instead of copying the run out. asyncSwapSlack is the room such a
+	// fresh buffer has beyond the next run.
+	asyncSwapPrefix = asyncBufSize / 8
+	asyncSwapSlack  = asyncBufSize / 4
 )
 
 // asyncShared is the process-wide async hashing state. sem bounds concurrent
@@ -161,13 +174,29 @@ func (h *Hasher) asyncShared() *asyncShared {
 // the reduction result in its first outLen bytes. tokened records whether
 // the job holds a free-list token to restore at drain.
 type asyncJob struct {
-	st      *asyncShared
-	fn      HashFn
-	in      []byte
+	st *asyncShared
+	fn HashFn
+	in []byte
+	// inOff is where the job's input starts inside in, which is the
+	// hasher's former buffer when the run was handed over in place.
+	inOff int
+	// src is the first level's input when the job reduces memory the
+	// caller shared (AppendShared) instead of a copy; in receives the level
+	// above it.
+	src     []byte
 	done    chan struct{}
 	dstOff  int
 	outLen  int
 	tokened bool
+	// pairIn holds the staged pairs handed over with the job, pairOff the
+	// buffer offsets of the chunks their hashes belong in and pairBase the
+	// buffer offset of the job's input. The runner hashes the first pairN
+	// pairs and places the results before reducing. The slices stay with
+	// the slot and go back to the hasher at the next handover.
+	pairIn   []byte
+	pairOff  []int
+	pairN    int
+	pairBase int
 	// panicked carries a panic raised by fn inside the runner to the hasher
 	// that drains the job, where it is raised again on the caller's
 	// goroutine as a synchronous reduction would have raised it.
@@ -190,21 +219,64 @@ var asyncHandoff = make(chan *asyncJob, 64)
 // to outChunks chunks. The claimed job-ring slot records where drainJobs
 // must copy the result. width and outChunks must be powers of two with
 // outChunks < width. Blocks while all worker slots are busy.
-func (h *Hasher) enqueueReduce(st *asyncShared, start, width, outChunks, dstOff int) {
+func (h *Hasher) enqueueReduce(st *asyncShared, start, width, outChunks, dstOff int, takePairs bool) bool {
+	need := width * 32
+	// Claiming the buffer and the ring slot can drain jobs and record their
+	// errors, and recording hashes the pending climbs. They are hashed first,
+	// so a panic there cannot hold the worker slot taken below. The staged
+	// pairs inside the input are kept for the job when the caller hands a
+	// run of deferred elements over; the staging is in buffer order, so
+	// they are all that is left once the pairs behind the input are hashed.
+	if h.climbEnd > 0 {
+		h.finishClimbs(0)
+	}
+	if takePairs && len(h.pairOff) > 0 && h.pairOff[0] >= start {
+		h.settlePairs(start + need)
+	} else {
+		h.settlePairs(0)
+	}
 	st.sem <- struct{}{}
 
-	need := width * 32
 	in, tokened := h.getJobBuf(st, need)
-	in = in[:need]
-	copy(in, h.buf[start:start+need])
-
 	slot := h.claimJobSlot(st)
+
+	inOff := 0
+	swapped := false
+	if takePairs && dstOff == start && start+need == len(h.buf) && start <= asyncSwapPrefix {
+		// The run is the tail of the buffer behind a short front: the job
+		// keeps the buffer and the hasher moves to the other one.
+		if cap(in) < start+need+asyncSwapSlack {
+			in = make([]byte, 0, start+need+2*asyncSwapSlack)
+		}
+		fresh := in[:start+outChunks*32]
+		copy(fresh, h.buf[:start])
+		in = h.buf
+		inOff = start
+		h.buf = fresh
+		swapped = true
+	} else {
+		in = in[:need]
+		copy(in, h.buf[start:start+need])
+	}
+
 	slot.st = st
 	slot.fn = h.hash
 	slot.in = in
+	slot.inOff = inOff
+	slot.src = nil
 	slot.dstOff = dstOff
 	slot.outLen = outChunks * 32
 	slot.tokened = tokened
+	slot.pairN = 0
+	// A failure recorded while claiming has hashed the staged pairs in
+	// place, and nothing is left to hand over.
+	if n := len(h.pairOff); n > 0 {
+		slot.pairIn, h.pairIn = h.pairIn, slot.pairIn
+		slot.pairOff, h.pairOff = h.pairOff, slot.pairOff[:0]
+		slot.pairN = n
+		slot.pairBase = start
+		h.pairEnd = 0
+	}
 
 	if end := dstOff + outChunks*32; end > h.jobMaxEnd {
 		h.jobMaxEnd = end
@@ -212,6 +284,65 @@ func (h *Hasher) enqueueReduce(st *asyncShared, start, width, outChunks, dstOff 
 
 	ensureAsyncRunner(st)
 	asyncHandoff <- slot
+	return swapped
+}
+
+// enqueueSharedReduce hands a job the caller's own memory as input: src, a
+// cap-sized run of chunks that stays unchanged until the scope closes, is
+// reduced to one node destined for dstOff. Only the levels above the first
+// are written, into a job buffer.
+func (h *Hasher) enqueueSharedReduce(st *asyncShared, src []byte, dstOff int) {
+	if h.climbEnd > 0 {
+		h.finishClimbs(0)
+	}
+	h.settlePairs(0)
+	st.sem <- struct{}{}
+
+	in, tokened := h.getJobBuf(st, len(src)/2)
+	slot := h.claimJobSlot(st)
+	slot.st = st
+	slot.fn = h.hash
+	slot.in = in[:len(src)/2]
+	slot.inOff = 0
+	slot.src = src
+	slot.dstOff = dstOff
+	slot.outLen = 32
+	slot.tokened = tokened
+	slot.pairN = 0
+
+	if end := dstOff + 32; end > h.jobMaxEnd {
+		h.jobMaxEnd = end
+	}
+
+	ensureAsyncRunner(st)
+	asyncHandoff <- slot
+}
+
+// appendShared takes the cap-sized spans of b as background jobs reading b
+// itself, and appends only what is left behind them. It needs an untouched
+// binary scope on top, so the nodes are the first thing in it.
+func (h *Hasher) appendShared(b []byte) bool {
+	st := h.asyncShared()
+	if st == nil || h.layerCount < 0 {
+		return false
+	}
+	layer := &h.layers[h.layerCount]
+	if !layer.incremental || layer.progressive || layer.legacy || layer.collapsed ||
+		layer.pendCount > 0 || len(h.buf) != layer.bufIdx {
+		return false
+	}
+	jobs := len(b) / asyncBufSize
+	for k := range jobs {
+		dstOff := len(h.buf)
+		h.buf = append(h.buf, zeroBytes[:32]...)
+		h.enqueueSharedReduce(st, b[k*asyncBufSize:(k+1)*asyncBufSize], dstOff)
+	}
+	layer.collapsed = true
+	layer.counts = [maxTreeDepth]uint32{}
+	layer.counts[asyncCapDepth] = uint32(jobs)
+	layer.maxDepth = asyncCapDepth
+	h.buf = append(h.buf, b[jobs*asyncBufSize:]...)
+	return true
 }
 
 // asyncJobRunner is a persistent worker goroutine: it reduces handed-off
@@ -242,7 +373,23 @@ func reduceAsyncJob(slot *asyncJob) {
 			slot.panicked = r
 		}
 	}()
-	in := slot.in
+	in := slot.in[slot.inOff:]
+	if slot.src != nil {
+		if err := slot.fn(in, slot.src); err != nil {
+			slot.err = err
+			return
+		}
+	}
+	if n := slot.pairN; n > 0 {
+		pairs := slot.pairIn[:n*64]
+		if err := slot.fn(pairs[:n*32], pairs); err != nil {
+			slot.err = err
+			return
+		}
+		for j, off := range slot.pairOff[:n] {
+			copy(in[off-slot.pairBase:][:32], pairs[j*32:j*32+32])
+		}
+	}
 	outChunks := slot.outLen / 32
 	for w := len(in) / 32; w > outChunks; w /= 2 {
 		if err := slot.fn(in[:w/2*32], in[:w*32]); err != nil {
@@ -313,16 +460,13 @@ func (h *Hasher) finishOldestJob(copyResult bool) {
 	slot.panicked = nil
 	jobErr := slot.err
 	slot.err = nil
-	if copyResult {
-		h.setHashErr(jobErr)
-	}
 	if copyResult && panicked == nil {
 		// The destination is expected to exist: every path that shrinks the
 		// buffer below a hole drains or discards first, so an out-of-range
 		// copy is an invariant violation and panics via the bounds check
 		// rather than silently producing a wrong root.
 		end := slot.dstOff + slot.outLen
-		copy(h.buf[slot.dstOff:end], slot.in[:slot.outLen])
+		copy(h.buf[slot.dstOff:end], slot.in[slot.inOff:slot.inOff+slot.outLen])
 	}
 	if slot.tokened {
 		// Tokened buffers always carry the pre-sized capacity: jobs are
@@ -333,8 +477,15 @@ func (h *Hasher) finishOldestJob(copyResult bool) {
 	slot.st = nil
 	slot.fn = nil
 	slot.in = nil
+	slot.src = nil
+	slot.pairN = 0
 	h.jobHead = (h.jobHead + 1) % len(h.jobRing)
 	h.jobCount--
+	if copyResult {
+		// Recorded once the slot is released: recording can hash pending
+		// climbs, and a panic there must not leave the ring half-updated.
+		h.setHashErr(jobErr)
+	}
 	if panicked != nil && copyResult {
 		panic(panicked)
 	}
@@ -437,15 +588,17 @@ func (h *Hasher) flushPendingAsync(st *asyncShared, layer *treeLayer) bool {
 		// A progressive layer gets element roots; a subtree node would be
 		// taken for a leaf by its close.
 		if layer.progressive {
-			h.enqueueReduce(st, start, lazyFlushChunks, batchElems, start)
-			h.compactAsyncRun(start, lazyFlushChunks, batchElems)
+			if !h.enqueueReduce(st, start, lazyFlushChunks, batchElems, start, true) {
+				h.compactAsyncRun(start, lazyFlushChunks, batchElems)
+			}
 			layer.pendStart = start + batchElems*32
 		} else {
 			if !h.asyncRootCompatible(layer, start, nodeDepth) {
 				break
 			}
-			h.enqueueReduce(st, start, lazyFlushChunks, 1, start)
-			h.compactAsyncRun(start, lazyFlushChunks, 1)
+			if !h.enqueueReduce(st, start, lazyFlushChunks, 1, start, true) {
+				h.compactAsyncRun(start, lazyFlushChunks, 1)
+			}
 			if !layer.collapsed {
 				layer.collapsed = true
 				layer.counts = [maxTreeDepth]uint32{}
@@ -498,21 +651,46 @@ func (h *Hasher) precollapseCapRun(st *asyncShared, layer *treeLayer) bool {
 			return false
 		}
 	}
-	emitted := false
+	// The jobs are cut from the run where it lies and the run is compacted
+	// once behind them: job i reads cap i of the run and leaves its node in
+	// chunk i, which lies in cap 0 and is copied out before any result lands.
 	runStart := h.binaryRegionStart(layer) + int(layer.counts[asyncCapDepth])*32
+	jobs := 0
 	for layer.counts[0] >= lazyFlushChunks {
-		h.enqueueReduce(st, runStart, lazyFlushChunks, 1, runStart)
-		h.compactAsyncRun(runStart, lazyFlushChunks, 1)
+		h.enqueueReduce(st, runStart+jobs*asyncBufSize, lazyFlushChunks, 1, runStart+jobs*32, false)
 		layer.counts[0] -= lazyFlushChunks
 		layer.counts[asyncCapDepth]++
-		if asyncCapDepth > layer.maxDepth {
-			layer.maxDepth = asyncCapDepth
-		}
-		layer.collapsed = true
-		runStart += 32
-		emitted = true
+		jobs++
 	}
-	return emitted
+	if jobs == 0 {
+		return false
+	}
+	if asyncCapDepth > layer.maxDepth {
+		layer.maxDepth = asyncCapDepth
+	}
+	layer.collapsed = true
+	runEnd := runStart + jobs*asyncBufSize
+	holeEnd := runStart + jobs*32
+	tail := copy(h.buf[holeEnd:], h.buf[runEnd:])
+	h.buf = h.buf[:holeEnd+tail]
+	return true
+}
+
+// precollapseOnClose hands the cap-sized spans of a raw chunk scope to
+// background jobs when the scope closes without ever having been collapsed
+// or hinted: a packed list appended in one piece. Only a scope wide enough
+// for two jobs is taken, since the close waits for the results.
+func (h *Hasher) precollapseOnClose(layer *treeLayer, indx int) {
+	if !layer.incremental || layer.progressive || layer.legacy || layer.pendCount > 0 {
+		return
+	}
+	if (len(h.buf)-indx)/32 < 2*lazyFlushChunks {
+		return
+	}
+	if st := h.asyncShared(); st != nil {
+		h.settleClimbs(indx)
+		h.precollapseCapRun(st, layer)
+	}
 }
 
 // compactAsyncRun shrinks a width-chunk run at start down to outChunks hole
@@ -526,4 +704,76 @@ func (h *Hasher) compactAsyncRun(start, width, outChunks int) {
 	} else {
 		h.buf = h.buf[:holeEnd]
 	}
+}
+
+// stagePair leaves the two chunks at indx, the last in the buffer, pending as
+// one pair while async hashing is on: its 64 bytes are staged and one chunk
+// stays in the buffer for the hash. A run of deferred elements handed to a
+// background job takes the staged pairs inside it along, and the job hashes
+// them before it reduces the run. Every other use of the region hashes them
+// in one call first (settlePairs).
+func (h *Hasher) stagePair(indx int) {
+	j := len(h.pairOff)
+	if j >= pairStageCap {
+		h.settlePairs(0)
+		j = 0
+	}
+	if len(h.pairIn) < pairStageCap*64 {
+		h.pairIn = make([]byte, pairStageCap*64)
+	}
+	copy(h.pairIn[j*64:j*64+64], h.buf[indx:indx+64])
+	h.buf = h.buf[:indx+32]
+	h.pairOff = append(h.pairOff, indx)
+	h.pairEnd = indx + 32
+}
+
+// settlePairs hashes the staged pairs whose chunks reach past from, in one
+// call, and places the results.
+func (h *Hasher) settlePairs(from int) {
+	i := len(h.pairOff)
+	for i > 0 && h.pairOff[i-1]+32 > from {
+		i--
+	}
+	offs := h.pairOff[i:]
+	if len(offs) == 0 {
+		return
+	}
+	h.pairOff = h.pairOff[:i]
+	h.pairEnd = 0
+	if i > 0 {
+		h.pairEnd = h.pairOff[i-1] + 32
+	}
+	pairs := h.pairIn[i*64 : (i+len(offs))*64]
+	err := h.hash(pairs[:len(offs)*32], pairs)
+	for j, off := range offs {
+		copy(h.buf[off:off+32], pairs[j*32:j*32+32])
+	}
+	h.setHashErr(err)
+}
+
+// stagePairBytes stages a two-chunk value straight from b, without writing
+// it to the buffer first: only the chunk for its hash is added there.
+func (h *Hasher) stagePairBytes(b []byte) bool {
+	if debug || h.layerCount < 0 || h.layers[h.layerCount].legacy || asyncState.Load() == nil {
+		return false
+	}
+	j := len(h.pairOff)
+	if j >= pairStageCap {
+		h.settlePairs(0)
+		j = 0
+	}
+	if len(h.pairIn) < pairStageCap*64 {
+		h.pairIn = make([]byte, pairStageCap*64)
+	}
+	stage := h.pairIn[j*64 : j*64+64]
+	clear(stage[copy(stage, b):])
+	indx := len(h.buf)
+	if cap(h.buf)-indx >= 32 {
+		h.buf = h.buf[:indx+32]
+	} else {
+		h.buf = append(h.buf, zeroBytes[:32]...)
+	}
+	h.pairOff = append(h.pairOff, indx)
+	h.pairEnd = indx + 32
+	return true
 }

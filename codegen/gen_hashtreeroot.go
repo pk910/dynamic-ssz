@@ -40,6 +40,9 @@ type hashTreeRootContext struct {
 	// where the body runs inside a depth-carrying method and can pass the depth
 	// on to a cyclic child.
 	depthAware bool
+	// inParallelWalk is set while emitting the elements of a list that is
+	// offered for a parallel walk.
+	inParallelWalk bool
 }
 
 // generateHashTreeRoot generates hash tree root methods for a specific type.
@@ -990,18 +993,45 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 			indexVar, indexDefer := ctx.getIndexVar()
 			defer indexDefer()
 
-			ctx.appendCode(indent, "for %s := range len(%s) {\n", indexVar, getValueVar(true, ""))
-			valVar := "t"
-			if ctx.isInlineable(desc.ElemDesc) {
-				valVar = fmt.Sprintf("%s[%s]", getValueVar(false, ""), indexVar)
-			} else {
-				ctx.appendCode(indent, "\tt := %s[%s]\n", getValueVar(false, ctx.getPtrPrefix(desc.ElemDesc, "&")), indexVar)
+			// emitLoop writes the element loop under the given header.
+			emitLoop := func(indent int, header string) error {
+				ctx.appendCode(indent, "%s {\n", header)
+				valVar := "t"
+				if ctx.isInlineable(desc.ElemDesc) {
+					valVar = fmt.Sprintf("%s[%s]", getValueVar(false, ""), indexVar)
+				} else {
+					ctx.appendCode(indent, "\tt := %s[%s]\n", getValueVar(false, ctx.getPtrPrefix(desc.ElemDesc, "&")), indexVar)
+				}
+				if err := ctx.hashType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false, packed); err != nil {
+					return err
+				}
+				ctx.appendCode(indent, "\tif (%s+1)%%256 == 0 {\n\t\thh.Collapse()\n\t}\n", indexVar)
+				ctx.appendCode(indent, "}\n")
+				return nil
 			}
-			if err := ctx.hashType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false, packed); err != nil {
+			plainHeader := fmt.Sprintf("for %s := range len(%s)", indexVar, getValueVar(true, ""))
+
+			// A binary list of single-leaf elements that can grow long is
+			// walked through sszutils.WalkElements, so a hasher that supports
+			// it can hash ranges of the elements on several goroutines, each
+			// into the walker the range is called with. A list inside such a
+			// range is walked in place, and so is one on a recursive cycle,
+			// whose elements charge the depth of the walk.
+			parallel := treeType == sszutils.TreeTypeBinary && !packed && !ctx.depthAware && !ctx.inParallelWalk &&
+				(desc.Limit == 0 || desc.Limit >= sszutils.ParallelWalkMin)
+			if parallel {
+				ctx.appendCode(indent, "if err := sszutils.WalkElements(hh, len(%s), func(hh sszutils.HashWalker, from, to int) error {\n", getValueVar(true, ""))
+				ctx.inParallelWalk = true
+				err := emitLoop(indent+1, fmt.Sprintf("for %s := from; %s < to; %s++", indexVar, indexVar, indexVar))
+				ctx.inParallelWalk = false
+				if err != nil {
+					return err
+				}
+				ctx.appendCode(indent+1, "return nil\n")
+				ctx.appendCode(indent, "}); err != nil {\n\treturn err\n}\n")
+			} else if err := emitLoop(indent, plainHeader); err != nil {
 				return err
 			}
-			ctx.appendCode(indent, "\tif (%s+1)%%256 == 0 {\n\t\thh.Collapse()\n\t}\n", indexVar)
-			ctx.appendCode(indent, "}\n")
 		}
 	}
 

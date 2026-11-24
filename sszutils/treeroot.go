@@ -74,5 +74,48 @@ func HashUint64Slice[T ~uint64](hh HashWalker, s []T) {
 		}
 		return
 	}
-	hh.Append(unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(s))), len(s)*8))
+	b := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(s))), len(s)*8)
+	if len(b) >= sharedAppendMin {
+		if sh, ok := hh.(sharedAppender); ok {
+			sh.AppendShared(b)
+			return
+		}
+	}
+	hh.Append(b)
+}
+
+// sharedAppendMin is the size from which a slice is offered to the hasher
+// without a copy.
+const sharedAppendMin = 1 << 21
+
+// sharedAppender is implemented by a hasher that can hash appended bytes
+// from the caller's memory, which then has to stay unchanged until the
+// scope closes.
+type sharedAppender interface {
+	AppendShared(b []byte)
+}
+
+// ParallelWalkMin is the element count from which the elements of a list are
+// offered to the hasher for a parallel walk.
+const ParallelWalkMin = 2048
+
+// ParallelWalker is an optional capability of a HashWalker: walking the
+// elements of the innermost open scope on several goroutines. Each element
+// must leave exactly one chunk in the scope, and walk must hash the elements
+// [from, to) into the walker it is given without changing the value.
+type ParallelWalker interface {
+	WalkParallel(n int, walk func(hh HashWalker, from, to int) error) error
+}
+
+// WalkElements hashes the n single-leaf elements of the innermost open scope
+// of hh by calling walk for ranges of them. A long list goes to the walker's
+// parallel walk when it has one; otherwise walk is called once, for all
+// elements, with hh.
+func WalkElements(hh HashWalker, n int, walk func(hh HashWalker, from, to int) error) error {
+	if n >= ParallelWalkMin {
+		if pw, ok := hh.(ParallelWalker); ok {
+			return pw.WalkParallel(n, walk)
+		}
+	}
+	return walk(hh, 0, n)
 }
