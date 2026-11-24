@@ -129,6 +129,14 @@ type Hasher struct {
 	climbPair  [64]byte
 	climbIn    []byte
 
+	// pairIn and pairOff stage the two-chunk values put while async hashing
+	// is on (see stagePair): the 64 bytes of each value, and the buffer
+	// offset of the chunk its hash belongs in, in buffer order. pairEnd is
+	// where the last of those chunks ends, or 0.
+	pairIn  []byte
+	pairOff []int
+	pairEnd int
+
 	// async gates this hasher into background subtree reduction (see
 	// SetAsyncHashing). Cleared on Reset so pooled hashers never carry the
 	// setting to their next user.
@@ -225,6 +233,7 @@ func (h *Hasher) setHashErr(err error) {
 //go:noinline
 func (h *Hasher) firstHashErr(err error) {
 	h.finishClimbs(0)
+	h.settlePairs(0)
 	if h.hashErr == nil {
 		h.hashErr = err
 	}
@@ -236,6 +245,8 @@ func (h *Hasher) Reset() {
 	h.buf = h.buf[:0]
 	h.climbs = h.climbs[:0]
 	h.climbEnd = 0
+	h.pairOff = h.pairOff[:0]
+	h.pairEnd = 0
 	h.hashErr = nil
 	h.discardJobs()
 	h.layerCount = -1
@@ -572,15 +583,19 @@ func deferrableElemChunks(scopeBytes int) (int, bool) {
 // the run is reduced in cap-sized background jobs instead, with any sub-cap
 // remainder left pending for the next round.
 func (h *Hasher) flushPending(layer *treeLayer, allowAsync bool) {
-	if layer.pendCount > 0 {
-		h.settleClimbs(layer.pendStart)
+	if layer.pendCount > 0 && h.climbEnd > layer.pendStart {
+		h.finishClimbs(layer.pendStart)
 	}
 	elem := layer.pendElemChunks
 	if allowAsync && layer.pendCount > 0 &&
 		elem > 0 && elem <= lazyFlushChunks && elem&(elem-1) == 0 {
+		// The staged pairs of the run are left for the jobs to take along.
 		if st := h.asyncShared(); st != nil && h.flushPendingAsync(st, layer) {
 			return
 		}
+	}
+	if layer.pendCount > 0 {
+		h.settleClimbs(layer.pendStart)
 	}
 	count := layer.pendCount
 	start := layer.pendStart
@@ -682,7 +697,11 @@ func (h *Hasher) Collapse() {
 	if !layer.incremental {
 		return
 	}
-	h.settleClimbs(layer.bufIdx)
+	// The staged pairs stay pending while the run they belong to keeps
+	// accumulating: its flush hands them to the job.
+	if h.climbEnd > layer.bufIdx {
+		h.finishClimbs(layer.bufIdx)
+	}
 
 	ast := h.asyncShared()
 	async := ast != nil
@@ -709,6 +728,7 @@ func (h *Hasher) Collapse() {
 			// synchronously: finalization must only see completed roots.
 			h.flushPending(layer, false)
 		}
+		h.settleClimbs(layer.bufIdx)
 		h.maybeCollapseProgressive(layer)
 	} else {
 		if layer.pendCount > 0 {
@@ -716,6 +736,7 @@ func (h *Hasher) Collapse() {
 			// toward the next cap-sized job.
 			return
 		}
+		h.settleClimbs(layer.bufIdx)
 		if async {
 			// Raw chunk runs (packed primitive lists and vectors) reduce as
 			// cap-sized background jobs too. The synchronous batch collapse
@@ -899,7 +920,7 @@ func (h *Hasher) maybeCollapseProgressive(layer *treeLayer) {
 		// and reduce synchronously in a few hashes.
 		if ast != nil && consumedMaxDepth == 0 && consumed == baseSize &&
 			baseSize >= asyncMinChunks && baseSize <= lazyFlushChunks {
-			h.enqueueReduce(ast, readPos, int(baseSize), 1, writePos)
+			h.enqueueReduce(ast, readPos, int(baseSize), 1, writePos, false)
 		} else {
 			// collapseAllDepths works within buf[readPos:consumePos] only,
 			// leaving the unconsumed tail untouched. Root lands at
@@ -1059,12 +1080,12 @@ func (h *Hasher) collapseAllDepths(layer *treeLayer, indx, bufEnd int, limit uin
 
 	// The nodes are read back from bufEnd, which for a scope closed out of
 	// order can start below indx, so the climbs there are finished first.
-	if len(h.climbs) > 0 {
+	if len(h.climbs) > 0 || len(h.pairOff) > 0 {
 		from := bufEnd
 		for d := 0; d <= layer.maxDepth; d++ {
 			from -= int(layer.counts[d]) * 32
 		}
-		h.finishClimbs(min(from, indx))
+		h.settleClimbs(min(from, indx))
 	}
 
 	// A limit below the chunks the scope holds is what merkleizeImpl reports
@@ -1292,6 +1313,9 @@ func (h *Hasher) Merkleize(indx int) {
 		if layer.pendCount > 0 {
 			h.flushPending(layer, false)
 		}
+		if h.async {
+			h.precollapseOnClose(layer, indx)
+		}
 		h.drainJobsFor(indx)
 
 		if layer.collapsed {
@@ -1354,6 +1378,9 @@ func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 		}
 		if layer.pendCount > 0 {
 			h.flushPending(layer, false)
+		}
+		if h.async {
+			h.precollapseOnClose(layer, indx)
 		}
 	}
 	h.drainJobsFor(indx)
@@ -1620,6 +1647,10 @@ func (h *Hasher) deferPair(indx int) bool {
 	if debug || h.layerCount < 0 || h.layers[h.layerCount].legacy {
 		return false
 	}
+	if h.async && asyncState.Load() != nil {
+		h.stagePair(indx)
+		return true
+	}
 	if h.climbs == nil {
 		h.climbs = make([]pendingClimb, 0, climbBatch)
 	}
@@ -1639,8 +1670,21 @@ func (h *Hasher) deferPair(indx int) bool {
 
 // settleClimbs finishes the pending climbs whose roots reach past from.
 func (h *Hasher) settleClimbs(from int) {
+	if h.climbEnd > from || h.pairEnd > from {
+		h.settlePending(from)
+	}
+}
+
+// settlePending is the work of settleClimbs, kept out of line so that
+// settleClimbs inlines.
+//
+//go:noinline
+func (h *Hasher) settlePending(from int) {
 	if h.climbEnd > from {
 		h.finishClimbs(from)
+	}
+	if h.pairEnd > from {
+		h.settlePairs(from)
 	}
 }
 
