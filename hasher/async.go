@@ -193,15 +193,29 @@ var asyncHandoff = make(chan *asyncJob, 64)
 func (h *Hasher) enqueueReduce(st *asyncShared, start, width, outChunks, dstOff int) {
 	st.sem <- struct{}{}
 
+	// Getting a buffer or ring slot can drain an earlier job and re-raise its
+	// hash function's panic. The worker slot and the buffer token are shared
+	// by all hashers, so both are returned unless the job reached a runner.
+	var (
+		in        []byte
+		tokened   bool
+		handedOff bool
+	)
+	defer func() {
+		if !handedOff {
+			<-st.sem
+			if tokened {
+				st.bufs <- in[:0]
+			}
+		}
+	}()
+
 	need := width * 32
-	in, tokened, panicked := h.getJobBuf(st, need)
+	in, tokened = h.getJobBuf(st, need)
 	in = in[:need]
 	copy(in, h.buf[start:start+need])
 
-	slot, slotPanicked := h.claimJobSlot(st)
-	if panicked == nil {
-		panicked = slotPanicked
-	}
+	slot := h.claimJobSlot(st)
 	slot.st = st
 	slot.fn = h.hash
 	slot.in = in
@@ -215,12 +229,7 @@ func (h *Hasher) enqueueReduce(st *asyncShared, start, width, outChunks, dstOff 
 
 	ensureAsyncRunner(st)
 	asyncHandoff <- slot
-
-	// Raise a drained job's panic only now: the worker slot and the buffer
-	// belong to the runner, so nothing shared is left held.
-	if panicked != nil {
-		panic(panicked)
-	}
+	handedOff = true
 }
 
 // asyncJobRunner is a persistent worker goroutine: it reduces handed-off
@@ -267,35 +276,31 @@ func reduceAsyncJob(slot *asyncJob) {
 // Instead it drains this hasher's own oldest job to recover a token, and as
 // a last resort (all tokens held by other hashers) takes an untracked
 // one-off buffer. An undersized token (oversized job) is also swapped for a
-// one-off, with the token restored as nil at drain. The first panic a drained
-// job carries is returned for the caller to raise.
-func (h *Hasher) getJobBuf(st *asyncShared, need int) (buf []byte, tokened bool, panicked any) {
+// one-off, with the token restored as nil at drain.
+func (h *Hasher) getJobBuf(st *asyncShared, need int) ([]byte, bool) {
 	for {
 		select {
 		case in := <-st.bufs:
 			if cap(in) >= need {
-				return in, true, panicked
+				return in, true
 			}
 			// Unmaterialized token: allocate the pre-sized buffer so it
 			// joins the reuse cycle at drain.
-			return make([]byte, asyncBufSize), true, panicked
+			return make([]byte, asyncBufSize), true
 		default:
 		}
 		if h.jobCount == 0 {
-			return make([]byte, need), false, panicked
+			return make([]byte, need), false
 		}
-		if p := h.finishOldestJob(true); panicked == nil {
-			panicked = p
-		}
+		h.drainOldestJob()
 	}
 }
 
 // claimJobSlot returns the next free ring slot, draining the oldest job
 // first when the ring is full. The ring is sized to twice the worker count
 // and only (re)sized while empty, so slot pointers held by running jobs
-// stay valid. The first panic a drained job carries is returned for the
-// caller to raise.
-func (h *Hasher) claimJobSlot(st *asyncShared) (slot *asyncJob, panicked any) {
+// stay valid.
+func (h *Hasher) claimJobSlot(st *asyncShared) *asyncJob {
 	if h.jobCount == 0 && len(h.jobRing) < cap(st.bufs) {
 		if size := cap(st.bufs); size <= asyncRingInline {
 			h.jobRing = h.jobRingBuf[:size]
@@ -304,25 +309,22 @@ func (h *Hasher) claimJobSlot(st *asyncShared) (slot *asyncJob, panicked any) {
 		}
 	}
 	for h.jobCount >= len(h.jobRing) {
-		if p := h.finishOldestJob(true); panicked == nil {
-			panicked = p
-		}
+		h.drainOldestJob()
 	}
-	slot = &h.jobRing[(h.jobHead+h.jobCount)%len(h.jobRing)]
+	slot := &h.jobRing[(h.jobHead+h.jobCount)%len(h.jobRing)]
 	h.jobCount++
 	if slot.done == nil {
 		slot.done = make(chan struct{}, 1)
 	}
-	return slot, panicked
+	return slot
 }
 
 // finishOldestJob waits for the ring's oldest job, optionally copies its
 // result into the hole it was carved from, takes over a hash error it
 // recorded, and restores the job's free-list token if it holds one: pre-sized buffers are returned for reuse, anything
 // else becomes a nil token. Tokenless buffers (taken when every token was
-// held by other hashers) are simply dropped. It returns the panic the job's
-// hash function raised; a caller discarding the result drops it.
-func (h *Hasher) finishOldestJob(copyResult bool) any {
+// held by other hashers) are simply dropped.
+func (h *Hasher) finishOldestJob(copyResult bool) {
 	slot := &h.jobRing[h.jobHead]
 	<-slot.done
 	panicked := slot.panicked
@@ -351,15 +353,15 @@ func (h *Hasher) finishOldestJob(copyResult bool) any {
 	slot.in = nil
 	h.jobHead = (h.jobHead + 1) % len(h.jobRing)
 	h.jobCount--
-	return panicked
+	if panicked != nil && copyResult {
+		panic(panicked)
+	}
 }
 
 // drainOldestJob waits for the ring's oldest job and writes its result into
 // the hole it was carved from.
 func (h *Hasher) drainOldestJob() {
-	if panicked := h.finishOldestJob(true); panicked != nil {
-		panic(panicked)
-	}
+	h.finishOldestJob(true)
 }
 
 // drainJobs waits for all outstanding reductions and writes their results
