@@ -27,19 +27,15 @@ type buildEntry struct {
 	hintSet
 }
 
-// builtRef records a descriptor a build completed. A hint-free descriptor
-// carries an empty hint set and hinted is false.
+// builtRef records a descriptor a build completed.
 type builtRef struct {
 	key     typeKey
 	variant *hintedVariant
 	hinted  bool
 }
 
-// builder is the state of one top-level descriptor build. It belongs to the
-// goroutine running the build and is never shared, so nothing it holds is
-// reachable from another goroutine. Descriptors it owns (the ones on its build
-// stack and the ones it completed) may be modified until it publishes them;
-// a published descriptor is never modified.
+// builder is the state of one top-level descriptor build, owned by the
+// goroutine running it. Its descriptors are mutable until published.
 type builder struct {
 	tc *TypeCache
 	// building is the build stack for cycle detection: one entry per (type
@@ -49,26 +45,20 @@ type builder struct {
 	// flight, so a fully-delegated type can tell whether its structure closes
 	// a cycle with one of them.
 	buildingTypes map[reflect.Type]int
-	// dynDepth is the number of variable-length collections crossed on the
-	// current path; it decides whether a re-entry is a legal cycle.
+	// dynDepth counts the variable-length collections crossed on the current path.
 	dynDepth int
 	// recursion records whether this build met a cycle.
 	recursion bool
-	// builtPlain and builtHinted hold every descriptor this build completed,
-	// for publication once the whole build has succeeded; they also serve a
-	// key the build reaches again (a diamond in the type graph).
+	// builtPlain and builtHinted hold the descriptors this build completed.
 	builtPlain  map[typeKey]*TypeDescriptor
 	builtHinted map[typeKey][]*hintedVariant
-	// order lists the completed descriptors in completion order, so the root
-	// comes last.
+	// order lists them in completion order; the root is last.
 	order []builtRef
-	// startSeq is the cache's publication sequence when the build started;
-	// the build uses only descriptors published at or before it (see lookup).
+	// startSeq is the cache's publishSeq when the build started (see lookup).
 	startSeq uint64
 }
 
-// newBuilder returns the state for a new top-level build on tc. The caller
-// holds buildMu.
+// newBuilder starts a top-level build on tc. The caller holds buildMu.
 func newBuilder(tc *TypeCache) *builder {
 	return &builder{
 		tc:            tc,
@@ -117,18 +107,11 @@ func dimensionType(t reflect.Type, dim int) reflect.Type {
 	}
 }
 
-// lookup returns the descriptor for key and hints that this build completed
-// already or that was published before this build started, or nil. The
-// caller holds buildMu.
+// lookup returns the descriptor for key and hints that this build completed or
+// that was published at or before startSeq, or nil. The caller holds buildMu.
 //
-// A build uses only descriptors published before it started; what other
-// builds publish while it waits on a sizer is ignored, and the overlapping
-// keys are resolved at publication. A build pushes a type onto its stack only
-// after failing to look it up, and publication is all-or-nothing, so nothing
-// published before the build started contains a type it is building. A graph
-// published during a sizer window may contain one: taking any part of it
-// would hand this build another build's copy of a type it is still building,
-// and its own copy would never get its back-edge.
+// Later publications are ignored: they may hold another build's copy of a
+// type on this build's stack, whose own copy would lose its back-edge.
 func (b *builder) lookup(key typeKey, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) *TypeDescriptor {
 	if len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0 {
 		if desc := b.builtPlain[key]; desc != nil {
@@ -268,8 +251,7 @@ func (b *builder) getTypeDescriptor(runtimeType, schemaType reflect.Type, sizeHi
 		return entry.desc, nil
 	}
 
-	// A type on the build stack is never looked up: the cycle check above
-	// hands back this build's own in-flight descriptor for it.
+	// A type on the build stack is resolved by the cycle check above.
 	if desc := b.lookup(key, sizeHints, maxSizeHints, typeHints); desc != nil {
 		return desc, nil
 	}
@@ -299,9 +281,7 @@ func (b *builder) getTypeDescriptor(runtimeType, schemaType reflect.Type, sizeHi
 		return nil, err
 	}
 
-	// Record the descriptor for publication. A cycle member completes before
-	// the cycle head does; it stays private to this build until the whole
-	// graph is complete and flag-fixed.
+	// Record the descriptor for publication once the whole build succeeded.
 	variant := &hintedVariant{desc: desc}
 	if cacheable {
 		b.builtPlain[key] = desc

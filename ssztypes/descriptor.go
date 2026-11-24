@@ -14,6 +14,7 @@ package ssztypes
 
 import (
 	"reflect"
+	"unsafe"
 )
 
 // SszTypeFlag is a flag indicating whether a type has a specific SSZ type feature
@@ -118,9 +119,8 @@ type TypeDescriptor struct {
 	MaxExpression          *string                   `json:"max_expr,omitempty"`      // The dynamic expression used to calculate the max size of the type
 	SchemaType             reflect.Type              `json:"-"`                       // Schema type that defines SSZ layout (may differ from Type for view descriptors)
 
-	// publishSeq is the publication sequence the type cache stored the
-	// descriptor under, 0 while it is unpublished. It is read and written only
-	// under the cache's build mutex, and is not part of the descriptor's hash.
+	// publishSeq is the type cache's publication sequence, 0 while unpublished.
+	// Guarded by the cache's build mutex; not part of the hash.
 	publishSeq uint64
 }
 
@@ -146,4 +146,10 @@ type DynFieldDescriptor struct {
 	Field        *FieldDescriptor `json:"field"`
 	HeaderOffset int64            `json:"offset"`
 	Index        int32            `json:"index"` // Index of the field in the struct
+}
+
+// TypeWord returns the identity of a type: the type pointer in the
+// reflect.Type's data word. It is a cheaper map key than the reflect.Type.
+func TypeWord(t reflect.Type) unsafe.Pointer {
+	return (*[2]unsafe.Pointer)(unsafe.Pointer(&t))[1]
 }
