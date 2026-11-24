@@ -74,5 +74,23 @@ func HashUint64Slice[T ~uint64](hh HashWalker, s []T) {
 		}
 		return
 	}
-	hh.Append(unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(s))), len(s)*8))
+	b := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(s))), len(s)*8)
+	if len(b) >= sharedAppendMin {
+		if sh, ok := hh.(sharedAppender); ok {
+			sh.AppendShared(b)
+			return
+		}
+	}
+	hh.Append(b)
+}
+
+// sharedAppendMin is the size from which a slice is offered to the hasher
+// without a copy.
+const sharedAppendMin = 1 << 21
+
+// sharedAppender is implemented by a hasher that can hash appended bytes
+// from the caller's memory, which then has to stay unchanged until the
+// scope closes.
+type sharedAppender interface {
+	AppendShared(b []byte)
 }

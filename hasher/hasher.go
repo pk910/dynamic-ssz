@@ -288,6 +288,17 @@ func (h *Hasher) Append(i []byte) {
 	h.buf = append(h.buf, i...)
 }
 
+// AppendShared appends raw bytes like Append, and may keep reading b until
+// the innermost open scope closes: the caller must leave b unchanged until
+// then. With async hashing a large b is reduced in the background straight
+// from the caller's memory instead of from a copy.
+func (h *Hasher) AppendShared(b []byte) {
+	if h.async && len(b) >= 2*asyncBufSize && h.appendShared(b) {
+		return
+	}
+	h.buf = append(h.buf, b...)
+}
+
 // AppendBool appends a single byte (0 or 1) to the buffer without padding.
 func (h *Hasher) AppendBool(b bool) {
 	if b {
@@ -390,6 +401,10 @@ func (h *Hasher) PutBytes(b []byte) {
 			return
 		}
 		h.AppendBytes32(b)
+		return
+	}
+
+	if len(b) <= 64 && h.async && h.stagePairBytes(b) {
 		return
 	}
 
