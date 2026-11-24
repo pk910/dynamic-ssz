@@ -293,7 +293,7 @@ jobs:
     - name: Install QEMU user emulation
       run: |
         sudo apt-get update
-        sudo apt-get install -y qemu-user-static
+        sudo apt-get install -y --no-install-recommends qemu-user
 
     - name: Download dependencies
       run: go mod download
@@ -307,9 +307,9 @@ jobs:
       # reference-vector tests, and the hasher known-answer tests (hardcoded
       # roots, run separately below) still verify the full hash pipeline.
       run: |
-        GOARCH=s390x CGO_ENABLED=0 go test -exec qemu-s390x-static \
+        GOARCH=s390x CGO_ENABLED=0 go test -exec qemu-s390x \
           $(go list ./... | grep -v -e '/hasher$' -e '/dynssz-gen$')
-        GOARCH=s390x CGO_ENABLED=0 go test -exec qemu-s390x-static \
+        GOARCH=s390x CGO_ENABLED=0 go test -exec qemu-s390x \
           -run 'TestKnownAnswer' ./hasher/
 
   # Run govulncheck to detect known vulnerabilities in dependencies
