@@ -10356,6 +10356,9 @@ func TestRecursiveBuildAcrossSizerWindow(t *testing.T) {
 	if holder.GetTypeHash() != clean.GetTypeHash() {
 		t.Error("type hash differs from a clean build")
 	}
+	if published, _ := cache.GetTypeDescriptor(reflect.TypeOf(&windowNode{}), nil, nil, nil); published != node {
+		t.Error("the parked build's holder does not reference the published node")
+	}
 	if again, _ := cache.GetTypeDescriptor(reflect.TypeOf(&windowHolder{}), nil, nil, nil); again != holder {
 		t.Error("later callers do not get the parked build's holder")
 	}

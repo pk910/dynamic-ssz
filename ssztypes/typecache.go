@@ -285,45 +285,77 @@ func (tc *TypeCache) entryFor(runtimeType reflect.Type) *typeEntry {
 }
 
 // publish stores the descriptors of a successful build and returns the
-// published descriptor of its root, or nil when the build completed none. The
-// first publisher of a key wins. Every descriptor is stamped before any is
-// stored, so nothing is written once a lock-free reader can reach it. The
-// caller holds buildMu.
+// published descriptor of its root, or nil when the build completed none. A
+// key another build published meanwhile keeps its descriptor, and this
+// build's references to its own copy are redirected to it, so every published
+// graph holds one descriptor per key. Redirecting and stamping are complete
+// before anything is stored: nothing is written once a lock-free reader can
+// reach it. The caller holds buildMu.
 func (tc *TypeCache) publish(b *builder) *TypeDescriptor {
 	if len(b.order) == 0 {
 		// The root was found on entry: nothing to publish.
 		return nil
 	}
+
+	var replaced map[*TypeDescriptor]*TypeDescriptor
+	for _, ref := range b.order {
+		var existing *TypeDescriptor
+		if ref.hinted {
+			existing = findVariant(tc.hinted[ref.key], ref.variant.sizeHints, ref.variant.maxSizeHints, ref.variant.typeHints, tc.publishSeq)
+		} else {
+			existing = tc.lookupPublished(ref.key.runtime, ref.key.schema)
+		}
+		if existing != nil {
+			if replaced == nil {
+				replaced = make(map[*TypeDescriptor]*TypeDescriptor, len(b.order))
+			}
+			replaced[ref.variant.desc] = existing
+		}
+	}
+
 	tc.publishSeq++
 	for _, ref := range b.order {
+		desc := ref.variant.desc
+		if _, lost := replaced[desc]; lost {
+			continue
+		}
 		ref.variant.seq = tc.publishSeq
-		ref.variant.desc.publishSeq = tc.publishSeq
+		desc.publishSeq = tc.publishSeq
+		if replaced == nil {
+			continue
+		}
+		if existing, lost := replaced[desc.ElemDesc]; lost {
+			desc.ElemDesc = existing
+		}
+		if desc.ContainerDesc != nil {
+			for i := range desc.ContainerDesc.Fields {
+				if existing, lost := replaced[desc.ContainerDesc.Fields[i].Type]; lost {
+					desc.ContainerDesc.Fields[i].Type = existing
+				}
+			}
+		}
+		for index, variant := range desc.UnionVariants {
+			if existing, lost := replaced[variant]; lost {
+				desc.UnionVariants[index] = existing
+			}
+		}
 	}
 
 	var root *TypeDescriptor
 	for _, ref := range b.order {
-		desc := ref.variant.desc
+		root = ref.variant.desc
+		if existing, lost := replaced[root]; lost {
+			root = existing
+			continue
+		}
 		switch {
 		case ref.hinted:
-			if existing := findVariant(tc.hinted[ref.key], ref.variant.sizeHints, ref.variant.maxSizeHints, ref.variant.typeHints, tc.publishSeq); existing != nil {
-				desc = existing
-				break
-			}
 			tc.hinted[ref.key] = append(tc.hinted[ref.key], ref.variant)
 		case ref.key.runtime == ref.key.schema:
-			entry := tc.entryFor(ref.key.runtime)
-			if !entry.plain.CompareAndSwap(nil, desc) {
-				desc = entry.plain.Load()
-			}
+			tc.entryFor(ref.key.runtime).plain.Store(root)
 		default:
-			entry := tc.entryFor(ref.key.runtime)
-			if actual, loaded := entry.views.LoadOrStore(TypeWord(ref.key.schema), desc); loaded {
-				if published, ok := actual.(*TypeDescriptor); ok {
-					desc = published
-				}
-			}
+			tc.entryFor(ref.key.runtime).views.Store(TypeWord(ref.key.schema), root)
 		}
-		root = desc
 	}
 	return root
 }
