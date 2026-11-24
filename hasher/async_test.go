@@ -326,6 +326,96 @@ func TestAsyncPanicReachesCaller(t *testing.T) {
 	hh.Reset()
 }
 
+// Enqueueing can drain an earlier job and re-raise its hash function's panic.
+// The worker slot it took must be returned, or every async hasher blocks on it.
+func TestAsyncPanicReleasesWorkerSlot(t *testing.T) {
+	EnableAsyncHashing(1)
+	defer DisableAsyncHashing()
+
+	// With one worker and two buffers, the third of four jobs drains the first
+	// and re-raises its panic.
+	s := asyncSequence{elemChunks: 8, n: 4 * 4096, cadence: 256, limit: 1 << 40}
+
+	failing := NewHasherWithHashFn(func(dst, src []byte) error {
+		if len(src) >= 1024*32 {
+			panic("hash function failed")
+		}
+		return hashtree.HashByteSlice(dst, src)
+	})
+	func() {
+		defer func() {
+			if r := recover(); r != "hash function failed" {
+				t.Fatalf("got %v, want the hash function's panic", r)
+			}
+		}()
+		runAsyncSequence(t, failing, s, 42, true)
+	}()
+	failing.Reset()
+
+	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 42, false)
+	got := make(chan [32]byte, 1)
+	go func() {
+		got <- runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 42, true)
+	}()
+	select {
+	case root := <-got:
+		if root != want {
+			t.Errorf("async root %x != sync root %x", root, want)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("a healthy hasher is blocked on the worker slot the panicking one kept")
+	}
+}
+
+// The same panic met while draining for ring space, after a buffer token was
+// already taken, must leave the worker slot and every token for reuse.
+func TestAsyncPanicReturnsSharedState(t *testing.T) {
+	EnableAsyncHashing(1) // ring and token count: 2
+	defer DisableAsyncHashing()
+	st := asyncState.Load()
+
+	rng := rand.New(rand.NewSource(7))
+	parker := NewHasherWithHashFn(hashtree.HashByteSlice)
+	parker.SetAsyncHashing(true)
+	failing := NewHasherWithHashFn(func(dst, src []byte) error {
+		if len(src) >= 1024*32 {
+			panic("hash function failed")
+		}
+		return hashtree.HashByteSlice(dst, src)
+	})
+	failing.SetAsyncHashing(true)
+
+	// parker holds both tokens, so failing's first job is tokenless; a token
+	// freed after it fills failing's ring with a tokened job.
+	parker.StartTree(sszutils.TreeTypeBinary)
+	driveFlushes(parker, rng, 2)
+	failing.StartTree(sszutils.TreeTypeBinary)
+	driveFlushes(failing, rng, 1)
+	parker.drainOldestJob()
+	driveFlushes(failing, rng, 1)
+	parker.drainOldestJob()
+
+	// The next enqueue takes the free token, then drains the tokenless job
+	// for ring space and meets its panic.
+	func() {
+		defer func() {
+			if r := recover(); r != "hash function failed" {
+				t.Fatalf("got %v, want the hash function's panic", r)
+			}
+		}()
+		driveFlushes(failing, rng, 1)
+	}()
+	failing.Reset()
+	parker.Reset()
+
+	if n := len(st.sem); n != 0 {
+		t.Errorf("%d worker slots still held", n)
+	}
+	if n := len(st.bufs); n != cap(st.bufs) {
+		t.Errorf("%d of %d buffer tokens returned", n, cap(st.bufs))
+	}
+}
+
 // TestAsyncGate verifies the two-level gating: the process-wide toggle and
 // the per-hasher SetAsyncHashing flag must both be set, and Reset clears the
 // per-hasher flag so pooled hashers never leak the setting to another user.
