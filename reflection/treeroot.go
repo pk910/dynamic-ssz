@@ -658,13 +658,14 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 		return sszutils.ErrPlatformOverflowWidthFn("vector length", uint64(sourceType.Len))
 	}
 
-	// A full byte vector of one or two chunks is put as it is, as the
-	// generated code does: its root is the same, without a scope of its own.
+	// A full byte vector is put as it is, as the generated code does: its root
+	// is the same, without a scope of its own, and a value of fewer than 32
+	// bytes inside a packed scope leaves its packed bytes, as a delegate must.
 	// An array is never shorter than its vector, but must be addressable to be
 	// read in place; a slice must hold exactly the vector.
 	isArray := sourceValue.Kind() == reflect.Array
 	if sourceType.GoTypeFlags&(ssztypes.GoTypeFlagIsByteArray|ssztypes.GoTypeFlagIsString) == ssztypes.GoTypeFlagIsByteArray &&
-		sourceType.BitSize == 0 && vecLen >= 32 && vecLen <= 64 &&
+		sourceType.BitSize == 0 && vecLen > 0 &&
 		(isArray && sourceValue.CanAddr() || !isArray && sourceValue.Len() == int(vecLen)) {
 		hh.PutBytes(sourceValue.Bytes()[:vecLen])
 		return nil
