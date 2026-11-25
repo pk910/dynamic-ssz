@@ -10022,3 +10022,59 @@ func TestUnmarshalSSZReaderOverReportedRead(t *testing.T) {
 		}
 	}
 }
+
+// packedBytesCustom is a custom element of a basic size, so a list of it packs;
+// its hash method hands its bytes to the reflection engine as a byte vector.
+type packedBytesCustom struct{ B [16]byte }
+
+var _ = sszutils.Annotate[packedBytesCustom](`ssz-type:"custom" ssz-static:"true" ssz-size:"16"`)
+
+func (c *packedBytesCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 16 }
+func (c *packedBytesCustom) MarshalSSZEncoder(_ sszutils.DynamicSpecs, e sszutils.Encoder) error {
+	e.EncodeBytes(c.B[:])
+	return nil
+}
+
+func (c *packedBytesCustom) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, d sszutils.Decoder) error {
+	_, err := d.DecodeBytes(c.B[:])
+	return err
+}
+
+func (c *packedBytesCustom) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	d, ok := ds.(*DynSsz)
+	if !ok {
+		return errors.New("specs are not a *DynSsz")
+	}
+	return d.HashTreeRootWith(&c.B, hh)
+}
+
+// A byte vector shorter than a chunk, hashed by reflection inside a packed
+// scope, leaves its packed bytes: the list root is that of its packed values.
+func TestHashTreeRootShortByteVectorInPackedScope(t *testing.T) {
+	v := struct {
+		L []packedBytesCustom `ssz-max:"8"`
+	}{L: make([]packedBytesCustom, 3)}
+	packed := make([]byte, 64)
+	for i := range v.L {
+		for j := range v.L[i].B {
+			v.L[i].B[j] = byte(i*16 + j + 1)
+		}
+		copy(packed[i*16:], v.L[i].B[:])
+	}
+
+	// Four chunks hold the limit of eight 16-byte values; the last two are zero.
+	var zero, num [32]byte
+	binary.LittleEndian.PutUint64(num[:], 3)
+	left := sha256.Sum256(packed)
+	right := sha256.Sum256(append(zero[:], zero[:]...))
+	body := sha256.Sum256(append(left[:], right[:]...))
+	want := sha256.Sum256(append(body[:], num[:]...))
+
+	got, err := NewDynSsz(nil).HashTreeRoot(&v)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	if got != want {
+		t.Fatalf("root = %x, want %x", got, want)
+	}
+}

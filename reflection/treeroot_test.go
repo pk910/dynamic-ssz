@@ -530,6 +530,20 @@ func TestHashTreeRootErrors(t *testing.T) {
 			expectedErr: "bitvector padding bits are not zero",
 		},
 		{
+			name: "two_chunk_vector_too_big",
+			input: &struct {
+				Data []byte `ssz-size:"48"`
+			}{make([]byte, 49)},
+			expectedErr: "vector length 49 exceeds limit 48",
+		},
+		{
+			name: "two_chunk_bitvector_padding",
+			input: struct {
+				Flags []byte `ssz-type:"bitvector" ssz-bitsize:"300"`
+			}{append(make([]byte, 37), 0xff)},
+			expectedErr: "bitvector padding bits are not zero",
+		},
+		{
 			name: "list_element_hash_error",
 			input: struct {
 				Data []struct {
