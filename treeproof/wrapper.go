@@ -438,6 +438,7 @@ func (w *Wrapper) regionLeaves(indx int) []*Node {
 	// The registry is ordered by offset and the region is walked in order, so
 	// one cursor covers it: no search per chunk.
 	i := sort.Search(len(w.nodes), func(i int) bool { return w.nodes[i].off+32 > indx })
+	byteLeaves := 0
 	for off := indx; off < len(w.buf); off += 32 {
 		for i < len(w.nodes) && w.nodes[i].off+32 <= off {
 			i++
@@ -453,10 +454,30 @@ func (w *Wrapper) regionLeaves(indx int) []*Node {
 		for j := i; j < len(w.nodes) && w.nodes[j].off < off+32; j++ {
 			w.materializeOne(j)
 		}
-		leaves = append(leaves, LeafFromBytes(w.buf[off:off+32]))
+		leaves = append(leaves, &pendingLeaf)
+		byteLeaves++
+	}
+
+	// Leaves of the region's own bytes are allocated as one block, as
+	// treeFromNodesToDepth does for branches: a node held on its own keeps its
+	// block alive.
+	if byteLeaves > 0 {
+		block := make([]Node, byteLeaves)
+		for k := range leaves {
+			if leaves[k] == &pendingLeaf {
+				off := indx + k*32
+				initLeaf(&block[0], w.buf[off:off+32])
+				leaves[k] = &block[0]
+				block = block[1:]
+			}
+		}
 	}
 	return leaves
 }
+
+// pendingLeaf marks, while regionLeaves walks a region, a chunk that becomes a
+// leaf of its own bytes. regionLeaves replaces every mark before returning.
+var pendingLeaf Node
 
 // setRegionNode replaces the region that began at indx with res: the region's
 // bytes and subtree roots are gone, and res occupies one chunk at indx.

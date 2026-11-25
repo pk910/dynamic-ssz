@@ -279,9 +279,15 @@ func NewNodeWithValue(value []byte) *Node {
 // newLeaf initializes a leaf node from up to 32 bytes of value, zero padded.
 // A leaf built from a value is data, never padding, whatever the value.
 func newLeaf(value []byte) *Node {
-	n := &Node{hasValue: true}
-	copy(n.value[:], value)
+	n := new(Node)
+	initLeaf(n, value)
 	return n
+}
+
+// initLeaf turns the zero node n into a leaf of value, as newLeaf does.
+func initLeaf(n *Node, value []byte) {
+	n.hasValue = true
+	copy(n.value[:], value)
 }
 
 // NewEmptyNode creates an empty (zero-padding) tree node with the given
