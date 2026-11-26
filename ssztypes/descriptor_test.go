@@ -56,3 +56,33 @@ func TestTypeDescriptorHotFieldsShareACacheLine(t *testing.T) {
 		}
 	}
 }
+
+func TestRootIsChunk(t *testing.T) {
+	basic := &TypeDescriptor{SszType: SszUint64Type, Size: 8}
+	container := &TypeDescriptor{SszType: SszContainerType, Size: 16}
+
+	tests := []struct {
+		name string
+		desc *TypeDescriptor
+		want bool
+	}{
+		{"basic value", basic, true},
+		{"uint256", &TypeDescriptor{SszType: SszUint256Type, Size: 32}, true},
+		{"wrapped basic value", &TypeDescriptor{SszType: SszTypeWrapperType, ElemDesc: basic}, true},
+		{"vector of basic values in one chunk", &TypeDescriptor{SszType: SszVectorType, Size: 32, ElemDesc: basic}, true},
+		{"vector of basic values past one chunk", &TypeDescriptor{SszType: SszVectorType, Size: 40, ElemDesc: basic}, false},
+		{"vector of containers", &TypeDescriptor{SszType: SszVectorType, Size: 16, ElemDesc: container}, false},
+		{"vector without element", &TypeDescriptor{SszType: SszVectorType, Size: 16}, false},
+		{"bitvector in one chunk", &TypeDescriptor{SszType: SszBitvectorType, Size: 32}, true},
+		{"bitvector past one chunk", &TypeDescriptor{SszType: SszBitvectorType, Size: 33}, false},
+		{"vector sized by an expression", &TypeDescriptor{SszType: SszVectorType, Size: 16, ElemDesc: basic, SszTypeFlags: SszTypeFlagHasSizeExpr}, false},
+		{"custom type", &TypeDescriptor{SszType: SszCustomType, Size: 8}, false},
+		{"small container", container, false},
+		{"list", &TypeDescriptor{SszType: SszListType, SszTypeFlags: SszTypeFlagIsDynamic, ElemDesc: basic}, false},
+	}
+	for _, tt := range tests {
+		if got := tt.desc.RootIsChunk(); got != tt.want {
+			t.Errorf("%s: RootIsChunk = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}

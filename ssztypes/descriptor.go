@@ -142,3 +142,24 @@ type DynFieldDescriptor struct {
 	HeaderOffset int64            `json:"offset"`
 	Index        int32            `json:"index"` // Index of the field in the struct
 }
+
+// RootIsChunk reports whether the hash tree root of the type is its
+// serialization padded to one chunk, so that no hash is computed for it: a
+// basic value, or a vector of basic values or a bitvector of up to 32 bytes.
+// The root of such a type is the same under every hash algorithm.
+func (td *TypeDescriptor) RootIsChunk() bool {
+	for td.SszType == SszTypeWrapperType && td.ElemDesc != nil {
+		td = td.ElemDesc
+	}
+	if td.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagHasSizeExpr) != 0 {
+		return false
+	}
+	switch td.SszType {
+	case SszBitvectorType:
+		return td.Size <= 32
+	case SszVectorType:
+		return td.Size <= 32 && td.ElemDesc != nil && td.ElemDesc.SszType.IsBasic()
+	default:
+		return td.SszType.IsBasic()
+	}
+}

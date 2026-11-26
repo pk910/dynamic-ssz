@@ -241,6 +241,13 @@ func (ctx *hashTreeRootContext) getPtrPrefix(desc *ssztypes.TypeDescriptor, pref
 	return ""
 }
 
+// sha256Walker spells the test for a walker that hashes with SHA256, the hash
+// an argument-less HashTreeRoot method computes its root with.
+func (ctx *hashTreeRootContext) sha256Walker() string {
+	hasherAlias := ctx.typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
+	return fmt.Sprintf("%s.AlgorithmOf(hh).Compatible(%s.SHA256)", hasherAlias, hasherAlias)
+}
+
 // hashUsesFastSsz reports whether a nested type is hashed through its static
 // fastssz-style method (HashTreeRootWith / HashTreeRoot) rather than being
 // inlined. Under WithoutDynamicExpressions the static method is used even when
@@ -269,7 +276,14 @@ func (ctx *hashTreeRootContext) hashUsesFastSsz(desc *ssztypes.TypeDescriptor, i
 // and through GetTree. A basic-shaped or custom delegate outside a packed
 // scope may leave only its packed bytes and is padded to a leaf afterwards;
 // inside a packed scope it appends those bytes and the scope packs them.
-func (ctx *hashTreeRootContext) hashDelegated(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot, isView, pack bool) (done bool, err error) {
+//
+// An argument-less HashTreeRoot method computes its root with SHA256. A
+// custom type answers for its root whatever it does to produce it, and a
+// root that takes no hashing is the same under every algorithm, so both are
+// hashed through the method always. For any other type the call is emitted
+// for a SHA256 walker only: walk reports that the caller has to emit the walk
+// of the type for the other walkers, one level deeper, and close the block.
+func (ctx *hashTreeRootContext) hashDelegated(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot, isView, pack bool) (done, walk bool, err error) {
 	padDelegate := !pack && (packedElemSize(desc) > 0 || desc.SszType == ssztypes.SszCustomType)
 	appendPackedStart := func() {}
 	appendPackedCheck := func() {}
@@ -287,7 +301,7 @@ func (ctx *hashTreeRootContext) hashDelegated(desc *ssztypes.TypeDescriptor, var
 			}
 			appendPackedCheck()
 			ctx.usedDynSpecs = true
-			return true, nil
+			return true, false, nil
 		}
 	}
 
@@ -309,14 +323,14 @@ func (ctx *hashTreeRootContext) hashDelegated(desc *ssztypes.TypeDescriptor, var
 				ctx.appendCode(indent, "hh.FillUpTo32()\n")
 			}
 			appendPackedCheck()
-			return true, nil
+			return true, false, nil
 		}
 		// Static generation never calls HashTreeRootWithDyn: a type with a
 		// static HashTreeRootWith is delegated below, one with inlinable
 		// structure is inlined by the caller, one with neither cannot be
 		// generated.
 		if ctx.options.WithoutDynamicExpressions && !useFastSsz && (desc.SszType == ssztypes.SszCustomType || isShallowDelegatedDescriptor(desc)) {
-			return true, fmt.Errorf("cannot generate static hash tree root for %s under without-dynamic-expressions: it provides only dynamic (spec-aware) SSZ methods and has no static HashTreeRootWith or inlinable structure; add it to the generation set or provide a static hasher", ctx.typePrinter.TypeString(desc))
+			return true, false, fmt.Errorf("cannot generate static hash tree root for %s under without-dynamic-expressions: it provides only dynamic (spec-aware) SSZ methods and has no static HashTreeRootWith or inlinable structure; add it to the generation set or provide a static hasher", ctx.typePrinter.TypeString(desc))
 		}
 	}
 
@@ -335,13 +349,18 @@ func (ctx *hashTreeRootContext) hashDelegated(desc *ssztypes.TypeDescriptor, var
 			// so the packed bytes are its prefix; a custom type of a basic
 			// size promises the same layout.
 			ctx.appendCode(indent, "if root, err := %s.HashTreeRoot(); err != nil {\n\treturn %s\n} else {\n\thh.Append(root[:%d])\n}\n", varName, typePath.getErrorWith("err"), desc.Size)
-		default:
+		case desc.SszType == ssztypes.SszCustomType || desc.RootIsChunk():
 			ctx.appendCode(indent, "if root, err := %s.HashTreeRoot(); err != nil {\n\treturn %s\n} else {\n\thh.AppendBytes32(root[:])\n}\n", varName, typePath.getErrorWith("err"))
+		default:
+			ctx.appendCode(indent, "if %s {\n", ctx.sha256Walker())
+			ctx.appendCode(indent+1, "if root, err := %s.HashTreeRoot(); err != nil {\n\treturn %s\n} else {\n\thh.AppendBytes32(root[:])\n}\n", varName, typePath.getErrorWith("err"))
+			ctx.appendCode(indent, "} else {\n")
+			return false, true, nil
 		}
-		return true, nil
+		return true, false, nil
 	}
 
-	return false, nil
+	return false, false, nil
 }
 
 // hashType generates hash tree root code for any SSZ type, delegating to specific hashers.
@@ -363,10 +382,22 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 	}
 
 	isView := desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
-	if done, err := ctx.hashDelegated(desc, varName, typePath, indent, isRoot, isView, pack); done {
+	done, walk, err := ctx.hashDelegated(desc, varName, typePath, indent, isRoot, isView, pack)
+	if done {
 		return err
 	}
+	if walk {
+		walkErr := ctx.hashInline(desc, varName, typePath, indent+1, isRoot, isView, pack)
+		ctx.appendCode(indent, "}\n")
+		return walkErr
+	}
 
+	return ctx.hashInline(desc, varName, typePath, indent, isRoot, isView, pack)
+}
+
+// hashInline generates the walk of a type that is not hashed through a method
+// of its own.
+func (ctx *hashTreeRootContext) hashInline(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot, isView, pack bool) error {
 	// A cycle member reached without delegation is inlined here, so the level
 	// it counts is charged inline (see emitInlineDepthCharge).
 	emitInlineDepthCharge(ctx.depthAware, isRoot, isView, ctx.recursion, desc, ctx.appendCode, indent, depthFailErr(ctx.recursion))
