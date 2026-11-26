@@ -1626,6 +1626,20 @@ func testCodegenPayloadByReflection(t *testing.T, payload any, specs map[string]
 		t.Fatalf("HashTreeRoot mismatch: ref=%x gen=%x", refHash, genHash)
 	}
 
+	// Under another hash the engines agree as well.
+	keccak := dynssz.WithHashAlgorithm(hasher.Keccak256)
+	genKeccak, err := genDs.HashTreeRoot(payload, keccak)
+	if err != nil {
+		t.Fatalf("generated keccak256 HashTreeRoot failed: %v", err)
+	}
+	refKeccak, err := refDs.HashTreeRoot(payload, keccak)
+	if err != nil {
+		t.Fatalf("reflection keccak256 HashTreeRoot failed: %v", err)
+	}
+	if refKeccak != genKeccak {
+		t.Fatalf("keccak256 HashTreeRoot mismatch: ref=%x gen=%x", refKeccak, genKeccak)
+	}
+
 	// Compare size
 	refSize, err := refDs.SizeSSZ(payload)
 	if err != nil {
@@ -7098,4 +7112,49 @@ func TestCodegenUnknownGeneratedView(t *testing.T) {
 			t.Errorf("own view MarshalSSZ = %x, %v; want %x", got, err, want)
 		}
 	})
+}
+
+// An argument-less HashTreeRoot method computes its root with sha256. Under
+// another hash both engines walk a child that has a structure, and still call
+// the method of a custom type, which answers for its root itself.
+func TestCodegenLegacyHashRootUnderAnotherHash(t *testing.T) {
+	keccak := dynssz.WithHashAlgorithm(hasher.Keccak256)
+	engines := map[string]*dynssz.DynSsz{
+		"generated":  dynssz.NewDynSsz(nil),
+		"reflection": dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz()),
+	}
+
+	// A structured child is walked.
+	holder := ForeignHashWithHolder_Payload
+	var chunks [64]byte
+	binary.LittleEndian.PutUint64(chunks[:], holder.F.A)
+	chunks[32] = holder.Y
+	want, err := hasher.Keccak256.HashPair(&chunks)
+	if err != nil {
+		t.Fatalf("HashPair: %v", err)
+	}
+	for name, ds := range engines {
+		root, rootErr := ds.HashTreeRoot(&holder, keccak)
+		if rootErr != nil || root != want {
+			t.Errorf("%s structured child: root %x, %v; want %x", name, root, rootErr, want)
+		}
+	}
+
+	// A custom type is hashed through its method, declared size or not.
+	for name, payload := range map[string]any{
+		"sized custom type":   &BasicSizedCustomHolder_Payload,
+		"unsized custom type": &CustomTypes1_Payload,
+	} {
+		roots := make([][32]byte, 0, len(engines))
+		for engine, ds := range engines {
+			root, rootErr := ds.HashTreeRoot(payload, keccak)
+			if rootErr != nil {
+				t.Errorf("%s %s: %v", engine, name, rootErr)
+			}
+			roots = append(roots, root)
+		}
+		if roots[0] != roots[1] {
+			t.Errorf("%s: the engines disagree: %x != %x", name, roots[0], roots[1])
+		}
+	}
 }

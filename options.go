@@ -5,6 +5,8 @@
 // Package dynssz provides dynamic SSZ encoding and decoding with runtime reflection support.
 package dynssz
 
+import "github.com/pk910/dynamic-ssz/hasher"
+
 // DynSszOption is a functional option for configuring a DynSsz instance.
 type DynSszOption func(*DynSszOptions)
 
@@ -13,6 +15,7 @@ type DynSszOptions struct {
 	NoFastSsz              bool
 	NoDelegation           bool
 	NoFastHash             bool
+	HashAlgorithm          *hasher.Algorithm
 	AsyncHashing           bool
 	AsyncHashingWorkers    int
 	ExtendedTypes          bool
@@ -56,11 +59,25 @@ func WithNoDelegation() DynSszOption {
 	}
 }
 
-// WithNoFastHash disables the accelerated hashtree hashing library, falling
-// back to the native Go sha256 implementation.
+// WithNoFastHash disables the accelerated hashing libraries: a built-in hash
+// algorithm is replaced by its native Go counterpart (hasher.SHA256Native,
+// hasher.Keccak256Native).
 func WithNoFastHash() DynSszOption {
 	return func(opts *DynSszOptions) {
 		opts.NoFastHash = true
+	}
+}
+
+// WithDefaultHashAlgorithm sets the hash algorithm this instance merkleizes
+// with when a call names none: HashTreeRoot and GetTree compress with it.
+// Without this option the instance hashes with hasher.SHA256.
+// WithHashAlgorithm overrides it for a single call.
+//
+// The methods a type carries itself are not affected: a generated
+// HashTreeRoot() or HashTreeRootDyn(ds) always hashes with SHA256.
+func WithDefaultHashAlgorithm(alg *hasher.Algorithm) DynSszOption {
+	return func(opts *DynSszOptions) {
+		opts.HashAlgorithm = alg
 	}
 }
 
@@ -198,6 +215,9 @@ type callConfig struct {
 	// maxStreamSize overrides DynSszOptions.MaxStreamSize for one
 	// UnmarshalSSZReader call; zero keeps the instance value.
 	maxStreamSize int
+	// hashAlgorithm overrides DynSszOptions.HashAlgorithm for one call; nil
+	// keeps the instance value.
+	hashAlgorithm *hasher.Algorithm
 }
 
 // applyCallOptions applies all provided CallOptions to a callConfig and returns it.
@@ -261,5 +281,25 @@ func WithViewDescriptor(view any) CallOption {
 func WithStreamSizeLimit(size int) CallOption {
 	return func(cfg *callConfig) {
 		cfg.maxStreamSize = size
+	}
+}
+
+// WithHashAlgorithm selects the hash algorithm one HashTreeRoot or GetTree
+// call merkleizes with, overriding the instance default set by
+// WithDefaultHashAlgorithm. The hash is a property of the value: a chain that
+// changes its hash at a fork keeps hashing older values with the previous
+// one, so both are in use side by side.
+//
+// HashTreeRootWith hashes with the walker it is given. Passing this option to
+// it only checks the walker: a walker of a hash the algorithm is not
+// compatible with fails the call with sszutils.ErrHashAlgorithmMismatch. The
+// other operations ignore this option.
+//
+// Example usage:
+//
+//	root, err := ds.HashTreeRoot(block, dynssz.WithHashAlgorithm(hasher.Keccak256))
+func WithHashAlgorithm(alg *hasher.Algorithm) CallOption {
+	return func(cfg *callConfig) {
+		cfg.hashAlgorithm = alg
 	}
 }
