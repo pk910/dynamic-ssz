@@ -159,6 +159,15 @@ and hashed and the outer type's other fields do not appear.
   generated code against the reflection walk.
 - `-without-dynamic-expressions` produces static handlers, which follow the
   static rows above.
+- A hash algorithm other than SHA-256 (`WithHashAlgorithm`,
+  `WithDefaultHashAlgorithm`) restricts the argument-less `HashTreeRoot()`,
+  which computes its root on its own, with SHA-256. It is still called for a
+  custom type, which answers for its root whatever it does to produce it, and
+  for a child whose root takes no hashing: a basic value, or a vector of basic
+  values or a bitvector of up to 32 bytes. Any other child is walked instead,
+  by both engines.
+  `HashTreeRootWith(hh)` and `HashTreeRootWithDyn(ds, hh)` hash into the
+  walker and are delegated to under every algorithm.
 
 ## Wrappers of a generated type
 

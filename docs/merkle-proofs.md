@@ -238,11 +238,32 @@ type Multiproof struct {
 
 ```go
 // Verify single proof
-func VerifyProof(root []byte, proof *Proof) (bool, error)
+func VerifyProof(root []byte, proof *Proof, opts ...Option) (bool, error)
 
 // Verify multi-proof
-func VerifyMultiproof(root []byte, proof [][]byte, leaves [][]byte, indices []int) (bool, error)
+func VerifyMultiproof(root []byte, proof [][]byte, leaves [][]byte, indices []int, opts ...Option) (bool, error)
 ```
+
+Without an option these functions verify the proof of a SHA-256 tree. For a
+tree built under another [hash algorithm](api-reference.md#hash-algorithms),
+name it with `WithAlgorithm`:
+
+```go
+tree, err := ds.GetTree(value, dynssz.WithHashAlgorithm(hasher.Keccak256))
+proof, err := tree.Prove(index)
+
+ok, err := treeproof.VerifyProof(tree.Hash(), proof, treeproof.WithAlgorithm(hasher.Keccak256))
+```
+
+The same option is taken by `VerifyMultiproof`, by `Multiproof.Compress` and
+`CompressedMultiproof.Decompress` (the zero hashes a compressed proof omits
+are those of its algorithm), and by `NewWrapper`.
+
+`GetTree` returns a finalized tree, so `Prove`, `ProveMulti`, `Get` and `Hash`
+work on it under every algorithm. A type that builds its own tree with a
+`Wrapper` creates it with `NewWrapper(WithAlgorithm(alg))`, whose `Root` and
+`Node` hand the tree out finalized as well. The tree builders
+(`TreeFromNodes` and its relatives) pad with the zero subtrees of SHA-256.
 
 Every value handed to a verifier — the root, each leaf, and each proof hash —
 must be exactly 32 bytes, the SSZ chunk size. A shorter one is rejected rather

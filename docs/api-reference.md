@@ -47,7 +47,8 @@ type DynSszOption func(*DynSszOptions)
 | Option | Description |
 |--------|-------------|
 | `WithNoFastSsz()` | Disable fastssz fallback, force all operations through reflection |
-| `WithNoFastHash()` | Disable accelerated hashtree hashing library |
+| `WithNoFastHash()` | Disable the accelerated hashing libraries: a built-in hash algorithm is replaced by its pure Go counterpart |
+| `WithDefaultHashAlgorithm(alg)` | Hash algorithm `HashTreeRoot` and `GetTree` merkleize with when a call names none (default `hasher.SHA256`); see [Hash algorithms](#hash-algorithms) |
 | `WithExtendedTypes()` | Enable non-standard types (signed ints, floats, big.Int, optionals) |
 | `WithVerbose()` | Enable verbose debug logging |
 | `WithLogCb(fn)` | Set a custom logging callback (`func(format string, args ...any)`) |
@@ -106,6 +107,20 @@ Bounds one unknown-length `UnmarshalSSZReader` decode, overriding `WithMaxStream
 ```go
 err := ds.UnmarshalSSZReader(&block, body, -1, dynssz.WithStreamSizeLimit(4*1024*1024))
 ```
+
+#### WithHashAlgorithm
+
+```go
+func WithHashAlgorithm(alg *hasher.Algorithm) CallOption
+```
+
+Selects the hash algorithm one `HashTreeRoot` or `GetTree` call merkleizes with, overriding `WithDefaultHashAlgorithm`. `HashTreeRootWith` hashes with the walker it is given; there the option only checks the walker and fails with `ErrHashAlgorithmMismatch` when the walker computes another hash. Other operations ignore the option.
+
+```go
+root, err := ds.HashTreeRoot(block, dynssz.WithHashAlgorithm(hasher.Keccak256))
+```
+
+See [Hash algorithms](#hash-algorithms).
 
 ## Serialization Methods
 
@@ -222,6 +237,92 @@ isValid, err := treeproof.VerifyProof(tree.Hash(), proof)
 ```
 
 See [Merkle Proofs](merkle-proofs.md) for complete documentation.
+
+### Hash algorithms
+
+The tree shape of a value is the same under every hash; only the node hashes
+differ. A `*hasher.Algorithm` is one such hash: a function that compresses two
+32-byte chunks into one, together with the zero subtree roots and the hasher
+pool derived from it.
+
+| Algorithm | Hash | Backend |
+|-----------|------|---------|
+| `hasher.SHA256` | SHA-256, the hash of the consensus specification (default) | [hashtree](https://github.com/OffchainLabs/hashtree) |
+| `hasher.SHA256Native` | SHA-256 | Go standard library |
+| `hasher.Keccak256` | Ethereum Keccak-256 (padding `0x01`, not NIST SHA3-256) | [keccaktree](https://github.com/pk910/keccaktree) |
+| `hasher.Keccak256Native` | Ethereum Keccak-256 | pure Go |
+
+Any other hash is used through the algorithm of its function:
+
+```go
+// fn hashes consecutive 64-byte pairs of input into dst
+alg, err := hasher.AlgorithmFor(fn)
+```
+
+`AlgorithmFor` returns the same algorithm for the same function. Finding it
+costs one call of the function, so keep the algorithm where roots are computed
+often. The zero subtree roots of an algorithm are computed when they are first
+needed; a function that computes SHA-256 or Keccak-256 uses those of the
+built-in algorithm. `hasher.NewHasherWithHashFn(fn)` and a `hasher.HasherPool`
+made around a function derive their algorithm from that function in the same
+way, per hasher or per pool.
+
+Two algorithms are compatible when they compute the same hash, whatever
+computes it: `alg.Compatible(other)`. `hasher.SHA256` and
+`hasher.SHA256Native` are compatible, and so is the algorithm of any other
+SHA-256 function.
+
+The algorithm is a property of the value, not of the process: a chain that
+changes its hash at a fork keeps hashing older values with the previous one.
+A `DynSsz` instance has a default, and a call can name another:
+
+```go
+ds := dynssz.NewDynSsz(specs) // hashes with SHA-256
+
+root, err := ds.HashTreeRoot(block)                                           // SHA-256
+root, err = ds.HashTreeRoot(block, dynssz.WithHashAlgorithm(hasher.Keccak256)) // Keccak-256
+tree, err := ds.GetTree(block, dynssz.WithHashAlgorithm(hasher.Keccak256))
+
+// An instance for a network that hashes with Keccak-256 throughout
+keccakDs := dynssz.NewDynSsz(specs, dynssz.WithDefaultHashAlgorithm(hasher.Keccak256))
+```
+
+Where a caller supplies the hash walker, the walker carries the algorithm:
+
+```go
+hh := hasher.Keccak256.Pool().Get()
+defer hasher.Keccak256.Pool().Put(hh)
+
+err := ds.HashTreeRootWith(block, hh)
+root, err := hh.HashRoot()
+```
+
+The methods a type carries itself take no walker and no option: a generated
+`HashTreeRoot()` or `HashTreeRootDyn(ds)` always hashes with SHA-256. The root
+of a value under another algorithm is computed by `ds.HashTreeRoot` with the
+option, which runs the same generated code on a walker of that algorithm.
+
+A hand-written argument-less `HashTreeRoot()` likewise computes its root on
+its own, with SHA-256. Under another algorithm both engines treat a child
+that offers only this method as follows:
+
+| Child | Under another algorithm |
+|-------|-------------------------|
+| A custom type | the method is called: a custom type answers for its 32-byte root, whatever it does to produce it |
+| Its root takes no hashing: a basic value, or a vector of basic values or a bitvector of up to 32 bytes | the method is called |
+| Any other type | its structure is walked instead |
+
+A custom type that should follow the algorithm implements
+`HashTreeRootWith(hh)` and hashes into the walker.
+
+A child that implements `HashTreeRootWith(hh)` or
+`HashTreeRootWithDyn(ds, hh)` hashes into the walker and works under every
+algorithm.
+
+The package-level `hasher.GetZeroHash`, `hasher.FastHasherPool`,
+`hasher.DefaultHasherPool` and `hasher.WithDefaultHasher` are those of SHA-256.
+`hasher.AlgorithmOf(hh)` reports the algorithm of a walker, which a cache of
+roots needs as part of its key.
 
 ## Utility Methods
 
@@ -643,6 +744,7 @@ var (
     // A hash walk was given something it cannot reduce
     ErrChunkLimitExceeded  = fmt.Errorf("merkleized more chunks than the limit holds")
     ErrScopeShapeMismatch  = fmt.Errorf("scope reduced in a shape it was not opened for")
+    ErrHashAlgorithmMismatch = fmt.Errorf("hash walker compresses with another hash algorithm")
 
     // The input exceeds a bound the caller set
     ErrMaxDepthExceeded    = fmt.Errorf("maximum nesting depth exceeded")
