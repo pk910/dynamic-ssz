@@ -50,9 +50,11 @@ type Wrapper struct {
 	// scopes holds one entry per open scope, in the order they were opened.
 	scopes []wScope
 	tmp    []byte
-	// hashFn compresses this tree, where a caller gave one; the package
-	// default serves the rest.
-	hashFn hasher.HashFn
+	// hash is the hash of the tree and padding its zero-padding nodes.
+	hash    treeHash
+	padding *padding
+	// finish makes the wrapper hand its tree out finalized.
+	finish bool
 
 	// walkErr records the first failure of the walk: a scope reduced in a
 	// shape it was not opened for, a reduction handed more chunks than its
@@ -78,29 +80,71 @@ type wScope struct {
 	progressive bool
 }
 
-// NewWrapper creates a new Wrapper ready to construct a Merkle tree.
+// NewWrapper creates a new Wrapper ready to construct a Merkle tree, of
+// hasher.SHA256 unless WithAlgorithm names another Algorithm.
 //
-// It names no backend, so its trees compress with whatever
-// hasher.FastHasherPool holds at the time -- the built-in compression unless a
-// caller installed one. hasher.NewHasher takes the built-in whatever the pool
-// holds, so a caller who installs a non-sha256 backend on the pool and reads
-// one walker against the other names it on both: NewWrapperWithHashFn here,
-// hasher.NewHasherWithHashFn there.
-func NewWrapper() *Wrapper {
-	return &Wrapper{
-		buf: make([]byte, 0),
-		tmp: make([]byte, 64),
+// Without an option its trees compress with whatever hasher.FastHasherPool
+// holds at the time -- the built-in compression unless a caller installed a
+// SHA256 backend there.
+//
+// A Wrapper given an Algorithm answers with the root a hasher of that
+// Algorithm gives for the same value, and its Root and Node hand the tree out
+// finalized: every branch holds its hash, so the tree is read-only and Prove,
+// ProveMulti, Get and Hash work on it whatever its Algorithm. A Node does not
+// record its Algorithm, and a tree left unfinalized would be completed with
+// SHA256 by those methods.
+func NewWrapper(opts ...Option) *Wrapper {
+	w := &Wrapper{
+		buf:     make([]byte, 0),
+		tmp:     make([]byte, 64),
+		hash:    treeHash{alg: hasher.SHA256},
+		padding: sha256Padding,
 	}
+	if alg := algorithmOf(opts); alg != nil {
+		w.setAlgorithm(alg)
+		w.finish = true
+	}
+
+	return w
+}
+
+// setAlgorithm makes the wrapper build its tree for alg.
+func (w *Wrapper) setAlgorithm(alg *hasher.Algorithm) {
+	w.hash = treeHashOf(alg)
+	w.padding = paddingOf(w.hash)
+}
+
+// finalizeConfig returns how the branches of the wrapper's tree are hashed.
+func (w *Wrapper) finalizeConfig() finalizeConfig {
+	if w.hash.alg == hasher.SHA256 {
+		return finalizeConfig{}
+	}
+	return finalizeConfig{fn: w.hash.alg.HashFn()}
 }
 
 // NewWrapperWithHashFn returns a Wrapper that compresses with fn, so a tree
 // answers with the same root the hasher gives for the same value: a caller
 // that installs a backend installs it for both walkers or for neither.
+//
+// The tree is built for the Algorithm derived from fn, as
+// hasher.NewHasherWithHashFn derives it: fn is called once to find the hash
+// it computes. A tree of another hash than SHA256 is handed out finalized.
+//
+// Deprecated: use NewWrapper with the Algorithm of the function
+// (WithAlgorithm, hasher.AlgorithmFor), which is derived once.
 func NewWrapperWithHashFn(fn hasher.HashFn) *Wrapper {
+	alg := (&hasher.HasherPool{HashFn: fn}).Algorithm()
+
 	w := NewWrapper()
-	w.hashFn = fn
+	w.setAlgorithm(alg)
+	w.finish = w.hash.foreign
 
 	return w
+}
+
+// Algorithm returns the Algorithm the tree is built for.
+func (w *Wrapper) Algorithm() *hasher.Algorithm {
+	return w.hash.alg
 }
 
 // --- Wrapper implements the HashWalker interface ---
@@ -416,7 +460,7 @@ func (w *Wrapper) MerkleizeProgressiveWithActiveFields(indx int, activeFields []
 	w.checkShape(indx, true)
 	w.closeScope(indx)
 	leaves := w.regionLeaves(indx)
-	res, err := TreeFromNodesProgressiveWithActiveFields(leaves, activeFields)
+	res, err := treeFromNodesProgressiveWithActiveFields(w.padding, leaves, activeFields)
 	if err != nil {
 		panic(err)
 	}
@@ -489,7 +533,7 @@ func (w *Wrapper) setRegionNode(indx int, res *Node) {
 
 func (w *Wrapper) reduceBinary(indx int) {
 	leaves := w.regionLeaves(indx)
-	res, err := treeFromNodesToDepthFn(leaves, chunkLimitDepth(uint64(len(leaves))))
+	res, err := treeFromNodesToDepthFn(w.padding, leaves, chunkLimitDepth(uint64(len(leaves))))
 	if err != nil {
 		panic(err)
 	}
@@ -499,7 +543,7 @@ func (w *Wrapper) reduceBinary(indx int) {
 func (w *Wrapper) reduceBinaryWithMixin(indx int, num, limit uint64) {
 	leaves := w.regionLeaves(indx)
 	w.checkChunkLimit(uint64(len(leaves)), limit)
-	res, err := treeFromNodesWithMixin64(leaves, num, limit)
+	res, err := treeFromNodesWithMixin64(w.padding, leaves, num, limit)
 	if err != nil {
 		panic(err)
 	}
@@ -508,7 +552,7 @@ func (w *Wrapper) reduceBinaryWithMixin(indx int, num, limit uint64) {
 
 func (w *Wrapper) reduceProgressive(indx int) {
 	leaves := w.regionLeaves(indx)
-	res, err := TreeFromNodesProgressive(leaves)
+	res, err := treeFromNodesProgressive(w.padding, leaves)
 	if err != nil {
 		panic(err)
 	}
@@ -517,7 +561,7 @@ func (w *Wrapper) reduceProgressive(indx int) {
 
 func (w *Wrapper) reduceProgressiveWithMixin(indx int, num uint64) {
 	leaves := w.regionLeaves(indx)
-	res, err := TreeFromNodesProgressiveWithMixin64(leaves, num)
+	res, err := treeFromNodesProgressiveWithMixin64(w.padding, leaves, num)
 	if err != nil {
 		panic(err)
 	}
@@ -566,7 +610,7 @@ func (w *Wrapper) materializeOne(i int) {
 	// recorded here where the walk can report it and the chunk is left
 	// unfilled: nothing was cached, so a later call answers it once the
 	// backend does.
-	if err := w.nodes[i].node.finalize(finalizeConfig{fn: w.hashFn}); err != nil {
+	if err := w.nodes[i].node.finalize(w.finalizeConfig()); err != nil {
 		w.setWalkErr(err)
 
 		return
@@ -710,10 +754,24 @@ func (w *Wrapper) rootNode() (*Node, error) {
 	if len(w.buf) != 32 {
 		return nil, fmt.Errorf("incomplete merkleization: wrapper holds %d bytes, want 32", len(w.buf))
 	}
-	if i := w.nodeIndexAt(0); i >= 0 {
-		return w.nodes[i].node, nil
+	i := w.nodeIndexAt(0)
+	if i < 0 {
+		return LeafFromBytes(w.buf), nil
 	}
-	return LeafFromBytes(w.buf), nil
+	n := w.nodes[i].node
+	if w.finish {
+		if err := n.finalize(w.finalizeConfig()); err != nil {
+			w.setWalkErr(err)
+			// Every hash cached in a partially finalized SHA256 tree is
+			// valid and a later Finalize resumes from it; the rest of a
+			// tree of another hash could not be completed by the caller.
+			if w.hash.foreign {
+				return nil, err
+			}
+			return n, err
+		}
+	}
+	return n, nil
 }
 
 // Node returns the root of the constructed tree. It panics when the
@@ -737,7 +795,7 @@ func (w *Wrapper) HashRoot() ([32]byte, error) {
 	if err != nil {
 		return [32]byte{}, err
 	}
-	if err := n.finalize(finalizeConfig{fn: w.hashFn}); err != nil {
+	if err := n.finalize(w.finalizeConfig()); err != nil {
 		w.setWalkErr(err)
 
 		return [32]byte{}, err

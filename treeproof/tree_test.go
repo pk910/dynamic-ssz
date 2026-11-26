@@ -594,7 +594,7 @@ func TestNodeHashReturnsCopy(t *testing.T) {
 	// a copy so a caller's mutation cannot corrupt it (and with it the roots
 	// of every other tree sharing the cached empty nodes).
 	const depth = 3
-	empty := getEmptyNode(depth)
+	empty := sha256Padding.emptyNode(depth)
 	zeroBefore := bytes.Clone(hasher.GetZeroHash(depth))
 
 	h := empty.Hash()
@@ -1247,7 +1247,7 @@ func TestTreeFromNodesWithMixinLimitBelowCount(t *testing.T) {
 		t.Fatalf("a limit below the leaf count was accepted: %v", err)
 	}
 
-	tree, err := treeFromNodesWithMixin64(nodes, 8, 2)
+	tree, err := treeFromNodesWithMixin64(sha256Padding, nodes, 8, 2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1267,7 +1267,7 @@ func TestTreeFromNodesWithMixinLimitBelowCount(t *testing.T) {
 	altered := make([]*Node, len(nodes))
 	copy(altered, nodes)
 	altered[7] = NewNodeWithValue([]byte{0xff})
-	alt, err := treeFromNodesWithMixin64(altered, 8, 2)
+	alt, err := treeFromNodesWithMixin64(sha256Padding, altered, 8, 2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1557,7 +1557,7 @@ func TestProveMultiEmptyIndices(t *testing.T) {
 
 func TestTreeFromNodesProgressiveImplEmpty(t *testing.T) {
 	// Directly call internal function with empty leaves
-	node, err := treeFromNodesProgressiveImpl(nil, 5)
+	node, err := treeFromNodesProgressiveImpl(sha256Padding, nil, 5)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1819,7 +1819,7 @@ func TestTreeFromNodesRejectsExcessLeaves(t *testing.T) {
 
 func TestTreeFromNodesProgressiveLeftError(t *testing.T) {
 	injected := errors.New("injected")
-	treeFromNodesToDepthFn = func([]*Node, int) (*Node, error) {
+	treeFromNodesToDepthFn = func(*padding, []*Node, int) (*Node, error) {
 		return nil, injected
 	}
 	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
@@ -1835,12 +1835,12 @@ func TestTreeFromNodesProgressiveLeftError(t *testing.T) {
 func TestTreeFromNodesProgressiveRecursiveError(t *testing.T) {
 	injected := errors.New("injected")
 	calls := 0
-	treeFromNodesToDepthFn = func(leaves []*Node, depth int) (*Node, error) {
+	treeFromNodesToDepthFn = func(c *padding, leaves []*Node, depth int) (*Node, error) {
 		calls++
 		if calls == 2 {
 			return nil, injected
 		}
-		return treeFromNodesToDepth(leaves, depth)
+		return treeFromNodesToDepth(c, leaves, depth)
 	}
 	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
 
@@ -1856,7 +1856,7 @@ func TestTreeFromNodesProgressiveRecursiveError(t *testing.T) {
 
 func TestTreeFromNodesWithMixinInjectedError(t *testing.T) {
 	injected := errors.New("injected")
-	treeFromNodesToDepthFn = func([]*Node, int) (*Node, error) {
+	treeFromNodesToDepthFn = func(*padding, []*Node, int) (*Node, error) {
 		return nil, injected
 	}
 	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
@@ -1871,7 +1871,7 @@ func TestTreeFromNodesWithMixinInjectedError(t *testing.T) {
 
 func TestTreeFromNodesProgressiveWithMixinInjectedError(t *testing.T) {
 	injected := errors.New("injected")
-	treeFromNodesToDepthFn = func([]*Node, int) (*Node, error) {
+	treeFromNodesToDepthFn = func(*padding, []*Node, int) (*Node, error) {
 		return nil, injected
 	}
 	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
@@ -1886,7 +1886,7 @@ func TestTreeFromNodesProgressiveWithMixinInjectedError(t *testing.T) {
 
 func TestTreeFromNodesProgressiveWithActiveFieldsInjectedError(t *testing.T) {
 	injected := errors.New("injected")
-	treeFromNodesToDepthFn = func([]*Node, int) (*Node, error) {
+	treeFromNodesToDepthFn = func(*padding, []*Node, int) (*Node, error) {
 		return nil, injected
 	}
 	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
@@ -1902,7 +1902,7 @@ func TestTreeFromNodesProgressiveWithActiveFieldsInjectedError(t *testing.T) {
 // the bitvector as the only caller of it.
 func TestTreeFromNodesProgressiveWithActiveFieldsBitvectorError(t *testing.T) {
 	injected := errors.New("injected")
-	treeFromNodesToDepthFn = func([]*Node, int) (*Node, error) {
+	treeFromNodesToDepthFn = func(*padding, []*Node, int) (*Node, error) {
 		return nil, injected
 	}
 	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
@@ -1938,7 +1938,7 @@ func TestTreeFromNodes64EdgeCases(t *testing.T) {
 		t.Errorf("TreeFromNodes64(leaf, 1) = %v, %v; want the leaf", n, err)
 	}
 	// treeFromNodesToDepth clamps a negative depth to an empty node.
-	if n, err := treeFromNodesToDepth(nil, -1); err != nil || n == nil {
+	if n, err := treeFromNodesToDepth(sha256Padding, nil, -1); err != nil || n == nil {
 		t.Errorf("treeFromNodesToDepth(nil, -1) = %v, %v", n, err)
 	}
 	// Int forwards clamp negative limit/num to zero.
@@ -1962,7 +1962,7 @@ func TestTreeFromNodesToDepthWideCapacity(t *testing.T) {
 
 	for _, depth := range []int{31, 32, 33, 40, 62, 63, 64} {
 		for _, in := range [][]*Node{{leaf}, leaves} {
-			n, err := treeFromNodesToDepth(in, depth)
+			n, err := treeFromNodesToDepth(sha256Padding, in, depth)
 			if err != nil {
 				t.Fatalf("depth %d, %d leaves: %v", depth, len(in), err)
 			}
@@ -1973,7 +1973,7 @@ func TestTreeFromNodesToDepthWideCapacity(t *testing.T) {
 	}
 
 	// The excess check itself still applies where 2^depth is representable.
-	if _, err := treeFromNodesToDepth(leaves, 0); err == nil {
+	if _, err := treeFromNodesToDepth(sha256Padding, leaves, 0); err == nil {
 		t.Error("depth 0 with two leaves should error")
 	}
 
@@ -2009,7 +2009,7 @@ func TestTreeBuilderDefensiveBranches(t *testing.T) {
 	leaf := LeafFromUint64(1)
 
 	// treeFromNodesToDepth rejects more leaves than 2^depth can hold.
-	if _, err := treeFromNodesToDepth([]*Node{leaf, leaf, leaf}, 1); err == nil {
+	if _, err := treeFromNodesToDepth(sha256Padding, []*Node{leaf, leaf, leaf}, 1); err == nil {
 		t.Error("treeFromNodesToDepth with excess leaves should error")
 	}
 
@@ -3361,7 +3361,7 @@ func TestBothWalkersRefuseAFailingHashFn(t *testing.T) {
 		w.Merkleize(idx)
 	}
 
-	hh := hasher.NewHasherWithHashFn(failing)
+	hh := hasher.NewHasherWithHashFn(failing) //nolint:staticcheck // the walkers are compared on the function hook
 	fill(hh)
 	if _, err := hh.HashRoot(); !errors.Is(err, backend) {
 		t.Fatalf("hasher.HashRoot err = %v, want %v", err, backend)

@@ -1516,7 +1516,7 @@ func TestWrapperCollapseNoop(t *testing.T) {
 
 func TestWrapperCommitPanicInjected(t *testing.T) {
 	injected := errors.New("injected commit error")
-	treeFromNodesToDepthFn = func([]*Node, int) (*Node, error) {
+	treeFromNodesToDepthFn = func(*padding, []*Node, int) (*Node, error) {
 		return nil, injected
 	}
 	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
@@ -1532,7 +1532,7 @@ func TestWrapperCommitPanicInjected(t *testing.T) {
 
 func TestWrapperCommitWithMixinPanicInjected(t *testing.T) {
 	injected := errors.New("injected commit error")
-	treeFromNodesToDepthFn = func([]*Node, int) (*Node, error) {
+	treeFromNodesToDepthFn = func(*padding, []*Node, int) (*Node, error) {
 		return nil, injected
 	}
 	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
@@ -1548,7 +1548,7 @@ func TestWrapperCommitWithMixinPanicInjected(t *testing.T) {
 
 func TestWrapperCommitProgressivePanicInjected(t *testing.T) {
 	injected := errors.New("injected commit error")
-	treeFromNodesToDepthFn = func([]*Node, int) (*Node, error) {
+	treeFromNodesToDepthFn = func(*padding, []*Node, int) (*Node, error) {
 		return nil, injected
 	}
 	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
@@ -1564,7 +1564,7 @@ func TestWrapperCommitProgressivePanicInjected(t *testing.T) {
 
 func TestWrapperCommitProgressiveWithMixinPanicInjected(t *testing.T) {
 	injected := errors.New("injected commit error")
-	treeFromNodesToDepthFn = func([]*Node, int) (*Node, error) {
+	treeFromNodesToDepthFn = func(*padding, []*Node, int) (*Node, error) {
 		return nil, injected
 	}
 	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
@@ -1580,7 +1580,7 @@ func TestWrapperCommitProgressiveWithMixinPanicInjected(t *testing.T) {
 
 func TestWrapperCommitProgressiveWithActiveFieldsPanicInjected(t *testing.T) {
 	injected := errors.New("injected commit error")
-	treeFromNodesToDepthFn = func([]*Node, int) (*Node, error) {
+	treeFromNodesToDepthFn = func(*padding, []*Node, int) (*Node, error) {
 		return nil, injected
 	}
 	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()

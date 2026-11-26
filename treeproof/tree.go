@@ -74,8 +74,10 @@ type Multiproof struct {
 }
 
 // Compress returns a new proof with zero hashes omitted.
-// See `CompressedMultiproof` for more info.
-func (p *Multiproof) Compress() *CompressedMultiproof {
+// See `CompressedMultiproof` for more info. The zero hashes are those of the
+// Algorithm named with WithAlgorithm, which Decompress has to be given too.
+func (p *Multiproof) Compress(opts ...Option) *CompressedMultiproof {
+	alg := treeHashFor(opts).alg
 	// The compressed proof owns its data, so editing one proof never edits
 	// the other.
 	compressed := &CompressedMultiproof{
@@ -86,7 +88,7 @@ func (p *Multiproof) Compress() *CompressedMultiproof {
 	}
 
 	for _, h := range p.Hashes {
-		if l, ok := hasher.GetZeroHashLevelBytes(h); ok {
+		if l, ok := alg.ZeroHashLevel(h); ok {
 			compressed.ZeroLevels = append(compressed.ZeroLevels, l)
 			compressed.Hashes = append(compressed.Hashes, nil)
 		} else {
@@ -121,7 +123,8 @@ type CompressedMultiproof struct {
 
 // Decompress returns a new multiproof, filling in the omitted
 // zero hashes. See `CompressedMultiProof` for more info.
-func (c *CompressedMultiproof) Decompress() *Multiproof {
+func (c *CompressedMultiproof) Decompress(opts ...Option) *Multiproof {
+	alg := treeHashFor(opts).alg
 	// The decompressed proof owns its data, so editing one proof never edits
 	// the other.
 	p := &Multiproof{
@@ -137,7 +140,7 @@ func (c *CompressedMultiproof) Decompress() *Multiproof {
 			if zc < len(c.ZeroLevels) {
 				level = c.ZeroLevels[zc]
 			}
-			p.Hashes[i] = hasher.GetZeroHash(level)
+			p.Hashes[i] = alg.ZeroHash(level)
 			zc++
 		} else {
 			p.Hashes[i] = bytes.Clone(c.Hashes[i])
@@ -167,11 +170,6 @@ type Node struct {
 	isEmpty   bool     // True if this is a zero-padding node
 	isVisited bool     // True while pending in a finalization batch
 }
-
-var (
-	emptyNodeInit  sync.Once
-	emptyNodeCache [65]*Node
-)
 
 // errMalformedTree is the finalization failure a tree's own shape causes: a
 // nil node, or a branch holding one child. It is what Hash reports through a
@@ -231,7 +229,7 @@ func (n *Node) show(depth, maxDepth, index int) {
 	// Always print the index first
 	printNode(fmt.Sprintf("INDEX: %d\n", index))
 
-	if n.left != nil || n.right != nil {
+	if !n.isEmpty && (n.left != nil || n.right != nil) {
 		// Branch node - show hash
 		printNode("HASH: " + hex.EncodeToString(n.Hash()) + "\n")
 	} else if n.hasValue {
@@ -240,7 +238,7 @@ func (n *Node) show(depth, maxDepth, index int) {
 	}
 
 	if n.isEmpty {
-		zeroLevel, _ := hasher.GetZeroHashLevelBytes(n.Hash())
+		zeroLevel := emptyDepth(n)
 		printNode("EMPTY: true (depth: " + strconv.Itoa(zeroLevel) + ")\n")
 	}
 
@@ -250,6 +248,10 @@ func (n *Node) show(depth, maxDepth, index int) {
 			printNode(" ... (max depth reached)\n")
 			return
 		}
+	}
+
+	if n.isEmpty {
+		return
 	}
 
 	if n.left != nil {
@@ -311,6 +313,10 @@ func NewNodeWithLR(left, right *Node) *Node {
 // inputs would collide, and a single short chunk would make Node.Hash() return
 // fewer than the 32 bytes it documents.
 func TreeFromChunks(chunks [][]byte) (*Node, error) {
+	return treeFromChunks(sha256Padding, chunks)
+}
+
+func treeFromChunks(c *padding, chunks [][]byte) (*Node, error) {
 	numLeaves := len(chunks)
 	if numLeaves == 0 {
 		return nil, errors.New("cannot create tree from empty chunks")
@@ -326,7 +332,7 @@ func TreeFromChunks(chunks [][]byte) (*Node, error) {
 		}
 		leaves[i] = NewNodeWithValue(c)
 	}
-	return TreeFromNodes(leaves, numLeaves)
+	return treeFromNodes(c, leaves, numLeaves)
 }
 
 // treeFromNodesToDepthFn is the injectable core tree builder. Internal callers
@@ -339,6 +345,10 @@ var treeFromNodesToDepthFn = treeFromNodesToDepth
 // The limit should be a power of 2.
 // Adjacent sibling nodes will be filled with zero order hashes that have been precomputed based on the tree depth.
 func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
+	return treeFromNodes(sha256Padding, leaves, limit)
+}
+
+func treeFromNodes(c *padding, leaves []*Node, limit int) (*Node, error) {
 	// A non-positive limit is either a true zero capacity or the int-overflow
 	// artifact of a chunk limit above the platform int max (only reachable on
 	// 32-bit). Either way an int cannot represent a usable capacity, so any
@@ -349,12 +359,12 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 		if len(leaves) > 0 {
 			return nil, fmt.Errorf("number of leaves %d exceeds limit %d", len(leaves), limit)
 		}
-		return getEmptyNode(0), nil
+		return c.emptyNode(0), nil
 	}
 	if len(leaves) > limit {
 		return nil, fmt.Errorf("number of leaves %d exceeds limit %d", len(leaves), limit)
 	}
-	return TreeFromNodes64(leaves, uint64(limit))
+	return treeFromNodes64(c, leaves, uint64(limit))
 }
 
 // TreeFromNodes64 is the uint64 form of TreeFromNodes and carries the canonical
@@ -362,13 +372,17 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 // 2^63 are representable. The tree is built from its depth (log2(limit)), so
 // construction is O(depth·leaves) regardless of how large the capacity is.
 func TreeFromNodes64(leaves []*Node, limit uint64) (*Node, error) {
+	return treeFromNodes64(sha256Padding, leaves, limit)
+}
+
+func treeFromNodes64(c *padding, leaves []*Node, limit uint64) (*Node, error) {
 	if limit == 0 {
 		// A zero capacity cannot hold any leaf; accepting one would silently drop
 		// it and produce a valid-looking root for a different tree.
 		if len(leaves) > 0 {
 			return nil, fmt.Errorf("number of leaves %d exceeds limit %d", len(leaves), 0)
 		}
-		return getEmptyNode(0), nil
+		return c.emptyNode(0), nil
 	}
 	if uint64(len(leaves)) > limit {
 		return nil, fmt.Errorf("number of leaves %d exceeds limit %d", len(leaves), limit)
@@ -376,14 +390,14 @@ func TreeFromNodes64(leaves []*Node, limit uint64) (*Node, error) {
 	if limit > 1 && limit&(limit-1) != 0 {
 		return nil, errors.New("number of leaves should be a power of 2")
 	}
-	return treeFromNodesToDepthFn(leaves, chunkLimitDepth(limit))
+	return treeFromNodesToDepthFn(c, leaves, chunkLimitDepth(limit))
 }
 
 // treeFromNodesToDepth builds a binary Merkle tree from leaves padded with
 // zero-order-hash subtrees to a capacity of 2^depth leaves. depth ranges over
 // [0, 64]; driving construction by the depth (rather than a 2^depth leaf count)
 // keeps it overflow-free for capacities beyond the platform int range.
-func treeFromNodesToDepth(leaves []*Node, depth int) (*Node, error) {
+func treeFromNodesToDepth(c *padding, leaves []*Node, depth int) (*Node, error) {
 	numLeaves := len(leaves)
 
 	// Reject excess leaves (silently dropped otherwise) when 2^depth is
@@ -400,7 +414,7 @@ func treeFromNodesToDepth(leaves []*Node, depth int) (*Node, error) {
 		if depth < 0 {
 			depth = 0
 		}
-		return getEmptyNode(depth), nil
+		return c.emptyNode(depth), nil
 	}
 
 	// A nil leaf cannot be hashed and would panic later in Hash(); reject it at
@@ -440,7 +454,7 @@ func treeFromNodesToDepth(leaves []*Node, depth int) (*Node, error) {
 		if rightIdx < numLeaves {
 			right = leaves[rightIdx]
 		} else {
-			right = getEmptyNode(0)
+			right = c.emptyNode(0)
 		}
 		branchNodes[branchPos] = Node{left: left, right: right}
 		current[i] = &branchNodes[branchPos]
@@ -461,7 +475,7 @@ func treeFromNodesToDepth(leaves []*Node, depth int) (*Node, error) {
 			if rightIdx < activeCount {
 				right = current[rightIdx]
 			} else {
-				right = getEmptyNode(depth - d)
+				right = c.emptyNode(depth - d)
 			}
 			branchNodes[branchPos] = Node{left: left, right: right}
 			next[i] = &branchNodes[branchPos]
@@ -495,25 +509,27 @@ func chunkLimitDepth(limit uint64) int {
 // using base_size pattern (1, 4, 16, 64...) rather than even binary splits.
 // Based on subtree_fill_progressive from remerkleable.
 func TreeFromNodesProgressive(leaves []*Node) (*Node, error) {
+	return treeFromNodesProgressive(sha256Padding, leaves)
+}
+
+func treeFromNodesProgressive(c *padding, leaves []*Node) (*Node, error) {
 	if len(leaves) == 0 {
-		return getEmptyNode(0), nil
+		return c.emptyNode(0), nil
 	}
 
-	// A nil leaf cannot be hashed and would panic later in Hash(); reject it at
-	// construction so the tree is always complete.
 	for i := range leaves {
 		if leaves[i] == nil {
 			return nil, fmt.Errorf("leaf at index %d is nil", i)
 		}
 	}
 
-	return treeFromNodesProgressiveImpl(leaves, 0)
+	return treeFromNodesProgressiveImpl(c, leaves, 0)
 }
 
 // treeFromNodesProgressiveImpl implements the recursive progressive tree construction
-func treeFromNodesProgressiveImpl(leaves []*Node, depth int) (*Node, error) {
+func treeFromNodesProgressiveImpl(c *padding, leaves []*Node, depth int) (*Node, error) {
 	if len(leaves) == 0 {
-		return getEmptyNode(0), nil
+		return c.emptyNode(0), nil
 	}
 
 	// Calculate base_size = 1 << depth (1, 4, 16, 64, 256...)
@@ -528,7 +544,7 @@ func treeFromNodesProgressiveImpl(leaves []*Node, depth int) (*Node, error) {
 	// Left child: binary merkleization of first baseSize nodes. baseSize is
 	// 1<<depth, so the binary subtree has exactly this depth.
 	leftNodes := leaves[:splitPoint]
-	leftChild, err := treeFromNodesToDepthFn(leftNodes, depth)
+	leftChild, err := treeFromNodesToDepthFn(c, leftNodes, depth)
 	if err != nil {
 		return nil, err
 	}
@@ -537,9 +553,9 @@ func treeFromNodesProgressiveImpl(leaves []*Node, depth int) (*Node, error) {
 	rightNodes := leaves[splitPoint:]
 	var rightChild *Node
 	if len(rightNodes) == 0 {
-		rightChild = getEmptyNode(0)
+		rightChild = c.emptyNode(0)
 	} else {
-		rightChild, err = treeFromNodesProgressiveImpl(rightNodes, depth+2)
+		rightChild, err = treeFromNodesProgressiveImpl(c, rightNodes, depth+2)
 		if err != nil {
 			return nil, err
 		}
@@ -579,11 +595,15 @@ func TreeFromNodesWithMixin(leaves []*Node, num, limit int) (*Node, error) {
 // sszutils.ErrChunkLimitFn's error, for the reason given on
 // TreeFromNodesWithMixin.
 func TreeFromNodesWithMixin64(leaves []*Node, num, limit uint64) (*Node, error) {
+	return treeFromNodesWithMixinChecked64(sha256Padding, leaves, num, limit)
+}
+
+func treeFromNodesWithMixinChecked64(c *padding, leaves []*Node, num, limit uint64) (*Node, error) {
 	if count := uint64(len(leaves)); limit > 0 && count > limit {
 		return nil, sszutils.ErrChunkLimitFn(count, limit)
 	}
 
-	return treeFromNodesWithMixin64(leaves, num, limit)
+	return treeFromNodesWithMixin64(c, leaves, num, limit)
 }
 
 // treeFromNodesWithMixin64 builds the tree for a leaf count the limit does not
@@ -591,7 +611,7 @@ func TreeFromNodesWithMixin64(leaves []*Node, num, limit uint64) (*Node, error) 
 // leaf reaches the root and no two values that differ share one. The walkers
 // reduce through this so a refused scope still produces the root they agree on;
 // the exported form above refuses the limit instead.
-func treeFromNodesWithMixin64(leaves []*Node, num, limit uint64) (*Node, error) {
+func treeFromNodesWithMixin64(c *padding, leaves []*Node, num, limit uint64) (*Node, error) {
 	count := uint64(len(leaves))
 	if limit == 0 {
 		// No limit: the tree is exactly as deep as the leaves require.
@@ -603,7 +623,7 @@ func treeFromNodesWithMixin64(leaves []*Node, num, limit uint64) (*Node, error) 
 
 	depth := chunkLimitDepth(limit)
 
-	mainTree, err := treeFromNodesToDepthFn(leaves, depth)
+	mainTree, err := treeFromNodesToDepthFn(c, leaves, depth)
 	if err != nil {
 		return nil, err
 	}
@@ -626,12 +646,15 @@ func TreeFromNodesProgressiveWithMixin(leaves []*Node, num int) (*Node, error) {
 // TreeFromNodesProgressiveWithMixin64 is the uint64 form of
 // TreeFromNodesProgressiveWithMixin.
 func TreeFromNodesProgressiveWithMixin64(leaves []*Node, num uint64) (*Node, error) {
-	mainTree, err := TreeFromNodesProgressive(leaves)
+	return treeFromNodesProgressiveWithMixin64(sha256Padding, leaves, num)
+}
+
+func treeFromNodesProgressiveWithMixin64(c *padding, leaves []*Node, num uint64) (*Node, error) {
+	mainTree, err := treeFromNodesProgressive(c, leaves)
 	if err != nil {
 		return nil, err
 	}
 
-	// Mixin length (same as binary version)
 	countLeaf := LeafFromUint64(num)
 	node := NewNodeWithLR(mainTree, countLeaf)
 	return node, nil
@@ -640,12 +663,16 @@ func TreeFromNodesProgressiveWithMixin64(leaves []*Node, num uint64) (*Node, err
 // TreeFromNodesProgressiveWithActiveFields constructs a progressive tree with active fields bitvector.
 // The progressive tree is created first, then mixed with the active fields.
 func TreeFromNodesProgressiveWithActiveFields(leaves []*Node, activeFields []byte) (*Node, error) {
-	mainTree, err := TreeFromNodesProgressive(leaves)
+	return treeFromNodesProgressiveWithActiveFields(sha256Padding, leaves, activeFields)
+}
+
+func treeFromNodesProgressiveWithActiveFields(c *padding, leaves []*Node, activeFields []byte) (*Node, error) {
+	mainTree, err := treeFromNodesProgressive(c, leaves)
 	if err != nil {
 		return nil, err
 	}
 
-	activeFieldsLeaf, err := activeFieldsNode(activeFields)
+	activeFieldsLeaf, err := activeFieldsNode(c, activeFields)
 	if err != nil {
 		return nil, err
 	}
@@ -658,7 +685,7 @@ func TreeFromNodesProgressiveWithActiveFields(leaves []*Node, activeFields []byt
 // mixed in beside the tree, as hasher.Hasher does: up to 256 bits are one chunk,
 // and a wider bitvector is merkleized to its root first so the fields past the
 // first chunk still reach the tree.
-func activeFieldsNode(activeFields []byte) (*Node, error) {
+func activeFieldsNode(c *padding, activeFields []byte) (*Node, error) {
 	if len(activeFields) <= 32 {
 		return LeafFromBytes(activeFields), nil
 	}
@@ -672,7 +699,25 @@ func activeFieldsNode(activeFields []byte) (*Node, error) {
 		chunks = append(chunks, LeafFromBytes(activeFields[off:end]))
 	}
 
-	return treeFromNodesToDepthFn(chunks, chunkLimitDepth(uint64(len(chunks))))
+	return treeFromNodesToDepthFn(c, chunks, chunkLimitDepth(uint64(len(chunks))))
+}
+
+// emptyDepth returns the depth of the zero subtree an empty node stands for.
+func emptyDepth(n *Node) int {
+	if n.value == zeroChunk {
+		return 0
+	}
+	if n.left == nil {
+		// A padding node made by NewEmptyNode carries only its root, which
+		// is one of SHA256.
+		depth, _ := hasher.GetZeroHashLevelBytes(n.value[:])
+		return depth
+	}
+	depth := 0
+	for ; n.left != nil; n = n.left {
+		depth++
+	}
+	return depth
 }
 
 // emptyChild returns the zero-padding child one level below an empty node.
@@ -680,11 +725,20 @@ func activeFieldsNode(activeFields []byte) (*Node, error) {
 // not matter. It reports false when the node is already the depth-0 zero leaf
 // (a gindex descending past it lies outside the tree's depth).
 func emptyChild(n *Node) (*Node, bool) {
+	if n.left != nil {
+		return n.left, true
+	}
+	// The zero chunk has nothing below it, under any hash.
+	if n.value == zeroChunk {
+		return nil, false
+	}
+	// A padding node made by NewEmptyNode carries only its root, which is
+	// one of SHA256.
 	depth, ok := hasher.GetZeroHashLevelBytes(n.value[:])
 	if !ok || depth < 1 {
 		return nil, false
 	}
-	return getEmptyNode(depth - 1), true
+	return sha256Padding.emptyNode(depth - 1), true
 }
 
 // Get fetches a node with the given general index.
@@ -756,6 +810,10 @@ type finalizeConfig struct {
 // recursive hashing of trees below the batching threshold alike. An error
 // from fn aborts finalization and is returned by Finalize. fn must support
 // in-place hashing: dst aliases the front of input.
+//
+// Deprecated: fn has to compute SHA256, the hash the tree was padded for. A
+// tree of another Algorithm is built and finalized by a Wrapper made with
+// WithAlgorithm.
 func WithHashFn(fn hasher.HashFn) FinalizeOption {
 	return func(c *finalizeConfig) {
 		c.fn = fn
@@ -784,6 +842,9 @@ func (n *Node) Finalize(opts ...FinalizeOption) error {
 
 // Left returns the left child node, or nil if this is a leaf.
 func (n *Node) Left() *Node {
+	if n.isEmpty {
+		return nil
+	}
 	return n.left
 }
 
@@ -794,7 +855,7 @@ func (n *Node) Right() *Node {
 
 // IsLeaf returns true if this node has no children (is a leaf node).
 func (n *Node) IsLeaf() bool {
-	return n.left == nil && n.right == nil
+	return n.isEmpty || (n.left == nil && n.right == nil)
 }
 
 // IsEmpty returns true if this node represents zero-padding: a position the
@@ -813,15 +874,6 @@ func (n *Node) Value() []byte {
 		return nil
 	}
 	return bytes.Clone(n.value[:])
-}
-
-func getEmptyNode(depth int) *Node {
-	emptyNodeInit.Do(func() {
-		for i := range emptyNodeCache {
-			emptyNodeCache[i] = NewEmptyNode(hasher.GetZeroHash(i))
-		}
-	})
-	return emptyNodeCache[depth]
 }
 
 // batchHashFn compresses a packed sequence of 64-byte sibling pairs into
@@ -1228,6 +1280,10 @@ func LeafFromBool(b bool) *Node {
 // split into 32-byte chunks that are merkleized into a subtree so the node
 // still hashes to a single 32-byte root.
 func LeafFromBytes(b []byte) *Node {
+	return leafFromBytes(sha256Padding, b)
+}
+
+func leafFromBytes(c *padding, b []byte) *Node {
 	l := len(b)
 	if l <= 32 {
 		return newLeaf(b)
@@ -1240,8 +1296,8 @@ func LeafFromBytes(b []byte) *Node {
 		leaves[i] = newLeaf(b[start:min(start+32, l)])
 	}
 
-	// limit is a power of two, so TreeFromNodes never returns an error here.
-	node, _ := TreeFromNodes(leaves, int(sszutils.NextPowerOfTwo(uint64(numChunks))))
+	// limit is a power of two, so treeFromNodes never returns an error here.
+	node, _ := treeFromNodes(c, leaves, int(sszutils.NextPowerOfTwo(uint64(numChunks))))
 	return node
 }
 
