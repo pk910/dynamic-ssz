@@ -886,21 +886,21 @@ func TestTypeCache_GetCompatFlag(t *testing.T) {
 	cache := NewTypeCache(ds)
 
 	// Test with empty compat flags
-	flag := cache.getCompatFlag(reflect.TypeOf(uint32(0)), reflect.TypeOf(uint32(0)))
+	flag := newBuilder(cache).getCompatFlag(reflect.TypeOf(uint32(0)), reflect.TypeOf(uint32(0)))
 	if flag != 0 {
 		t.Errorf("Expected 0 compat flag for uint32, got %d", flag)
 	}
 
 	// Test with pointer type
 	ptrType := reflect.TypeOf((*uint32)(nil))
-	flag = cache.getCompatFlag(ptrType, ptrType)
+	flag = newBuilder(cache).getCompatFlag(ptrType, ptrType)
 	if flag != 0 {
 		t.Errorf("Expected 0 compat flag for pointer type, got %d", flag)
 	}
 
 	// Add a compat flag and test
 	cache.CompatFlags["uint32"] = SszCompatFlagFastsszBufferMarshaler
-	flag = cache.getCompatFlag(reflect.TypeOf(uint32(0)), reflect.TypeOf(uint32(0)))
+	flag = newBuilder(cache).getCompatFlag(reflect.TypeOf(uint32(0)), reflect.TypeOf(uint32(0)))
 	if flag != SszCompatFlagFastsszBufferMarshaler {
 		t.Errorf("Expected SszCompatFlagMarshalSSZTo, got %d", flag)
 	}
@@ -5707,23 +5707,23 @@ func TestDelegatedStaticSize(t *testing.T) {
 	tc.buildMu.Lock()
 	defer tc.buildMu.Unlock()
 
-	sz, sized, err := tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticDynSizer{}))
+	sz, sized, err := newBuilder(tc).delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticDynSizer{}))
 	if err != nil || !sized || sz != 8 {
 		t.Errorf("dynssz sizer: size=%d sized=%v err=%v; want 8", sz, sized, err)
 	}
 
-	sz, sized, err = tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticFastSizer{}))
+	sz, sized, err = newBuilder(tc).delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticFastSizer{}))
 	if err != nil || !sized || sz != 16 {
 		t.Errorf("fastssz sizer: size=%d sized=%v err=%v; want 16", sz, sized, err)
 	}
 
-	if _, _, err = tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticNoSizer{})); err == nil {
+	if _, _, err = newBuilder(tc).delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticNoSizer{})); err == nil {
 		t.Error("no sizer: expected error")
 	}
 
 	// A sizer that refuses states no size, which describes the type without a
 	// fixed one rather than refusing the type.
-	if sz, sized, err := tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(delegatedNegSize{})); err != nil || sized || sz != 0 {
+	if sz, sized, err := newBuilder(tc).delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(delegatedNegSize{})); err != nil || sized || sz != 0 {
 		t.Errorf("refusing sizer: size=%d sized=%v err=%v; want no size and no error", sz, sized, err)
 	}
 }
@@ -6698,7 +6698,7 @@ func TestSizersRunWithoutBuildLock(t *testing.T) {
 	}
 	for _, test := range tests {
 		released = false
-		size, sized, err := tc.delegatedStaticSize(test.desc, test.typ)
+		size, sized, err := newBuilder(tc).delegatedStaticSize(test.desc, test.typ)
 		if err != nil || !sized || size != 8 {
 			t.Errorf("%s: size=%d sized=%v err=%v", test.name, size, sized, err)
 		}

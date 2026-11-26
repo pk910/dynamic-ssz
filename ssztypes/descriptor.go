@@ -13,8 +13,17 @@
 package ssztypes
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"math"
+	"math/bits"
 	"reflect"
+	"slices"
 	"unsafe"
+
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 // SszTypeFlag is a flag indicating whether a type has a specific SSZ type feature
@@ -142,6 +151,186 @@ type DynFieldDescriptor struct {
 	Field        *FieldDescriptor `json:"field"`
 	HeaderOffset int64            `json:"offset"`
 	Index        int32            `json:"index"` // Index of the field in the struct
+}
+
+// SetMinSize records the smallest number of bytes a value of this type can
+// serialize to. Decoders use it to reject an offset table that declares more
+// elements than the region can hold, before that count sizes an allocation.
+//
+// A type with no floor -- a list, an optional list -- keeps 0, which states
+// no bound rather than a wrong one. A bit list holds its termination bit, a
+// union its selector, an optional its presence byte and a big.Int its sign
+// byte, so each holds at least one byte.
+//
+// It is stored rather than derived at decode time because Len carries different
+// meanings per type (bytes for a container's fixed section, elements for a
+// vector), so the rule would otherwise be re-derived on every decode. Children
+// are read from their own cached value, so a recursive type resolves without
+// walking back into itself: a cycle's back edge simply contributes nothing.
+//
+// Both front ends record it, so the descriptor hashes agree. The reflection
+// cache resolves every size against the active spec; the code generator's
+// go/types parser records the static tag values and emits the bound as a
+// runtime expression instead (see minSizeExpr), since a preset may resolve
+// them smaller than the static defaults.
+func (td *TypeDescriptor) SetMinSize() {
+	// A static type serializes to exactly its size.
+	if td.SszTypeFlags&SszTypeFlagIsDynamic == 0 {
+		td.MinSize = td.Size
+		return
+	}
+
+	switch td.SszType {
+	case SszTypeWrapperType:
+		if td.ElemDesc != nil {
+			td.MinSize = td.ElemDesc.MinSize
+		}
+	case SszContainerType, SszProgressiveContainerType:
+		// The fixed section: every field's own size, and four offset bytes for
+		// each dynamic one.
+		td.MinSize = td.Len
+	case SszBitlistType, SszProgressiveBitlistType, SszUnionType, SszCompatibleUnionType, SszOptionalType, SszBigIntType:
+		// The termination bit's byte, the selector byte, the presence byte or
+		// the sign byte.
+		td.MinSize = 1
+	case SszVectorType:
+		// A vector of dynamic elements leads with one 4-byte offset per element,
+		// and every element costs at least its own minimum on top of that. Len is
+		// the element count here, not a byte size.
+		if td.ElemDesc != nil {
+			// An overflowing product would bound the region above the true floor
+			// and refuse valid input, so it states no bound instead. The product
+			// is formed in two words: checking it after it has wrapped would
+			// accept the wrapped value as a floor.
+			hi, lo := bits.Mul64(uint64(td.Len), 4+uint64(td.ElemDesc.MinSize))
+			if hi == 0 && lo <= math.MaxInt64 {
+				td.MinSize = int64(lo)
+			}
+		}
+	default:
+		// Everything else can serialize to nothing -- an empty list, an absent
+		// optional list -- so it states no floor.
+	}
+}
+
+// NoSszRootError reports that a limit-less list or bitlist cannot be hashed.
+// Both engines raise it where the root would be produced: the reflection engine
+// at hash time, the code generator while emitting the hash method.
+func NoSszRootError(desc *TypeDescriptor) error {
+	kind := sszTypeNameList
+	if desc.SszType == SszBitlistType {
+		kind = sszTypeNameBitlist
+	}
+
+	return sszutils.NewSszErrorf(sszutils.ErrExtendedTypeDisabled,
+		"%s has no ssz-max, so it has no SSZ hash tree root: add a limit, or enable extended types to hash it as an unbounded %s. If this is a view's data type, hash it through its view instead",
+		kind, kind)
+}
+
+// GetTypeHash computes a SHA-256 hash of the TypeDescriptor's JSON
+// representation. This hash uniquely identifies the type's SSZ layout and is
+// used by the code generator to detect when a type's structure has changed and
+// regeneration is needed.
+//
+// Recursive types form a cyclic descriptor graph that standard JSON
+// marshalling cannot represent; those fall back to a deterministic
+// reference-based serialization so distinct recursive layouts hash to
+// distinct values. Acyclic descriptors keep the plain JSON form.
+//
+// The hash covers that encoding, not the wire format: encoding/json emits
+// fields in declaration order, so reordering TypeDescriptor moves every hash
+// without changing any serialization. It identifies a layout within one
+// version of this package, not across versions.
+func (td *TypeDescriptor) GetTypeHash() [32]byte {
+	jsonDesc, err := json.Marshal(td)
+	if err != nil {
+		jsonDesc = marshalCyclicDescriptor(td)
+	}
+	hash := sha256.Sum256(jsonDesc)
+	return hash
+}
+
+// marshalCyclicDescriptor serializes a descriptor graph that contains cycles
+// into a deterministic byte representation for hashing. Standard JSON
+// marshalling fails on cyclic graphs, so each reachable descriptor is assigned
+// an index in a deterministic traversal order and serialized shallowly, with
+// child descriptors written as index references. Field metadata that normally
+// travels inside the nested JSON (names, indices) is emitted alongside the
+// references; dynamic-field layout is fully derived from the fields and flags,
+// so it needs no separate representation.
+func marshalCyclicDescriptor(root *TypeDescriptor) []byte {
+	index := map[*TypeDescriptor]int{}
+	order := []*TypeDescriptor{}
+
+	var walk func(desc *TypeDescriptor)
+	walk = func(desc *TypeDescriptor) {
+		if desc == nil {
+			return
+		}
+		if _, seen := index[desc]; seen {
+			return
+		}
+		index[desc] = len(order)
+		order = append(order, desc)
+
+		if desc.ContainerDesc != nil {
+			for i := range desc.ContainerDesc.Fields {
+				walk(desc.ContainerDesc.Fields[i].Type)
+			}
+		}
+		walk(desc.ElemDesc)
+		for _, key := range sortedVariantKeys(desc.UnionVariants) {
+			walk(desc.UnionVariants[key])
+		}
+	}
+	walk(root)
+
+	ref := func(desc *TypeDescriptor) int {
+		if desc == nil {
+			return -1
+		}
+		return index[desc]
+	}
+
+	var buf bytes.Buffer
+	for i, desc := range order {
+		shallow := *desc
+		shallow.ContainerDesc = nil
+		shallow.UnionVariants = nil
+		shallow.ElemDesc = nil
+		nodeJSON, _ := json.Marshal(&shallow)
+
+		fmt.Fprintf(&buf, "#%d:%s", i, nodeJSON)
+		if desc.ContainerDesc != nil {
+			for fi := range desc.ContainerDesc.Fields {
+				field := &desc.ContainerDesc.Fields[fi]
+				fmt.Fprintf(&buf, ";f:%s/%d/%d=%d", field.Name, field.SszIndex, field.FieldIndex, ref(field.Type))
+			}
+		}
+		if desc.ElemDesc != nil {
+			fmt.Fprintf(&buf, ";e=%d", ref(desc.ElemDesc))
+		}
+		for _, key := range sortedVariantKeys(desc.UnionVariants) {
+			fmt.Fprintf(&buf, ";u:%d=%d", key, ref(desc.UnionVariants[key]))
+		}
+		buf.WriteByte('\n')
+	}
+
+	return buf.Bytes()
+}
+
+// sortedVariantKeys returns the union variant keys in ascending order so the
+// traversal and serialization are deterministic across map iteration orders.
+func sortedVariantKeys(variants map[uint8]*TypeDescriptor) []uint8 {
+	if len(variants) == 0 {
+		return nil
+	}
+	keys := make([]uint8, 0, len(variants))
+	for key := range variants {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 // TypeWord returns the identity of a type: the type pointer in the

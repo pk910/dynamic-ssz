@@ -5,6 +5,7 @@
 package ssztypes
 
 import (
+	"fmt"
 	"math"
 	"reflect"
 	"slices"
@@ -322,6 +323,36 @@ func (b *builder) getTypeDescriptor(runtimeType, schemaType reflect.Type, sizeHi
 		FixupRecursiveFlags(held...)
 	}
 	return tc.publish(b, mark)
+}
+
+func (b *builder) getCompatFlag(runtimeType, schemaType reflect.Type) SszCompatFlag {
+	runtimeTypeName := runtimeType.Name()
+	runtimeTypePkgPath := runtimeType.PkgPath()
+	if runtimeTypePkgPath == "" && runtimeType.Kind() == reflect.Ptr {
+		runtimeTypePkgPath = runtimeType.Elem().PkgPath()
+	}
+
+	runtimeTypeKey := runtimeTypeName
+	if runtimeTypePkgPath != "" {
+		runtimeTypeKey = runtimeTypePkgPath + "." + runtimeTypeName
+	}
+
+	schemaTypeName := schemaType.Name()
+	schemaTypePkgPath := schemaType.PkgPath()
+	if schemaTypePkgPath == "" && schemaType.Kind() == reflect.Ptr {
+		schemaTypePkgPath = schemaType.Elem().PkgPath()
+	}
+
+	schemaTypeKey := schemaTypeName
+	if schemaTypePkgPath != "" {
+		schemaTypeKey = schemaTypePkgPath + "." + schemaTypeName
+	}
+
+	if runtimeTypeKey != schemaTypeKey {
+		runtimeTypeKey = fmt.Sprintf("%v|%v", runtimeTypeKey, schemaTypeKey)
+	}
+
+	return b.tc.CompatFlags[runtimeTypeKey]
 }
 
 // hintsMatchDefault reports whether a reference's type hints name, dimension
@@ -719,7 +750,7 @@ func (b *builder) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, schemaT
 	// descriptors qualify when they delegate through the dynamic view interface set.
 	// A type generated in the same run is reached through its generated methods
 	// and, when a reference declares it custom, frames as its own descriptor does.
-	sameRun := tc.noSpecResolution && callerTypeHinted && tc.getCompatFlag(runtimeType, schemaType) != 0
+	sameRun := tc.noSpecResolution && callerTypeHinted && b.getCompatFlag(runtimeType, schemaType) != 0
 	if staticAnnotation != nil && !hasExternalHints && !tc.NoDelegation && (!sameRun || sszType != SszCustomType) {
 		var fullyDelegated bool
 		promoted := tc.PromotedDelegationMethods(runtimeType)
@@ -729,7 +760,7 @@ func (b *builder) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, schemaT
 			// buildMu released.
 			if fullyDelegatesSSZView(runtimeType, promoted) {
 				view := *desc.CodegenInfo
-				tc.withoutBuildLock(func() { fullyDelegated = servesView(runtimeType, view) })
+				b.withoutBuildLock(func() { fullyDelegated = servesView(runtimeType, view) })
 			}
 		} else {
 			fullyDelegated = fullyDelegatesSSZ(runtimeType, promoted)
@@ -749,7 +780,7 @@ func (b *builder) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, schemaT
 				sized = true
 				desc.SszTypeFlags |= SszTypeFlagHasSizeExpr
 			case *staticAnnotation:
-				size, sized, err = tc.delegatedStaticSize(desc, runtimeType)
+				size, sized, err = b.delegatedStaticSize(desc, runtimeType)
 				if err != nil {
 					return err
 				}
@@ -762,7 +793,7 @@ func (b *builder) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, schemaT
 			} else {
 				desc.SszTypeFlags |= SszTypeFlagIsDynamic
 			}
-			tc.detectCompatFlags(desc, runtimeType, schemaType)
+			b.detectCompatFlags(desc, runtimeType, schemaType)
 			// Without traversal the descriptor cannot know whether the type uses
 			// spec-dependent sizes, so it must not fall back to the type's fastssz
 			// methods (which bake spec-independent values). The shallow path is
@@ -771,7 +802,7 @@ func (b *builder) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, schemaT
 			// those handle every operation correctly.
 			desc.SszCompatFlags &^= SszCompatFlagFastsszSurface | SszCompatFlagFastsszHashRoot | SszCompatFlagFastsszHashRootWith
 			desc.HashTreeRootWithMethod = nil
-			desc.SszTypeFlags |= tc.customSpecFlags(desc)
+			desc.SszTypeFlags |= b.customSpecFlags(desc)
 			// A shallow descriptor has no traversed subtree: a static one still
 			// knows its size, a dynamic one holds the floor its generation
 			// declared, resolved against the specs as generated code resolves
@@ -913,7 +944,7 @@ func (b *builder) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, schemaT
 		// read from the type's sizer: here on a zero value, by generated code at
 		// run time, so a descriptor built for generation refuses a width the
 		// generated code cannot ask for.
-		if tc.noSpecResolution && len(sizeHints) > 0 && sizeHints[0].Expr != "" && !getDynamicSizerCompatibility(runtimeType) && tc.getCompatFlag(runtimeType, schemaType)&SszCompatFlagDynamicSizer == 0 {
+		if tc.noSpecResolution && len(sizeHints) > 0 && sizeHints[0].Expr != "" && !getDynamicSizerCompatibility(runtimeType) && b.getCompatFlag(runtimeType, schemaType)&SszCompatFlagDynamicSizer == 0 {
 			return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "custom type %v declares its width from %q but has no spec-aware sizer: the generator cannot know that width, so declare it with a literal ssz-size", t, sizeHints[0].Expr)
 		}
 		switch {
@@ -950,7 +981,7 @@ func (b *builder) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, schemaT
 			// A static delegate, or one whose width an expression names that no
 			// value was supplied for and no literal stands in, is as wide as its
 			// sizer says: that is the width generated code frames it with.
-			size, sized, err := tc.delegatedStaticSize(desc, runtimeType)
+			size, sized, err := b.delegatedStaticSize(desc, runtimeType)
 			if err != nil {
 				return err
 			}
@@ -1034,7 +1065,7 @@ func (b *builder) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, schemaT
 		if !tc.ExtendedTypes {
 			return sszutils.NewSszError(sszutils.ErrExtendedTypeDisabled, "big integers are not supported in SSZ (use extended types option to enable it)")
 		}
-		err := tc.buildBigIntDescriptor(desc, runtimeType)
+		err := b.buildBigIntDescriptor(desc, runtimeType)
 		if err != nil {
 			return err
 		}
@@ -1044,7 +1075,7 @@ func (b *builder) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, schemaT
 		return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "bit size tag is only allowed for bitvector or bitlist types, got %v", desc.SszType)
 	}
 
-	tc.detectCompatFlags(desc, runtimeType, schemaType)
+	b.detectCompatFlags(desc, runtimeType, schemaType)
 
 	// Under NoDelegation a type that carries the complete dynamic surface is
 	// walked, static methods or not. A -legacy generation of a type with spec
@@ -1194,12 +1225,29 @@ func (b *builder) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, schemaT
 			}
 			return sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "custom ssz type %v is missing a fastssz or dynssz %s implementation", schemaType, strings.Join(missing, ", "))
 		}
-		desc.SszTypeFlags |= tc.customSpecFlags(desc)
+		desc.SszTypeFlags |= b.customSpecFlags(desc)
 	}
 
 	desc.SetMinSize()
 
 	return nil
+}
+
+// customSpecFlags returns the flag a custom type raises for the spec values it
+// may use. A custom type is not traversed, so what it does with a spec value
+// is not seen; its methods say it instead. One that carries a spec-aware
+// method takes the spec set and is treated as depending on it, which the
+// types that hold it derive like any other child flag: none of them is served
+// by a static method that baked the values in. A custom type with static
+// methods only cannot depend on the spec and raises nothing.
+func (b *builder) customSpecFlags(desc *TypeDescriptor) SszTypeFlag {
+	if desc.SszType != SszCustomType || desc.SszCompatFlags&SszCompatFlagDynamicMethods == 0 {
+		return 0
+	}
+	if b.tc.noSpecResolution {
+		return SszTypeFlagHasMaxExpr
+	}
+	return SszTypeFlagHasDynamicMax
 }
 
 // missingDelegatedOperations names the SSZ operations a set of compatibility
@@ -1233,6 +1281,68 @@ func unresolvedReason(resolved bool) string {
 	}
 
 	return "is not defined and has no positive static fallback"
+}
+
+// detectCompatFlags records which SSZ delegation interfaces (fastssz, dynamic,
+// dynamic-view, and HashTreeRootWith) the type implements. The fastssz family
+// is only flagged when no resolved spec value below the type differs from the
+// static tags: a fastssz method baked those in, enforces them on every
+// operation, and so cannot answer for a value that resolves them differently.
+func (b *builder) detectCompatFlags(desc *TypeDescriptor, runtimeType, schemaType reflect.Type) {
+	if desc.SszTypeFlags&(SszTypeFlagHasDynamicSize|SszTypeFlagHasDynamicMax) == 0 {
+		desc.SszCompatFlags |= getFastsszCompatFlags(runtimeType)
+		if getFastsszHashCompatibility(runtimeType) {
+			desc.SszCompatFlags |= SszCompatFlagFastsszHashRoot
+		}
+		if method := getHashTreeRootWithCompatibility(runtimeType); method != nil {
+			desc.HashTreeRootWithMethod = method
+			desc.SszCompatFlags |= SszCompatFlagFastsszHashRootWith
+		}
+	}
+
+	// Check for dynamic interface implementations
+	if getDynamicMarshalerCompatibility(runtimeType) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicMarshaler
+	}
+	if getDynamicUnmarshalerCompatibility(runtimeType) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicUnmarshaler
+	}
+	if getDynamicEncoderCompatibility(runtimeType) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicEncoder
+	}
+	if getDynamicDecoderCompatibility(runtimeType) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicDecoder
+	}
+	if getDynamicSizerCompatibility(runtimeType) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicSizer
+	}
+	if getDynamicHashRootCompatibility(runtimeType) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicHashRoot
+	}
+
+	// Check for dynamic view interface implementations (for fork-dependent SSZ schemas).
+	// View interfaces are checked on runtimeType because the methods are implemented
+	// on the runtime type, while schemaType only defines the SSZ layout.
+	if getDynamicViewMarshalerCompatibility(runtimeType) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicViewMarshaler
+	}
+	if getDynamicViewUnmarshalerCompatibility(runtimeType) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicViewUnmarshaler
+	}
+	if getDynamicViewEncoderCompatibility(runtimeType) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicViewEncoder
+	}
+	if getDynamicViewDecoderCompatibility(runtimeType) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicViewDecoder
+	}
+	if getDynamicViewSizerCompatibility(runtimeType) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicViewSizer
+	}
+	if getDynamicViewHashRootCompatibility(runtimeType) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicViewHashRoot
+	}
+
+	desc.SszCompatFlags |= b.getCompatFlag(runtimeType, schemaType)
 }
 
 // fullyDelegatesSSZ reports whether the type declares the complete set of
@@ -1269,6 +1379,77 @@ func fullyDelegatesSSZView(runtimeType reflect.Type, promoted map[string]bool) b
 			(getDynamicViewDecoderCompatibility(runtimeType) && !promoted["UnmarshalSSZDecoderView"])) &&
 		getDynamicViewSizerCompatibility(runtimeType) && !promoted["SizeSSZDynView"] &&
 		getDynamicViewHashRootCompatibility(runtimeType) && !promoted["HashTreeRootWithDynView"]
+}
+
+// delegatedStaticSize returns the fixed SSZ byte size of a fully-delegated static
+// type by invoking the type's own sizer on a zero value. A static type's sizer
+// derives its result from constants and spec values only — never from field data
+// — so a zero value yields the correct size, and spec-dependent fixed sizes are
+// resolved against the cache's specs. View descriptors use the view sizer.
+//
+// The sizer is user code and may call back into the instance, so it runs with
+// buildMu released; one that depends on the type being built recurses without
+// bound. The caller holds buildMu.
+func (b *builder) delegatedStaticSize(desc *TypeDescriptor, runtimeType reflect.Type) (int64, bool, error) {
+	specs := b.tc.specs // never nil: NewTypeCache substitutes emptySpecs{}
+	zero := reflect.New(runtimeType).Interface()
+
+	// A sizer returns int; its result enters the size domain here, so it is
+	// bounded to the SSZ size range like every other size. A refusal states no
+	// size at all -- a spec value the cache cannot resolve reads the same as an
+	// over-limit total through that one return -- so the type is described
+	// without a fixed size rather than refused, and the size is asked for again
+	// where a caller can be told why it cannot be given.
+	validate := func(n int) (int64, bool, error) {
+		if n < 0 {
+			return 0, false, nil
+		}
+		if n > sszutils.MaxSszSize {
+			return 0, false, sszutils.NewSszErrorf(sszutils.SizeLimitSentinel(uint64(n)), "sizer for static type %v returned out-of-range size %d", runtimeType, n)
+		}
+
+		return int64(n), true, nil
+	}
+
+	if desc.GoTypeFlags&GoTypeFlagIsView != 0 {
+		if sizer, ok := zero.(sszutils.DynamicViewSizer); ok && desc.CodegenInfo != nil {
+			view := *desc.CodegenInfo
+			n, served := 0, false
+			b.withoutBuildLock(func() {
+				if sizeFn := sizer.SizeSSZDynView(view); sizeFn != nil {
+					n, served = sizeFn(specs), true
+				}
+			})
+			if served {
+				return validate(n)
+			}
+		}
+		return 0, false, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "static view type %v does not provide a usable view sizer", runtimeType)
+	}
+
+	// Non-view static types may size themselves through either the dynssz sizer
+	// (spec-aware) or the fastssz sizer. Fully-delegated callers always provide
+	// the DynamicSizer; a static custom type may instead provide only fastssz.
+	if sizer, ok := zero.(sszutils.DynamicSizer); ok {
+		var n int
+		b.withoutBuildLock(func() { n = sizer.SizeSSZDyn(specs) })
+		return validate(n)
+	}
+	if sizer, ok := zero.(sszutils.FastsszSizer); ok {
+		var n int
+		b.withoutBuildLock(func() { n = sizer.SizeSSZ() })
+		return validate(n)
+	}
+	return 0, false, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "static type %v provides no usable sizer", runtimeType)
+}
+
+// withoutBuildLock runs fn (user code) with buildMu released and takes it
+// again, also when fn panics. The caller holds buildMu and must not rely on
+// shared cache state across the call.
+func (b *builder) withoutBuildLock(fn func()) {
+	b.tc.buildMu.Unlock()
+	defer b.tc.buildMu.Lock()
+	fn()
 }
 
 // buildTypeWrapperDescriptor builds a descriptor for TypeWrapper types with runtime/schema pairing.
@@ -1723,7 +1904,7 @@ func (b *builder) buildCompatibleUnionDescriptor(desc *TypeDescriptor, runtimeTy
 	desc.SszTypeFlags |= SszTypeFlagIsDynamic
 
 	// Extract the schema descriptor type from the generic type parameter (determines SSZ layout)
-	schemaDescriptorType, err := tc.extractGenericTypeParameter(schemaType)
+	schemaDescriptorType, err := extractGenericTypeParameter(schemaType)
 	if err != nil {
 		return err
 	}
@@ -1743,7 +1924,7 @@ func (b *builder) buildCompatibleUnionDescriptor(desc *TypeDescriptor, runtimeTy
 	// Extract runtime variant info if using view descriptor
 	var runtimeVariantMap map[string]reflect.Type
 	if isViewDescriptor {
-		runtimeDescriptorType, err := tc.extractGenericTypeParameter(runtimeType)
+		runtimeDescriptorType, err := extractGenericTypeParameter(runtimeType)
 		if err != nil {
 			return sszutils.ErrorWithPath(err, "(union)")
 		}
@@ -1798,7 +1979,7 @@ func (b *builder) buildUnionDescriptor(desc *TypeDescriptor, runtimeType, schema
 	desc.Size = 0
 	desc.SszTypeFlags |= SszTypeFlagIsDynamic
 
-	schemaDescriptorType, err := tc.extractGenericTypeParameter(schemaType)
+	schemaDescriptorType, err := extractGenericTypeParameter(schemaType)
 	if err != nil {
 		return err
 	}
@@ -1815,7 +1996,7 @@ func (b *builder) buildUnionDescriptor(desc *TypeDescriptor, runtimeType, schema
 
 	var runtimeVariantMap map[string]reflect.Type
 	if isViewDescriptor {
-		runtimeDescriptorType, err := tc.extractGenericTypeParameter(runtimeType)
+		runtimeDescriptorType, err := extractGenericTypeParameter(runtimeType)
 		if err != nil {
 			return sszutils.ErrorWithPath(err, "(union)")
 		}
@@ -1959,7 +2140,7 @@ func (b *builder) buildOptionalListDescriptor(desc *TypeDescriptor, runtimeType,
 }
 
 // buildBigIntDescriptor builds a descriptor for ssz big int types
-func (tc *TypeCache) buildBigIntDescriptor(desc *TypeDescriptor, runtimeType reflect.Type) error {
+func (b *builder) buildBigIntDescriptor(desc *TypeDescriptor, runtimeType reflect.Type) error {
 	// A big integer is read and written through big.Int's methods, whether
 	// the type was detected or hinted, so the runtime type has to be big.Int.
 	if runtimeType != bigIntType {
@@ -2241,4 +2422,115 @@ func (b *builder) buildListDescriptor(desc *TypeDescriptor, runtimeType, schemaT
 	MarkNoSszRoot(tc.ExtendedTypes, desc)
 
 	return nil
+}
+
+// RejectMaxOnVector rejects a limit declared for a dimension that is fixed
+// with a different length. A vector's length is its type, so it has no
+// capacity left to bound: a diverging limit describes nothing and was being
+// ignored, which reads as a bounded list to anyone writing the tag. A limit
+// equal to the fixed length is accepted — it states what the type already
+// says, and tags are positional, so the common spelling that bounds an outer
+// list repeats the inner vector's length in both families
+// ([][48]byte `ssz-size:"?,48" ssz-max:"4096,48"`). It is shared by the
+// reflection type cache and the code generator's parser so both read the same
+// tags the same way.
+//
+// The dimension is fixed either because ssz-size gave it a length or because
+// the Go type is an array, so this catches both spellings; arrayLen carries
+// the Go array length (0 otherwise). Only the dimension being built is
+// examined: an outer array of bounded lists carries `?` for its own dimension
+// and its limits belong to the inner ones.
+func RejectMaxOnVector(sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, arrayLen uint64, typeName string) error {
+	if len(maxSizeHints) == 0 || maxSizeHints[0].NoValue {
+		return nil
+	}
+
+	// A limit that only exists as an unresolved expression, or the ssz-max:"0"
+	// placeholder, states no capacity either.
+	if maxSizeHints[0].Size == 0 {
+		return nil
+	}
+
+	// The length this dimension is fixed to, mirroring how the vector builders
+	// resolve it: an explicit size hint wins over the Go array's own length. A
+	// bit-sized hint counts bits where the limit counts elements, so it grants
+	// no equality; a purely symbolic length cannot be compared either.
+	fixedLen := arrayLen
+	if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
+		fixedLen = uint64(sizeHints[0].Size)
+		if sizeHints[0].Bits {
+			fixedLen = 0
+		}
+	}
+	if fixedLen != 0 && maxSizeHints[0].Size == fixedLen {
+		return nil
+	}
+
+	return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint,
+		"ssz-max %d is declared for %s, whose length is fixed: a vector has no capacity to bound (a limit equal to the length is accepted; anything else needs ssz-size or ssz-max, not both, for one dimension)",
+		maxSizeHints[0].Size, typeName)
+}
+
+// MarkNoSszRoot flags a list or bitlist that carries no limit, unless extended
+// types are enabled. It is shared by the reflection type cache and the code
+// generator's parser so both classify the same types the same way.
+//
+// A limit is part of the type in SSZ: List[T, N] and Bitlist[N] need N to
+// merkleize, so a list without one has no defined hash tree root. The library
+// still hashes it -- merkleizing to the chunks the value occupies and mixing in
+// the length, so the root at least identifies the value -- but that root is
+// outside the spec and no other implementation will agree on it, which is why
+// it is an opt-in extension rather than the default.
+//
+// Serialization is unaffected: a limit only bounds a list, and encoding and
+// decoding never need it. So the flag is set here but only acted on where the
+// root is produced, which also keeps a view's data type usable: it carries no
+// tags because the layout lives in the view schema, and hashing it through the
+// view uses the view's descriptor, which does have the limit.
+//
+// A progressive list or bitlist is unbounded by design (EIP-7916) and is
+// unaffected.
+func MarkNoSszRoot(extendedTypes bool, desc *TypeDescriptor) {
+	if extendedTypes || desc.SszTypeFlags&SszTypeFlagHasLimit != 0 {
+		return
+	}
+
+	// A limit carried by a dynssz-max expression is still a limit; it is just
+	// not resolvable yet. That is the documented ssz-max:"0" placeholder
+	// pattern, and it is how the code generator sees every spec-driven limit,
+	// since spec values only exist at runtime.
+	if desc.MaxExpression != nil {
+		return
+	}
+
+	if desc.SszType == SszListType || desc.SszType == SszBitlistType {
+		desc.SszTypeFlags |= SszTypeFlagNoSszRoot
+	}
+}
+
+// extractGenericTypeParameter extracts the generic type parameter from a CompatibleUnion type.
+// This uses reflection to call the GetDescriptorType method on the union type.
+func extractGenericTypeParameter(unionType reflect.Type) (reflect.Type, error) {
+	// Create a zero value of the union type to call methods on
+	unionValue := reflect.New(unionType)
+
+	// Get the GetDescriptorType method
+	method := unionValue.MethodByName("GetDescriptorType")
+	if !method.IsValid() {
+		return nil, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "GetDescriptorType method not found on type %s", unionType)
+	}
+
+	// Call the method to get the descriptor type
+	results := method.Call(nil)
+	if len(results) == 0 {
+		return nil, sszutils.NewSszError(sszutils.ErrMissingInterface, "GetDescriptorType returned no results")
+	}
+
+	// Extract the reflect.Type from the result
+	descriptorType, ok := results[0].Interface().(reflect.Type)
+	if !ok {
+		return nil, sszutils.NewSszError(sszutils.ErrMissingInterface, "GetDescriptorType did not return a reflect.Type")
+	}
+
+	return descriptorType, nil
 }
