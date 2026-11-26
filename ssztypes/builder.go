@@ -62,12 +62,6 @@ type builder struct {
 	// order lists the completed descriptors not yet published, in completion
 	// order.
 	order []builtRef
-	// startSeq is the publishSeq up to which the build uses published
-	// descriptors (see lookup and withoutBuildLock).
-	startSeq uint64
-	// frozen stops startSeq from advancing: another build published a type
-	// this build has under construction.
-	frozen bool
 }
 
 // noOpenCycle is the value of builder.openCycle outside of an open cycle.
@@ -77,7 +71,6 @@ const noOpenCycle = math.MaxInt
 func newBuilder(tc *TypeCache) *builder {
 	return &builder{
 		tc:            tc,
-		startSeq:      tc.publishSeq,
 		openCycle:     noOpenCycle,
 		building:      make(map[typeKey][]*buildEntry, 8),
 		buildingTypes: make(map[reflect.Type]int, 8),
@@ -124,22 +117,22 @@ func dimensionType(t reflect.Type, dim int) reflect.Type {
 }
 
 // lookup returns the descriptor for key and hints that this build completed or
-// that was published at or before startSeq, or nil. The caller holds buildMu.
+// that is published, or nil. The caller holds buildMu.
 func (b *builder) lookup(key typeKey, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) *TypeDescriptor {
 	if len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0 {
 		if desc := b.builtPlain[key]; desc != nil {
 			return desc
 		}
-		return b.tc.publishedPlain(key, b.startSeq)
+		return b.tc.lookupPublished(key.runtime, key.schema)
 	}
 	// Hint-carrying builds are cached per exact hint combination: the same
 	// (type, hints) pair recurs across every container referencing the type,
 	// and the descriptor depends only on the type pair, the hints and the
 	// cache configuration.
-	if desc := findVariant(b.builtHinted[key], sizeHints, maxSizeHints, typeHints, math.MaxUint64); desc != nil {
+	if desc := findVariant(b.builtHinted[key], sizeHints, maxSizeHints, typeHints); desc != nil {
 		return desc
 	}
-	return findVariant(b.tc.hinted[key], sizeHints, maxSizeHints, typeHints, b.startSeq)
+	return findVariant(b.tc.hinted[key], sizeHints, maxSizeHints, typeHints)
 }
 
 // derefType strips pointers from t.
@@ -325,33 +318,6 @@ func (b *builder) getTypeDescriptor(runtimeType, schemaType reflect.Type, sizeHi
 		FixupRecursiveFlags(desc)
 	}
 	return tc.publish(b, mark), nil
-}
-
-// withoutBuildLock runs fn (user code) with buildMu released and takes it
-// again, also when fn panics. Afterwards the build uses what other builds
-// published meanwhile, unless that includes a type it has under construction:
-// it then keeps building against what it used so far, and publish replaces
-// its copies with the published descriptors. The caller holds buildMu.
-func (b *builder) withoutBuildLock(fn func()) {
-	tc := b.tc
-	seq := tc.publishSeq
-	func() {
-		tc.buildMu.Unlock()
-		defer tc.buildMu.Lock()
-		fn()
-	}()
-	if b.frozen || tc.publishSeq == seq {
-		return
-	}
-	for key, entries := range b.building {
-		for _, entry := range entries {
-			if tc.publishedDesc(key, &entry.hintSet, tc.publishSeq) != nil {
-				b.frozen = true
-				return
-			}
-		}
-	}
-	b.startSeq = tc.publishSeq
 }
 
 // hintsMatchDefault reports whether a reference's type hints name, dimension
@@ -759,7 +725,7 @@ func (b *builder) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, schemaT
 			// buildMu released.
 			if fullyDelegatesSSZView(runtimeType, promoted) {
 				view := *desc.CodegenInfo
-				b.withoutBuildLock(func() { fullyDelegated = servesView(runtimeType, view) })
+				tc.withoutBuildLock(func() { fullyDelegated = servesView(runtimeType, view) })
 			}
 		} else {
 			fullyDelegated = fullyDelegatesSSZ(runtimeType, promoted)
@@ -779,7 +745,7 @@ func (b *builder) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, schemaT
 				sized = true
 				desc.SszTypeFlags |= SszTypeFlagHasSizeExpr
 			case *staticAnnotation:
-				size, sized, err = b.delegatedStaticSize(desc, runtimeType)
+				size, sized, err = tc.delegatedStaticSize(desc, runtimeType)
 				if err != nil {
 					return err
 				}
@@ -980,7 +946,7 @@ func (b *builder) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, schemaT
 			// A static delegate, or one whose width an expression names that no
 			// value was supplied for and no literal stands in, is as wide as its
 			// sizer says: that is the width generated code frames it with.
-			size, sized, err := b.delegatedStaticSize(desc, runtimeType)
+			size, sized, err := tc.delegatedStaticSize(desc, runtimeType)
 			if err != nil {
 				return err
 			}

@@ -5697,23 +5697,23 @@ func TestDelegatedStaticSize(t *testing.T) {
 	tc.buildMu.Lock()
 	defer tc.buildMu.Unlock()
 
-	sz, sized, err := newBuilder(tc).delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticDynSizer{}))
+	sz, sized, err := tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticDynSizer{}))
 	if err != nil || !sized || sz != 8 {
 		t.Errorf("dynssz sizer: size=%d sized=%v err=%v; want 8", sz, sized, err)
 	}
 
-	sz, sized, err = newBuilder(tc).delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticFastSizer{}))
+	sz, sized, err = tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticFastSizer{}))
 	if err != nil || !sized || sz != 16 {
 		t.Errorf("fastssz sizer: size=%d sized=%v err=%v; want 16", sz, sized, err)
 	}
 
-	if _, _, err = newBuilder(tc).delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticNoSizer{})); err == nil {
+	if _, _, err = tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticNoSizer{})); err == nil {
 		t.Error("no sizer: expected error")
 	}
 
 	// A sizer that refuses states no size, which describes the type without a
 	// fixed one rather than refusing the type.
-	if sz, sized, err := newBuilder(tc).delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(delegatedNegSize{})); err != nil || sized || sz != 0 {
+	if sz, sized, err := tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(delegatedNegSize{})); err != nil || sized || sz != 0 {
 		t.Errorf("refusing sizer: size=%d sized=%v err=%v; want no size and no error", sz, sized, err)
 	}
 }
@@ -6441,10 +6441,11 @@ type (
 	raceB struct{ A *raceA }
 )
 
-// reachableSeqs reads the publication stamp of every descriptor reachable from
-// desc, the way a reader walking a published graph reads its nodes.
-func reachableSeqs(desc *TypeDescriptor) uint64 {
-	var sum uint64
+// reachableFlags reads the type flags of every descriptor reachable from desc,
+// the way a reader walking a published graph reads its nodes, and returns
+// their union.
+func reachableFlags(desc *TypeDescriptor) SszTypeFlag {
+	var sum SszTypeFlag
 	seen := make(map[*TypeDescriptor]bool, 8)
 	var walk func(d *TypeDescriptor)
 	walk = func(d *TypeDescriptor) {
@@ -6452,7 +6453,7 @@ func reachableSeqs(desc *TypeDescriptor) uint64 {
 			return
 		}
 		seen[d] = true
-		sum += d.publishSeq
+		sum |= d.SszTypeFlags
 		if d.ContainerDesc != nil {
 			for i := range d.ContainerDesc.Fields {
 				walk(d.ContainerDesc.Fields[i].Type)
@@ -6482,8 +6483,8 @@ func TestPublishWritesNothingReachable(t *testing.T) {
 		}()
 		for finished := false; ; {
 			if member := cache.lookupPublished(memberType, memberType); member != nil {
-				if reachableSeqs(member) == 0 {
-					t.Fatal("a published graph holds unstamped descriptors")
+				if reachableFlags(member)&SszTypeFlagRecursionMember == 0 {
+					t.Fatal("a published cycle holds no descriptor marked as a recursion member")
 				}
 				break
 			}
