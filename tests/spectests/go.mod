@@ -12,6 +12,8 @@ require (
 	gopkg.in/yaml.v2 v2.4.0
 )
 
+require github.com/pk910/keccaktree v0.0.0-20261107050236-6ede9ab1aacf // indirect
+
 require (
 	github.com/OffchainLabs/go-bitfield v0.0.0-20251031151322-f427d04d8506 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect

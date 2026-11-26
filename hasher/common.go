@@ -9,12 +9,12 @@
 package hasher
 
 import (
-	"bytes"
-	"crypto/sha256"
 	"fmt"
 	"hash"
 	"math/bits"
+	"reflect"
 	"sync"
+	"sync/atomic"
 
 	"github.com/pk910/dynamic-ssz/sszutils"
 	hashtree "github.com/pk910/hashtree-bindings"
@@ -22,79 +22,41 @@ import (
 
 var debug = false
 
-// DefaultHasherPool is a default hasher pool
+// DefaultHasherPool is the hasher pool of SHA256Native
 var DefaultHasherPool HasherPool
 
-// FastHasherPool is the fast hasher pool that uses the hashtree library if cgo is enabled
+// FastHasherPool is the hasher pool of SHA256, which uses the hashtree library if cgo is enabled
 var FastHasherPool HasherPool = HasherPool{
 	HashFn: hashtree.HashByteSlice,
 }
 
-var hasherInitOnce sync.Once
-var zeroHashes [65][32]byte
-var zeroHashLevels map[string]int
-var zeroHashLevelsBytes map[[32]byte]int
-var zeroBytes []byte
+var zeroBytes = sszutils.ZeroBytes()
 
-func initHasher() {
-	hasherInitOnce.Do(func() {
-		zeroBytes = sszutils.ZeroBytes()
-		zeroHashLevels = make(map[string]int)
-		zeroHashLevelsBytes = make(map[[32]byte]int)
-		zeroHashLevels[string(zeroBytes[:32])] = 0
-		zeroHashLevelsBytes[[32]byte{}] = 0
-
-		tmp := [64]byte{}
-		for i := range 64 {
-			copy(tmp[:32], zeroHashes[i][:])
-			copy(tmp[32:], zeroHashes[i][:])
-			zeroHashes[i+1] = sha256.Sum256(tmp[:])
-			zeroHashLevels[string(zeroHashes[i+1][:])] = i + 1
-			zeroHashLevelsBytes[zeroHashes[i+1]] = i + 1
-		}
-	})
-}
-
-// GetZeroHashLevel returns the merkle tree depth level for a known zero hash.
-// Returns the level and true if the hash is a recognized zero hash, or 0 and
-// false otherwise.
+// GetZeroHashLevel returns the merkle tree depth level for a known SHA256
+// zero hash. Returns the level and true if the hash is a recognized zero
+// hash, or 0 and false otherwise.
 func GetZeroHashLevel(hash string) (int, bool) {
-	initHasher()
-	level, ok := zeroHashLevels[hash]
-	return level, ok
+	return SHA256.ZeroHashLevel([]byte(hash))
 }
 
-// GetZeroHashLevelBytes returns the merkle tree depth level for a known zero hash.
-// Returns the level and true if the hash is a recognized zero hash, or 0 and false otherwise.
+// GetZeroHashLevelBytes returns the merkle tree depth level for a known
+// SHA256 zero hash. Returns the level and true if the hash is a recognized
+// zero hash, or 0 and false otherwise.
 func GetZeroHashLevelBytes(hash []byte) (int, bool) {
-	initHasher()
-	if len(hash) != 32 {
-		return 0, false
-	}
-	var key [32]byte
-	copy(key[:], hash)
-	level, ok := zeroHashLevelsBytes[key]
-	return level, ok
+	return SHA256.ZeroHashLevel(hash)
 }
 
-// GetZeroHash returns a copy of the precomputed zero hash at the given merkle
-// tree depth; the caller owns it. Depths outside the supported range are
-// clamped to the nearest valid level.
+// GetZeroHash returns a copy of the precomputed SHA256 zero hash at the given
+// merkle tree depth; the caller owns it. Depths outside the supported range
+// are clamped to the nearest valid level.
 func GetZeroHash(depth int) []byte {
-	initHasher()
-	if depth < 0 {
-		depth = 0
-	} else if depth >= len(zeroHashes) {
-		depth = len(zeroHashes) - 1
-	}
-	return bytes.Clone(zeroHashes[depth][:])
+	return SHA256.ZeroHash(depth)
 }
 
-// GetZeroHashes returns the full array of precomputed zero hashes for all 65
-// merkle tree depth levels.
+// GetZeroHashes returns the full array of precomputed SHA256 zero hashes for
+// all 65 merkle tree depth levels.
 func GetZeroHashes() [65][32]byte {
-	initHasher()
-	return zeroHashes
+	return SHA256.ZeroHashes()
 }
 
 func logfn(format string, a ...any) {
@@ -158,9 +120,42 @@ func WithDefaultHasher(fn func(hh sszutils.HashWalker) error) error {
 }
 
 // HasherPool may be used for pooling Hashers for similarly typed SSZs.
+//
+// The pool of an Algorithm is the one its Pool method returns. A pool created
+// outside this package hashes with the Algorithm derived from its HashFn, as
+// NewHasherWithHashFn derives it, and with SHA256Native when it has none; set
+// HashFn before the pool is used.
 type HasherPool struct {
 	HashFn HashFn
+	alg    *Algorithm
+	own    atomic.Pointer[ownAlgorithm]
 	pool   sync.Pool
+}
+
+// ownAlgorithm is the Algorithm a pool derived from its HashFn, with the code
+// of that function.
+type ownAlgorithm struct {
+	code uintptr
+	alg  *Algorithm
+}
+
+// Algorithm returns the Algorithm the hashers of the pool compress with.
+func (hh *HasherPool) Algorithm() *Algorithm {
+	if hh.alg != nil {
+		return hh.alg
+	}
+	if hh.HashFn == nil {
+		return SHA256Native
+	}
+
+	code := reflect.ValueOf(hh.HashFn).Pointer()
+	if own := hh.own.Load(); own != nil && own.code == code {
+		return own.alg
+	}
+	alg := algorithmOfFn(hh.HashFn)
+	hh.own.Store(&ownAlgorithm{code: code, alg: alg})
+
+	return alg
 }
 
 // CurrentHashFn reports the function the pool hands its hashers, which is the
@@ -170,17 +165,20 @@ func (hh *HasherPool) CurrentHashFn() HashFn {
 	if hh.HashFn != nil {
 		return hh.HashFn
 	}
-	return defaultHashFn()
+	return defaultHash
 }
 
 // Get acquires a Hasher from the pool.
 func (hh *HasherPool) Get() *Hasher {
+	alg := hh.Algorithm()
 	h := hh.pool.Get()
 	if h == nil {
-		return NewHasherWithHashFn(hh.CurrentHashFn())
+		return newHasher(alg)
 	}
 	hasher, _ := h.(*Hasher)
-	hasher.hash = hh.CurrentHashFn()
+	hasher.alg = alg
+	hasher.hash = alg.HashFn()
+	hasher.zero = alg.zero()
 	return hasher
 }
 
