@@ -6754,6 +6754,104 @@ func TestGetAllTypesListsEachPairOnce(t *testing.T) {
 }
 
 type (
+	ownHead struct {
+		Kids []*ownMember `ssz-max:"4"`
+		D    []uint64     `ssz-max:"8" dynssz-max:"OWN_MAX"`
+	}
+	ownMember struct {
+		T ownInside `ssz-type:"custom"`
+		X uint64
+	}
+	ownInside struct {
+		Up []*ownHead `ssz-max:"4"`
+	}
+
+	ownLoopHead struct {
+		Kids []*ownLoopMember `ssz-max:"4"`
+	}
+	ownLoopMember struct {
+		Up []*ownLoopHead `ssz-max:"4"`
+		T  ownLoop        `ssz-type:"custom"`
+	}
+	ownLoop struct {
+		Self []*ownLoop `ssz-max:"4"`
+	}
+	ownLoopUser struct {
+		Kids []*ownLoopUser `ssz-max:"4"`
+		T    *ownLoop
+	}
+
+	ownAfterHead struct {
+		Cs []*ownAfterMember `ssz-max:"4"`
+		D  []uint64          `ssz-max:"8" dynssz-max:"OWN_MAX"`
+	}
+	ownAfterMember struct {
+		Up []*ownAfterHead `ssz-max:"4"`
+	}
+	ownAfter     struct{ C ownAfterMember }
+	ownAfterRoot struct {
+		H *ownAfterHead
+		W ownAfter `ssz-type:"custom"`
+	}
+)
+
+// A cache that builds for code generation describes a custom type generated
+// in the same run by its own descriptor, which the referencing descriptor
+// does not link to. That descriptor gets the flags of a recursive cycle it is
+// built alongside like every linked one, so its flags do not depend on which
+// type was requested first, and it is not written once it is published.
+func TestSameRunCustomDescriptorFlags(t *testing.T) {
+	methods := SszCompatFlagDynamicMarshaler | SszCompatFlagDynamicUnmarshaler | SszCompatFlagDynamicSizer | SszCompatFlagDynamicHashRoot
+	newCache := func() *TypeCache {
+		cache := NewTypeCache(nil)
+		cache.DisableSpecResolution()
+		for _, name := range []string{"ownInside", "ownLoop", "ownAfter"} {
+			cache.CompatFlags["github.com/pk910/dynamic-ssz/ssztypes."+name] = methods
+		}
+		return cache
+	}
+	flagsOf := func(cache *TypeCache, typ reflect.Type) SszTypeFlag {
+		t.Helper()
+		desc, err := cache.GetTypeDescriptor(typ, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("%v: %v", typ, err)
+		}
+		return desc.SszTypeFlags
+	}
+
+	tests := []struct {
+		name         string
+		custom, root reflect.Type
+		want         SszTypeFlag
+	}{
+		{"built inside the open cycle", reflect.TypeOf(ownInside{}), reflect.TypeOf(&ownHead{}), SszTypeFlagHasMaxExpr},
+		{"its own cycle inside the open cycle", reflect.TypeOf(&ownLoop{}), reflect.TypeOf(&ownLoopHead{}), SszTypeFlagRecursionMember},
+		{"built after the cycle closed", reflect.TypeOf(ownAfter{}), reflect.TypeOf(ownAfterRoot{}), SszTypeFlagHasMaxExpr},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			alone := flagsOf(newCache(), test.custom)
+			cache := newCache()
+			flagsOf(cache, test.root)
+			after := flagsOf(cache, test.custom)
+			if alone != after || after&test.want == 0 {
+				t.Errorf("flags %v when requested first, %v after %v; want equal and %v set", alone, after, test.root, test.want)
+			}
+		})
+	}
+
+	// A later build that links to the published descriptor inside a cycle of
+	// its own leaves it as it is.
+	cache := newCache()
+	flagsOf(cache, reflect.TypeOf(&ownLoopHead{}))
+	before := flagsOf(cache, reflect.TypeOf(&ownLoop{}))
+	flagsOf(cache, reflect.TypeOf(&ownLoopUser{}))
+	if after := flagsOf(cache, reflect.TypeOf(&ownLoop{})); after != before {
+		t.Errorf("published descriptor changed from %v to %v", before, after)
+	}
+}
+
+type (
 	firstUseShared struct{ V uint32 }
 	firstUseA      struct {
 		X uint64

@@ -310,12 +310,16 @@ func (b *builder) getTypeDescriptor(runtimeType, schemaType reflect.Type, sizeHi
 	}
 
 	// Everything completed since this entry was pushed references only
-	// published descriptors and each other. If the entry closes a cycle, its
-	// members read in-progress children: re-derive their child-propagated
-	// flags before publication.
+	// published descriptors and each other. If the entry closes a cycle, the
+	// descriptors held for it read in-progress children: re-derive their
+	// child-propagated flags before publication.
 	if b.openCycle == index {
 		b.openCycle = noOpenCycle
-		FixupRecursiveFlags(desc)
+		held := make([]*TypeDescriptor, 0, len(b.order)-mark)
+		for _, ref := range b.order[mark:] {
+			held = append(held, ref.variant.desc)
+		}
+		FixupRecursiveFlags(held...)
 	}
 	return tc.publish(b, mark)
 }

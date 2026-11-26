@@ -17,10 +17,12 @@ import (
 // fastssz delegation, which bakes in spec-independent preset values.
 const childDerivedFlags = SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr | SszTypeFlagSizerWidth
 
-// FixupRecursiveFlags re-derives the child-propagated type flags across a
-// descriptor graph that contains at least one recursive cycle. It is shared by
-// the reflection type cache and the code generator's parser, which build their
-// descriptor graphs independently but propagate flags by the same rules.
+// FixupRecursiveFlags re-derives the child-propagated type flags across the
+// descriptor graphs below roots, which contain at least one recursive cycle.
+// It is shared by the reflection type cache and the code generator's parser,
+// which build their descriptor graphs independently but propagate flags by the
+// same rules. Both pass every descriptor built alongside the cycle: one that
+// is not linked into its parent is not reachable from the cycle head.
 //
 // During a recursive build, a back-edge hands out a descriptor whose
 // child-derived flags are not final yet, and descriptors built inside the
@@ -38,8 +40,8 @@ const childDerivedFlags = SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax |
 // resolved size or limit below the type differs from the static tags it baked
 // in. Custom types keep their compat flags — they have no traversed children,
 // so their flags can never change here anyway.
-func FixupRecursiveFlags(root *TypeDescriptor) {
-	markRecursionMembers(root)
+func FixupRecursiveFlags(roots ...*TypeDescriptor) {
+	markRecursionMembers(roots)
 
 	// Collect all reachable descriptors once; the visited set is keyed by
 	// pointer identity so cycles terminate.
@@ -67,7 +69,9 @@ func FixupRecursiveFlags(root *TypeDescriptor) {
 			collect(variant)
 		}
 	}
-	collect(root)
+	for _, root := range roots {
+		collect(root)
+	}
 
 	// Iterate to the fixpoint. Each sweep can only raise flags, and there are
 	// at most 4 flags per node, so the loop terminates after at most 4*len+1
@@ -146,7 +150,7 @@ func FixupRecursiveFlags(root *TypeDescriptor) {
 // reachable subgraph, which is complete once a member has been published, so
 // the first build reaching a descriptor marks it and a later build finds the
 // bit already set: a published descriptor is never written.
-func markRecursionMembers(root *TypeDescriptor) {
+func markRecursionMembers(roots []*TypeDescriptor) {
 	type node struct {
 		index, lowlink int
 		onStack        bool
@@ -214,7 +218,11 @@ func markRecursionMembers(root *TypeDescriptor) {
 			}
 		}
 	}
-	connect(root)
+	for _, root := range roots {
+		if _, seen := nodes[root]; !seen && root != nil {
+			connect(root)
+		}
+	}
 }
 
 // marshalCyclicDescriptor serializes a descriptor graph that contains cycles
