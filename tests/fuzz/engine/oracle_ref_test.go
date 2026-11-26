@@ -3,9 +3,11 @@ package engine
 import (
 	"bytes"
 	"reflect"
+	"strings"
 	"testing"
 
 	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/hasher"
 )
 
 type oracleFixture struct {
@@ -34,6 +36,20 @@ func TestReferenceOracleChecksClassicSchema(t *testing.T) {
 	}
 	if detail, supported, ok := referenceCheck(value, wantEncoding, root); !supported || !ok {
 		t.Fatalf("reference check = supported %v, ok %v: %s", supported, ok, detail)
+	}
+
+	keccakRoot, err := ds.HashTreeRoot(value, dynssz.WithHashAlgorithm(hasher.Keccak256))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail, ok := referenceKeccakCheck(value, keccakRoot); !ok {
+		t.Fatalf("keccak256 reference check failed: %s", detail)
+	}
+	if _, ok := referenceKeccakCheck(value, root); ok {
+		t.Fatal("the sha256 root passed the keccak256 reference check")
+	}
+	if detail, ok := referenceKeccakCheck(make(chan int), keccakRoot); ok || !strings.Contains(detail, "panic") {
+		t.Fatalf("unsupported kind: ok %v, detail %q; want a reported panic", ok, detail)
 	}
 
 	bad := append([]byte(nil), wantEncoding...)

@@ -30,12 +30,20 @@ func (e *Engine) oracleChecks(entry corpus.TypeEntry, ds *dynssz.DynSsz, instanc
 		report(IssueSizeMismatch, "size", fmt.Sprintf("SizeSSZ=%d len(MarshalSSZ)=%d", size, len(encoded)), encoded)
 	}
 
+	keccak := dynssz.WithHashAlgorithm(hasher.Keccak256)
+	keccakRoot, keccakErr := ds.HashTreeRoot(instance, keccak)
+
 	if e.reference {
 		detail, supported, ok := referenceCheck(instance, encoded, root)
 		if supported {
 			e.stats.ReferenceChecks.Add(1)
 			if !ok {
 				report(IssueReferenceMismatch, "reference", detail, encoded)
+			}
+			if keccakErr == nil {
+				if detail, ok = referenceKeccakCheck(instance, keccakRoot); !ok {
+					report(IssueReferenceMismatch, "reference", detail, encoded)
+				}
 			}
 		} else {
 			e.stats.ReferenceSkips.Add(1)
@@ -50,6 +58,10 @@ func (e *Engine) oracleChecks(entry corpus.TypeEntry, ds *dynssz.DynSsz, instanc
 		if nativeRoot, err := native.HashTreeRoot(instance); err == nil && nativeRoot != root {
 			e.stats.HTRMismatches.Add(1)
 			report(IssueHTRMismatch, "fast-vs-native", fmt.Sprintf("fast=%x native=%x", root, nativeRoot), encoded)
+		}
+		if nativeRoot, err := native.HashTreeRoot(instance, keccak); err == nil && keccakErr == nil && nativeRoot != keccakRoot {
+			e.stats.HTRMismatches.Add(1)
+			report(IssueHTRMismatch, "keccak256 fast-vs-native", fmt.Sprintf("fast=%x native=%x", keccakRoot, nativeRoot), encoded)
 		}
 	}
 
