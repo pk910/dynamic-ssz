@@ -73,8 +73,10 @@ type typeEntry struct {
 //   - A published TypeDescriptor is immutable.
 //   - Hint-free lookups take no lock.
 //   - buildMu serialises builds, publication, removals and GetAllTypes. A
-//     build releases it only around user code: a static type's sizer and a
-//     view type's dispatcher.
+//     build releases it around a static type's sizer and a view type's
+//     dispatcher, which may call back into the cache. Other user code (the
+//     spec resolver, a union or wrapper type's GetDescriptorType) runs with
+//     it held and must not.
 //   - A build publishes a descriptor once everything it references is
 //     complete, the members of a recursive cycle together. The first publisher
 //     of a key wins.
@@ -159,9 +161,7 @@ func (tc *TypeCache) DisableSpecResolution() {
 //   - *TypeDescriptor: The type descriptor containing metadata for SSZ operations
 //   - error: An error if the type cannot be analyzed or contains unsupported features
 //
-// Type descriptors are only cached when no size hints are provided (i.e., for root types).
-// When size hints are present, the descriptor is computed dynamically to accommodate the
-// specific constraints.
+// Descriptors are cached per type and per exact combination of hints.
 //
 // Example:
 //
@@ -270,7 +270,12 @@ func (tc *TypeCache) entryFor(runtimeType reflect.Type) *typeEntry {
 // descriptor per key. Redirecting is complete before anything is stored:
 // nothing is written once a lock-free reader can reach it. The caller holds
 // buildMu.
-func (tc *TypeCache) publish(b *builder, mark int) *TypeDescriptor {
+//
+// The descriptors referencing a copy are laid out with its size, so a
+// published descriptor of another size cannot replace it: the build fails,
+// and nothing of the batch is stored. Sizes differ only when a sizer returns
+// different sizes for one type.
+func (tc *TypeCache) publish(b *builder, mark int) (*TypeDescriptor, error) {
 	batch := b.order[mark:]
 	b.order = b.order[:mark]
 
@@ -283,6 +288,10 @@ func (tc *TypeCache) publish(b *builder, mark int) *TypeDescriptor {
 			existing = tc.lookupPublished(ref.key.runtime, ref.key.schema)
 		}
 		if existing != nil {
+			desc := ref.variant.desc
+			if existing.Size != desc.Size || (existing.SszTypeFlags^desc.SszTypeFlags)&SszTypeFlagIsDynamic != 0 {
+				return nil, sszutils.NewSszErrorf(sszutils.ErrUnsupportedType, "type %v was described with size %d and with size %d: its sizer must return the same size on every call", desc.Type, existing.Size, desc.Size)
+			}
 			if replaced == nil {
 				replaced = make(map[*TypeDescriptor]*TypeDescriptor, len(batch))
 			}
@@ -334,7 +343,7 @@ func (tc *TypeCache) publish(b *builder, mark int) *TypeDescriptor {
 			tc.entryFor(ref.key.runtime).views.Store(TypeWord(ref.key.schema), root)
 		}
 	}
-	return root
+	return root, nil
 }
 
 func (tc *TypeCache) getCompatFlag(runtimeType, schemaType reflect.Type) SszCompatFlag {
@@ -748,7 +757,7 @@ func (tc *TypeCache) GetAllTypes() [][2]reflect.Type {
 //	cache.RemoveType(reflect.TypeOf(MyStruct{}))
 //
 //	// Next call to GetTypeDescriptor will rebuild the descriptor
-//	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(MyStruct{}), nil, nil)
+//	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(MyStruct{}), nil, nil, nil)
 func (tc *TypeCache) RemoveType(t reflect.Type) {
 	tc.RemoveTypeKey(t, t)
 }

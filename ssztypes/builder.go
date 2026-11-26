@@ -317,7 +317,7 @@ func (b *builder) getTypeDescriptor(runtimeType, schemaType reflect.Type, sizeHi
 		b.openCycle = noOpenCycle
 		FixupRecursiveFlags(desc)
 	}
-	return tc.publish(b, mark), nil
+	return tc.publish(b, mark)
 }
 
 // hintsMatchDefault reports whether a reference's type hints name, dimension
