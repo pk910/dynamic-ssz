@@ -78,9 +78,12 @@ type typeEntry struct {
 //   - buildMu serialises builds, publication, removals and GetAllTypes. A
 //     build releases it only around user code: a static type's sizer and a
 //     view type's dispatcher.
-//   - A build publishes all-or-nothing, and the first publisher of a key wins.
-//   - A build uses only descriptors published before it started.
-//   - Build errors are not cached.
+//   - A build publishes a descriptor once everything it references is
+//     complete, the members of a recursive cycle together. The first publisher
+//     of a key wins.
+//   - A build uses the descriptors published before it started, and after
+//     releasing buildMu also later ones (see builder.withoutBuildLock).
+//   - A failed build keeps what it published; the failing type is not cached.
 type TypeCache struct {
 	specs sszutils.DynamicSpecs
 
@@ -228,26 +231,9 @@ func (tc *TypeCache) GetTypeDescriptorWithSchema(runtimeType, schemaType reflect
 	tc.buildMu.Lock()
 	defer tc.buildMu.Unlock()
 
-	// The builder's first lookup is the double check.
-	b := newBuilder(tc)
-	desc, err := b.getTypeDescriptor(runtimeType, schemaType, sizeHints, maxSizeHints, typeHints)
-	if err != nil {
-		// Nothing of a failed build is published.
-		return nil, err
-	}
-
-	// A build that involved a recursive cycle has descriptors that read
-	// in-progress children; re-derive the child-propagated flags now that the
-	// graph is complete, before any of it is published. Non-recursive builds
-	// are already exact.
-	if b.recursion {
-		FixupRecursiveFlags(desc)
-	}
-	if published := tc.publish(b); published != nil {
-		desc = published
-	}
-
-	return desc, nil
+	// The builder's first lookup is the double check, and it publishes what it
+	// completes.
+	return newBuilder(tc).getTypeDescriptor(runtimeType, schemaType, sizeHints, maxSizeHints, typeHints)
 }
 
 // lookupPublished returns the published hint-free descriptor of a (runtime,
@@ -269,6 +255,24 @@ func (tc *TypeCache) lookupPublished(runtimeType, schemaType reflect.Type) *Type
 	return desc
 }
 
+// publishedPlain returns the hint-free descriptor published for key at or
+// before maxSeq, or nil.
+func (tc *TypeCache) publishedPlain(key typeKey, maxSeq uint64) *TypeDescriptor {
+	if desc := tc.lookupPublished(key.runtime, key.schema); desc != nil && desc.publishSeq <= maxSeq {
+		return desc
+	}
+	return nil
+}
+
+// publishedDesc returns the descriptor published for key and hints at or
+// before maxSeq, or nil. The caller holds buildMu.
+func (tc *TypeCache) publishedDesc(key typeKey, hints *hintSet, maxSeq uint64) *TypeDescriptor {
+	if len(hints.sizeHints) == 0 && len(hints.maxSizeHints) == 0 && len(hints.typeHints) == 0 {
+		return tc.publishedPlain(key, maxSeq)
+	}
+	return findVariant(tc.hinted[key], hints.sizeHints, hints.maxSizeHints, hints.typeHints, maxSeq)
+}
+
 // entryFor returns the published entry of a runtime type, creating it on
 // first use. The caller holds buildMu.
 func (tc *TypeCache) entryFor(runtimeType reflect.Type) *typeEntry {
@@ -284,37 +288,29 @@ func (tc *TypeCache) entryFor(runtimeType reflect.Type) *typeEntry {
 	return entry
 }
 
-// publish stores the descriptors of a successful build and returns the
-// published descriptor of its root, or nil when the build completed none. A
-// key another build published meanwhile keeps its descriptor, and this
-// build's references to its own copy are redirected to it, so every published
-// graph holds one descriptor per key. Redirecting and stamping are complete
-// before anything is stored: nothing is written once a lock-free reader can
-// reach it. The caller holds buildMu.
-func (tc *TypeCache) publish(b *builder) *TypeDescriptor {
-	if len(b.order) == 0 {
-		// The root was found on entry: nothing to publish.
-		return nil
-	}
+// publish stores the descriptors b completed since its order held mark
+// entries and returns the published descriptor of the last one. A key another
+// build published meanwhile keeps its descriptor, and this build's references
+// to its own copy are redirected to it, so every published graph holds one
+// descriptor per key. Redirecting and stamping are complete before anything is
+// stored: nothing is written once a lock-free reader can reach it. The caller
+// holds buildMu.
+func (tc *TypeCache) publish(b *builder, mark int) *TypeDescriptor {
+	batch := b.order[mark:]
+	b.order = b.order[:mark]
 
 	var replaced map[*TypeDescriptor]*TypeDescriptor
-	for _, ref := range b.order {
-		var existing *TypeDescriptor
-		if ref.hinted {
-			existing = findVariant(tc.hinted[ref.key], ref.variant.sizeHints, ref.variant.maxSizeHints, ref.variant.typeHints, tc.publishSeq)
-		} else {
-			existing = tc.lookupPublished(ref.key.runtime, ref.key.schema)
-		}
-		if existing != nil {
+	for _, ref := range batch {
+		if existing := tc.publishedDesc(ref.key, &ref.variant.hintSet, tc.publishSeq); existing != nil {
 			if replaced == nil {
-				replaced = make(map[*TypeDescriptor]*TypeDescriptor, len(b.order))
+				replaced = make(map[*TypeDescriptor]*TypeDescriptor, len(batch))
 			}
 			replaced[ref.variant.desc] = existing
 		}
 	}
 
 	tc.publishSeq++
-	for _, ref := range b.order {
+	for _, ref := range batch {
 		desc := ref.variant.desc
 		if _, lost := replaced[desc]; lost {
 			continue
@@ -342,10 +338,16 @@ func (tc *TypeCache) publish(b *builder) *TypeDescriptor {
 	}
 
 	var root *TypeDescriptor
-	for _, ref := range b.order {
+	for _, ref := range batch {
 		root = ref.variant.desc
 		if existing, lost := replaced[root]; lost {
+			// Later references of this build resolve to the published one.
 			root = existing
+			if ref.hinted {
+				ref.variant.desc = existing
+			} else {
+				b.builtPlain[ref.key] = existing
+			}
 			continue
 		}
 		switch {
@@ -538,8 +540,8 @@ func (tc *TypeCache) detectCompatFlags(desc *TypeDescriptor, runtimeType, schema
 // The sizer is user code and may call back into the instance, so it runs with
 // buildMu released; one that depends on the type being built recurses without
 // bound. The caller holds buildMu.
-func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType reflect.Type) (int64, bool, error) {
-	specs := tc.specs // never nil: NewTypeCache substitutes emptySpecs{}
+func (b *builder) delegatedStaticSize(desc *TypeDescriptor, runtimeType reflect.Type) (int64, bool, error) {
+	specs := b.tc.specs // never nil: NewTypeCache substitutes emptySpecs{}
 	zero := reflect.New(runtimeType).Interface()
 
 	// A sizer returns int; its result enters the size domain here, so it is
@@ -563,7 +565,7 @@ func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType refle
 		if sizer, ok := zero.(sszutils.DynamicViewSizer); ok && desc.CodegenInfo != nil {
 			view := *desc.CodegenInfo
 			n, served := 0, false
-			tc.withoutBuildLock(func() {
+			b.withoutBuildLock(func() {
 				if sizeFn := sizer.SizeSSZDynView(view); sizeFn != nil {
 					n, served = sizeFn(specs), true
 				}
@@ -580,24 +582,15 @@ func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType refle
 	// the DynamicSizer; a static custom type may instead provide only fastssz.
 	if sizer, ok := zero.(sszutils.DynamicSizer); ok {
 		var n int
-		tc.withoutBuildLock(func() { n = sizer.SizeSSZDyn(specs) })
+		b.withoutBuildLock(func() { n = sizer.SizeSSZDyn(specs) })
 		return validate(n)
 	}
 	if sizer, ok := zero.(sszutils.FastsszSizer); ok {
 		var n int
-		tc.withoutBuildLock(func() { n = sizer.SizeSSZ() })
+		b.withoutBuildLock(func() { n = sizer.SizeSSZ() })
 		return validate(n)
 	}
 	return 0, false, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "static type %v provides no usable sizer", runtimeType)
-}
-
-// withoutBuildLock runs fn (user code) with buildMu released and takes it
-// again, also when fn panics. The caller holds buildMu and must not rely on
-// shared cache state across the call.
-func (tc *TypeCache) withoutBuildLock(fn func()) {
-	tc.buildMu.Unlock()
-	defer tc.buildMu.Lock()
-	fn()
 }
 
 // RejectMaxOnVector rejects a limit declared for a dimension that is fixed

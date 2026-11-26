@@ -10312,8 +10312,7 @@ type (
 )
 
 // A build that waits on a sizer while another build publishes the same
-// recursive type must keep its own cycle: what others publish meanwhile is
-// not part of its graph.
+// recursive type ends up referencing the published cycle.
 func TestRecursiveBuildAcrossSizerWindow(t *testing.T) {
 	windowEntered = make(chan struct{})
 	windowRelease = make(chan struct{})

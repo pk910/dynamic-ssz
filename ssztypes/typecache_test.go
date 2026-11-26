@@ -5697,23 +5697,23 @@ func TestDelegatedStaticSize(t *testing.T) {
 	tc.buildMu.Lock()
 	defer tc.buildMu.Unlock()
 
-	sz, sized, err := tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticDynSizer{}))
+	sz, sized, err := newBuilder(tc).delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticDynSizer{}))
 	if err != nil || !sized || sz != 8 {
 		t.Errorf("dynssz sizer: size=%d sized=%v err=%v; want 8", sz, sized, err)
 	}
 
-	sz, sized, err = tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticFastSizer{}))
+	sz, sized, err = newBuilder(tc).delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticFastSizer{}))
 	if err != nil || !sized || sz != 16 {
 		t.Errorf("fastssz sizer: size=%d sized=%v err=%v; want 16", sz, sized, err)
 	}
 
-	if _, _, err = tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticNoSizer{})); err == nil {
+	if _, _, err = newBuilder(tc).delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticNoSizer{})); err == nil {
 		t.Error("no sizer: expected error")
 	}
 
 	// A sizer that refuses states no size, which describes the type without a
 	// fixed one rather than refusing the type.
-	if sz, sized, err := tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(delegatedNegSize{})); err != nil || sized || sz != 0 {
+	if sz, sized, err := newBuilder(tc).delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(delegatedNegSize{})); err != nil || sized || sz != 0 {
 		t.Errorf("refusing sizer: size=%d sized=%v err=%v; want no size and no error", sz, sized, err)
 	}
 }
@@ -6107,25 +6107,263 @@ type (
 	}
 )
 
-// A build that fails publishes nothing, not even the types below it that it
-// completed; the next request for one of them builds it on its own.
-func TestFailedBuildPublishesNothing(t *testing.T) {
+// A build that fails keeps the descriptors it completed and published; the
+// failing type itself is not cached.
+func TestFailedBuildKeepsCompletedDescriptors(t *testing.T) {
 	cache := NewTypeCache(&dummyDynamicSpecs{})
-	nested := reflect.TypeOf(publishNested{})
+	nested, failing := reflect.TypeOf(publishNested{}), reflect.TypeOf(publishFailing{})
 
-	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(publishFailing{}), nil, nil, nil); err == nil {
+	if _, err := cache.GetTypeDescriptor(failing, nil, nil, nil); err == nil {
 		t.Fatal("expected error for map field")
 	}
-	if types := cache.GetAllTypes(); len(types) != 0 {
-		t.Fatalf("failed build published %v", types)
+	if cache.hasPlain(typeKey{runtime: failing, schema: failing}) {
+		t.Error("the failing type is published")
+	}
+	published := cache.lookupPublished(nested, nested)
+	if published == nil || published.Size != 4 {
+		t.Fatalf("nested type after the failed build: %+v", published)
+	}
+	if desc, err := cache.GetTypeDescriptor(nested, nil, nil, nil); err != nil || desc != published {
+		t.Errorf("nested type alone: %p, %v, want %p", desc, err, published)
+	}
+}
+
+// stepSizedOf is a static custom type whose sizer counts its calls and runs
+// stepHook, so a test can act while a build has buildMu released. T tells the
+// instantiations apart.
+type stepSizedOf[T any] struct{ V uint32 }
+
+type (
+	stepSized = stepSizedOf[uint8]
+	stepOther = stepSizedOf[uint16]
+)
+
+var (
+	_ = sszutils.Annotate[stepSized](`ssz-type:"custom" ssz-static:"true"`)
+	_ = sszutils.Annotate[stepOther](`ssz-type:"custom" ssz-static:"true"`)
+)
+
+var (
+	stepCalls int
+	stepHook  func()
+)
+
+func (s *stepSizedOf[T]) SizeSSZDyn(sszutils.DynamicSpecs) int {
+	stepCalls++
+	if hook := stepHook; hook != nil {
+		stepHook = nil
+		hook()
+	}
+	return 4
+}
+
+func (s *stepSizedOf[T]) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, 0, 0, 0, 0), nil
+}
+
+func (s *stepSizedOf[T]) UnmarshalSSZDyn(sszutils.DynamicSpecs, []byte) error { return nil }
+
+func (s *stepSizedOf[T]) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutBytes(make([]byte, 32))
+	return nil
+}
+
+type (
+	stepLeaf   struct{ V uint64 }
+	stepShared struct{ S stepOther }
+	stepRoot   struct {
+		Leaf   stepLeaf
+		Parked stepSized
+		Shared stepShared
+	}
+)
+
+// A descriptor is published as soon as it is complete, and a build that
+// released buildMu uses what was published meanwhile.
+func TestBuildPublishesCompletedDescriptors(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	leafType, sharedType, rootType := reflect.TypeOf(stepLeaf{}), reflect.TypeOf(stepShared{}), reflect.TypeOf(stepRoot{})
+
+	var leaf, shared *TypeDescriptor
+	stepCalls = 0
+	stepHook = func() {
+		leaf = cache.lookupPublished(leafType, leafType)
+		if cache.lookupPublished(rootType, rootType) != nil {
+			t.Error("the root is published while it is under construction")
+		}
+		var err error
+		if shared, err = cache.GetTypeDescriptor(sharedType, nil, nil, nil); err != nil {
+			t.Error(err)
+		}
+	}
+	root, err := cache.GetTypeDescriptor(rootType, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	desc, err := cache.GetTypeDescriptor(nested, nil, nil, nil)
-	if err != nil {
-		t.Fatalf("nested type alone: %v", err)
+	if leaf == nil || root.ContainerDesc.Fields[0].Type != leaf {
+		t.Error("the leaf was not published before the root completed")
 	}
-	if desc.Size != 4 || !cache.hasPlain(typeKey{runtime: nested, schema: nested}) {
-		t.Errorf("nested type: size %d, published %v", desc.Size, cache.hasPlain(typeKey{runtime: nested, schema: nested}))
+	if shared == nil || root.ContainerDesc.Fields[2].Type != shared {
+		t.Error("the root does not reference the descriptor published while it waited")
+	}
+	// One call for the root's field, one inside the build the hook started:
+	// the root does not build the shared type again.
+	if stepCalls != 2 {
+		t.Errorf("sizer ran %d times, want 2", stepCalls)
+	}
+}
+
+type (
+	stepNode struct {
+		Before stepLeaf
+		Kids   []*stepNode `ssz-max:"4"`
+		Ref    stepRef
+		Parked stepSized
+	}
+	stepRef struct {
+		N []*stepNode `ssz-max:"4"`
+	}
+)
+
+// Descriptors that reference a type still under construction are published
+// with it, not before.
+func TestBuildHoldsOpenCycle(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	leafType, refType, nodeType := reflect.TypeOf(stepLeaf{}), reflect.TypeOf(stepRef{}), reflect.TypeOf(&stepNode{})
+
+	stepHook = func() {
+		if cache.lookupPublished(leafType, leafType) == nil {
+			t.Error("a descriptor completed before the cycle opened is not published")
+		}
+		if cache.lookupPublished(refType, refType) != nil || len(cache.hinted) != 0 {
+			t.Error("a descriptor referencing the open cycle head is published")
+		}
+	}
+	node, err := cache.GetTypeDescriptor(nodeType, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ref := cache.lookupPublished(refType, refType)
+	if ref == nil || node.ContainerDesc.Fields[2].Type != ref {
+		t.Fatal("the cycle head does not reference the published descriptor of its member")
+	}
+	kids := node.ContainerDesc.Fields[1].Type
+	if kids.ElemDesc != node || ref.ContainerDesc.Fields[0].Type != kids {
+		t.Error("the cycle does not close on the published head")
+	}
+	leaf := node.ContainerDesc.Fields[0].Type
+	if node.SszTypeFlags&ref.SszTypeFlags&SszTypeFlagRecursionMember == 0 || leaf.SszTypeFlags&SszTypeFlagRecursionMember != 0 {
+		t.Errorf("recursion members: node %v, ref %v, leaf %v", node.SszTypeFlags, ref.SszTypeFlags, leaf.SszTypeFlags)
+	}
+	if node.SszTypeFlags&SszTypeFlagSizerWidth == 0 || kids.SszTypeFlags&SszTypeFlagSizerWidth == 0 {
+		t.Errorf("flags of the cycle are not re-derived: node %v, kids %v", node.SszTypeFlags, kids.SszTypeFlags)
+	}
+}
+
+type (
+	stepMid    struct{ S stepSized }
+	stepHolder struct {
+		L []stepMid `ssz-max:"4"`
+	}
+	stepContested struct {
+		LA []stepMid `ssz-max:"4"`
+		LB []stepMid `ssz-max:"4"`
+		A  stepMid
+		B  stepMid
+	}
+)
+
+// A build whose types another build publishes while it has them under
+// construction ends up referencing the published descriptors only.
+func TestBuildYieldsToPublishedDescriptors(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	var holder *TypeDescriptor
+	stepHook = func() {
+		var err error
+		if holder, err = cache.GetTypeDescriptor(reflect.TypeOf(stepHolder{}), nil, nil, nil); err != nil {
+			t.Error(err)
+		}
+	}
+	root, err := cache.GetTypeDescriptor(reflect.TypeOf(stepContested{}), nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if holder == nil {
+		t.Fatal("the sizer hook did not run")
+	}
+
+	list := holder.ContainerDesc.Fields[0].Type
+	fields := root.ContainerDesc.Fields
+	if fields[0].Type != list || fields[1].Type != list {
+		t.Error("the root does not reference the published list descriptor")
+	}
+	if fields[2].Type != list.ElemDesc || fields[3].Type != list.ElemDesc {
+		t.Error("the root does not reference the published element descriptor")
+	}
+	if n := cache.hintedLen(typeKey{runtime: list.Type, schema: list.Type}); n != 1 {
+		t.Errorf("%d list variants published, want 1", n)
+	}
+}
+
+type (
+	stepUnionVariants struct {
+		A stepMid
+		B uint64
+	}
+	stepUnion struct {
+		Variant uint8
+		Data    any
+	}
+	stepCycle struct {
+		Kids []*stepCycle `ssz-max:"4"`
+		Mids []stepMid    `ssz-max:"8"`
+		Mid  stepMid
+		U    stepUnion `ssz-type:"compatible-union"`
+	}
+)
+
+func (u *stepUnion) GetDescriptorType() reflect.Type { return reflect.TypeOf(stepUnionVariants{}) }
+
+// The members of a cycle are published together. Where another build
+// published one of the types they reference meanwhile, every reference to the
+// build's own copy is redirected: list element, container field and union
+// variant.
+func TestCyclePublicationRedirectsReferences(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	var mid *TypeDescriptor
+	stepHook = func() {
+		var err error
+		if mid, err = cache.GetTypeDescriptor(reflect.TypeOf(stepMid{}), nil, nil, nil); err != nil {
+			t.Error(err)
+		}
+	}
+	root, err := cache.GetTypeDescriptor(reflect.TypeOf(&stepCycle{}), nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mid == nil {
+		t.Fatal("the sizer hook did not run")
+	}
+
+	fields := root.ContainerDesc.Fields
+	if fields[0].Type.ElemDesc != root {
+		t.Error("the cycle does not close on the published head")
+	}
+	if fields[1].Type.ElemDesc != mid {
+		t.Error("list element references the build's own copy")
+	}
+	if fields[2].Type != mid {
+		t.Error("container field references the build's own copy")
+	}
+	if fields[3].Type.UnionVariants[1] != mid {
+		t.Error("union variant references the build's own copy")
+	}
+	if mid.ContainerDesc.Fields[0].Type != cache.lookupPublished(reflect.TypeOf(stepSized{}), reflect.TypeOf(stepSized{})) {
+		t.Error("the published type references an unpublished descriptor")
 	}
 }
 
