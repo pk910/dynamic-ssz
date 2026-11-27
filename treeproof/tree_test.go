@@ -7,9 +7,10 @@ package treeproof
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"unsafe"
@@ -17,780 +18,6 @@ import (
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
-
-func TestNewNodeWithValue(t *testing.T) {
-	tests := []struct {
-		name        string
-		value       []byte
-		expectEmpty bool
-	}{
-		{
-			name:        "non-empty value",
-			value:       []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32},
-			expectEmpty: false,
-		},
-		{
-			// A zero value is data, not padding.
-			name:        "zero value",
-			value:       sszutils.ZeroBytes()[:32],
-			expectEmpty: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			node := NewNodeWithValue(tt.value)
-
-			if node == nil {
-				t.Fatal("node should not be nil")
-			}
-			if node.left != nil || node.right != nil {
-				t.Error("leaf node should have nil children")
-			}
-			if !bytes.Equal(node.value[:], tt.value) {
-				t.Error("node value mismatch")
-			}
-			if node.isEmpty != tt.expectEmpty {
-				t.Errorf("expected isEmpty=%v, got %v", tt.expectEmpty, node.isEmpty)
-			}
-		})
-	}
-}
-
-func TestNewEmptyNode(t *testing.T) {
-	zeroHash := sszutils.ZeroBytes()[:32]
-	node := NewEmptyNode(zeroHash)
-
-	if node == nil {
-		t.Fatal("node should not be nil")
-	}
-	if !node.isEmpty {
-		t.Error("empty node should have isEmpty=true")
-	}
-	if !bytes.Equal(node.value[:], zeroHash) {
-		t.Error("empty node value should match zero hash")
-	}
-	if node.left != nil || node.right != nil {
-		t.Error("empty node should have nil children")
-	}
-}
-
-func TestNewNodeWithLR(t *testing.T) {
-	left := NewNodeWithValue([]byte{1})
-	right := NewNodeWithValue([]byte{2})
-
-	node := NewNodeWithLR(left, right)
-
-	if node == nil {
-		t.Fatal("node should not be nil")
-	}
-	if node.left != left {
-		t.Error("left child mismatch")
-	}
-	if node.right != right {
-		t.Error("right child mismatch")
-	}
-	if node.hasValue {
-		t.Error("branch node should have no value initially")
-	}
-}
-
-func TestTreeFromChunks(t *testing.T) {
-	tests := []struct {
-		name        string
-		chunks      [][]byte
-		expectError bool
-	}{
-		{
-			name: "valid power of 2 chunks",
-			chunks: [][]byte{
-				bytes.Repeat([]byte{1}, 32),
-				bytes.Repeat([]byte{2}, 32),
-				bytes.Repeat([]byte{3}, 32),
-				bytes.Repeat([]byte{4}, 32),
-			},
-			expectError: false,
-		},
-		{
-			name: "non-power of 2 chunks",
-			chunks: [][]byte{
-				bytes.Repeat([]byte{1}, 32),
-				bytes.Repeat([]byte{2}, 32),
-				bytes.Repeat([]byte{3}, 32),
-			},
-			expectError: true,
-		},
-		{
-			name:        "single chunk",
-			chunks:      [][]byte{bytes.Repeat([]byte{1}, 32)},
-			expectError: false,
-		},
-		{
-			name:        "empty chunks",
-			chunks:      [][]byte{},
-			expectError: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tree, err := TreeFromChunks(tt.chunks)
-
-			if tt.expectError {
-				if err == nil {
-					t.Error("expected error but got none")
-				}
-				return
-			}
-
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			if tree == nil {
-				t.Fatal("tree should not be nil")
-			}
-
-			// Verify the tree has correct structure
-			if len(tt.chunks) == 1 {
-				if !tree.IsLeaf() {
-					t.Error("single chunk should produce leaf node")
-				}
-			} else {
-				if tree.IsLeaf() {
-					t.Error("multiple chunks should produce branch node")
-				}
-			}
-		})
-	}
-}
-
-var TestCasesTreeFromNodes = []struct {
-	name        string
-	nodes       []*Node
-	limit       int
-	expectError bool
-	validateFn  func(*testing.T, *Node)
-}{
-	{
-		name:        "zero limit returns empty node",
-		nodes:       []*Node{},
-		limit:       0,
-		expectError: false,
-		validateFn: func(t *testing.T, n *Node) {
-			t.Helper()
-			if !n.IsEmpty() {
-				t.Error("expected empty node for zero limit")
-			}
-		},
-	},
-	{
-		name:        "no nodes with limit",
-		nodes:       []*Node{},
-		limit:       4,
-		expectError: false,
-		validateFn: func(t *testing.T, n *Node) {
-			t.Helper()
-			if !n.IsEmpty() {
-				t.Error("expected empty node for no leaves")
-			}
-		},
-	},
-	{
-		name:        "single node with limit 1",
-		nodes:       []*Node{NewNodeWithValue([]byte{1})},
-		limit:       1,
-		expectError: false,
-		validateFn: func(t *testing.T, n *Node) {
-			t.Helper()
-			if !n.IsLeaf() {
-				t.Error("expected leaf node")
-			}
-		},
-	},
-	{
-		name:        "single node with limit 2",
-		nodes:       []*Node{NewNodeWithValue([]byte{1})},
-		limit:       2,
-		expectError: false,
-		validateFn: func(t *testing.T, n *Node) {
-			t.Helper()
-			if n.IsLeaf() {
-				t.Error("expected branch node")
-			}
-			if n.right == nil || !n.right.IsEmpty() {
-				t.Error("expected empty right child")
-			}
-		},
-	},
-	{
-		name:        "two nodes with limit 2",
-		nodes:       []*Node{NewNodeWithValue([]byte{1}), NewNodeWithValue([]byte{2})},
-		limit:       2,
-		expectError: false,
-		validateFn: func(t *testing.T, n *Node) {
-			t.Helper()
-			if n.IsLeaf() {
-				t.Error("expected branch node")
-			}
-		},
-	},
-	{
-		name:        "non-power of 2 limit",
-		nodes:       []*Node{NewNodeWithValue([]byte{1})},
-		limit:       3,
-		expectError: true,
-	},
-	{
-		name: "four nodes with limit 8",
-		nodes: []*Node{
-			NewNodeWithValue([]byte{1}),
-			NewNodeWithValue([]byte{2}),
-			NewNodeWithValue([]byte{3}),
-			NewNodeWithValue([]byte{4}),
-		},
-		limit:       8,
-		expectError: false,
-		validateFn: func(t *testing.T, n *Node) {
-			t.Helper()
-			// Should have padding on the right side
-			if n.IsLeaf() {
-				t.Error("expected branch node")
-			}
-		},
-	},
-	{
-		name: "large limit with few nodes does not OOM",
-		nodes: []*Node{
-			NewNodeWithValue([]byte{1}),
-			NewNodeWithValue([]byte{2}),
-		},
-
-		limit:       1 << 20, // ~1 million
-		expectError: false,
-		validateFn: func(t *testing.T, n *Node) {
-			t.Helper()
-			if n == nil {
-				t.Fatal("expected non-nil tree")
-			}
-			if n.IsLeaf() {
-				t.Error("expected branch node for large limit")
-			}
-		},
-	},
-}
-
-func TestTreeFromNodes(t *testing.T) {
-	for _, tt := range TestCasesTreeFromNodes {
-		t.Run(tt.name, func(t *testing.T) {
-			tree, err := TreeFromNodes(tt.nodes, tt.limit)
-
-			if tt.expectError {
-				if err == nil {
-					t.Error("expected error but got none")
-				}
-				return
-			}
-
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			if tree == nil {
-				t.Fatal("tree should not be nil")
-			}
-
-			if tt.validateFn != nil {
-				tt.validateFn(t, tree)
-			}
-		})
-	}
-}
-
-func BenchmarkTreeFromNodes(b *testing.B) {
-	for _, bm := range TestCasesTreeFromNodes {
-		b.Run(bm.name, func(b *testing.B) {
-			b.ReportAllocs()
-			b.ResetTimer()
-
-			for i := 0; i < b.N; i++ {
-				_, _ = TreeFromNodes(bm.nodes, bm.limit)
-			}
-		})
-	}
-}
-
-func TestTreeFromNodesProgressive(t *testing.T) {
-	tests := []struct {
-		name       string
-		nodes      []*Node
-		validateFn func(*testing.T, *Node)
-	}{
-		{
-			name:  "empty nodes",
-			nodes: []*Node{},
-			validateFn: func(t *testing.T, n *Node) {
-				t.Helper()
-				if !n.IsEmpty() {
-					t.Error("expected empty node")
-				}
-			},
-		},
-		{
-			name:  "single node",
-			nodes: []*Node{NewNodeWithValue([]byte{1})},
-			validateFn: func(t *testing.T, n *Node) {
-				t.Helper()
-				// Progressive tree with 1 node: base_size=1, so left gets the node, right is empty
-				if n.IsLeaf() {
-					t.Error("expected branch node")
-				}
-				if !n.right.IsEmpty() {
-					t.Error("expected empty right child")
-				}
-			},
-		},
-		{
-			name: "five nodes - progressive pattern",
-			nodes: []*Node{
-				NewNodeWithValue([]byte{1}),
-				NewNodeWithValue([]byte{2}),
-				NewNodeWithValue([]byte{3}),
-				NewNodeWithValue([]byte{4}),
-				NewNodeWithValue([]byte{5}),
-			},
-			validateFn: func(t *testing.T, n *Node) {
-				t.Helper()
-				// With 5 nodes: first 1 goes to right (binary), remaining 4 go to left (progressive)
-				if n.IsLeaf() {
-					t.Error("expected branch node")
-				}
-				// Right child should be a single leaf (first node)
-				// Left child should be progressive tree of remaining 4 nodes
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tree, err := TreeFromNodesProgressive(tt.nodes)
-
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			if tree == nil {
-				t.Fatal("tree should not be nil")
-			}
-
-			if tt.validateFn != nil {
-				tt.validateFn(t, tree)
-			}
-		})
-	}
-}
-
-func TestTreeFromNodesWithMixin(t *testing.T) {
-	nodes := []*Node{
-		NewNodeWithValue([]byte{1}),
-		NewNodeWithValue([]byte{2}),
-		NewNodeWithValue([]byte{3}),
-		NewNodeWithValue([]byte{4}),
-	}
-
-	tree, err := TreeFromNodesWithMixin(nodes, 4, 4)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if tree.IsLeaf() {
-		t.Error("expected branch node")
-	}
-
-	// Right child should be the length mixin
-	lengthBuf := make([]byte, 32)
-	binary.LittleEndian.PutUint64(lengthBuf[:8], 4)
-	if !bytes.Equal(tree.right.value[:], lengthBuf) {
-		t.Error("right child should be length mixin")
-	}
-}
-
-func TestTreeFromNodesProgressiveWithMixin(t *testing.T) {
-	nodes := []*Node{
-		NewNodeWithValue([]byte{1}),
-		NewNodeWithValue([]byte{2}),
-		NewNodeWithValue([]byte{3}),
-	}
-
-	tree, err := TreeFromNodesProgressiveWithMixin(nodes, 3)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if tree.IsLeaf() {
-		t.Error("expected branch node")
-	}
-
-	// Right child should be the length mixin
-	lengthBuf := make([]byte, 32)
-	binary.LittleEndian.PutUint64(lengthBuf[:8], 3)
-	if !bytes.Equal(tree.right.value[:], lengthBuf) {
-		t.Error("right child should be length mixin")
-	}
-}
-
-func TestTreeFromNodesProgressiveWithActiveFields(t *testing.T) {
-	nodes := []*Node{
-		NewNodeWithValue([]byte{1}),
-		NewNodeWithValue([]byte{2}),
-		NewNodeWithValue([]byte{3}),
-	}
-
-	activeFields := []byte{0b11111111, 0b00000111} // 11 active fields
-
-	tree, err := TreeFromNodesProgressiveWithActiveFields(nodes, activeFields)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if tree.IsLeaf() {
-		t.Error("expected branch node")
-	}
-
-	// Right child should be the active fields bitvector
-	expectedLeaf := make([]byte, 0, 32)
-	expectedLeaf = append(expectedLeaf, activeFields...)
-	expectedLeaf = append(expectedLeaf, make([]byte, 30)...)
-	if !bytes.Equal(tree.right.value[:], expectedLeaf) {
-		t.Error("right child should be active fields bitvector")
-	}
-}
-
-func TestNodeGet(t *testing.T) {
-	// Create a simple tree
-	leaf1 := NewNodeWithValue([]byte{1})
-	leaf2 := NewNodeWithValue([]byte{2})
-	leaf3 := NewNodeWithValue([]byte{3})
-	leaf4 := NewNodeWithValue([]byte{4})
-
-	node1 := NewNodeWithLR(leaf1, leaf2)
-	node2 := NewNodeWithLR(leaf3, leaf4)
-	root := NewNodeWithLR(node1, node2)
-
-	tests := []struct {
-		name        string
-		index       int
-		expectError bool
-		expectValue []byte
-	}{
-		{
-			name:        "get root",
-			index:       1,
-			expectError: false,
-		},
-		{
-			name:        "get left child",
-			index:       2,
-			expectError: false,
-		},
-		{
-			name:        "get right child",
-			index:       3,
-			expectError: false,
-		},
-		{
-			name:        "get leaf 1",
-			index:       4,
-			expectError: false,
-			expectValue: []byte{1},
-		},
-		{
-			name:        "get leaf 2",
-			index:       5,
-			expectError: false,
-			expectValue: []byte{2},
-		},
-		{
-			name:        "get leaf 3",
-			index:       6,
-			expectError: false,
-			expectValue: []byte{3},
-		},
-		{
-			name:        "get leaf 4",
-			index:       7,
-			expectError: false,
-			expectValue: []byte{4},
-		},
-		{
-			name:        "get non-existent node",
-			index:       8,
-			expectError: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			node, err := root.Get(tt.index)
-
-			if tt.expectError {
-				if err == nil {
-					t.Error("expected error but got none")
-				}
-				return
-			}
-
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			if node == nil {
-				t.Fatal("node should not be nil")
-			}
-
-			if tt.expectValue != nil && !bytes.Equal(node.value[:1], tt.expectValue) {
-				t.Errorf("expected value %v, got %v", tt.expectValue, node.value[:1])
-			}
-		})
-	}
-}
-
-func TestNodeHash(t *testing.T) {
-	// Test leaf node hash
-	leafValue := bytes.Repeat([]byte{42}, 32)
-	leaf := NewNodeWithValue(leafValue)
-
-	hash := leaf.Hash()
-	if !bytes.Equal(hash, leafValue) {
-		t.Error("leaf node hash should be its value")
-	}
-
-	// Test branch node hash
-	left := NewNodeWithValue(bytes.Repeat([]byte{1}, 32))
-	right := NewNodeWithValue(bytes.Repeat([]byte{2}, 32))
-	branch := NewNodeWithLR(left, right)
-
-	expectedHash := sha256.Sum256(append(left.value[:], right.value[:]...))
-	branchHash := branch.Hash()
-
-	if !bytes.Equal(branchHash, expectedHash[:]) {
-		t.Error("branch node hash mismatch")
-	}
-
-	// Test that hash is cached
-	if !branch.hasValue {
-		t.Error("hash should be cached in node value")
-	}
-
-	// Call hash again to ensure it returns cached value
-	branchHash2 := branch.Hash()
-	if !bytes.Equal(branchHash, branchHash2) {
-		t.Error("cached hash should be returned")
-	}
-}
-
-func TestNodeHashReturnsCopy(t *testing.T) {
-	// Empty nodes alias the process-wide zero-hash table; Hash must hand out
-	// a copy so a caller's mutation cannot corrupt it (and with it the roots
-	// of every other tree sharing the cached empty nodes).
-	const depth = 3
-	empty := sha256Padding.emptyNode(depth)
-	zeroBefore := bytes.Clone(hasher.GetZeroHash(depth))
-
-	h := empty.Hash()
-	if !bytes.Equal(h, zeroBefore) {
-		t.Fatalf("empty node hash mismatch: %x != %x", h, zeroBefore)
-	}
-
-	h[0] ^= 0xff
-	if !bytes.Equal(hasher.GetZeroHash(depth), zeroBefore) {
-		t.Fatal("mutating Hash() result corrupted the global zero-hash table")
-	}
-	if !bytes.Equal(empty.Hash(), zeroBefore) {
-		t.Fatal("mutating Hash() result changed the node's stored hash")
-	}
-
-	// The same guarantee holds for regular leaf and cached branch values.
-	leaf := NewNodeWithValue(bytes.Repeat([]byte{7}, 32))
-	leafHash := leaf.Hash()
-	leafHash[0] ^= 0xff
-	if !bytes.Equal(leaf.Hash(), bytes.Repeat([]byte{7}, 32)) {
-		t.Fatal("mutating Hash() result changed the leaf value")
-	}
-}
-
-func TestNodeProve(t *testing.T) {
-	// Create a simple tree with 4 leaves
-	chunks := [][]byte{
-		sum256ToBytes([]byte("leaf0")),
-		sum256ToBytes([]byte("leaf1")),
-		sum256ToBytes([]byte("leaf2")),
-		sum256ToBytes([]byte("leaf3")),
-	}
-
-	tree, err := TreeFromChunks(chunks)
-	if err != nil {
-		t.Fatalf("failed to create tree: %v", err)
-	}
-
-	tests := []struct {
-		name        string
-		index       int
-		expectError bool
-	}{
-		{
-			name:        "prove leaf 0",
-			index:       4,
-			expectError: false,
-		},
-		{
-			name:        "prove leaf 3",
-			index:       7,
-			expectError: false,
-		},
-		{
-			name:        "prove intermediate node",
-			index:       2,
-			expectError: false,
-		},
-		{
-			name:        "prove root",
-			index:       1,
-			expectError: false,
-		},
-		{
-			name:        "prove non-existent node",
-			index:       10,
-			expectError: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			proof, err := tree.Prove(tt.index)
-
-			if tt.expectError {
-				if err == nil {
-					t.Error("expected error but got none")
-				}
-				return
-			}
-
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			if proof == nil {
-				t.Fatal("proof should not be nil")
-			}
-
-			if proof.Index != tt.index {
-				t.Errorf("proof index mismatch: expected %d, got %d", tt.index, proof.Index)
-			}
-
-			// Verify proof structure
-			expectedPathLen := getPathLength(tt.index)
-			if len(proof.Hashes) != expectedPathLen {
-				t.Errorf("expected %d hashes, got %d", expectedPathLen, len(proof.Hashes))
-			}
-
-			// Verify the proof
-			rootHash := tree.Hash()
-			valid, err := VerifyProof(rootHash, proof)
-			if err != nil {
-				t.Errorf("proof verification error: %v", err)
-			}
-			if !valid {
-				t.Error("proof should be valid")
-			}
-		})
-	}
-}
-
-func TestNodeProveMulti(t *testing.T) {
-	// Create a tree with 8 leaves
-	chunks := make([][]byte, 8)
-	for i := 0; i < 8; i++ {
-		hash := sha256.Sum256([]byte{byte(i)})
-		chunks[i] = hash[:]
-	}
-
-	tree, err := TreeFromChunks(chunks)
-	if err != nil {
-		t.Fatalf("failed to create tree: %v", err)
-	}
-
-	tests := []struct {
-		name        string
-		indices     []int
-		expectError bool
-	}{
-		{
-			name:        "prove single leaf",
-			indices:     []int{8},
-			expectError: false,
-		},
-		{
-			name:        "prove two leaves",
-			indices:     []int{8, 11},
-			expectError: false,
-		},
-		{
-			name:        "prove adjacent leaves",
-			indices:     []int{8, 9},
-			expectError: false,
-		},
-		{
-			name:        "prove all leaves",
-			indices:     []int{8, 9, 10, 11, 12, 13, 14, 15},
-			expectError: false,
-		},
-		{
-			name:        "prove with invalid index",
-			indices:     []int{8, 20},
-			expectError: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			proof, err := tree.ProveMulti(tt.indices)
-
-			if tt.expectError {
-				if err == nil {
-					t.Error("expected error but got none")
-				}
-				return
-			}
-
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			if proof == nil {
-				t.Fatal("proof should not be nil")
-			}
-
-			// Verify proof structure
-			if len(proof.Indices) != len(tt.indices) {
-				t.Error("indices count mismatch")
-			}
-			if len(proof.Leaves) != len(tt.indices) {
-				t.Error("leaves count mismatch")
-			}
-
-			// Verify the multiproof
-			rootHash := tree.Hash()
-			valid, err := VerifyMultiproof(rootHash, proof.Hashes, proof.Leaves, proof.Indices)
-			if err != nil {
-				t.Errorf("multiproof verification error: %v", err)
-			}
-			if !valid {
-				t.Error("multiproof should be valid")
-			}
-		})
-	}
-}
 
 func TestMultiproofCompress(t *testing.T) {
 	// Create a tree with some empty nodes
@@ -904,433 +131,6 @@ func TestCompressDecompressWithZeroHashes(t *testing.T) {
 	}
 }
 
-func TestLeafFromBytesLargeThan32(t *testing.T) {
-	// Oversized input is merkleized into a subtree instead of panicking, and the
-	// chunk structure is recorded as real child nodes.
-	largeData := bytes.Repeat([]byte{0xFF}, 50)
-
-	var node *Node
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				t.Fatalf("LeafFromBytes panicked on oversized input: %v", r)
-			}
-		}()
-		node = LeafFromBytes(largeData)
-	}()
-
-	if node == nil {
-		t.Fatal("expected non-nil node")
-	}
-	if node.Left() == nil || node.Right() == nil {
-		t.Fatal("oversized input must be recorded as a branch node with children")
-	}
-
-	chunk0 := make([]byte, 32)
-	copy(chunk0, largeData[:32])
-	chunk1 := make([]byte, 32)
-	copy(chunk1, largeData[32:])
-
-	if !bytes.Equal(node.Left().Value(), chunk0) {
-		t.Errorf("left chunk mismatch: got %x want %x", node.Left().Value(), chunk0)
-	}
-	if !bytes.Equal(node.Right().Value(), chunk1) {
-		t.Errorf("right chunk mismatch: got %x want %x", node.Right().Value(), chunk1)
-	}
-
-	root := node.Hash()
-	if len(root) != 32 {
-		t.Fatalf("root must be 32 bytes, got %d", len(root))
-	}
-	if want := hashPair(chunk0, chunk1); !bytes.Equal(root, want) {
-		t.Errorf("merkle root mismatch: got %x want %x", root, want)
-	}
-}
-
-func TestTreeFromNodesProgressiveBoundaryConditions(t *testing.T) {
-	t.Run("exactly power of 2 nodes", func(t *testing.T) {
-		// Test with exactly 4 nodes (power of 2)
-		nodes := []*Node{
-			NewNodeWithValue([]byte{1}),
-			NewNodeWithValue([]byte{2}),
-			NewNodeWithValue([]byte{3}),
-			NewNodeWithValue([]byte{4}),
-		}
-
-		tree, err := TreeFromNodesProgressive(nodes)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-
-		if tree == nil {
-			t.Fatal("tree should not be nil")
-		}
-	})
-
-	t.Run("large number of nodes", func(t *testing.T) {
-		// Test with many nodes to exercise deeper recursion
-		nodes := make([]*Node, 17) // 17 nodes should create complex progressive tree
-		for i := range nodes {
-			nodes[i] = NewNodeWithValue([]byte{byte(i)})
-		}
-
-		tree, err := TreeFromNodesProgressive(nodes)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-
-		if tree == nil {
-			t.Fatal("tree should not be nil")
-		}
-
-		// Should be a branch node due to progressive structure
-		if tree.IsLeaf() {
-			t.Error("tree with many nodes should be a branch")
-		}
-	})
-}
-
-func TestLeafCreationFunctions(t *testing.T) {
-	t.Run("LeafFromUint64", func(t *testing.T) {
-		val := uint64(0x1234567890ABCDEF)
-		leaf := LeafFromUint64(val)
-
-		buf := make([]byte, 32)
-		binary.LittleEndian.PutUint64(buf[:8], val)
-
-		if !bytes.Equal(leaf.value[:], buf) {
-			t.Error("LeafFromUint64 value mismatch")
-		}
-	})
-
-	t.Run("LeafFromUint32", func(t *testing.T) {
-		val := uint32(0x12345678)
-		leaf := LeafFromUint32(val)
-
-		buf := make([]byte, 32)
-		binary.LittleEndian.PutUint32(buf[:4], val)
-
-		if !bytes.Equal(leaf.value[:], buf) {
-			t.Error("LeafFromUint32 value mismatch")
-		}
-	})
-
-	t.Run("LeafFromUint16", func(t *testing.T) {
-		val := uint16(0x1234)
-		leaf := LeafFromUint16(val)
-
-		buf := make([]byte, 32)
-		binary.LittleEndian.PutUint16(buf[:2], val)
-
-		if !bytes.Equal(leaf.value[:], buf) {
-			t.Error("LeafFromUint16 value mismatch")
-		}
-	})
-
-	t.Run("LeafFromUint8", func(t *testing.T) {
-		val := uint8(0xAB)
-		leaf := LeafFromUint8(val)
-
-		buf := make([]byte, 32)
-		buf[0] = val
-
-		if !bytes.Equal(leaf.value[:], buf) {
-			t.Error("LeafFromUint8 value mismatch")
-		}
-	})
-
-	t.Run("LeafFromBool", func(t *testing.T) {
-		// Test true
-		leafTrue := LeafFromBool(true)
-		bufTrue := make([]byte, 32)
-		bufTrue[0] = 1
-
-		if !bytes.Equal(leafTrue.value[:], bufTrue) {
-			t.Error("LeafFromBool(true) value mismatch")
-		}
-
-		// Test false
-		leafFalse := LeafFromBool(false)
-		bufFalse := make([]byte, 32)
-
-		if !bytes.Equal(leafFalse.value[:], bufFalse) {
-			t.Error("LeafFromBool(false) value mismatch")
-		}
-	})
-
-	t.Run("LeafFromBytes", func(t *testing.T) {
-		// Test < 32 bytes
-		smallBytes := make([]byte, 0, 32)
-		smallBytes = append(smallBytes, 1, 2, 3, 4)
-		leafSmall := LeafFromBytes(smallBytes)
-		expectedSmall := make([]byte, 0, 32)
-		expectedSmall = append(expectedSmall, smallBytes...)
-		expectedSmall = append(expectedSmall, make([]byte, 28)...)
-
-		if !bytes.Equal(leafSmall.value[:], expectedSmall) {
-			t.Error("LeafFromBytes (small) value mismatch")
-		}
-
-		// Test exactly 32 bytes
-		fullBytes := bytes.Repeat([]byte{0xFF}, 32)
-		leafFull := LeafFromBytes(fullBytes)
-
-		if !bytes.Equal(leafFull.value[:], fullBytes) {
-			t.Error("LeafFromBytes (32 bytes) value mismatch")
-		}
-	})
-
-	t.Run("EmptyLeaf", func(t *testing.T) {
-		leaf := EmptyLeaf()
-
-		if !bytes.Equal(leaf.value[:], sszutils.ZeroBytes()[:32]) {
-			t.Error("EmptyLeaf value mismatch")
-		}
-		if !leaf.isEmpty {
-			t.Error("EmptyLeaf should have isEmpty=true")
-		}
-	})
-
-	t.Run("LeavesFromUint64", func(t *testing.T) {
-		// Test empty
-		emptyLeaves := LeavesFromUint64([]uint64{})
-		if len(emptyLeaves) != 0 {
-			t.Error("LeavesFromUint64 empty should return empty slice")
-		}
-
-		// Test multiple values
-		values := []uint64{0x1111111111111111, 0x2222222222222222, 0x3333333333333333, 0x4444444444444444}
-		leaves := LeavesFromUint64(values)
-
-		// 4 uint64s = 32 bytes = 1 leaf
-		if len(leaves) != 1 {
-			t.Errorf("expected 1 leaf, got %d", len(leaves))
-		}
-
-		// Verify the packed values
-		buf := make([]byte, 32)
-		for i, v := range values {
-			binary.LittleEndian.PutUint64(buf[i*8:(i+1)*8], v)
-		}
-
-		if !bytes.Equal(leaves[0].value[:], buf) {
-			t.Error("LeavesFromUint64 packed value mismatch")
-		}
-
-		// Test with more values that span multiple leaves
-		manyValues := make([]uint64, 5)
-		for i := range manyValues {
-			manyValues[i] = uint64(i + 1)
-		}
-		manyLeaves := LeavesFromUint64(manyValues)
-
-		// 5 uint64s = 40 bytes = 2 leaves (32 + 8 bytes)
-		if len(manyLeaves) != 2 {
-			t.Errorf("expected 2 leaves, got %d", len(manyLeaves))
-		}
-	})
-}
-
-func TestNodeGetters(t *testing.T) {
-	// Create test nodes
-	leafValue := []byte{42}
-	leaf := NewNodeWithValue(leafValue)
-
-	leftChild := NewNodeWithValue([]byte{1})
-	rightChild := NewNodeWithValue([]byte{2})
-	branch := NewNodeWithLR(leftChild, rightChild)
-
-	emptyNode := NewEmptyNode(sszutils.ZeroBytes()[:32])
-
-	t.Run("Left", func(t *testing.T) {
-		if leaf.Left() != nil {
-			t.Error("leaf.Left() should be nil")
-		}
-		if branch.Left() != leftChild {
-			t.Error("branch.Left() mismatch")
-		}
-	})
-
-	t.Run("Right", func(t *testing.T) {
-		if leaf.Right() != nil {
-			t.Error("leaf.Right() should be nil")
-		}
-		if branch.Right() != rightChild {
-			t.Error("branch.Right() mismatch")
-		}
-	})
-
-	t.Run("IsLeaf", func(t *testing.T) {
-		if !leaf.IsLeaf() {
-			t.Error("leaf.IsLeaf() should be true")
-		}
-		if branch.IsLeaf() {
-			t.Error("branch.IsLeaf() should be false")
-		}
-		if !emptyNode.IsLeaf() {
-			t.Error("emptyNode.IsLeaf() should be true")
-		}
-	})
-
-	t.Run("IsEmpty", func(t *testing.T) {
-		if leaf.IsEmpty() {
-			t.Error("leaf.IsEmpty() should be false")
-		}
-		if branch.IsEmpty() {
-			t.Error("branch.IsEmpty() should be false")
-		}
-		if !emptyNode.IsEmpty() {
-			t.Error("emptyNode.IsEmpty() should be true")
-		}
-	})
-
-	t.Run("Value", func(t *testing.T) {
-		if !bytes.Equal(leaf.Value()[:1], leafValue) {
-			t.Error("leaf.Value() mismatch")
-		}
-		if branch.Value() != nil {
-			t.Error("branch.Value() should be nil before hashing")
-		}
-		if !bytes.Equal(emptyNode.Value(), sszutils.ZeroBytes()[:32]) {
-			t.Error("emptyNode.Value() mismatch")
-		}
-	})
-}
-
-func TestTreeFromNodesWithMixinNonPowerOfTwoLimit(t *testing.T) {
-	nodes := []*Node{
-		NewNodeWithValue([]byte{1}),
-		NewNodeWithValue([]byte{2}),
-		NewNodeWithValue([]byte{3}),
-	}
-
-	// limit 3 is not a power of 2; TreeFromNodesWithMixin should normalize it
-	tree, err := TreeFromNodesWithMixin(nodes, 3, 3)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if tree.IsLeaf() {
-		t.Error("expected branch node")
-	}
-}
-
-func TestTreeFromNodesWithMixinZeroLimit(t *testing.T) {
-	nodes := []*Node{NewNodeWithValue([]byte{1})}
-
-	// The mixin path clamps an under-sized limit up to the chunk count, the
-	// same fallback the Hasher applies, so no leaf is silently dropped.
-	tree, err := TreeFromNodesWithMixin(nodes, 1, 0)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	reference, err := TreeFromNodesWithMixin(nodes, 1, 1)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !bytes.Equal(tree.Hash(), reference.Hash()) {
-		t.Errorf("clamped limit root mismatch: %x != %x", tree.Hash(), reference.Hash())
-	}
-}
-
-// A limit below the leaf count overflows the type it declares. The exported
-// form refuses it; the form the walkers reduce through takes the depth the
-// leaves need, as hasher.Hasher does, so every leaf reaches the root and two
-// values that differ cannot share one.
-func TestTreeFromNodesWithMixinLimitBelowCount(t *testing.T) {
-	nodes := make([]*Node, 8)
-	for i := range nodes {
-		nodes[i] = NewNodeWithValue([]byte{byte(i + 1)})
-	}
-
-	if _, err := TreeFromNodesWithMixin(nodes, 8, 2); !errors.Is(err, sszutils.ErrChunkLimitExceeded) {
-		t.Fatalf("a limit below the leaf count was accepted: %v", err)
-	}
-
-	tree, err := treeFromNodesWithMixin64(sha256Padding, nodes, 8, 2)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// No depth holds more leaves than the limit allows, so the tree takes the
-	// depth the leaves need and every one of them reaches the root.
-	reference, err := TreeFromNodesWithMixin(nodes, 8, 8)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !bytes.Equal(tree.Hash(), reference.Hash()) {
-		t.Errorf("over-capacity root %x, want the root of every leaf %x", tree.Hash(), reference.Hash())
-	}
-
-	// A leaf past the limit is part of the value, so it moves the root: two
-	// values that differ there cannot share one.
-	altered := make([]*Node, len(nodes))
-	copy(altered, nodes)
-	altered[7] = NewNodeWithValue([]byte{0xff})
-	alt, err := treeFromNodesWithMixin64(sha256Padding, altered, 8, 2)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if bytes.Equal(tree.Hash(), alt.Hash()) {
-		t.Errorf("a leaf past the limit left the root unchanged")
-	}
-}
-
-func TestTreeFromNodesWithMixinEmpty(t *testing.T) {
-	tree, err := TreeFromNodesWithMixin(nil, 0, 4)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if tree == nil {
-		t.Fatal("expected non-nil tree")
-	}
-}
-
-func TestTreeFromNodesProgressiveWithMixinEmpty(t *testing.T) {
-	tree, err := TreeFromNodesProgressiveWithMixin(nil, 0)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if tree == nil {
-		t.Fatal("expected non-nil tree")
-	}
-}
-
-func TestTreeFromNodesProgressiveWithActiveFieldsEmpty(t *testing.T) {
-	tree, err := TreeFromNodesProgressiveWithActiveFields(nil, []byte{0x07})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if tree == nil {
-		t.Fatal("expected non-nil tree")
-	}
-}
-
-// A bitvector wider than one chunk is merkleized to its root before the mixin,
-// as hasher.Hasher does, so the fields past the first chunk reach the tree.
-func TestTreeFromNodesProgressiveWithActiveFieldsWide(t *testing.T) {
-	leaves := []*Node{LeafFromUint64(1), LeafFromUint64(2)}
-
-	activeFields := make([]byte, 65)
-	activeFields[0] = 0x03
-	tree, err := TreeFromNodesProgressiveWithActiveFields(leaves, activeFields)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	altered := make([]byte, len(activeFields))
-	copy(altered, activeFields)
-	altered[64] = 0x01
-	alt, err := TreeFromNodesProgressiveWithActiveFields(leaves, altered)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if bytes.Equal(tree.Hash(), alt.Hash()) {
-		t.Fatal("a field past the first chunk did not reach the root")
-	}
-}
-
 func TestTreeFromNodesProgressiveImplDeepRecursion(t *testing.T) {
 	// Create enough nodes to trigger multiple levels of progressive recursion
 	// depth 0: baseSize=1, depth 2: baseSize=4, depth 4: baseSize=16
@@ -1377,54 +177,6 @@ func TestHelperFunctions(t *testing.T) {
 			}
 		}
 	})
-
-	t.Run("floorLog2", func(t *testing.T) {
-		tests := []struct {
-			n        int
-			expected int
-		}{
-			{1, 0},
-			{2, 1},
-			{3, 1},
-			{4, 2},
-			{5, 2},
-			{7, 2},
-			{8, 3},
-			{15, 3},
-			{16, 4},
-			{31, 4},
-			{32, 5},
-		}
-
-		for _, tt := range tests {
-			result := floorLog2(tt.n)
-			if result != tt.expected {
-				t.Errorf("floorLog2(%d) = %d, want %d", tt.n, result, tt.expected)
-			}
-		}
-	})
-
-	t.Run("powerTwo", func(t *testing.T) {
-		tests := []struct {
-			n        int
-			expected int
-		}{
-			{0, 1},
-			{1, 2},
-			{2, 4},
-			{3, 8},
-			{4, 16},
-			{5, 32},
-			{10, 1024},
-		}
-
-		for _, tt := range tests {
-			result := powerTwo(tt.n)
-			if result != tt.expected {
-				t.Errorf("powerTwo(%d) = %d, want %d", tt.n, result, tt.expected)
-			}
-		}
-	})
 }
 
 func TestTreeEdgeCases(t *testing.T) {
@@ -1436,7 +188,7 @@ func TestTreeEdgeCases(t *testing.T) {
 		}()
 
 		// Create node with only right child
-		node := &Node{left: nil, right: NewNodeWithValue([]byte{1})}
+		node := NewNodeWithLR(nil, NewNodeWithValue([]byte{1}))
 		_ = node.Hash() // Should panic
 	})
 
@@ -1447,7 +199,7 @@ func TestTreeEdgeCases(t *testing.T) {
 
 		// First call computes hash
 		hash1 := branch.Hash()
-		if !branch.hasValue {
+		if !branch.n.hasValue {
 			t.Error("hash should be cached")
 		}
 
@@ -1465,7 +217,7 @@ func TestTreeEdgeCases(t *testing.T) {
 
 		// Hash should still be computed correctly
 		hash := branch.Hash()
-		expected := hashFn(append(left.value[:], emptyRight.value[:]...))
+		expected := hashFn(append(left.n.value[:], emptyRight.n.value[:]...))
 
 		if !bytes.Equal(hash, expected) {
 			t.Error("hash with empty right node mismatch")
@@ -1475,7 +227,7 @@ func TestTreeEdgeCases(t *testing.T) {
 
 func TestProveIntermediateNodeSetsValue(t *testing.T) {
 	// Create a fresh tree and prove an intermediate node FIRST
-	// (before any Hash() calls) to hit the cur.value == nil branch
+	// (before any Hash() calls) to hit the cur.n.value == nil branch
 	chunks := [][]byte{
 		sum256ToBytes([]byte("a")),
 		sum256ToBytes([]byte("b")),
@@ -1504,9 +256,9 @@ func TestProveIntermediateNodeSetsValue(t *testing.T) {
 func TestProveNilLeftChild(t *testing.T) {
 	// Create malformed tree: left is nil, right exists
 	rightLeaf := NewNodeWithValue(bytes.Repeat([]byte{1}, 32))
-	root := &Node{left: nil, right: rightLeaf}
+	root := NewNodeWithLR(nil, rightLeaf)
 
-	// Index 3 (binary 11): pathLen=1, level 0 goes RIGHT, checks cur.left == nil → error
+	// Index 3 (binary 11): pathLen=1, level 0 goes RIGHT, checks cur.n.left == nil → error
 	_, err := root.Prove(3)
 	if err == nil {
 		t.Fatal("expected error for nil left child")
@@ -1516,7 +268,7 @@ func TestProveNilLeftChild(t *testing.T) {
 func TestProveNilAfterTraversal(t *testing.T) {
 	// Create tree: left exists but right is nil
 	leftLeaf := NewNodeWithValue(bytes.Repeat([]byte{1}, 32))
-	root := &Node{left: leftLeaf, right: nil}
+	root := NewNodeWithLR(leftLeaf, nil)
 
 	// Index 3: goes RIGHT, left != nil (sibling OK), cur = right = nil → error
 	_, err := root.Prove(3)
@@ -1530,7 +282,7 @@ func TestProveMultiMissingRequiredNode(t *testing.T) {
 	leaf4 := NewNodeWithValue(bytes.Repeat([]byte{1}, 32))
 	leaf5 := NewNodeWithValue(bytes.Repeat([]byte{2}, 32))
 	leftBranch := NewNodeWithLR(leaf4, leaf5)
-	root := &Node{left: leftBranch, right: nil}
+	root := NewNodeWithLR(leftBranch, nil)
 
 	// Prove [4, 5]: leaf Gets succeed, but getRequiredIndices([4,5])=[3]
 	// Get(3) traverses root→right which is nil → error at reqIndices Get
@@ -1557,199 +309,13 @@ func TestProveMultiEmptyIndices(t *testing.T) {
 
 func TestTreeFromNodesProgressiveImplEmpty(t *testing.T) {
 	// Directly call internal function with empty leaves
-	node, err := treeFromNodesProgressiveImpl(sha256Padding, nil, 5)
+	node, err := treeFromNodesProgressiveImpl(nil, 5)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !node.IsEmpty() {
+	if !node.isEmpty {
 		t.Fatal("expected empty node for nil leaves")
 	}
-}
-
-func TestNodeShow(t *testing.T) {
-	// Create a simple tree for testing Show functionality
-	// We'll create a tree with leaves and branches to test the show output
-	leaf1 := NewNodeWithValue([]byte{1, 2, 3, 4})
-	leaf2 := NewNodeWithValue([]byte{5, 6, 7, 8})
-	leaf3 := NewNodeWithValue([]byte{9, 10, 11, 12})
-	leaf4 := NewNodeWithValue([]byte{13, 14, 15, 16})
-
-	branch1 := NewNodeWithLR(leaf1, leaf2)
-	branch2 := NewNodeWithLR(leaf3, leaf4)
-	root := NewNodeWithLR(branch1, branch2)
-
-	t.Run("Show with depth 0", func(t *testing.T) {
-		// Just test that Show doesn't panic - it prints to stdout
-		// so we can't easily capture the output in a unit test
-		defer func() {
-			if r := recover(); r != nil {
-				t.Errorf("Show should not panic: %v", r)
-			}
-		}()
-
-		root.Show(0)
-	})
-
-	t.Run("Show with depth 2", func(t *testing.T) {
-		defer func() {
-			if r := recover(); r != nil {
-				t.Errorf("Show should not panic: %v", r)
-			}
-		}()
-
-		root.Show(2)
-	})
-
-	t.Run("Show with depth 10", func(t *testing.T) {
-		defer func() {
-			if r := recover(); r != nil {
-				t.Errorf("Show should not panic: %v", r)
-			}
-		}()
-
-		root.Show(10)
-	})
-
-	t.Run("Show on leaf node", func(t *testing.T) {
-		defer func() {
-			if r := recover(); r != nil {
-				t.Errorf("Show on leaf should not panic: %v", r)
-			}
-		}()
-
-		leaf1.Show(5)
-	})
-
-	t.Run("Show on empty node", func(t *testing.T) {
-		defer func() {
-			if r := recover(); r != nil {
-				t.Errorf("Show on empty node should not panic: %v", r)
-			}
-		}()
-
-		emptyNode := NewEmptyNode(sszutils.ZeroBytes()[:32])
-		emptyNode.Show(3)
-	})
-}
-
-// Get must reject non-positive generalized indices instead of returning the
-// root or producing an out-of-range access.
-func TestGetRejectsNonPositiveIndex(t *testing.T) {
-	node, err := TreeFromNodes([]*Node{LeafFromUint64(1), LeafFromUint64(2)}, 2)
-	if err != nil {
-		t.Fatalf("TreeFromNodes: %v", err)
-	}
-
-	for _, idx := range []int{0, -1, -100} {
-		got, err := node.Get(idx)
-		if err == nil {
-			t.Errorf("Get(%d): expected error", idx)
-		}
-		if got != nil {
-			t.Errorf("Get(%d): expected nil node", idx)
-		}
-	}
-}
-
-// Prove must reject non-positive generalized indices without panicking on a
-// negative make capacity.
-func TestProveRejectsNonPositiveIndex(t *testing.T) {
-	node, err := TreeFromNodes([]*Node{LeafFromUint64(1), LeafFromUint64(2)}, 2)
-	if err != nil {
-		t.Fatalf("TreeFromNodes: %v", err)
-	}
-
-	for _, idx := range []int{0, -1, -100} {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					t.Errorf("Prove(%d) panicked: %v", idx, r)
-				}
-			}()
-			proof, err := node.Prove(idx)
-			if err == nil {
-				t.Errorf("Prove(%d): expected error", idx)
-			}
-			if proof != nil {
-				t.Errorf("Prove(%d): expected nil proof", idx)
-			}
-		}()
-	}
-}
-
-// ProveMulti must reject any non-positive generalized index, including when it
-// is mixed with valid indices.
-func TestProveMultiRejectsNonPositiveIndex(t *testing.T) {
-	node, err := TreeFromNodes([]*Node{LeafFromUint64(1), LeafFromUint64(2)}, 2)
-	if err != nil {
-		t.Fatalf("TreeFromNodes: %v", err)
-	}
-
-	for _, indices := range [][]int{{0}, {4, 0}, {-1}} {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					t.Errorf("ProveMulti(%v) panicked: %v", indices, r)
-				}
-			}()
-			proof, err := node.ProveMulti(indices)
-			if err == nil {
-				t.Errorf("ProveMulti(%v): expected error", indices)
-			}
-			if proof != nil {
-				t.Errorf("ProveMulti(%v): expected nil proof", indices)
-			}
-		}()
-	}
-}
-
-// Hashing a branch node with a missing child must produce a clear panic rather
-// than a raw nil pointer dereference.
-func TestHashIncompleteBranchPanicsCleanly(t *testing.T) {
-	leaf := LeafFromUint64(1)
-
-	for _, n := range []*Node{NewNodeWithLR(leaf, nil), NewNodeWithLR(nil, leaf)} {
-		func() {
-			defer func() {
-				r := recover()
-				if r == nil {
-					t.Error("expected panic for incomplete branch")
-					return
-				}
-				if msg, ok := r.(string); !ok || msg != "Tree incomplete" {
-					t.Errorf("expected 'Tree incomplete' panic, got %v", r)
-				}
-			}()
-			_ = n.Hash()
-		}()
-	}
-}
-
-// TreeFromNodes and TreeFromNodesProgressive must reject nil leaves at
-// construction time so a malformed tree is never returned.
-func TestTreeFromNodesRejectsNilLeaf(t *testing.T) {
-	leaf := LeafFromUint64(1)
-
-	// nil leaves are rejected at construction so a later Hash() can never panic.
-	if n, err := TreeFromNodes([]*Node{nil, leaf}, 2); err == nil || n != nil {
-		t.Errorf("TreeFromNodes: expected nil tree and error for nil leaf, got tree=%v err=%v", n, err)
-	}
-	if n, err := TreeFromNodes([]*Node{nil}, 1); err == nil || n != nil {
-		t.Errorf("TreeFromNodes single: expected nil tree and error for nil leaf, got tree=%v err=%v", n, err)
-	}
-	if n, err := TreeFromNodesProgressive([]*Node{leaf, nil}); err == nil || n != nil {
-		t.Errorf("TreeFromNodesProgressive: expected nil tree and error for nil leaf, got tree=%v err=%v", n, err)
-	}
-
-	// A tree assembled directly with a nil child still hashes to a clean panic
-	// rather than a raw nil dereference (the hashNode guard).
-	defer func() {
-		r := recover()
-		if msg, ok := r.(string); !ok || msg != "Tree incomplete" {
-			t.Errorf("expected 'Tree incomplete' panic, got %v", r)
-		}
-	}()
-	_ = NewNodeWithLR(leaf, nil).Hash()
 }
 
 // Decompress must not panic on malformed input: missing ZeroLevels entries fall
@@ -1785,41 +351,9 @@ func TestDecompressHandlesMalformedInput(t *testing.T) {
 	}
 }
 
-func TestTreeFromNodesRejectsExcessLeaves(t *testing.T) {
-	nodes := []*Node{
-		NewNodeWithValue([]byte{1}),
-		NewNodeWithValue([]byte{2}),
-		NewNodeWithValue([]byte{3}),
-	}
-
-	// More leaves than the limit allows would be dropped silently, producing a
-	// valid-looking root for a different tree.
-	if _, err := TreeFromNodes(nodes, 2); err == nil {
-		t.Fatal("expected error for 3 leaves with limit 2")
-	}
-	if _, err := TreeFromNodes(nodes, 1); err == nil {
-		t.Fatal("expected error for 3 leaves with limit 1")
-	}
-	if _, err := TreeFromNodes(nodes, 0); err == nil {
-		t.Fatal("expected error for 3 leaves with limit 0")
-	}
-
-	// The boundary case still works.
-	tree, err := TreeFromNodes(nodes[:2], 2)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if tree == nil {
-		t.Fatal("expected non-nil tree")
-	}
-}
-
-// --- tree construction error paths (moved from errpath_test.go) ---
-// --- treeFromNodesProgressiveImpl: left child build error ---
-
 func TestTreeFromNodesProgressiveLeftError(t *testing.T) {
 	injected := errors.New("injected")
-	treeFromNodesToDepthFn = func(*padding, []*Node, int) (*Node, error) {
+	treeFromNodesToDepthFn = func([]*node, int) (*node, error) {
 		return nil, injected
 	}
 	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
@@ -1835,12 +369,12 @@ func TestTreeFromNodesProgressiveLeftError(t *testing.T) {
 func TestTreeFromNodesProgressiveRecursiveError(t *testing.T) {
 	injected := errors.New("injected")
 	calls := 0
-	treeFromNodesToDepthFn = func(c *padding, leaves []*Node, depth int) (*Node, error) {
+	treeFromNodesToDepthFn = func(leaves []*node, depth int) (*node, error) {
 		calls++
 		if calls == 2 {
 			return nil, injected
 		}
-		return treeFromNodesToDepth(c, leaves, depth)
+		return treeFromNodesToDepth(leaves, depth)
 	}
 	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
 
@@ -1856,7 +390,7 @@ func TestTreeFromNodesProgressiveRecursiveError(t *testing.T) {
 
 func TestTreeFromNodesWithMixinInjectedError(t *testing.T) {
 	injected := errors.New("injected")
-	treeFromNodesToDepthFn = func(*padding, []*Node, int) (*Node, error) {
+	treeFromNodesToDepthFn = func([]*node, int) (*node, error) {
 		return nil, injected
 	}
 	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
@@ -1871,7 +405,7 @@ func TestTreeFromNodesWithMixinInjectedError(t *testing.T) {
 
 func TestTreeFromNodesProgressiveWithMixinInjectedError(t *testing.T) {
 	injected := errors.New("injected")
-	treeFromNodesToDepthFn = func(*padding, []*Node, int) (*Node, error) {
+	treeFromNodesToDepthFn = func([]*node, int) (*node, error) {
 		return nil, injected
 	}
 	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
@@ -1886,7 +420,7 @@ func TestTreeFromNodesProgressiveWithMixinInjectedError(t *testing.T) {
 
 func TestTreeFromNodesProgressiveWithActiveFieldsInjectedError(t *testing.T) {
 	injected := errors.New("injected")
-	treeFromNodesToDepthFn = func(*padding, []*Node, int) (*Node, error) {
+	treeFromNodesToDepthFn = func([]*node, int) (*node, error) {
 		return nil, injected
 	}
 	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
@@ -1902,7 +436,7 @@ func TestTreeFromNodesProgressiveWithActiveFieldsInjectedError(t *testing.T) {
 // the bitvector as the only caller of it.
 func TestTreeFromNodesProgressiveWithActiveFieldsBitvectorError(t *testing.T) {
 	injected := errors.New("injected")
-	treeFromNodesToDepthFn = func(*padding, []*Node, int) (*Node, error) {
+	treeFromNodesToDepthFn = func([]*node, int) (*node, error) {
 		return nil, injected
 	}
 	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
@@ -1910,44 +444,6 @@ func TestTreeFromNodesProgressiveWithActiveFieldsBitvectorError(t *testing.T) {
 	_, err := TreeFromNodesProgressiveWithActiveFields(nil, make([]byte, 65))
 	if !errors.Is(err, injected) {
 		t.Fatalf("expected injected error, got: %v", err)
-	}
-}
-
-// TestTreeFromNodes64EdgeCases covers the zero-capacity, excess-leaf, non-pow2
-// and depth-boundary branches of the uint64 tree builders and their int
-// forwards.
-func TestTreeFromNodes64EdgeCases(t *testing.T) {
-	leaf := LeafFromUint64(1)
-
-	// Zero capacity with a leaf is rejected; with no leaves it yields an empty node.
-	if _, err := TreeFromNodes64([]*Node{leaf}, 0); err == nil {
-		t.Error("TreeFromNodes64(leaf, 0) should error")
-	}
-	if n, err := TreeFromNodes64(nil, 0); err != nil || n == nil {
-		t.Errorf("TreeFromNodes64(nil, 0) = %v, %v", n, err)
-	}
-	// Leaves exceeding the limit, and a non-power-of-two limit, are rejected.
-	if _, err := TreeFromNodes64([]*Node{leaf, leaf, leaf}, 2); err == nil {
-		t.Error("TreeFromNodes64 exceeding limit should error")
-	}
-	if _, err := TreeFromNodes64([]*Node{leaf}, 3); err == nil {
-		t.Error("TreeFromNodes64 non-power-of-two limit should error")
-	}
-	// limit 1 (depth 0) with a single leaf returns that leaf.
-	if n, err := TreeFromNodes64([]*Node{leaf}, 1); err != nil || n != leaf {
-		t.Errorf("TreeFromNodes64(leaf, 1) = %v, %v; want the leaf", n, err)
-	}
-	// treeFromNodesToDepth clamps a negative depth to an empty node.
-	if n, err := treeFromNodesToDepth(sha256Padding, nil, -1); err != nil || n == nil {
-		t.Errorf("treeFromNodesToDepth(nil, -1) = %v, %v", n, err)
-	}
-	// Int forwards clamp negative limit/num to zero.
-	if _, err := TreeFromNodesWithMixin(nil, -1, -1); err != nil {
-		t.Errorf("TreeFromNodesWithMixin(nil, -1, -1): %v", err)
-	}
-	// The mixin builder clamps an under-sized capacity up to the chunk count.
-	if _, err := TreeFromNodesWithMixin64([]*Node{leaf}, 1, 0); err != nil {
-		t.Errorf("TreeFromNodesWithMixin64(leaf, 1, 0): %v", err)
 	}
 }
 
@@ -1962,7 +458,7 @@ func TestTreeFromNodesToDepthWideCapacity(t *testing.T) {
 
 	for _, depth := range []int{31, 32, 33, 40, 62, 63, 64} {
 		for _, in := range [][]*Node{{leaf}, leaves} {
-			n, err := treeFromNodesToDepth(sha256Padding, in, depth)
+			n, err := treeFromNodesToDepth(nodesOf(in), depth)
 			if err != nil {
 				t.Fatalf("depth %d, %d leaves: %v", depth, len(in), err)
 			}
@@ -1973,7 +469,7 @@ func TestTreeFromNodesToDepthWideCapacity(t *testing.T) {
 	}
 
 	// The excess check itself still applies where 2^depth is representable.
-	if _, err := treeFromNodesToDepth(sha256Padding, leaves, 0); err == nil {
+	if _, err := treeFromNodesToDepth(nodesOf(leaves), 0); err == nil {
 		t.Error("depth 0 with two leaves should error")
 	}
 
@@ -2009,7 +505,7 @@ func TestTreeBuilderDefensiveBranches(t *testing.T) {
 	leaf := LeafFromUint64(1)
 
 	// treeFromNodesToDepth rejects more leaves than 2^depth can hold.
-	if _, err := treeFromNodesToDepth(sha256Padding, []*Node{leaf, leaf, leaf}, 1); err == nil {
+	if _, err := treeFromNodesToDepth(nodesOf([]*Node{leaf, leaf, leaf}), 1); err == nil {
 		t.Error("treeFromNodesToDepth with excess leaves should error")
 	}
 
@@ -2018,33 +514,16 @@ func TestTreeBuilderDefensiveBranches(t *testing.T) {
 		t.Errorf("TreeFromNodesProgressiveWithMixin(leaf, -1): %v", err)
 	}
 
-	// hashNode panics on a nil node (an incomplete tree).
+	// Reading the value of a nil node (an incomplete tree) panics.
 	func() {
 		defer func() {
 			if recover() == nil {
-				t.Error("hashNode(nil) should panic")
+				t.Error("nodeValue(nil) should panic")
 			}
 		}()
-		hashNode(nil)
+		h := hashingOf(hasher.SHA256)
+		nodeValue(nil, &h)
 	}()
-}
-
-// A non-positive limit cannot represent a usable capacity, so TreeFromNodes must
-// error when leaves are present instead of silently dropping them and returning
-// a valid-looking empty-tree root. A negative limit is the int-overflow artifact
-// of a huge capacity on 32-bit builds.
-func TestTreeFromNodesRejectsNonPositiveLimitWithLeaves(t *testing.T) {
-	leaves := []*Node{LeafFromUint64(1)}
-	for _, limit := range []int{0, -1, -1024} {
-		if _, err := TreeFromNodes(leaves, limit); err == nil {
-			t.Fatalf("TreeFromNodes(1 leaf, limit=%d) should error, got nil", limit)
-		}
-	}
-
-	// No leaves with a non-positive limit is a valid empty tree.
-	if _, err := TreeFromNodes(nil, 0); err != nil {
-		t.Fatalf("TreeFromNodes(no leaves, limit=0) unexpected error: %v", err)
-	}
 }
 
 // A gindex that lands inside a zero-padding subtree is spec-valid (needed for
@@ -2181,106 +660,6 @@ func TestProveMultiOwnsItsIndices(t *testing.T) {
 	}
 }
 
-// A leaf cannot hold more than its 32-byte chunk; NewNodeWithValue panics
-// on longer input instead of truncating it into a silently wrong root.
-// LeafFromBytes stays the constructor for longer input, merkleizing it into
-// a subtree.
-func TestNewNodeWithValueOversized(t *testing.T) {
-	if n := NewNodeWithValue(bytes.Repeat([]byte{7}, 32)); !n.hasValue {
-		t.Fatal("32-byte value must build a leaf")
-	}
-	defer func() {
-		if recover() == nil {
-			t.Fatal("expected panic for a 33-byte leaf value")
-		}
-	}()
-	NewNodeWithValue(bytes.Repeat([]byte{7}, 33))
-}
-
-// TestNodeValuesDoNotAliasCallerMemory pins that a leaf owns its bytes. The
-// 32-byte branch used to store the caller's slice while the shorter branch
-// copied, so whether a later mutation of a reused scratch buffer corrupted
-// every tree and root built from it depended on the input length.
-func TestNodeValuesDoNotAliasCallerMemory(t *testing.T) {
-	tests := []struct {
-		name  string
-		build func(buf []byte) *Node
-		size  int
-	}{
-		{"NewNodeWithValue", NewNodeWithValue, 32},
-		{"LeafFromBytes_exact", LeafFromBytes, 32},
-		{"LeafFromBytes_short", LeafFromBytes, 16},
-		{"LeafFromBytes_multichunk", LeafFromBytes, 64},
-		{"TreeFromChunks", func(buf []byte) *Node {
-			tree, err := TreeFromChunks([][]byte{buf})
-			if err != nil {
-				t.Fatalf("TreeFromChunks: %v", err)
-			}
-			return tree
-		}, 32},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			buf := make([]byte, tt.size)
-			buf[0] = 1
-
-			node := tt.build(buf)
-			before := bytes.Clone(node.Hash())
-
-			// The caller reuses its scratch buffer.
-			buf[0] = 0xff
-
-			if after := node.Hash(); !bytes.Equal(before, after) {
-				t.Fatalf("node hash changed after the caller mutated its buffer: %x -> %x", before, after)
-			}
-		})
-	}
-}
-
-// TestTreeFromChunksRequiresFullChunks pins the chunk-length validation.
-// hashPair copies each side into a fixed 64-byte block, so a short chunk was
-// zero-extended and a long one truncated: distinct inputs collided, and a
-// single-chunk tree returned fewer than the 32 bytes Node.Hash() documents.
-func TestTreeFromChunksRequiresFullChunks(t *testing.T) {
-	chunk := func(b byte) []byte {
-		c := make([]byte, 32)
-		c[0] = b
-		return c
-	}
-
-	tests := []struct {
-		name    string
-		chunks  [][]byte
-		wantErr string
-	}{
-		{"short_single", [][]byte{{1, 2, 3}}, "chunk 0 has length 3, want 32"},
-		{"short_pair", [][]byte{{1}, {2}}, "chunk 0 has length 1, want 32"},
-		{"short_second", [][]byte{chunk(1), {2}}, "chunk 1 has length 1, want 32"},
-		{"long", [][]byte{make([]byte, 40)}, "chunk 0 has length 40, want 32"},
-		{"empty_chunk", [][]byte{{}}, "chunk 0 has length 0, want 32"},
-		{"exact", [][]byte{chunk(1), chunk(2)}, ""},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tree, err := TreeFromChunks(tt.chunks)
-			if tt.wantErr != "" {
-				if err == nil || err.Error() != tt.wantErr {
-					t.Fatalf("TreeFromChunks error = %v, want %q", err, tt.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if got := len(tree.Hash()); got != 32 {
-				t.Fatalf("Hash() length = %d, want 32", got)
-			}
-		})
-	}
-}
-
 // finalizeTestChunks returns n distinct 32-byte chunks.
 func finalizeTestChunks(n int) [][]byte {
 	chunks := make([][]byte, n)
@@ -2292,7 +671,12 @@ func finalizeTestChunks(n int) [][]byte {
 
 // assertAllBranchesHashed fails the test if any branch node in the subtree has
 // no cached value.
-func assertAllBranchesHashed(t *testing.T, n *Node) {
+func assertAllBranchesHashed(t *testing.T, tree *Node) {
+	t.Helper()
+	assertBranchesHashed(t, tree.n)
+}
+
+func assertBranchesHashed(t *testing.T, n *node) {
 	t.Helper()
 	if n == nil || (n.left == nil && n.right == nil) {
 		return
@@ -2303,8 +687,17 @@ func assertAllBranchesHashed(t *testing.T, n *Node) {
 	if n.isVisited {
 		t.Fatal("branch node still carries the pending flag after finalization")
 	}
-	assertAllBranchesHashed(t, n.left)
-	assertAllBranchesHashed(t, n.right)
+	assertBranchesHashed(t, n.left)
+	assertBranchesHashed(t, n.right)
+}
+
+// nodesOf returns the nodes behind the given handles.
+func nodesOf(handles []*Node) []*node {
+	nodes := make([]*node, len(handles))
+	for i, handle := range handles {
+		nodes[i] = handle.n
+	}
+	return nodes
 }
 
 // Batched finalization must produce the same roots as the recursive hashNode
@@ -2336,7 +729,7 @@ func TestFinalizeBatchedShapes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to build reference tree: %v", err)
 			}
-			want := bytes.Clone(hashNode(ref))
+			want := bytes.Clone(refHash(ref))
 
 			tree, err := tt.build()
 			if err != nil {
@@ -2359,13 +752,13 @@ func TestFinalizePartialSubtree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to build reference tree: %v", err)
 	}
-	want := bytes.Clone(hashNode(ref))
+	want := bytes.Clone(refHash(ref))
 
 	tree, err := TreeFromChunks(chunks)
 	if err != nil {
 		t.Fatalf("failed to build tree: %v", err)
 	}
-	if got := tree.Left().Hash(); !bytes.Equal(got, hashNode(ref.left)) {
+	if got := tree.Left().Hash(); !bytes.Equal(got, refNodeHash(ref.n.left)) {
 		t.Fatalf("left subtree hash mismatch: %x", got)
 	}
 	if got := tree.Hash(); !bytes.Equal(got, want) {
@@ -2377,9 +770,8 @@ func TestFinalizePartialSubtree(t *testing.T) {
 // A failing batch hash backend aborts finalization with its error; the
 // partially finalized tree resumes cleanly once the backend recovers.
 func TestFinalizeBatchHashFnError(t *testing.T) {
-	orig := batchHashFn
-	batchHashFn = func(_, _ []byte) error { return errors.New("backend failure") }
-	defer func() { batchHashFn = orig }()
+	restore := replaceSHA256Backend(func(_, _ []byte) error { return errors.New("backend failure") })
+	defer restore()
 
 	chunks := finalizeTestChunks(64)
 
@@ -2387,7 +779,7 @@ func TestFinalizeBatchHashFnError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to build reference tree: %v", err)
 	}
-	want := bytes.Clone(hashNode(ref))
+	want := bytes.Clone(refHash(ref))
 
 	tree, err := TreeFromChunks(chunks)
 	if err != nil {
@@ -2396,7 +788,7 @@ func TestFinalizeBatchHashFnError(t *testing.T) {
 	if finalizeErr := tree.Finalize(); finalizeErr == nil {
 		t.Fatal("expected the backend error")
 	}
-	batchHashFn = orig
+	restore()
 	if finalizeErr := tree.Finalize(); finalizeErr != nil {
 		t.Fatalf("resumed Finalize: %v", finalizeErr)
 	}
@@ -2479,20 +871,20 @@ func TestFinalizeMalformedSubtree(t *testing.T) {
 	malformed := NewNodeWithLR(LeafFromBytes(finalizeTestChunks(1)[0]), nil)
 	root := NewNodeWithLR(healthy, malformed)
 
-	if finalizeErr := root.finalize(finalizeConfig{}); finalizeErr == nil {
+	if finalizeErr := root.Finalize(); finalizeErr == nil {
 		t.Fatal("expected the malformed-tree error")
 	}
 
-	if root.hasValue {
+	if root.n.hasValue {
 		t.Error("root above a malformed subtree must stay unhashed")
 	}
-	if malformed.hasValue {
+	if malformed.n.hasValue {
 		t.Error("malformed node must stay unhashed")
 	}
-	if healthy.hasValue {
+	if healthy.n.hasValue {
 		t.Error("hard abort must not hash the sibling walked before the malformed node")
 	}
-	if healthy.isVisited {
+	if healthy.n.isVisited {
 		t.Error("pending flag must be cleared when the abort discards the batches")
 	}
 
@@ -2534,7 +926,7 @@ func TestFinalizeLargeTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to build reference tree: %v", err)
 	}
-	want := bytes.Clone(hashNode(ref))
+	want := bytes.Clone(refHash(ref))
 
 	tree, err := TreeFromChunks(chunks)
 	if err != nil {
@@ -2568,7 +960,7 @@ func TestFinalizeShortLeavesWarmedPool(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := bytes.Clone(hashNode(ref))
+		want := bytes.Clone(refHash(ref))
 
 		// Warm the scratch pool with nonzero 32-byte chunks.
 		warmChunks := make([][]byte, 32)
@@ -2607,7 +999,7 @@ func TestFinalizeShortLeavesLarge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := bytes.Clone(hashNode(ref))
+	want := bytes.Clone(refHash(ref))
 
 	tree, err := TreeFromNodes(shortLeafNodes(numLeaves), numLeaves)
 	if err != nil {
@@ -2621,44 +1013,11 @@ func TestFinalizeShortLeavesLarge(t *testing.T) {
 	}
 }
 
-// Finalize(WithHashFn) hashes through the given function and produces the
-// same root as the default backend.
-func TestFinalizeWithHashFn(t *testing.T) {
-	chunks := finalizeTestChunks(64)
-
-	ref, err := TreeFromChunks(chunks)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := bytes.Clone(hashNode(ref))
-
-	var calls int
-	countingFn := func(dst, input []byte) error {
-		calls++
-		return batchHashFn(dst, input)
-	}
-
-	tree, err := TreeFromChunks(chunks)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if finalizeErr := tree.Finalize(WithHashFn(countingFn)); finalizeErr != nil {
-		t.Fatalf("Finalize: %v", finalizeErr)
-	}
-	if got := tree.Hash(); !bytes.Equal(got, want) {
-		t.Fatalf("Finalize(WithHashFn) root %x, want %x", got, want)
-	}
-	if calls == 0 {
-		t.Fatal("custom hash function was not used")
-	}
-}
-
 // A backend failure on a mid-walk flush aborts the walk and fails Finalize;
 // the tree resumes cleanly once the backend recovers.
 func TestFinalizeMidwalkError(t *testing.T) {
-	orig := batchHashFn
-	batchHashFn = func(_, _ []byte) error { return errors.New("backend failure") }
-	defer func() { batchHashFn = orig }()
+	restore := replaceSHA256Backend(func(_, _ []byte) error { return errors.New("backend failure") })
+	defer restore()
 
 	chunks := finalizeTestChunks(4 * finalizeBatchPairs)
 
@@ -2666,7 +1025,7 @@ func TestFinalizeMidwalkError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := bytes.Clone(hashNode(ref))
+	want := bytes.Clone(refHash(ref))
 
 	tree, err := TreeFromChunks(chunks)
 	if err != nil {
@@ -2675,7 +1034,7 @@ func TestFinalizeMidwalkError(t *testing.T) {
 	if finalizeErr := tree.Finalize(); finalizeErr == nil {
 		t.Fatal("expected the backend error")
 	}
-	batchHashFn = orig
+	restore()
 	if finalizeErr := tree.Finalize(); finalizeErr != nil {
 		t.Fatalf("resumed Finalize: %v", finalizeErr)
 	}
@@ -2701,7 +1060,7 @@ func TestFinalizeDeepPadded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := bytes.Clone(hashNode(ref))
+	want := bytes.Clone(refHash(ref))
 
 	tree, err := TreeFromNodes64(leaves(), 1<<30)
 	if err != nil {
@@ -2748,55 +1107,6 @@ func TestFinalizeSharedSubtree(t *testing.T) {
 		t.Fatalf("shared-subtree root %x, want %x", got, want)
 	}
 	assertAllBranchesHashed(t, shared)
-}
-
-// WithHashFn reaches trees below the batching threshold through the
-// recursive path, and a failing function surfaces its error while leaving a
-// resumable tree.
-func TestFinalizeWithHashFnSmallTree(t *testing.T) {
-	chunks := finalizeTestChunks(8)
-
-	ref, err := TreeFromChunks(chunks)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := bytes.Clone(hashNode(ref))
-
-	var calls int
-	countingFn := func(dst, input []byte) error {
-		calls++
-		return batchHashFn(dst, input)
-	}
-	tree, err := TreeFromChunks(chunks)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if finalizeErr := tree.Finalize(WithHashFn(countingFn)); finalizeErr != nil {
-		t.Fatalf("Finalize: %v", finalizeErr)
-	}
-	if calls == 0 {
-		t.Fatal("custom hash function was not used below the batching threshold")
-	}
-	if got := tree.Hash(); !bytes.Equal(got, want) {
-		t.Fatalf("small-tree WithHashFn root %x, want %x", got, want)
-	}
-
-	failing, err := TreeFromChunks(chunks)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if finalizeErr := failing.Finalize(WithHashFn(func(_, _ []byte) error {
-		return errors.New("backend failure")
-	})); finalizeErr == nil {
-		t.Fatal("expected the failing hash function's error")
-	}
-	if finalizeErr := failing.Finalize(); finalizeErr != nil {
-		t.Fatalf("resumed Finalize: %v", finalizeErr)
-	}
-	if got := failing.Hash(); !bytes.Equal(got, want) {
-		t.Fatalf("resumed root %x, want %x", got, want)
-	}
-	assertAllBranchesHashed(t, failing)
 }
 
 // Hash finalizes an unfinalized tree, and hashNode caches every branch it
@@ -2976,13 +1286,13 @@ func TestFinalizePrehashedSubtree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to build reference tree: %v", err)
 	}
-	want := bytes.Clone(hashNode(ref))
+	want := bytes.Clone(refHash(ref))
 
 	tree, err := TreeFromChunks(chunks)
 	if err != nil {
 		t.Fatalf("failed to build tree: %v", err)
 	}
-	if err := tree.right.Finalize(); err != nil {
+	if err := tree.Right().Finalize(); err != nil {
 		t.Fatalf("subtree Finalize: %v", err)
 	}
 	if err := tree.Finalize(); err != nil {
@@ -3005,7 +1315,7 @@ func TestFinalizeConcurrentTrees(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := bytes.Clone(hashNode(ref))
+	want := bytes.Clone(refHash(ref))
 
 	var wg sync.WaitGroup
 	errs := make([]error, trees)
@@ -3036,11 +1346,12 @@ func TestFinalizeConcurrentTrees(t *testing.T) {
 
 // hashNodeFn reports malformed nodes as errors.
 func TestHashNodeFnMalformed(t *testing.T) {
-	if err := hashNodeFn(nil, batchHashFn); err == nil {
+	h := hashingOf(hasher.SHA256)
+	if err := hashNodeFn(nil, &h); err == nil {
 		t.Error("expected error for nil node")
 	}
-	malformed := &Node{left: LeafFromBytes(finalizeTestChunks(1)[0])}
-	if err := hashNodeFn(malformed, batchHashFn); err == nil {
+	malformed := NewNodeWithLR(LeafFromBytes(finalizeTestChunks(1)[0]), nil)
+	if err := hashNodeFn(malformed.n, &h); err == nil {
 		t.Error("expected error for branch with a single child")
 	}
 }
@@ -3057,7 +1368,7 @@ func TestFinalizeRecursiveTailErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := bytes.Clone(hashNode(ref))
+	want := bytes.Clone(refHash(ref))
 
 	for _, tc := range []struct {
 		name     string
@@ -3101,14 +1412,14 @@ func TestProveNavigationMissingChild(t *testing.T) {
 	leaf := LeafFromBytes(finalizeTestChunks(1)[0])
 	cached := sum256ToBytes([]byte{9})
 
-	missingSibling := &Node{right: leaf, hasValue: true}
-	copy(missingSibling.value[:], cached)
+	missingSibling := &Node{n: &node{right: leaf.n, hasValue: true}, alg: hasher.SHA256}
+	copy(missingSibling.n.value[:], cached)
 	if _, err := missingSibling.Prove(3); err == nil {
 		t.Error("expected error for missing left sibling")
 	}
 
-	missingTarget := &Node{left: leaf, hasValue: true}
-	copy(missingTarget.value[:], cached)
+	missingTarget := &Node{n: &node{left: leaf.n, hasValue: true}, alg: hasher.SHA256}
+	copy(missingTarget.n.value[:], cached)
 	if _, err := missingTarget.Prove(3); err == nil {
 		t.Error("expected error for missing right child")
 	}
@@ -3125,7 +1436,7 @@ func TestNodeSize(t *testing.T) {
 	if unsafe.Sizeof(uintptr(0)) != 8 {
 		t.Skip("layout pin applies to 64-bit platforms")
 	}
-	if size := unsafe.Sizeof(Node{}); size != 56 {
+	if size := unsafe.Sizeof(node{}); size != 56 {
 		t.Fatalf("Node size = %d bytes, want 56", size)
 	}
 }
@@ -3166,13 +1477,13 @@ func TestFinalizeStaleVisitedFlag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := bytes.Clone(hashNode(ref))
+	want := bytes.Clone(refHash(ref))
 
 	tree, err := TreeFromChunks(chunks)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tree.left.isVisited = true
+	tree.n.left.isVisited = true
 	if finalizeErr := tree.Finalize(); finalizeErr != nil {
 		t.Fatalf("Finalize: %v", finalizeErr)
 	}
@@ -3192,7 +1503,7 @@ func TestFinalizeRecoveredFnPanic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := bytes.Clone(hashNode(ref))
+	want := bytes.Clone(refHash(ref))
 
 	tree, err := TreeFromChunks(chunks)
 	if err != nil {
@@ -3375,5 +1686,217 @@ func TestBothWalkersRefuseAFailingHashFn(t *testing.T) {
 	}
 	if err := root.Finalize(WithHashFn(failing)); !errors.Is(err, backend) {
 		t.Fatalf("Finalize err = %v, want %v", err, backend)
+	}
+}
+
+// hashPair is the SHA256 compression of two chunks.
+func hashPair(left, right []byte) []byte {
+	var input [64]byte
+	copy(input[:32], left)
+	copy(input[32:], right)
+
+	sum := sha256.Sum256(input[:])
+	return sum[:]
+}
+
+// refHash is the root of a SHA256 tree computed node by node, without the
+// finalization under test and without caching anything in the tree.
+func refHash(n *Node) []byte {
+	return refNodeHash(n.n)
+}
+
+func refNodeHash(n *node) []byte {
+	switch {
+	case n == nil:
+		panic("Tree incomplete")
+	case n.isEmpty && !n.hasValue:
+		return hasher.SHA256.ZeroHash(int(n.depth))
+	case n.left == nil && n.right == nil:
+		return bytes.Clone(n.value[:])
+	case n.left == nil || n.right == nil:
+		panic("Tree incomplete")
+	}
+	return hashPair(refNodeHash(n.left), refNodeHash(n.right))
+}
+
+// batchHashFn is the function a SHA256 tree is finalized with by default.
+func batchHashFn(dst, input []byte) error {
+	return hasher.SHA256.HashFn()(dst, input)
+}
+
+// replaceSHA256Backend makes SHA256 trees hash with fn until the returned
+// function is called.
+func replaceSHA256Backend(fn hasher.HashFn) (restore func()) {
+	installed := hasher.FastHasherPool.HashFn
+	hasher.FastHasherPool.HashFn = fn
+
+	return func() { hasher.FastHasherPool.HashFn = installed }
+}
+
+// The package names no hash of its own: every hash and every zero subtree
+// root comes from the Algorithm of the tree at hand. SHA256 appears once, as
+// the Algorithm an entry point works with when none is named.
+func TestPackageNamesNoHash(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read the package directory: %v", err)
+	}
+	forbidden := []string{"sha256.", "sha3.", "hasher.GetZeroHash", "hasher.FastHasherPool", "hasher.DefaultHasherPool", "hasher.Keccak256", "hasher.SHA256Native"}
+	defaults := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		source, readErr := os.ReadFile(name)
+		if readErr != nil {
+			t.Fatalf("read %s: %v", name, readErr)
+		}
+		for i, line := range strings.Split(string(source), "\n") {
+			code, _, _ := strings.Cut(line, "//")
+			for _, word := range forbidden {
+				if strings.Contains(code, word) {
+					t.Errorf("%s:%d names a hash: %s", name, i+1, strings.TrimSpace(line))
+				}
+			}
+			defaults += strings.Count(code, "hasher.SHA256")
+		}
+	}
+	if defaults != 1 {
+		t.Errorf("hasher.SHA256 is named %d times in the package, want once as the default", defaults)
+	}
+}
+
+// Padding nodes are shared by the trees of every hash and hold no root of
+// their own: each tree answers for them with the zero subtree roots of its
+// Algorithm.
+func TestPaddingNodesAreShared(t *testing.T) {
+	var shared *node
+	for name, alg := range testAlgorithms(t) {
+		tree, _ := algorithmTree(t, alg, paddedListWalk)
+		// The right half of the 64-leaf data tree is one zero subtree.
+		empty, err := tree.Get(5)
+		if err != nil {
+			t.Fatalf("%s: Get: %v", name, err)
+		}
+		if shared == nil {
+			shared = empty.n
+		}
+		if empty.n != shared || empty.n != emptyNode(5) || empty.n.hasValue {
+			t.Errorf("%s: the padding node is not the shared, valueless one", name)
+		}
+		if !empty.IsEmpty() || !empty.IsLeaf() || empty.Left() != nil || empty.Right() != nil || empty.Algorithm() != alg {
+			t.Errorf("%s: a padding node is not shown as an empty leaf of its tree", name)
+		}
+		want := alg.ZeroHash(5)
+		if !bytes.Equal(empty.Hash(), want) || !bytes.Equal(empty.Value(), want) {
+			t.Errorf("%s: padding root %x, want %x", name, empty.Hash(), want)
+		}
+		below, err := tree.Get(5 << 5)
+		if err != nil || !bytes.Equal(below.Hash(), make([]byte, 32)) {
+			t.Errorf("%s: the leaf below the padding = %v, %v; want the zero chunk", name, below, err)
+		}
+		if _, err = tree.Get(5 << 6); err == nil {
+			t.Errorf("%s: found a node below the zero chunk", name)
+		}
+		tree.Show(0)
+
+		// A padding node made from a zero subtree root of the Algorithm is
+		// the shared one of that depth.
+		loose := NewEmptyNode(alg.ZeroHash(3), WithAlgorithm(alg))
+		if loose.n != emptyNode(3) {
+			t.Errorf("%s: NewEmptyNode did not resolve the depth of its root", name)
+		}
+		child, err := loose.Get(2)
+		if err != nil || !bytes.Equal(child.Hash(), alg.ZeroHash(2)) {
+			t.Errorf("%s: child of a padding node = %v, %v", name, child, err)
+		}
+	}
+}
+
+// A generated proof must not alias the process-wide zero-hash table. Empty
+// siblings and zero-padding leaves hold the shared GetZeroHash slice, so handing
+// the raw bytes to a caller would let a proof mutation corrupt every subsequent
+// root computation in the process.
+func TestProveDoesNotAliasZeroHashTable(t *testing.T) {
+	leaves := []*Node{
+		LeafFromUint64(1),
+		LeafFromUint64(2),
+		LeafFromUint64(3),
+	}
+	tree, err := TreeFromNodes(leaves, 4)
+	if err != nil {
+		t.Fatalf("TreeFromNodes: %v", err)
+	}
+
+	// gindex 6 is the third leaf; its sibling (gindex 7) is zero-padding, so the
+	// proof carries the depth-0 zero hash.
+	proof, err := tree.Prove(6)
+	if err != nil {
+		t.Fatalf("Prove: %v", err)
+	}
+
+	zero := append([]byte(nil), hasher.GetZeroHash(0)...)
+	mutated := false
+	for _, h := range proof.Hashes {
+		if bytes.Equal(h, zero) {
+			h[0] ^= 0xFF
+			mutated = true
+		}
+	}
+	if !mutated {
+		t.Fatal("expected a zero-hash sibling in the proof")
+	}
+	if !bytes.Equal(hasher.GetZeroHash(0), zero) {
+		t.Fatalf("proof mutation corrupted the shared zero-hash table: %x", hasher.GetZeroHash(0))
+	}
+
+	// Node.Value() returns a copy for the same reason.
+	v := EmptyLeaf().Value()
+	v[0] ^= 0xFF
+	if !bytes.Equal(hasher.GetZeroHash(0), zero) {
+		t.Fatalf("Value() mutation corrupted the shared zero-hash table: %x", hasher.GetZeroHash(0))
+	}
+}
+
+// A decompressed proof owns its hashes: writing to one leaves the shared zero
+// hashes untouched.
+func TestDecompressClonesZeroHashes(t *testing.T) {
+	proof := &Multiproof{
+		Indices: []int{2, 3},
+		Leaves:  [][]byte{make([]byte, 32), make([]byte, 32)},
+		Hashes:  [][]byte{make([]byte, 32)},
+	}
+	decompressed := proof.Compress().Decompress()
+	if len(decompressed.Hashes) != 1 {
+		t.Fatalf("decompressed %d hashes, want 1", len(decompressed.Hashes))
+	}
+	before := bytes.Clone(hasher.GetZeroHash(0))
+	decompressed.Hashes[0][0] ^= 0xff
+	if !bytes.Equal(hasher.GetZeroHash(0), before) {
+		t.Fatal("writing a decompressed proof hash changed the shared zero hash")
+	}
+}
+
+func TestChunkLimitDepth(t *testing.T) {
+	cases := []struct {
+		limit uint64
+		depth int
+	}{
+		{0, 0}, {1, 0}, {2, 1}, {3, 2}, {4, 2}, {5, 3}, {8, 3}, {9, 4},
+		{1 << 32, 32},
+		{1 << 62, 62},
+		{(1 << 63) - 1, 63},
+		{1 << 63, 63},
+		// Above 2^63 the next power of two (2^64) is unrepresentable; the deepest
+		// tree is depth 64. This is the range that previously overflowed to a
+		// negative int and crashed GetTree.
+		{(1 << 63) + 1, 64},
+		{^uint64(0), 64},
+	}
+	for _, c := range cases {
+		if got := chunkLimitDepth(c.limit); got != c.depth {
+			t.Errorf("chunkLimitDepth(%d) = %d, want %d", c.limit, got, c.depth)
+		}
 	}
 }

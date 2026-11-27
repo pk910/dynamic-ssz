@@ -10,7 +10,6 @@ package treeproof
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"math/bits"
@@ -20,24 +19,13 @@ import (
 	"github.com/pk910/dynamic-ssz/hasher"
 )
 
-// hashChunkPair compresses one pair of chunks with the tree's hash.
-func (c treeHash) hashChunkPair(pair *[64]byte) ([32]byte, error) {
-	if !c.foreign {
-		return sha256.Sum256(pair[:]), nil
-	}
-	// The copy keeps the caller's pair on its stack: the call below goes
-	// through a function value.
-	p := *pair
-	return c.alg.HashPair(&p)
-}
-
 // VerifyProof verifies a single merkle branch. It's more
 // efficient than VerifyMultiproof for proving one leaf.
 func VerifyProof(root []byte, proof *Proof, opts ...Option) (bool, error) {
-	return verifyProof(treeHashFor(opts), root, proof)
+	return verifyProof(algorithmOf(opts), root, proof)
 }
 
-func verifyProof(c treeHash, root []byte, proof *Proof) (bool, error) {
+func verifyProof(alg *hasher.Algorithm, root []byte, proof *Proof) (bool, error) {
 	if proof == nil {
 		return false, errors.New("proof must not be nil")
 	}
@@ -80,7 +68,7 @@ func verifyProof(c treeHash, root []byte, proof *Proof) (bool, error) {
 			copy(tmp[:32], node[:])
 			copy(tmp[32:], sibling[:])
 		}
-		if node, err = c.hashChunkPair(&tmp); err != nil {
+		if node, err = alg.HashPair(&tmp); err != nil {
 			return false, err
 		}
 	}
@@ -108,10 +96,10 @@ func verifyProof(c treeHash, root []byte, proof *Proof) (bool, error) {
 // Let's call such hashes "*5", "*6" and "*15" respectively.
 // Then, when calling this function `proof` should be ordered as [*15, *6, *5].
 func VerifyMultiproof(root []byte, proof, leaves [][]byte, indices []int, opts ...Option) (bool, error) {
-	return verifyMultiproof(treeHashFor(opts), root, proof, leaves, indices)
+	return verifyMultiproof(algorithmOf(opts), root, proof, leaves, indices)
 }
 
-func verifyMultiproof(c treeHash, root []byte, proof, leaves [][]byte, indices []int) (bool, error) {
+func verifyMultiproof(alg *hasher.Algorithm, root []byte, proof, leaves [][]byte, indices []int) (bool, error) {
 	if len(indices) == 0 {
 		return false, errors.New("indices length is zero")
 	}
@@ -148,7 +136,7 @@ func verifyMultiproof(c treeHash, root []byte, proof, leaves [][]byte, indices [
 	}
 
 	if len(proof) == 0 {
-		if ok, valid, err := verifyFullTreeLeaves(c, root, leaves, indices); ok {
+		if ok, valid, err := verifyFullTreeLeaves(alg, root, leaves, indices); ok {
 			return valid, err
 		}
 	}
@@ -162,17 +150,17 @@ func verifyMultiproof(c treeHash, root []byte, proof, leaves [][]byte, indices [
 	// For that shape we can rebuild the root level-by-level without the more
 	// general hash-index map used for mixed-depth proofs.
 	if indicesShareDepth(indices) {
-		if handled, valid, err := verifyMultiproofSameDepth(c, root, proof, leaves, indices, requiredProofIndices); handled {
+		if handled, valid, err := verifyMultiproofSameDepth(alg, root, proof, leaves, indices, requiredProofIndices); handled {
 			return valid, err
 		}
 	}
 
-	return verifyMultiproofGeneral(c, root, proof, leaves, indices, requiredProofIndices)
+	return verifyMultiproofGeneral(alg, root, proof, leaves, indices, requiredProofIndices)
 }
 
 // verifyMultiproofGeneral verifies proofs that include indices from different
 // tree depths by storing known node hashes in a map keyed by generalized index.
-func verifyMultiproofGeneral(c treeHash, root []byte, proof, leaves [][]byte, indices, requiredProofIndices []int) (bool, error) {
+func verifyMultiproofGeneral(alg *hasher.Algorithm, root []byte, proof, leaves [][]byte, indices, requiredProofIndices []int) (bool, error) {
 	// Keep leaf indices in descending generalized-index order so verification can
 	// walk the tree bottom-up without building another sorted slice.
 	leafIndexCursor := newDescendingIndexCursor(indices)
@@ -294,7 +282,7 @@ func verifyMultiproofGeneral(c treeHash, root []byte, proof, leaves [][]byte, in
 
 		copy(tmp[:32], left[:])
 		copy(tmp[32:], right[:])
-		parentHash, err := c.hashChunkPair(&tmp)
+		parentHash, err := alg.HashPair(&tmp)
 		if err != nil {
 			return false, err
 		}
@@ -339,7 +327,7 @@ const inlineIndexedChunkCapacity = 64
 // verifyMultiproofSameDepth verifies proofs where all requested indices are on
 // the same tree level. It returns handled=false when the input shape should
 // fall back to the general verifier.
-func verifyMultiproofSameDepth(c treeHash, root []byte, proof, leaves [][]byte, indices, requiredProofIndices []int) (handled, valid bool, err error) {
+func verifyMultiproofSameDepth(alg *hasher.Algorithm, root []byte, proof, leaves [][]byte, indices, requiredProofIndices []int) (handled, valid bool, err error) {
 	var currentLevelInline [inlineIndexedChunkCapacity]indexedChunk
 	var nextLevelInline [inlineIndexedChunkCapacity]indexedChunk
 
@@ -376,7 +364,7 @@ func verifyMultiproofSameDepth(c treeHash, root []byte, proof, leaves [][]byte, 
 			if currentNode.index&1 == 1 && i+1 < len(currentLevel) && currentLevel[i+1].index == currentNode.index-1 {
 				copy(tmp[:32], currentLevel[i+1].hash[:])
 				copy(tmp[32:], currentNode.hash[:])
-				parentHash, hashErr := c.hashChunkPair(&tmp)
+				parentHash, hashErr := alg.HashPair(&tmp)
 				if hashErr != nil {
 					return true, false, hashErr
 				}
@@ -405,7 +393,7 @@ func verifyMultiproofSameDepth(c treeHash, root []byte, proof, leaves [][]byte, 
 				copy(tmp[32:], proofSiblingHash[:])
 			}
 
-			parentHash, hashErr := c.hashChunkPair(&tmp)
+			parentHash, hashErr := alg.HashPair(&tmp)
 			if hashErr != nil {
 				return true, false, hashErr
 			}
@@ -503,7 +491,7 @@ func intsSortedDescending(indices []int) bool {
 
 // verifyFullTreeLeaves handles proofs where the caller already provides a full
 // power-of-two leaf layer that can be merkleized directly.
-func verifyFullTreeLeaves(c treeHash, root []byte, leaves [][]byte, indices []int) (handled, valid bool, err error) {
+func verifyFullTreeLeaves(alg *hasher.Algorithm, root []byte, leaves [][]byte, indices []int) (handled, valid bool, err error) {
 	count := len(indices)
 	if count == 0 || count != len(leaves) || count&(count-1) != 0 {
 		return false, false, nil
@@ -528,7 +516,7 @@ func verifyFullTreeLeaves(c treeHash, root []byte, leaves [][]byte, indices []in
 		return false, false, nil
 	}
 
-	pool := c.alg.Pool()
+	pool := alg.Pool()
 	hh := pool.Get()
 	defer pool.Put(hh)
 

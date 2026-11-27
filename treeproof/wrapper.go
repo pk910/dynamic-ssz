@@ -50,11 +50,9 @@ type Wrapper struct {
 	// scopes holds one entry per open scope, in the order they were opened.
 	scopes []wScope
 	tmp    []byte
-	// hash is the hash of the tree and padding its zero-padding nodes.
-	hash    treeHash
-	padding *padding
-	// finish makes the wrapper hand its tree out finalized.
-	finish bool
+	// alg is the Algorithm the tree is built for. Building needs it only
+	// where a subtree's root is read before the walk ends.
+	alg *hasher.Algorithm
 
 	// walkErr records the first failure of the walk: a scope reduced in a
 	// shape it was not opened for, a reduction handed more chunks than its
@@ -66,7 +64,7 @@ type Wrapper struct {
 // nodeRef is a subtree root and the 32 bytes of buf it occupies.
 type nodeRef struct {
 	off  int
-	node *Node
+	node *node
 	// filled reports whether node's root bytes were written into buf.
 	filled bool
 }
@@ -81,70 +79,22 @@ type wScope struct {
 }
 
 // NewWrapper creates a new Wrapper ready to construct a Merkle tree, of
-// hasher.SHA256 unless WithAlgorithm names another Algorithm.
-//
-// Without an option its trees compress with whatever hasher.FastHasherPool
-// holds at the time -- the built-in compression unless a caller installed a
-// SHA256 backend there.
-//
-// A Wrapper given an Algorithm answers with the root a hasher of that
-// Algorithm gives for the same value, and its Root and Node hand the tree out
-// finalized: every branch holds its hash, so the tree is read-only and Prove,
-// ProveMulti, Get and Hash work on it whatever its Algorithm. A Node does not
-// record its Algorithm, and a tree left unfinalized would be completed with
-// SHA256 by those methods.
+// hasher.SHA256 unless WithAlgorithm names another Algorithm. The tree
+// answers with the root a hasher of that Algorithm gives for the same value.
 func NewWrapper(opts ...Option) *Wrapper {
-	w := &Wrapper{
-		buf:     make([]byte, 0),
-		tmp:     make([]byte, 64),
-		hash:    treeHash{alg: hasher.SHA256},
-		padding: sha256Padding,
+	return &Wrapper{
+		buf: make([]byte, 0),
+		tmp: make([]byte, 64),
+		alg: algorithmOf(opts),
 	}
-	if alg := algorithmOf(opts); alg != nil {
-		w.setAlgorithm(alg)
-		w.finish = true
-	}
-
-	return w
-}
-
-// setAlgorithm makes the wrapper build its tree for alg.
-func (w *Wrapper) setAlgorithm(alg *hasher.Algorithm) {
-	w.hash = treeHashOf(alg)
-	w.padding = paddingOf(w.hash)
-}
-
-// finalizeConfig returns how the branches of the wrapper's tree are hashed.
-func (w *Wrapper) finalizeConfig() finalizeConfig {
-	if w.hash.alg == hasher.SHA256 {
-		return finalizeConfig{}
-	}
-	return finalizeConfig{fn: w.hash.alg.HashFn()}
-}
-
-// NewWrapperWithHashFn returns a Wrapper that compresses with fn, so a tree
-// answers with the same root the hasher gives for the same value: a caller
-// that installs a backend installs it for both walkers or for neither.
-//
-// The tree is built for the Algorithm derived from fn, as
-// hasher.NewHasherWithHashFn derives it: fn is called once to find the hash
-// it computes. A tree of another hash than SHA256 is handed out finalized.
-//
-// Deprecated: use NewWrapper with the Algorithm of the function
-// (WithAlgorithm, hasher.AlgorithmFor), which is derived once.
-func NewWrapperWithHashFn(fn hasher.HashFn) *Wrapper {
-	alg := (&hasher.HasherPool{HashFn: fn}).Algorithm()
-
-	w := NewWrapper()
-	w.setAlgorithm(alg)
-	w.finish = w.hash.foreign
-
-	return w
 }
 
 // Algorithm returns the Algorithm the tree is built for.
 func (w *Wrapper) Algorithm() *hasher.Algorithm {
-	return w.hash.alg
+	if w.alg == nil {
+		return algorithmOf(nil)
+	}
+	return w.alg
 }
 
 // --- Wrapper implements the HashWalker interface ---
@@ -460,7 +410,7 @@ func (w *Wrapper) MerkleizeProgressiveWithActiveFields(indx int, activeFields []
 	w.checkShape(indx, true)
 	w.closeScope(indx)
 	leaves := w.regionLeaves(indx)
-	res, err := treeFromNodesProgressiveWithActiveFields(w.padding, leaves, activeFields)
+	res, err := treeFromNodesProgressiveWithActiveFields(leaves, activeFields)
 	if err != nil {
 		panic(err)
 	}
@@ -472,13 +422,13 @@ func (w *Wrapper) MerkleizeProgressiveWithActiveFields(indx int, activeFields []
 // regionLeaves pads the region that began at indx and cuts it into leaves: a
 // chunk that begins where a subtree root sits is that subtree, every other
 // chunk is a leaf of those bytes. This is the only place bytes become leaves.
-func (w *Wrapper) regionLeaves(indx int) []*Node {
+func (w *Wrapper) regionLeaves(indx int) []*node {
 	w.fillRegionUpTo32(indx)
 	if len(w.buf) == indx {
 		return nil
 	}
 
-	leaves := make([]*Node, 0, (len(w.buf)-indx)/32)
+	leaves := make([]*node, 0, (len(w.buf)-indx)/32)
 	// The registry is ordered by offset and the region is walked in order, so
 	// one cursor covers it: no search per chunk.
 	i := sort.Search(len(w.nodes), func(i int) bool { return w.nodes[i].off+32 > indx })
@@ -506,7 +456,7 @@ func (w *Wrapper) regionLeaves(indx int) []*Node {
 	// treeFromNodesToDepth does for branches: a node held on its own keeps its
 	// block alive.
 	if byteLeaves > 0 {
-		block := make([]Node, byteLeaves)
+		block := make([]node, byteLeaves)
 		for k := range leaves {
 			if leaves[k] == &pendingLeaf {
 				off := indx + k*32
@@ -521,11 +471,11 @@ func (w *Wrapper) regionLeaves(indx int) []*Node {
 
 // pendingLeaf marks, while regionLeaves walks a region, a chunk that becomes a
 // leaf of its own bytes. regionLeaves replaces every mark before returning.
-var pendingLeaf Node
+var pendingLeaf node
 
 // setRegionNode replaces the region that began at indx with res: the region's
 // bytes and subtree roots are gone, and res occupies one chunk at indx.
-func (w *Wrapper) setRegionNode(indx int, res *Node) {
+func (w *Wrapper) setRegionNode(indx int, res *node) {
 	w.truncateNodes(indx)
 	w.buf = append(w.buf[:indx], zeroChunk[:]...)
 	w.nodes = append(w.nodes, nodeRef{off: indx, node: res})
@@ -533,7 +483,7 @@ func (w *Wrapper) setRegionNode(indx int, res *Node) {
 
 func (w *Wrapper) reduceBinary(indx int) {
 	leaves := w.regionLeaves(indx)
-	res, err := treeFromNodesToDepthFn(w.padding, leaves, chunkLimitDepth(uint64(len(leaves))))
+	res, err := treeFromNodesToDepthFn(leaves, chunkLimitDepth(uint64(len(leaves))))
 	if err != nil {
 		panic(err)
 	}
@@ -543,7 +493,7 @@ func (w *Wrapper) reduceBinary(indx int) {
 func (w *Wrapper) reduceBinaryWithMixin(indx int, num, limit uint64) {
 	leaves := w.regionLeaves(indx)
 	w.checkChunkLimit(uint64(len(leaves)), limit)
-	res, err := treeFromNodesWithMixin64(w.padding, leaves, num, limit)
+	res, err := treeFromNodesWithMixin64(leaves, num, limit)
 	if err != nil {
 		panic(err)
 	}
@@ -552,7 +502,7 @@ func (w *Wrapper) reduceBinaryWithMixin(indx int, num, limit uint64) {
 
 func (w *Wrapper) reduceProgressive(indx int) {
 	leaves := w.regionLeaves(indx)
-	res, err := treeFromNodesProgressive(w.padding, leaves)
+	res, err := treeFromNodesProgressive(leaves)
 	if err != nil {
 		panic(err)
 	}
@@ -561,7 +511,7 @@ func (w *Wrapper) reduceProgressive(indx int) {
 
 func (w *Wrapper) reduceProgressiveWithMixin(indx int, num uint64) {
 	leaves := w.regionLeaves(indx)
-	res, err := treeFromNodesProgressiveWithMixin64(w.padding, leaves, num)
+	res, err := treeFromNodesProgressiveWithMixin64(leaves, num)
 	if err != nil {
 		panic(err)
 	}
@@ -610,12 +560,13 @@ func (w *Wrapper) materializeOne(i int) {
 	// recorded here where the walk can report it and the chunk is left
 	// unfilled: nothing was cached, so a later call answers it once the
 	// backend does.
-	if err := w.nodes[i].node.finalize(w.finalizeConfig()); err != nil {
+	h := hashingOf(w.Algorithm())
+	if err := w.nodes[i].node.finalize(&h); err != nil {
 		w.setWalkErr(err)
 
 		return
 	}
-	copy(w.buf[w.nodes[i].off:w.nodes[i].off+32], w.nodes[i].node.Hash())
+	copy(w.buf[w.nodes[i].off:w.nodes[i].off+32], nodeValue(w.nodes[i].node, &h))
 	w.nodes[i].filled = true
 }
 
@@ -632,119 +583,12 @@ func (w *Wrapper) clampIndex(i int) int {
 	return i
 }
 
-// --- legacy node API ---
-
-// alignForNode pads to the next chunk boundary of the enclosing scope, so a
-// node added through the legacy Add* API occupies a chunk of its own and keeps
-// its identity as a leaf. hasher.Hasher has no counterpart to these methods,
-// so nothing constrains this to the byte layout of a value write.
-func (w *Wrapper) alignForNode() {
-	off := 0
-	if n := len(w.scopes); n > 0 {
-		off = w.scopes[n-1].off
-	}
-	w.fillRegionUpTo32(off)
-}
-
-// AddNode places a node at the next chunk boundary, where it occupies one
-// chunk.
-func (w *Wrapper) AddNode(n *Node) {
-	w.alignForNode()
-	off := len(w.buf)
-	w.buf = append(w.buf, zeroChunk[:]...)
-	w.nodes = append(w.nodes, nodeRef{off: off, node: n})
-}
-
-// AddUint64 adds a uint64 as a leaf node.
-func (w *Wrapper) AddUint64(i uint64) {
-	w.AddNode(LeafFromUint64(i))
-}
-
-// AddUint32 adds a uint32 as a leaf node.
-func (w *Wrapper) AddUint32(i uint32) {
-	w.AddNode(LeafFromUint32(i))
-}
-
-// AddUint16 adds a uint16 as a leaf node.
-func (w *Wrapper) AddUint16(i uint16) {
-	w.AddNode(LeafFromUint16(i))
-}
-
-// AddUint8 adds a uint8 as a leaf node.
-func (w *Wrapper) AddUint8(i uint8) {
-	w.AddNode(LeafFromUint8(i))
-}
-
-// AddBytes adds a byte slice as a leaf node (<=32 bytes) or as a subtree of
-// its chunks. An empty value is a leaf of zeros, the meaning this method has
-// carried since v1: it builds a tree from values, so every value it is given
-// takes a place in the leaf order. PutBytes, the walker operation, is the one
-// that contributes nothing for an empty value, because there the value writes
-// bytes into a region.
-func (w *Wrapper) AddBytes(b []byte) {
-	if len(b) <= 32 {
-		w.AddNode(LeafFromBytes(b))
-		return
-	}
-	w.alignForNode()
-	indx := len(w.buf)
-	w.AppendBytes32(b)
-	w.reduceBinary(indx)
-}
-
-// addEmpty adds an empty (all-zeros) leaf node.
-func (w *Wrapper) addEmpty() {
-	w.AddNode(EmptyLeaf())
-}
-
-// The methods below preserve the exported v1.x Wrapper API (Commit*/AddEmpty)
-// as thin aliases over the current Merkleize* methods, so consumers built
-// against earlier v1 releases keep compiling. New code should use Merkleize*.
-
-// Commit reduces the region that began at index i into a binary subtree.
-//
-// Deprecated: use Merkleize.
-func (w *Wrapper) Commit(i int) { w.Merkleize(i) }
-
-// CommitWithMixin reduces the region that began at index i with a length mixin.
-//
-// Deprecated: use MerkleizeWithMixin.
-func (w *Wrapper) CommitWithMixin(i, num, limit int) {
-	w.MerkleizeWithMixin(i, uint64(num), uint64(limit))
-}
-
-// CommitProgressive reduces the region that began at index i progressively.
-//
-// Deprecated: use MerkleizeProgressive.
-func (w *Wrapper) CommitProgressive(i int) { w.MerkleizeProgressive(i) }
-
-// CommitProgressiveWithMixin reduces the region that began at index i
-// progressively, with a length mixin.
-//
-// Deprecated: use MerkleizeProgressiveWithMixin.
-func (w *Wrapper) CommitProgressiveWithMixin(i, num int) {
-	w.MerkleizeProgressiveWithMixin(i, uint64(num))
-}
-
-// CommitProgressiveWithActiveFields reduces the region that began at index i
-// progressively, with an active-fields bitvector mixin.
-//
-// Deprecated: use MerkleizeProgressiveWithActiveFields.
-func (w *Wrapper) CommitProgressiveWithActiveFields(i int, activeFields []byte) {
-	w.MerkleizeProgressiveWithActiveFields(i, activeFields)
-}
-
-// AddEmpty adds an empty (all-zeros) leaf node.
-//
-// Deprecated: retained for v1 API compatibility.
-func (w *Wrapper) AddEmpty() { w.addEmpty() }
-
 // --- terminal state ---
 
 // rootNode returns the single subtree the walker has left, or an error naming
 // what is missing. The conditions are hasher.Hasher's: no scope may be open
 // and the buffer must hold exactly one chunk.
-func (w *Wrapper) rootNode() (*Node, error) {
+func (w *Wrapper) rootNode() (*node, error) {
 	if w.walkErr != nil {
 		return nil, w.walkErr
 	}
@@ -754,24 +598,10 @@ func (w *Wrapper) rootNode() (*Node, error) {
 	if len(w.buf) != 32 {
 		return nil, fmt.Errorf("incomplete merkleization: wrapper holds %d bytes, want 32", len(w.buf))
 	}
-	i := w.nodeIndexAt(0)
-	if i < 0 {
-		return LeafFromBytes(w.buf), nil
+	if i := w.nodeIndexAt(0); i >= 0 {
+		return w.nodes[i].node, nil
 	}
-	n := w.nodes[i].node
-	if w.finish {
-		if err := n.finalize(w.finalizeConfig()); err != nil {
-			w.setWalkErr(err)
-			// Every hash cached in a partially finalized SHA256 tree is
-			// valid and a later Finalize resumes from it; the rest of a
-			// tree of another hash could not be completed by the caller.
-			if w.hash.foreign {
-				return nil, err
-			}
-			return n, err
-		}
-	}
-	return n, nil
+	return leafFromBytes(w.buf), nil
 }
 
 // Node returns the root of the constructed tree. It panics when the
@@ -781,12 +611,16 @@ func (w *Wrapper) Node() *Node {
 	if err != nil {
 		panic(err.Error())
 	}
-	return n
+	return &Node{n: n, alg: w.Algorithm()}
 }
 
 // Root returns the root of the constructed tree.
 func (w *Wrapper) Root() (*Node, error) {
-	return w.rootNode()
+	n, err := w.rootNode()
+	if err != nil {
+		return nil, err
+	}
+	return &Node{n: n, alg: w.Algorithm()}, nil
 }
 
 // HashRoot returns the 32-byte hash tree root of the constructed tree.
@@ -795,13 +629,14 @@ func (w *Wrapper) HashRoot() ([32]byte, error) {
 	if err != nil {
 		return [32]byte{}, err
 	}
-	if err := n.finalize(w.finalizeConfig()); err != nil {
+	h := hashingOf(w.Algorithm())
+	if err := n.finalize(&h); err != nil {
 		w.setWalkErr(err)
 
 		return [32]byte{}, err
 	}
 
-	return [32]byte(n.Hash()), nil
+	return [32]byte(nodeValue(n, &h)), nil
 }
 
 // Hash returns the last chunk of the walker's state -- the latest reduction

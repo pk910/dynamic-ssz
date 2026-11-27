@@ -5,6 +5,8 @@ package hasher_test
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"hash"
 	"sync/atomic"
 	"testing"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
 	"github.com/pk910/dynamic-ssz/treeproof"
+	"golang.org/x/crypto/sha3"
 )
 
 type isolationElem struct {
@@ -170,6 +173,46 @@ func runEveryEntryPoint(t *testing.T, name string, alg *hasher.Algorithm) {
 		t.Fatalf("%s: the full leaf layer does not verify", name)
 	}
 
+	// A tree left unfinished is hashed with its own Algorithm when first
+	// asked, and so is one built by hand.
+	lazy := treeproof.NewWrapper(proofOption)
+	lazyIdx := lazy.StartTree(sszutils.TreeTypeBinary)
+	for i := range leaves {
+		lazy.Append(leaves[i])
+	}
+	lazy.MerkleizeWithMixin(lazyIdx, 4, 64)
+	lazyTree, err := lazy.Root()
+	fail("wrapper Root", err)
+	proof, err := lazyTree.Prove(2 * 64)
+	fail("Prove on an unfinished tree", err)
+	ok, err = treeproof.VerifyProof(lazyTree.Hash(), proof, proofOption)
+	fail("VerifyProof", err)
+	if !ok {
+		t.Fatalf("%s: the proof of an unfinished tree does not verify", name)
+	}
+
+	handLeaves := make([]*treeproof.Node, len(leaves))
+	for i := range leaves {
+		handLeaves[i] = treeproof.NewNodeWithValue(leaves[i], proofOption) //nolint:staticcheck // the deprecated API is part of what is checked
+	}
+	handTree, err := treeproof.TreeFromNodesWithMixin(handLeaves, 4, 64, proofOption) //nolint:staticcheck // the deprecated API is part of what is checked
+	fail("TreeFromNodesWithMixin", err)
+	if !bytes.Equal(handTree.Hash(), lazyTree.Hash()) {
+		t.Fatalf("%s: a tree built by hand differs from the walked one", name)
+	}
+	if _, err = handTree.Get(2*64 + 40); err != nil {
+		t.Fatalf("%s: Get into the padding of a hand-built tree: %v", name, err)
+	}
+
+	// A subtree of this hash is taken by a wrapper of this hash.
+	joined := treeproof.NewWrapper(proofOption)
+	joinIdx := joined.Index()
+	joined.AddNode(handTree)                         //nolint:staticcheck // the deprecated API is part of what is checked
+	joined.AddNode(treeproof.EmptyLeaf(proofOption)) //nolint:staticcheck // the deprecated API is part of what is checked
+	joined.Merkleize(joinIdx)
+	_, err = joined.HashRoot()
+	fail("AddNode of a subtree", err)
+
 	// A hasher and a pool made around the bare function belong to its hash.
 	pool := &hasher.HasherPool{HashFn: alg.HashFn()}
 	if !pool.Algorithm().Compatible(alg) || !hasher.NewHasherWithHashFn(alg.HashFn()).Algorithm().Compatible(alg) {
@@ -178,4 +221,90 @@ func runEveryEntryPoint(t *testing.T, name string, alg *hasher.Algorithm) {
 	_ = alg.ZeroHash(3)
 	_ = alg.Compatible(hasher.SHA256)
 	_ = alg.Compatible(hasher.Keccak256)
+}
+
+// poolRoot hashes two chunks into a list with room for four with a hasher of
+// the pool.
+func poolRoot(t *testing.T, pool *hasher.HasherPool) [32]byte {
+	t.Helper()
+	hh := pool.Get()
+	defer pool.Put(hh)
+
+	indx := hh.Index()
+	hh.PutUint64(1)
+	hh.PutUint64(2)
+	hh.MerkleizeWithMixin(indx, 2, 4)
+	root, err := hh.HashRoot()
+	if err != nil {
+		t.Fatalf("HashRoot: %v", err)
+	}
+
+	return root
+}
+
+// A pool made by the caller hashes with the function its field holds now,
+// also where the new function runs the code of the one before.
+func TestPoolFollowsItsHashFn(t *testing.T) {
+	want := map[string][32]byte{
+		"sha256":    poolRoot(t, hasher.SHA256Native.Pool()),
+		"keccak256": poolRoot(t, hasher.Keccak256Native.Pool()),
+	}
+	constructors := map[string]func() hash.Hash{"sha256": sha256.New, "keccak256": sha3.NewLegacyKeccak256}
+	algorithms := map[string]*hasher.Algorithm{"sha256": hasher.SHA256, "keccak256": hasher.Keccak256}
+
+	pool := &hasher.HasherPool{}
+	for _, name := range []string{"sha256", "keccak256", "sha256"} {
+		pool.HashFn = hasher.NativeHashWrapperFactory(constructors[name])
+		if got := poolRoot(t, pool); got != want[name] {
+			t.Errorf("HashFn set to %s: root %x, want %x", name, got, want[name])
+		}
+		if !pool.Algorithm().Compatible(algorithms[name]) {
+			t.Errorf("HashFn set to %s: the pool names another hash", name)
+		}
+	}
+}
+
+// A function installed in DefaultHasherPool is used by that pool only:
+// NewHasher and a pool without a function compress with the built-in.
+func TestDefaultPoolHashFnStaysInItsPool(t *testing.T) { //nolint:paralleltest // changes a built-in pool
+	want := poolRoot(t, &hasher.HasherPool{})
+
+	var calls atomic.Int64
+	restore := hasher.CountCompressions(hasher.SHA256Native, &calls)
+	defer restore()
+
+	if got := poolRoot(t, &hasher.HasherPool{}); got != want || calls.Load() != 0 {
+		t.Errorf("a pool without a function: root %x, want %x; %d calls of the installed function", got, want, calls.Load())
+	}
+
+	hh := hasher.NewHasher()
+	indx := hh.Index()
+	hh.PutUint64(1)
+	hh.PutUint64(2)
+	hh.MerkleizeWithMixin(indx, 2, 4)
+	if got, err := hh.HashRoot(); err != nil || got != want || calls.Load() != 0 {
+		t.Errorf("NewHasher: root %x, %v, want %x; %d calls of the installed function", got, err, want, calls.Load())
+	}
+
+	if got := poolRoot(t, &hasher.DefaultHasherPool); got != want || calls.Load() == 0 {
+		t.Errorf("DefaultHasherPool: root %x, want %x; %d calls of the installed function", got, want, calls.Load())
+	}
+}
+
+// FastHasherPool and DefaultHasherPool stay the pools of SHA256 and
+// SHA256Native when a caller replaces them as a whole.
+func TestReplacedBuiltInPoolsKeepTheirAlgorithm(t *testing.T) { //nolint:paralleltest // replaces the built-in pools
+	want := poolRoot(t, &hasher.FastHasherPool)
+
+	hasher.FastHasherPool = hasher.HasherPool{HashFn: hasher.FastHasherPool.HashFn}
+	hasher.DefaultHasherPool = hasher.HasherPool{}
+
+	if hasher.FastHasherPool.Algorithm() != hasher.SHA256 || hasher.DefaultHasherPool.Algorithm() != hasher.SHA256Native {
+		t.Error("a replaced built-in pool names another Algorithm")
+	}
+	for name, pool := range map[string]*hasher.HasherPool{"FastHasherPool": &hasher.FastHasherPool, "DefaultHasherPool": &hasher.DefaultHasherPool} {
+		if got := poolRoot(t, pool); got != want {
+			t.Errorf("%s: root %x, want %x", name, got, want)
+		}
+	}
 }

@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -30,7 +31,7 @@ func nodeCount(w *Wrapper) int { return (len(w.buf) + 31) / 32 }
 func nodeAt(w *Wrapper, i int) *Node {
 	off := i * 32
 	if j := w.nodeIndexAt(off); j >= 0 {
-		return w.nodes[j].node
+		return &Node{n: w.nodes[j].node, alg: w.alg}
 	}
 	w.fillRegionUpTo32(0)
 	w.materialize(off, off+32)
@@ -64,6 +65,28 @@ func TestNewWrapper(t *testing.T) {
 	}
 	if w.tmp == nil || len(w.tmp) != 64 {
 		t.Error("tmp should be initialized with 64 bytes")
+	}
+}
+
+// A Wrapper made without the constructor builds a SHA256 tree.
+func TestZeroValueWrapper(t *testing.T) {
+	walk := func(w *Wrapper) []byte {
+		indx := w.Index()
+		w.PutUint64(1)
+		w.PutUint64(2)
+		w.Merkleize(indx)
+		return w.Node().Hash()
+	}
+
+	zero := &Wrapper{}
+	if zero.Algorithm() != hasher.SHA256 {
+		t.Error("a zero-value Wrapper names another Algorithm than SHA256")
+	}
+	if got, want := walk(zero), walk(NewWrapper()); !bytes.Equal(got, want) {
+		t.Errorf("a zero-value Wrapper gives the root %x, want %x", got, want)
+	}
+	if zero.Node().Algorithm() != hasher.SHA256 {
+		t.Error("the tree of a zero-value Wrapper names another Algorithm than SHA256")
 	}
 }
 
@@ -500,7 +523,7 @@ func TestWrapperPutMethods(t *testing.T) {
 
 		expected := make([]byte, 32)
 		expected[0] = 1
-		if !bytes.Equal(nodeAt(w, 0).value[:], expected) {
+		if !bytes.Equal(nodeAt(w, 0).n.value[:], expected) {
 			t.Error("PutBool value mismatch")
 		}
 	})
@@ -573,127 +596,6 @@ func TestWrapperPutUint64Array(t *testing.T) {
 	})
 }
 
-func TestWrapperAddMethods(t *testing.T) {
-	t.Run("AddBytes", func(t *testing.T) {
-		// Small bytes
-		w := NewWrapper()
-		w.AddBytes([]byte{1, 2, 3})
-
-		if nodeCount(w) != 1 {
-			t.Error("AddBytes (small) should add one node")
-		}
-
-		// Large bytes
-		w2 := NewWrapper()
-		w2.AddBytes(bytes.Repeat([]byte{1}, 100))
-
-		if len(w2.nodes) != 1 {
-			t.Error("AddBytes (large) should create merkleized node")
-		}
-	})
-
-	t.Run("AddUint64", func(t *testing.T) {
-		w := NewWrapper()
-		w.AddUint64(0xFFFFFFFFFFFFFFFF)
-
-		if nodeCount(w) != 1 {
-			t.Error("AddUint64 should add one node")
-		}
-
-		expected := make([]byte, 32)
-		binary.LittleEndian.PutUint64(expected[:8], 0xFFFFFFFFFFFFFFFF)
-		if !bytes.Equal(nodeAt(w, 0).value[:], expected) {
-			t.Error("AddUint64 value mismatch")
-		}
-	})
-
-	t.Run("AddSmallUints", func(t *testing.T) {
-		for _, tc := range []struct {
-			name string
-			add  func(w *Wrapper)
-			want []byte
-		}{
-			{"AddUint32", func(w *Wrapper) { w.AddUint32(0x11223344) }, []byte{0x44, 0x33, 0x22, 0x11}},
-			{"AddUint16", func(w *Wrapper) { w.AddUint16(0x1122) }, []byte{0x22, 0x11}},
-			{"AddUint8", func(w *Wrapper) { w.AddUint8(0x11) }, []byte{0x11}},
-		} {
-			w := NewWrapper()
-			tc.add(w)
-			if nodeCount(w) != 1 {
-				t.Fatalf("%s added %d chunks, want 1", tc.name, nodeCount(w))
-			}
-			want := make([]byte, 32)
-			copy(want, tc.want)
-			if got := nodeAt(w, 0).value[:]; !bytes.Equal(got, want) {
-				t.Errorf("%s value = %x, want %x", tc.name, got, want)
-			}
-		}
-	})
-
-	t.Run("AddBytesEmpty", func(t *testing.T) {
-		// A value added through this API takes a place in the leaf order, an
-		// empty one included: it is a leaf of zeros, as it has been since v1.
-		w := NewWrapper()
-		w.AddBytes(nil)
-		root, err := w.Root()
-		if err != nil {
-			t.Fatalf("empty AddBytes: %v", err)
-		}
-		if !bytes.Equal(root.Hash(), make([]byte, 32)) {
-			t.Errorf("empty AddBytes gave %x, want a leaf of zeros", root.Hash())
-		}
-
-		// Among siblings it keeps its position rather than shifting the rest.
-		w2 := NewWrapper()
-		idx := w2.Index()
-		w2.AddUint64(1)
-		w2.AddBytes(nil)
-		w2.AddUint64(2)
-		w2.Merkleize(idx)
-		with, err := w2.Root()
-		if err != nil {
-			t.Fatalf("with the empty value: %v", err)
-		}
-
-		w3 := NewWrapper()
-		idx = w3.Index()
-		w3.AddUint64(1)
-		w3.AddNode(LeafFromBytes(nil))
-		w3.AddUint64(2)
-		w3.Merkleize(idx)
-		spelled, err := w3.Root()
-		if err != nil {
-			t.Fatalf("with the leaf spelled out: %v", err)
-		}
-		if !bytes.Equal(with.Hash(), spelled.Hash()) {
-			t.Errorf("root = %x, want the same as an explicit zero leaf %x", with.Hash(), spelled.Hash())
-		}
-	})
-
-	t.Run("AddNode", func(t *testing.T) {
-		w := NewWrapper()
-		node := NewNodeWithValue(bytes.Repeat([]byte{42}, 32))
-		w.AddNode(node)
-
-		if nodeCount(w) != 1 || w.nodes[0].node != node {
-			t.Error("AddNode failed")
-		}
-	})
-
-	t.Run("AddEmpty", func(t *testing.T) {
-		w := NewWrapper()
-		w.addEmpty()
-
-		if nodeCount(w) != 1 {
-			t.Error("AddEmpty should add one node")
-		}
-
-		if !nodeAt(w, 0).IsEmpty() {
-			t.Error("AddEmpty should add empty node")
-		}
-	})
-}
-
 func TestWrapperNode(t *testing.T) {
 	t.Run("single node", func(t *testing.T) {
 		w := NewWrapper()
@@ -701,7 +603,7 @@ func TestWrapperNode(t *testing.T) {
 		w.AddNode(node)
 
 		retrieved := w.Node()
-		if retrieved != node {
+		if retrieved.n != node.n {
 			t.Error("Node() should return the single node")
 		}
 	})
@@ -791,48 +693,6 @@ func TestWrapperHashRootError(t *testing.T) {
 	_, err := w.HashRoot()
 	if err == nil {
 		t.Error("HashRoot should return error when no nodes exist")
-	}
-}
-
-// The v1 exported Commit*/AddEmpty API is retained as thin aliases over the
-// Merkleize* methods; each must produce the same root as its counterpart.
-func TestWrapperCommitAliases(t *testing.T) {
-	build := func(fn func(w *Wrapper)) []byte {
-		w := NewWrapper()
-		w.PutUint64(1)
-		w.PutUint64(2)
-		w.PutUint64(3)
-		fn(w)
-		return w.Node().Hash()
-	}
-
-	if !bytes.Equal(build(func(w *Wrapper) { w.Commit(0) }),
-		build(func(w *Wrapper) { w.Merkleize(0) })) {
-		t.Error("Commit should match Merkleize")
-	}
-	if !bytes.Equal(build(func(w *Wrapper) { w.CommitWithMixin(0, 3, 8) }),
-		build(func(w *Wrapper) { w.MerkleizeWithMixin(0, 3, 8) })) {
-		t.Error("CommitWithMixin should match MerkleizeWithMixin")
-	}
-	if !bytes.Equal(build(func(w *Wrapper) { w.CommitProgressive(0) }),
-		build(func(w *Wrapper) { w.MerkleizeProgressive(0) })) {
-		t.Error("CommitProgressive should match MerkleizeProgressive")
-	}
-	if !bytes.Equal(build(func(w *Wrapper) { w.CommitProgressiveWithMixin(0, 3) }),
-		build(func(w *Wrapper) { w.MerkleizeProgressiveWithMixin(0, 3) })) {
-		t.Error("CommitProgressiveWithMixin should match MerkleizeProgressiveWithMixin")
-	}
-	activeFields := []byte{0x07}
-	if !bytes.Equal(build(func(w *Wrapper) { w.CommitProgressiveWithActiveFields(0, activeFields) }),
-		build(func(w *Wrapper) { w.MerkleizeProgressiveWithActiveFields(0, activeFields) })) {
-		t.Error("CommitProgressiveWithActiveFields should match MerkleizeProgressiveWithActiveFields")
-	}
-
-	// AddEmpty adds a zero leaf like the internal addEmpty.
-	w := NewWrapper()
-	w.AddEmpty()
-	if nodeCount(w) != 1 || !w.nodes[0].node.isEmpty {
-		t.Error("AddEmpty should append a single zero leaf")
 	}
 }
 
@@ -1025,29 +885,6 @@ func TestWrapperTerminalStates(t *testing.T) {
 	}
 }
 
-// A node added through the legacy Add* API keeps its identity as a leaf of the
-// enclosing scope, even when bytes were appended before it: it takes a chunk
-// of its own rather than being smeared across two.
-func TestWrapperAddNodeKeepsLeafIdentity(t *testing.T) {
-	w := NewWrapper()
-	idx := w.StartTree(sszutils.TreeTypeNone)
-	w.AppendUint64(0x1122334455667788)
-	w.AddUint64(0xdeadbeef)
-	w.Merkleize(idx)
-
-	root, err := w.Root()
-	if err != nil {
-		t.Fatalf("Root: %v", err)
-	}
-	if root.left == nil || root.right == nil {
-		t.Fatalf("root is not a two-leaf tree: %v", root)
-	}
-	want := LeafFromUint64(0xdeadbeef)
-	if !bytes.Equal(root.right.Hash(), want.Hash()) {
-		t.Fatalf("second leaf = %x, want the added node %x", root.right.Hash(), want.Hash())
-	}
-}
-
 func TestWrapperRegionLeaves(t *testing.T) {
 	t.Run("empty region", func(t *testing.T) {
 		w := NewWrapper()
@@ -1105,7 +942,7 @@ func TestWrapperRegionLeaves(t *testing.T) {
 		if len(leaves) != 5 {
 			t.Fatalf("got %d leaves, want 5", len(leaves))
 		}
-		if leaves[1] != sub {
+		if leaves[1] != sub.n {
 			t.Error("a subtree root was not kept as its own node")
 		}
 		if leaves[4] != nil {
@@ -1114,7 +951,7 @@ func TestWrapperRegionLeaves(t *testing.T) {
 		want := map[int][]byte{0: a, 2: b[:32], 3: append(b[32:40:40], make([]byte, 24)...)}
 		for k, chunk := range want {
 			leaf := leaves[k]
-			if leaf == nil || !leaf.IsLeaf() || leaf.IsEmpty() || !bytes.Equal(leaf.Value(), chunk) {
+			if leaf == nil || leaf.left != nil || leaf.right != nil || leaf.isEmpty || !bytes.Equal(leaf.value[:], chunk) {
 				t.Fatalf("leaf %d does not hold its chunk", k)
 			}
 		}
@@ -1124,33 +961,10 @@ func TestWrapperRegionLeaves(t *testing.T) {
 
 		// Leaves hold copies: reusing the buffer must not change them.
 		clear(w.buf)
-		if !bytes.Equal(leaves[0].Value(), a) || !bytes.Equal(leaves[2].Value(), b[:32]) {
+		if !bytes.Equal(leaves[0].value[:], a) || !bytes.Equal(leaves[2].value[:], b[:32]) {
 			t.Error("a leaf aliases the wrapper buffer")
 		}
 	})
-}
-
-func TestChunkLimitDepth(t *testing.T) {
-	cases := []struct {
-		limit uint64
-		depth int
-	}{
-		{0, 0}, {1, 0}, {2, 1}, {3, 2}, {4, 2}, {5, 3}, {8, 3}, {9, 4},
-		{1 << 32, 32},
-		{1 << 62, 62},
-		{(1 << 63) - 1, 63},
-		{1 << 63, 63},
-		// Above 2^63 the next power of two (2^64) is unrepresentable; the deepest
-		// tree is depth 64. This is the range that previously overflowed to a
-		// negative int and crashed GetTree.
-		{(1 << 63) + 1, 64},
-		{^uint64(0), 64},
-	}
-	for _, c := range cases {
-		if got := chunkLimitDepth(c.limit); got != c.depth {
-			t.Errorf("chunkLimitDepth(%d) = %d, want %d", c.limit, got, c.depth)
-		}
-	}
 }
 
 func TestWrapperEdgeCases(t *testing.T) {
@@ -1238,28 +1052,6 @@ func TestWrapperCommitErrorHandling(t *testing.T) {
 			t.Errorf("expected 1 node, got %d", nodeCount(w))
 		}
 	})
-}
-
-func TestAddNodeWithNilSlice(t *testing.T) {
-	// Create wrapper with zero value (nil nodes) to cover the nil check in AddNode
-	w := &Wrapper{}
-	w.AddNode(NewNodeWithValue([]byte{1}))
-
-	if nodeCount(w) != 1 {
-		t.Fatalf("expected 1 node, got %d", nodeCount(w))
-	}
-}
-
-func TestWrapperAddNodeNil(t *testing.T) {
-	w := NewWrapper()
-
-	// Test AddNode with nil node - should handle gracefully
-	w.AddNode(nil)
-
-	// Should have one node (even if nil)
-	if nodeCount(w) != 1 {
-		t.Error("AddNode should add the node even if nil")
-	}
 }
 
 func TestMin(t *testing.T) {
@@ -1516,7 +1308,7 @@ func TestWrapperCollapseNoop(t *testing.T) {
 
 func TestWrapperCommitPanicInjected(t *testing.T) {
 	injected := errors.New("injected commit error")
-	treeFromNodesToDepthFn = func(*padding, []*Node, int) (*Node, error) {
+	treeFromNodesToDepthFn = func([]*node, int) (*node, error) {
 		return nil, injected
 	}
 	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
@@ -1532,7 +1324,7 @@ func TestWrapperCommitPanicInjected(t *testing.T) {
 
 func TestWrapperCommitWithMixinPanicInjected(t *testing.T) {
 	injected := errors.New("injected commit error")
-	treeFromNodesToDepthFn = func(*padding, []*Node, int) (*Node, error) {
+	treeFromNodesToDepthFn = func([]*node, int) (*node, error) {
 		return nil, injected
 	}
 	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
@@ -1548,7 +1340,7 @@ func TestWrapperCommitWithMixinPanicInjected(t *testing.T) {
 
 func TestWrapperCommitProgressivePanicInjected(t *testing.T) {
 	injected := errors.New("injected commit error")
-	treeFromNodesToDepthFn = func(*padding, []*Node, int) (*Node, error) {
+	treeFromNodesToDepthFn = func([]*node, int) (*node, error) {
 		return nil, injected
 	}
 	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
@@ -1564,7 +1356,7 @@ func TestWrapperCommitProgressivePanicInjected(t *testing.T) {
 
 func TestWrapperCommitProgressiveWithMixinPanicInjected(t *testing.T) {
 	injected := errors.New("injected commit error")
-	treeFromNodesToDepthFn = func(*padding, []*Node, int) (*Node, error) {
+	treeFromNodesToDepthFn = func([]*node, int) (*node, error) {
 		return nil, injected
 	}
 	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
@@ -1580,7 +1372,7 @@ func TestWrapperCommitProgressiveWithMixinPanicInjected(t *testing.T) {
 
 func TestWrapperCommitProgressiveWithActiveFieldsPanicInjected(t *testing.T) {
 	injected := errors.New("injected commit error")
-	treeFromNodesToDepthFn = func(*padding, []*Node, int) (*Node, error) {
+	treeFromNodesToDepthFn = func([]*node, int) (*node, error) {
 		return nil, injected
 	}
 	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
@@ -1989,8 +1781,7 @@ func TestWrapperRefusedBackendIsReported(t *testing.T) {
 	}
 
 	for _, n := range []int{0, 1, 2, 4} {
-		restore := batchHashFn
-		batchHashFn = flaky(n)
+		restore := replaceSHA256Backend(flaky(n))
 
 		w := NewWrapper()
 		build(w)
@@ -2002,7 +1793,7 @@ func TestWrapperRefusedBackendIsReported(t *testing.T) {
 		cached.Hash()
 		cachedErr := cached.HashErr()
 
-		batchHashFn = restore
+		restore()
 
 		if !errors.Is(rootErr, refused) || !errors.Is(rootWalkErr, refused) {
 			t.Errorf("%d calls before the refusal: HashRoot err = %v, HashErr = %v", n, rootErr, rootWalkErr)
@@ -2125,5 +1916,295 @@ func TestWalkerConstructorsResolveTheBackendDifferently(t *testing.T) {
 	}
 	if got := wrapperRoot(); bytes.Equal(got, builtIn) {
 		t.Errorf("NewWrapper answered the built-in root %x, want the pool's backend", got)
+	}
+}
+
+// A wrapper made for an Algorithm gives the root the hasher of that
+// Algorithm gives, and its tree is hashed with that Algorithm whenever that
+// happens.
+func TestWrapperWithAlgorithmMatchesHasher(t *testing.T) {
+	for name, alg := range testAlgorithms(t) {
+		for _, tc := range algorithmWalks {
+			want := algorithmRoot(t, alg, tc.walk)
+
+			w := NewWrapper(WithAlgorithm(alg))
+			if w.Algorithm() != alg || hasher.AlgorithmOf(w) != alg {
+				t.Fatalf("%s: wrapper reports another algorithm", name)
+			}
+			tc.walk(w)
+			got, err := w.HashRoot()
+			if err != nil {
+				t.Fatalf("%s %s: wrapper HashRoot: %v", name, tc.name, err)
+			}
+			if got != want {
+				t.Errorf("%s %s: wrapper root %x, hasher root %x", name, tc.name, got, want)
+			}
+
+			w = NewWrapper(WithAlgorithm(alg))
+			tc.walk(w)
+			node, err := w.Root()
+			if err != nil {
+				t.Fatalf("%s %s: wrapper Root: %v", name, tc.name, err)
+			}
+			// The tree is hashed with its own Algorithm when first asked,
+			// and a child knows that Algorithm too.
+			if node.Algorithm() != alg {
+				t.Errorf("%s %s: the tree does not carry its algorithm", name, tc.name)
+			}
+			if left := node.Left(); left != nil && left.Algorithm() != alg {
+				t.Errorf("%s %s: a child does not carry the algorithm of its tree", name, tc.name)
+			}
+			if !bytes.Equal(node.Hash(), want[:]) || !bytes.Equal(w.Node().Hash(), want[:]) {
+				t.Errorf("%s %s: tree root %x, hasher root %x", name, tc.name, node.Hash(), want)
+			}
+
+			if alg.Compatible(hasher.SHA256) != (want == algorithmRoot(t, hasher.SHA256, tc.walk)) && tc.name != "single chunk" {
+				t.Errorf("%s %s: the root and Compatible disagree about the hash", name, tc.name)
+			}
+		}
+	}
+}
+
+// shape is one hashing program: a list of elemChunks-sized elements, optionally
+// preceded by raw chunks, closed by one of the merkleizations.
+type shape struct {
+	name        string
+	rawPrefix   int
+	elemChunks  int
+	n           int
+	limit       uint64
+	progressive bool
+	active      bool
+	mixin       bool
+}
+
+func (s shape) String() string {
+	return fmt.Sprintf("%s(raw=%d elem=%d n=%d limit=%d prog=%v act=%v mix=%v)",
+		s.name, s.rawPrefix, s.elemChunks, s.n, s.limit, s.progressive, s.active, s.mixin)
+}
+
+// run drives one program, sending a Collapse hint every cadence elements
+// (cadence 0 sends none), and returns the root.
+func run(w sszutils.HashWalker, s shape, cadence int) {
+	chunk := make([]byte, 32)
+	counter := uint64(0)
+	fill := func() {
+		counter++
+		binary.LittleEndian.PutUint64(chunk, counter)
+		binary.LittleEndian.PutUint64(chunk[24:], ^counter)
+	}
+
+	treeType := sszutils.TreeTypeBinary
+	if s.progressive || s.active {
+		treeType = sszutils.TreeTypeProgressive
+	}
+	idx := w.StartTree(treeType)
+
+	for i := 0; i < s.rawPrefix; i++ {
+		fill()
+		w.Append(chunk)
+		if cadence > 0 && (i+1)%cadence == 0 {
+			w.Collapse()
+		}
+	}
+	for i := 0; i < s.n; i++ {
+		if s.elemChunks == 0 {
+			fill()
+			w.Append(chunk)
+		} else {
+			ci := w.StartTree(sszutils.TreeTypeNone)
+			for c := 0; c < s.elemChunks; c++ {
+				fill()
+				w.Append(chunk)
+			}
+			w.Merkleize(ci)
+		}
+		if cadence > 0 && (i+1)%cadence == 0 {
+			w.Collapse()
+		}
+	}
+
+	switch {
+	case s.active:
+		w.MerkleizeProgressiveWithActiveFields(idx, []byte{0xff, 0xff})
+	case s.progressive:
+		w.MerkleizeProgressiveWithMixin(idx, uint64(s.n))
+	case s.mixin:
+		w.MerkleizeWithMixin(idx, uint64(s.n), s.limit)
+	default:
+		w.Merkleize(idx)
+	}
+}
+
+// A reduction handed more chunks than its limit holds runs over a tree deep
+// enough for them and refuses the root. The hint must not move that root
+// either, so it is read from the walk where the refusal withholds it.
+func hasherRoot(t *testing.T, s shape, cadence int) [32]byte {
+	t.Helper()
+	h := hasher.NewHasher()
+	run(h, s, cadence)
+	root, err := h.HashRoot()
+	if errors.Is(err, sszutils.ErrChunkLimitExceeded) {
+		copy(root[:], h.Hash())
+		err = nil
+	}
+	if err != nil {
+		t.Fatalf("%s cadence=%d: hasher: %v", s, cadence, err)
+	}
+	return root
+}
+
+func wrapperRoot(t *testing.T, s shape, cadence int) [32]byte {
+	t.Helper()
+	w := NewWrapper()
+	run(w, s, cadence)
+	root, err := w.HashRoot()
+	if errors.Is(err, sszutils.ErrChunkLimitExceeded) {
+		copy(root[:], w.Hash())
+		err = nil
+	}
+	if err != nil {
+		t.Fatalf("%s cadence=%d: wrapper: %v", s, cadence, err)
+	}
+	return root
+}
+
+// A Collapse hint is optional. It must never change the root, on either
+// walker, and the two walkers must agree.
+func TestCollapseNeverMovesTheRoot(t *testing.T) {
+	var shapes []shape
+	for _, n := range []int{1, 2, 3, 5, 8, 9, 16, 17, 33, 64, 100} {
+		for _, elem := range []int{0, 1, 2, 3, 8} {
+			shapes = append(shapes,
+				shape{name: "binary", elemChunks: elem, n: n, mixin: true, limit: 1 << 20},
+				shape{name: "binary-nolimit", elemChunks: elem, n: n},
+				shape{name: "progressive", elemChunks: elem, n: n, progressive: true},
+			)
+			if n <= 17 {
+				shapes = append(shapes,
+					shape{name: "over-limit", elemChunks: elem, n: n, mixin: true, limit: 3},
+					shape{name: "raw-prefix", rawPrefix: 3, elemChunks: elem, n: n, mixin: true, limit: 1 << 20},
+					shape{name: "active-fields", elemChunks: elem, n: n, active: true},
+				)
+			}
+		}
+	}
+
+	cadences := []int{1, 2, 3, 7, 64}
+	var moved, disagreed int
+	for _, s := range shapes {
+		base := hasherRoot(t, s, 0)
+		wbase := wrapperRoot(t, s, 0)
+		if base != wbase {
+			disagreed++
+			t.Errorf("%s: walkers disagree without any hint: hasher %x wrapper %x", s, base, wbase)
+		}
+		for _, cadence := range cadences {
+			if got := hasherRoot(t, s, cadence); got != base {
+				moved++
+				t.Errorf("%s cadence=%d: hint moved the hasher root: %x, want %x", s, cadence, got, base)
+			}
+			if got := wrapperRoot(t, s, cadence); got != wbase {
+				moved++
+				t.Errorf("%s cadence=%d: hint moved the wrapper root: %x, want %x", s, cadence, got, wbase)
+			}
+		}
+	}
+	t.Logf("programs=%d cadences=%d roots compared=%d moved=%d walker disagreements=%d",
+		len(shapes), len(cadences), len(shapes)*(1+2*len(cadences)), moved, disagreed)
+}
+
+// A scope declares its tree shape when it is opened, and the reduction has to
+// match it: the two shapes disagree about what the accumulated chunks mean.
+// Both walkers refuse either mismatch rather than pick an answer, and every
+// reduction is guarded, not only the binary pair.
+func TestScopeShapeMismatchIsRefused(t *testing.T) {
+	appendChunks := func(w sszutils.HashWalker, cadence int) {
+		chunk := make([]byte, 32)
+		for i := 0; i < 17; i++ {
+			chunk[0] = byte(i)
+			w.Append(chunk)
+			if cadence > 0 && (i+1)%cadence == 0 {
+				w.Collapse()
+			}
+		}
+	}
+
+	cases := []struct {
+		name  string
+		close func(w sszutils.HashWalker, idx int)
+		open  sszutils.TreeType
+	}{
+		{"progressive closed binary", func(w sszutils.HashWalker, idx int) { w.Merkleize(idx) }, sszutils.TreeTypeProgressive},
+		{"progressive closed binary with mixin", func(w sszutils.HashWalker, idx int) { w.MerkleizeWithMixin(idx, 17, 64) }, sszutils.TreeTypeProgressive},
+		{"binary closed progressive", func(w sszutils.HashWalker, idx int) { w.MerkleizeProgressive(idx) }, sszutils.TreeTypeBinary},
+		{"binary closed progressive with mixin", func(w sszutils.HashWalker, idx int) { w.MerkleizeProgressiveWithMixin(idx, 17) }, sszutils.TreeTypeBinary},
+		{"binary closed progressive with active fields", func(w sszutils.HashWalker, idx int) {
+			w.MerkleizeProgressiveWithActiveFields(idx, []byte{0xff, 0xff})
+		}, sszutils.TreeTypeBinary},
+	}
+
+	for _, tc := range cases {
+		for _, cadence := range []int{0, 1, 4} {
+			h := hasher.NewHasher()
+			runShapeCase(h, tc.open, cadence, appendChunks, tc.close)
+			if _, err := h.HashRoot(); !errors.Is(err, sszutils.ErrScopeShapeMismatch) {
+				t.Errorf("%s: hasher cadence=%d: err = %v, want %v", tc.name, cadence, err, sszutils.ErrScopeShapeMismatch)
+			}
+
+			w := NewWrapper()
+			runShapeCase(w, tc.open, cadence, appendChunks, tc.close)
+			if _, err := w.HashRoot(); !errors.Is(err, sszutils.ErrScopeShapeMismatch) {
+				t.Errorf("%s: wrapper cadence=%d: err = %v, want %v", tc.name, cadence, err, sszutils.ErrScopeShapeMismatch)
+			}
+		}
+	}
+}
+
+// runShapeCase opens a scope in one shape and reduces it in whichever the case
+// names, which is the mismatch under test.
+func runShapeCase(w sszutils.HashWalker, open sszutils.TreeType, cadence int,
+	body func(sszutils.HashWalker, int), reduce func(sszutils.HashWalker, int)) {
+	idx := w.StartTree(open)
+	body(w, cadence)
+	reduce(w, idx)
+}
+
+// A scope that declares no shape accepts either reduction: generated code
+// written before StartTree opens a progressive container with Index, and code
+// from the v1.3 line opens one with TreeTypeNone. Both still work, and the
+// hint does not move those roots either.
+func TestUndeclaredScopeClosedProgressiveStillWorks(t *testing.T) {
+	root := func(cadence int, useIndex bool) [32]byte {
+		h := hasher.NewHasher()
+		var idx int
+		if useIndex {
+			idx = h.Index()
+		} else {
+			idx = h.StartTree(sszutils.TreeTypeNone)
+		}
+		chunk := make([]byte, 32)
+		for i := 0; i < 17; i++ {
+			chunk[0] = byte(i)
+			h.Append(chunk)
+			if cadence > 0 && (i+1)%cadence == 0 {
+				h.Collapse()
+			}
+		}
+		h.MerkleizeProgressiveWithMixin(idx, 17)
+		r, err := h.HashRoot()
+		if err != nil {
+			t.Fatalf("cadence=%d: %v", cadence, err)
+		}
+		return r
+	}
+
+	for _, useIndex := range []bool{true, false} {
+		base := root(0, useIndex)
+		for _, cadence := range []int{1, 4} {
+			if got := root(cadence, useIndex); got != base {
+				t.Errorf("index=%v cadence=%d moved the root: %x, want %x", useIndex, cadence, got, base)
+			}
+		}
 	}
 }

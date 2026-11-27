@@ -1397,12 +1397,18 @@ func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error
 		return nil, err
 	}
 
-	// The wrapper finalizes all node hashes up front: batched hashing during
-	// finalization is cheaper than the lazy per-pair path, and the finalized
-	// tree is immutable and safe for concurrent proof generation. On a
-	// finalization error a partially finalized SHA256 tree is returned
+	// Finalize all node hashes up front: batched hashing during finalization
+	// is cheaper than the lazy per-pair path, and the finalized tree is
+	// immutable and safe for concurrent proof generation.
+	node, err := w.Root()
+	if err != nil {
+		return nil, err
+	}
+	// On a finalization error the partially finalized tree is returned
 	// alongside the error; every hash cached in it is valid.
-	return w.Root()
+	finalizeErr := node.Finalize()
+
+	return node, finalizeErr
 }
 
 // hashAlgorithm is the algorithm a call hashes with: the one the call names,

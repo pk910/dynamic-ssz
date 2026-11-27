@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"errors"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -354,7 +355,7 @@ func TestVerifyFullTreeLeaves(t *testing.T) {
 
 	t.Run("ascending order", func(t *testing.T) {
 		// This is the normal fast-path case: all leaves are present in ascending order.
-		ok, valid, _ := verifyFullTreeLeaves(treeHash{alg: hasher.SHA256}, root, leaves, []int{4, 5, 6, 7})
+		ok, valid, _ := verifyFullTreeLeaves(hasher.SHA256, root, leaves, []int{4, 5, 6, 7})
 		if !ok {
 			t.Fatal("expected fast path to accept ascending full-tree leaves")
 		}
@@ -365,7 +366,7 @@ func TestVerifyFullTreeLeaves(t *testing.T) {
 
 	t.Run("descending order", func(t *testing.T) {
 		// This checks that the helper also accepts the same full tree in reverse order.
-		ok, valid, _ := verifyFullTreeLeaves(treeHash{alg: hasher.SHA256}, root, [][]byte{
+		ok, valid, _ := verifyFullTreeLeaves(hasher.SHA256, root, [][]byte{
 			leaves[3],
 			leaves[2],
 			leaves[1],
@@ -381,7 +382,7 @@ func TestVerifyFullTreeLeaves(t *testing.T) {
 
 	t.Run("rejects non power of two", func(t *testing.T) {
 		// A full binary tree must have a power-of-two leaf count for this shortcut.
-		ok, valid, _ := verifyFullTreeLeaves(treeHash{alg: hasher.SHA256}, root, leaves[:3], []int{4, 5, 6})
+		ok, valid, _ := verifyFullTreeLeaves(hasher.SHA256, root, leaves[:3], []int{4, 5, 6})
 		if ok || valid {
 			t.Fatalf("expected helper to reject non-power-of-two leaf count, got ok=%v valid=%v", ok, valid)
 		}
@@ -389,7 +390,7 @@ func TestVerifyFullTreeLeaves(t *testing.T) {
 
 	t.Run("rejects malformed ascending indices", func(t *testing.T) {
 		// This makes sure the helper rejects leaves that look ascending but skip the expected order.
-		ok, valid, _ := verifyFullTreeLeaves(treeHash{alg: hasher.SHA256}, root, leaves, []int{4, 5, 7, 6})
+		ok, valid, _ := verifyFullTreeLeaves(hasher.SHA256, root, leaves, []int{4, 5, 7, 6})
 		if ok || valid {
 			t.Fatalf("expected helper to reject malformed ascending indices, got ok=%v valid=%v", ok, valid)
 		}
@@ -397,7 +398,7 @@ func TestVerifyFullTreeLeaves(t *testing.T) {
 
 	t.Run("rejects malformed descending indices", func(t *testing.T) {
 		// This is the same guard as above, but for the descending-order shortcut.
-		ok, valid, _ := verifyFullTreeLeaves(treeHash{alg: hasher.SHA256}, root, [][]byte{
+		ok, valid, _ := verifyFullTreeLeaves(hasher.SHA256, root, [][]byte{
 			leaves[3],
 			leaves[2],
 			leaves[1],
@@ -410,7 +411,7 @@ func TestVerifyFullTreeLeaves(t *testing.T) {
 
 	t.Run("rejects unsupported starting index", func(t *testing.T) {
 		// The fast path only supports exact full-tree ranges, so unrelated starting indices must fail.
-		ok, valid, _ := verifyFullTreeLeaves(treeHash{alg: hasher.SHA256}, root, leaves, []int{5, 6, 7, 8})
+		ok, valid, _ := verifyFullTreeLeaves(hasher.SHA256, root, leaves, []int{5, 6, 7, 8})
 		if ok || valid {
 			t.Fatalf("expected helper to reject unsupported starting index, got ok=%v valid=%v", ok, valid)
 		}
@@ -1305,12 +1306,12 @@ func TestVerifyMultiproofManySameDepthLeaves(t *testing.T) {
 func TestVerifyMultiproofRootNeverComputed(t *testing.T) {
 	root := make([]byte, 32)
 
-	handled, valid, err := verifyMultiproofSameDepth(treeHash{alg: hasher.SHA256}, root, nil, nil, nil, nil)
+	handled, valid, err := verifyMultiproofSameDepth(hasher.SHA256, root, nil, nil, nil, nil)
 	if !handled || valid || err == nil {
 		t.Fatalf("same-depth backstop: handled=%v valid=%v err=%v", handled, valid, err)
 	}
 
-	valid, err = verifyMultiproofGeneral(treeHash{alg: hasher.SHA256}, root, nil, nil, nil, nil)
+	valid, err = verifyMultiproofGeneral(hasher.SHA256, root, nil, nil, nil, nil)
 	if valid || err == nil {
 		t.Fatalf("general backstop: valid=%v err=%v", valid, err)
 	}
@@ -1342,51 +1343,6 @@ func TestProofIndexHelperEdgeCases(t *testing.T) {
 	}
 }
 
-// A generated proof must not alias the process-wide zero-hash table. Empty
-// siblings and zero-padding leaves hold the shared GetZeroHash slice, so handing
-// the raw bytes to a caller would let a proof mutation corrupt every subsequent
-// root computation in the process.
-func TestProveDoesNotAliasZeroHashTable(t *testing.T) {
-	leaves := []*Node{
-		LeafFromUint64(1),
-		LeafFromUint64(2),
-		LeafFromUint64(3),
-	}
-	tree, err := TreeFromNodes(leaves, 4)
-	if err != nil {
-		t.Fatalf("TreeFromNodes: %v", err)
-	}
-
-	// gindex 6 is the third leaf; its sibling (gindex 7) is zero-padding, so the
-	// proof carries the depth-0 zero hash.
-	proof, err := tree.Prove(6)
-	if err != nil {
-		t.Fatalf("Prove: %v", err)
-	}
-
-	zero := append([]byte(nil), hasher.GetZeroHash(0)...)
-	mutated := false
-	for _, h := range proof.Hashes {
-		if bytes.Equal(h, zero) {
-			h[0] ^= 0xFF
-			mutated = true
-		}
-	}
-	if !mutated {
-		t.Fatal("expected a zero-hash sibling in the proof")
-	}
-	if !bytes.Equal(hasher.GetZeroHash(0), zero) {
-		t.Fatalf("proof mutation corrupted the shared zero-hash table: %x", hasher.GetZeroHash(0))
-	}
-
-	// Node.Value() returns a copy for the same reason.
-	v := sha256Padding.emptyNode(0).Value()
-	v[0] ^= 0xFF
-	if !bytes.Equal(hasher.GetZeroHash(0), zero) {
-		t.Fatalf("Value() mutation corrupted the shared zero-hash table: %x", hasher.GetZeroHash(0))
-	}
-}
-
 // VerifyProof must reject a non-positive generalized index, mirroring
 // VerifyMultiproof. Otherwise Index=-1 (whose path length is 63) would be
 // processed as a valid 63-deep proof.
@@ -1397,25 +1353,6 @@ func TestVerifyProofRejectsNonPositiveIndex(t *testing.T) {
 		if err == nil || ok {
 			t.Fatalf("VerifyProof(Index=%d) = (%v, %v); want (false, error)", idx, ok, err)
 		}
-	}
-}
-
-// A decompressed proof owns its hashes: writing to one leaves the shared zero
-// hashes untouched.
-func TestDecompressClonesZeroHashes(t *testing.T) {
-	proof := &Multiproof{
-		Indices: []int{2, 3},
-		Leaves:  [][]byte{make([]byte, 32), make([]byte, 32)},
-		Hashes:  [][]byte{make([]byte, 32)},
-	}
-	decompressed := proof.Compress().Decompress()
-	if len(decompressed.Hashes) != 1 {
-		t.Fatalf("decompressed %d hashes, want 1", len(decompressed.Hashes))
-	}
-	before := bytes.Clone(hasher.GetZeroHash(0))
-	decompressed.Hashes[0][0] ^= 0xff
-	if !bytes.Equal(hasher.GetZeroHash(0), before) {
-		t.Fatal("writing a decompressed proof hash changed the shared zero hash")
 	}
 }
 
@@ -1454,56 +1391,6 @@ func testAlgorithms(t *testing.T) map[string]*hasher.Algorithm {
 		"keccak256":        hasher.Keccak256,
 		"keccak256 native": hasher.Keccak256Native,
 		"custom":           customAlgorithm(t, 0x01, nil),
-	}
-}
-
-func TestTreeHashOf(t *testing.T) {
-	for name, alg := range testAlgorithms(t) {
-		h := treeHashOf(alg)
-		if want := !alg.Compatible(hasher.SHA256); h.alg != alg || h.foreign != want {
-			t.Errorf("%s: foreign = %v, want %v", name, h.foreign, want)
-		}
-		// SHA256 trees share their padding; a tree of another hash has its own.
-		if shared := paddingOf(h) == sha256Padding; shared == h.foreign {
-			t.Errorf("%s: shares the SHA256 padding = %v", name, shared)
-		}
-	}
-}
-
-// The padding nodes of a tree are linked, and the public view of a tree shows
-// them as the leaves they stand for.
-func TestPaddingNodesAreLeaves(t *testing.T) {
-	for name, alg := range testAlgorithms(t) {
-		tree, _ := algorithmTree(t, alg, paddedListWalk)
-		// The right half of the 64-leaf data tree is one zero subtree.
-		empty, err := tree.Get(5)
-		if err != nil {
-			t.Fatalf("%s: Get: %v", name, err)
-		}
-		if !empty.IsEmpty() || !empty.IsLeaf() || empty.Left() != nil || empty.Right() != nil {
-			t.Errorf("%s: a padding node is not shown as an empty leaf", name)
-		}
-		if depth := emptyDepth(empty); depth != 5 {
-			t.Errorf("%s: padding depth = %d, want 5", name, depth)
-		}
-		if want := alg.ZeroHash(5); !bytes.Equal(empty.Hash(), want) {
-			t.Errorf("%s: padding root %x, want %x", name, empty.Hash(), want)
-		}
-		below, err := tree.Get(5 << 5)
-		if err != nil || !bytes.Equal(below.Hash(), make([]byte, 32)) {
-			t.Errorf("%s: the leaf below the padding = %v, %v; want the zero chunk", name, below, err)
-		}
-		tree.Show(0)
-	}
-
-	// A padding node made from a root alone is a SHA256 zero subtree.
-	loose := NewEmptyNode(hasher.GetZeroHash(3))
-	if depth := emptyDepth(loose); depth != 3 {
-		t.Errorf("loose padding depth = %d, want 3", depth)
-	}
-	child, err := loose.Get(2)
-	if err != nil || !bytes.Equal(child.Hash(), hasher.GetZeroHash(2)) {
-		t.Errorf("child of a loose padding node = %v, %v", child, err)
 	}
 }
 
@@ -1581,46 +1468,6 @@ func algorithmRoot(t *testing.T, alg *hasher.Algorithm, walk func(hh sszutils.Ha
 		t.Fatalf("hasher HashRoot: %v", err)
 	}
 	return root
-}
-
-// A wrapper made for an Algorithm gives the root the hasher of that
-// Algorithm gives, and hands its tree out finalized.
-func TestWrapperWithAlgorithmMatchesHasher(t *testing.T) {
-	for name, alg := range testAlgorithms(t) {
-		for _, tc := range algorithmWalks {
-			want := algorithmRoot(t, alg, tc.walk)
-
-			w := NewWrapper(WithAlgorithm(alg))
-			if w.Algorithm() != alg || hasher.AlgorithmOf(w) != alg {
-				t.Fatalf("%s: wrapper reports another algorithm", name)
-			}
-			tc.walk(w)
-			got, err := w.HashRoot()
-			if err != nil {
-				t.Fatalf("%s %s: wrapper HashRoot: %v", name, tc.name, err)
-			}
-			if got != want {
-				t.Errorf("%s %s: wrapper root %x, hasher root %x", name, tc.name, got, want)
-			}
-
-			w = NewWrapper(WithAlgorithm(alg))
-			tc.walk(w)
-			node, err := w.Root()
-			if err != nil {
-				t.Fatalf("%s %s: wrapper Root: %v", name, tc.name, err)
-			}
-			if !node.hasValue {
-				t.Errorf("%s %s: the tree was handed out unfinalized", name, tc.name)
-			}
-			if !bytes.Equal(node.Hash(), want[:]) || !bytes.Equal(w.Node().Hash(), want[:]) {
-				t.Errorf("%s %s: tree root %x, hasher root %x", name, tc.name, node.Hash(), want)
-			}
-
-			if alg.Compatible(hasher.SHA256) != (want == algorithmRoot(t, hasher.SHA256, tc.walk)) && tc.name != "single chunk" {
-				t.Errorf("%s %s: the root and Compatible disagree about the hash", name, tc.name)
-			}
-		}
-	}
 }
 
 func algorithmTree(t *testing.T, alg *hasher.Algorithm, walk func(hh sszutils.HashWalker)) (*Node, []byte) {
@@ -1772,98 +1619,91 @@ func TestAlgorithmBackendRefusal(t *testing.T) {
 		}
 	}
 
-	// The tree of another hash is not handed out unfinished.
+	// A tree that could not be hashed reports the refusal and has no root.
 	w := NewWrapper(WithAlgorithm(alg))
 	paddedListWalk(w)
-	if node, rootErr := w.Root(); !errors.Is(rootErr, errBackendRefused) || node != nil {
-		t.Errorf("wrapper Root = %v, %v; want the refusal and no tree", node, rootErr)
+	node, rootErr := w.Root()
+	if rootErr != nil {
+		t.Fatalf("wrapper Root: %v", rootErr)
 	}
-	if !errors.Is(w.HashErr(), errBackendRefused) {
-		t.Errorf("wrapper HashErr = %v, want the refusal", w.HashErr())
+	if finalizeErr := node.Finalize(); !errors.Is(finalizeErr, errBackendRefused) {
+		t.Errorf("Finalize = %v, want the refusal", finalizeErr)
 	}
-}
-
-// A SHA256 tree that could not be finalized is handed out with the error:
-// every hash cached in it is valid and a later Finalize completes it.
-func TestWrapperWithAlgorithmPartialSHA256Tree(t *testing.T) {
-	var fail atomic.Bool
-	alg := customAlgorithm(t, 0x00, &fail)
-	if !alg.Compatible(hasher.SHA256) {
-		t.Fatal("the unsalted function is not a SHA256 backend")
+	if _, proveErr := node.Prove(130); !errors.Is(proveErr, errBackendRefused) {
+		t.Errorf("Prove = %v, want the refusal", proveErr)
+	}
+	if got := node.Hash(); got != nil {
+		t.Errorf("Hash = %x, want no root", got)
 	}
 
-	fail.Store(true)
-	w := NewWrapper(WithAlgorithm(alg))
-	paddedListWalk(w)
-	node, err := w.Root()
+	hashed := NewWrapper(WithAlgorithm(alg))
+	paddedListWalk(hashed)
+	if _, hashErr := hashed.HashRoot(); !errors.Is(hashErr, errBackendRefused) || !errors.Is(hashed.HashErr(), errBackendRefused) {
+		t.Errorf("wrapper HashRoot = %v, HashErr = %v; want the refusal", hashErr, hashed.HashErr())
+	}
+
+	// Once the backend answers, the same tree completes with its Algorithm.
 	fail.Store(false)
-	if !errors.Is(err, errBackendRefused) || node == nil {
-		t.Fatalf("wrapper Root = %v, %v; want the tree and the refusal", node, err)
+	if finalizeErr := node.Finalize(); finalizeErr != nil {
+		t.Fatalf("resumed Finalize: %v", finalizeErr)
 	}
-
-	if err = node.Finalize(); err != nil {
-		t.Fatalf("Finalize: %v", err)
-	}
-	want := algorithmRoot(t, hasher.SHA256, paddedListWalk)
+	want := algorithmRoot(t, alg, paddedListWalk)
 	if !bytes.Equal(node.Hash(), want[:]) {
-		t.Errorf("root %x, want %x", node.Hash(), want)
+		t.Errorf("resumed root %x, want %x", node.Hash(), want)
 	}
 }
 
-// No option, a nil option and a nil Algorithm all name SHA256.
-func TestOptionsDefaultToSHA256(t *testing.T) {
-	tree, root := algorithmTree(t, hasher.SHA256, paddedListWalk)
-	proof, err := tree.Prove(130)
-	if err != nil {
-		t.Fatalf("Prove: %v", err)
-	}
-	for name, opts := range map[string][]Option{
-		"none":          nil,
-		"nil option":    {nil},
-		"nil algorithm": {WithAlgorithm(nil)},
-	} {
-		ok, verifyErr := VerifyProof(root, proof, opts...)
-		if verifyErr != nil || !ok {
-			t.Errorf("%s: VerifyProof = %v, %v", name, ok, verifyErr)
+// Rejected multiproofs over large, distinct index sets keep the required
+// indices cache within its budget, a set over the budget is not stored, and
+// small sets are still served from the cache.
+func TestRequiredIndicesCacheBudget(t *testing.T) {
+	root := make([]byte, 32)
+	verify := func(indices []int) {
+		leaves := make([][]byte, len(indices))
+		for i := range leaves {
+			leaves[i] = make([]byte, 32)
 		}
-		if w := NewWrapper(opts...); w.Algorithm() != hasher.SHA256 || w.finish {
-			t.Errorf("%s: NewWrapper is not the plain SHA256 wrapper", name)
+		if ok, err := VerifyMultiproof(root, nil, leaves, indices); ok || err == nil {
+			t.Fatalf("forged proof accepted (ok=%v, err=%v)", ok, err)
 		}
 	}
-}
+	sparse := func(n, offset int) []int {
+		indices := make([]int, n)
+		for i := range indices {
+			indices[i] = 1<<28 + i*7 + offset
+		}
+		return indices
+	}
+	held := func() int {
+		requiredIndicesCache.mu.RLock()
+		defer requiredIndicesCache.mu.RUnlock()
+		total := 0
+		for i := range requiredIndicesCache.entries {
+			total += len(requiredIndicesCache.entries[i].indices) + len(requiredIndicesCache.entries[i].required)
+		}
+		if total != requiredIndicesCache.ints {
+			t.Fatalf("cache tracks %d ints but holds %d", requiredIndicesCache.ints, total)
+		}
+		return total
+	}
 
-// A node marked empty whose value is no zero subtree root of any hash in use
-// has nothing beneath it.
-func TestEmptyNodeWithUnknownRootHasNoChildren(t *testing.T) {
-	node := NewEmptyNode(bytes.Repeat([]byte{0xff}, 32))
-	if child, err := node.Get(2); err == nil || child != nil {
-		t.Errorf("Get(2) = %v, %v; want an error", child, err)
+	for k := range 2 * requiredIndicesCacheSize {
+		verify(sparse(16384, k))
+		if n := held(); n > requiredIndicesCacheMaxInts {
+			t.Fatalf("cache holds %d ints, over the budget of %d", n, requiredIndicesCacheMaxInts)
+		}
 	}
-}
 
-// A wrapper made for a bare function builds the tree of the hash that
-// function computes.
-func TestWrapperWithHashFnDerivesItsAlgorithm(t *testing.T) {
-	for name, tc := range map[string]struct {
-		fn      hasher.HashFn
-		alg     *hasher.Algorithm
-		foreign bool
-	}{
-		"custom hash":    {saltedSHA256(0x05, nil), customAlgorithm(t, 0x05, nil), true},
-		"sha256 backend": {saltedSHA256(0x00, nil), hasher.SHA256, false},
-	} {
-		w := NewWrapperWithHashFn(tc.fn)
-		if !w.Algorithm().Compatible(tc.alg) || w.finish != tc.foreign {
-			t.Fatalf("%s: the wrapper did not derive the algorithm of its function", name)
+	big := sparse(1<<17, 0)
+	verify(big)
+	for i := range requiredIndicesCache.entries {
+		if slices.Equal(requiredIndicesCache.entries[i].indices, big) {
+			t.Fatal("set over the budget was cached")
 		}
-		paddedListWalk(w)
-		node, err := w.Root()
-		if err != nil {
-			t.Fatalf("%s: Root: %v", name, err)
-		}
-		want := algorithmRoot(t, tc.alg, paddedListWalk)
-		if !bytes.Equal(node.Hash(), want[:]) {
-			t.Errorf("%s: root %x, want %x", name, node.Hash(), want)
-		}
+	}
+
+	small := []int{1<<16 + 3, 1<<16 + 1000}
+	if first, second := getRequiredIndices(small), getRequiredIndices(small); &first[0] != &second[0] {
+		t.Error("small set was not served from the cache")
 	}
 }
