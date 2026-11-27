@@ -1176,6 +1176,9 @@ func (d *DynSsz) unmarshalSSZReader(target any, decoder *sszutils.StreamDecoder,
 // When NoFastHash is false (default), it uses the optimized gohashtree implementation. For types
 // without dynamic fields, it automatically delegates to fastssz's HashTreeRoot method when available.
 //
+// The root is computed with SHA256 unless the instance or the call names
+// another hash algorithm (WithDefaultHashAlgorithm, WithHashAlgorithm).
+//
 // Parameters:
 //   - source: Any Go value for which to compute the hash tree root
 //
@@ -1207,7 +1210,12 @@ func (d *DynSsz) HashTreeRoot(source any, opts ...CallOption) ([32]byte, error) 
 	if source == nil {
 		return [32]byte{}, sszutils.NewSszError(sszutils.ErrInvalidValueRange, "source must not be nil")
 	}
-	pool := d.hasherPool()
+	cfg := applyCallOptions(opts)
+	alg, err := d.hashAlgorithm(source, cfg)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	pool := alg.Pool()
 	hh := pool.Get()
 	defer func() {
 		pool.Put(hh)
@@ -1217,9 +1225,8 @@ func (d *DynSsz) HashTreeRoot(source any, opts ...CallOption) ([32]byte, error) 
 		hh.SetAsyncHashing(true)
 	}
 
-	err := d.HashTreeRootWith(source, hh, opts...)
-	if err != nil {
-		return [32]byte{}, err
+	if walkErr := d.hashTreeRootWith(source, hh, cfg); walkErr != nil {
+		return [32]byte{}, walkErr
 	}
 
 	return hh.HashRoot()
@@ -1273,7 +1280,15 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "hash walker must not be nil")
 	}
 	cfg := applyCallOptions(opts)
+	if cfg != nil && cfg.hashAlgorithm != nil && !hasher.AlgorithmOf(hh).Compatible(cfg.hashAlgorithm) {
+		return sszutils.NewSszError(sszutils.ErrHashAlgorithmMismatch, "the walker hashes with another algorithm than the call names")
+	}
 
+	return d.hashTreeRootWith(source, hh, cfg)
+}
+
+// hashTreeRootWith merkleizes source into hh under the parsed call options.
+func (d *DynSsz) hashTreeRootWith(source any, hh sszutils.HashWalker, cfg *callConfig) error {
 	// Skip view descriptor logic for types implementing DynamicHashRoot
 	if cfg == nil || cfg.viewDescriptor == nil {
 		if hasher, ok := source.(sszutils.DynamicHashRoot); ok && !d.options.NoDelegation && d.delegable(source, "HashTreeRootWithDyn") {
@@ -1378,38 +1393,83 @@ func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error
 	if source == nil {
 		return nil, sszutils.NewSszError(sszutils.ErrInvalidValueRange, "source must not be nil")
 	}
-	// The tree is compressed with the function this instance hashes with, so
-	// one value gives one root whichever entry point a caller reaches for.
-	w := treeproof.NewWrapperWithHashFn(d.hasherPool().CurrentHashFn())
-
-	if err := d.HashTreeRootWith(source, w, opts...); err != nil {
+	// The tree is compressed with the algorithm this call hashes with, so one
+	// value gives one root whichever entry point a caller reaches for.
+	cfg := applyCallOptions(opts)
+	alg, err := d.hashAlgorithm(source, cfg)
+	if err != nil {
 		return nil, err
+	}
+	w := treeproof.NewWrapper(treeproof.WithAlgorithm(alg))
+
+	if walkErr := d.hashTreeRootWith(source, w, cfg); walkErr != nil {
+		return nil, walkErr
 	}
 
 	// Finalize all node hashes up front: batched hashing during finalization
 	// is cheaper than the lazy per-pair path, and the finalized tree is
-	// immutable and safe for concurrent proof generation. NoFastHash carries
-	// over: finalization then runs on the native Go sha256 implementation.
+	// immutable and safe for concurrent proof generation.
 	node, err := w.Root()
 	if err != nil {
 		return nil, err
 	}
 	// On a finalization error the partially finalized tree is returned
 	// alongside the error; every hash cached in it is valid.
-	finalizeErr := node.Finalize(treeproof.WithHashFn(d.hasherPool().CurrentHashFn()))
+	finalizeErr := node.Finalize()
 
 	return node, finalizeErr
 }
 
-// hasherPool is the pool this instance hashes from: the accelerated one, or
-// the built-in sha256 where WithNoFastHash asked for it. Every entry point
-// draws from the same one, so a backend installed on it reaches all of them.
-func (d *DynSsz) hasherPool() *hasher.HasherPool {
+// hashAlgorithm is the algorithm a call hashes source with: the one the call
+// names, else the one the type of source declares with ssz-hash, else the
+// default of the instance, else SHA256. Under a view the declaration of the
+// view type is read before that of the data type. NoFastHash selects the
+// pure Go counterpart.
+func (d *DynSsz) hashAlgorithm(source any, cfg *callConfig) (*hasher.Algorithm, error) {
+	var alg *hasher.Algorithm
+	if cfg != nil {
+		alg = cfg.hashAlgorithm
+	}
+	if alg == nil {
+		declared, err := d.declaredHashAlgorithm(source, cfg)
+		if err != nil {
+			return nil, err
+		}
+		alg = declared
+	}
+	if alg == nil {
+		alg = d.options.HashAlgorithm
+	}
+	if alg == nil {
+		alg = hasher.SHA256
+	}
 	if d.options.NoFastHash {
-		return &hasher.DefaultHasherPool
+		return alg.Native(), nil
 	}
 
-	return &hasher.FastHasherPool
+	return alg, nil
+}
+
+// declaredHashAlgorithm returns the algorithm the type of source declares
+// with an ssz-hash annotation, or nil when it declares none.
+func (d *DynSsz) declaredHashAlgorithm(source any, cfg *callConfig) (*hasher.Algorithm, error) {
+	name, declared := "", false
+	if cfg != nil && cfg.viewDescriptor != nil {
+		name, declared = sszutils.LookupHashAnnotation(reflect.TypeOf(cfg.viewDescriptor))
+	}
+	if !declared {
+		name, declared = sszutils.LookupHashAnnotation(reflect.TypeOf(source))
+	}
+	if !declared {
+		return nil, nil
+	}
+
+	alg, ok := hasher.AlgorithmByName(name)
+	if !ok {
+		return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "ssz-hash names %q, which is no registered hash algorithm", name)
+	}
+
+	return alg, nil
 }
 
 // ValidateType validates whether a given type is compatible with SSZ encoding/decoding.

@@ -7,6 +7,7 @@ package dynssz
 import (
 	"bytes"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -8928,7 +8929,7 @@ func TestHashTreeRootWithReportsAFailedHashFunction(t *testing.T) {
 	failing := errors.New("hash backend unavailable")
 
 	ds := NewDynSsz(nil)
-	h := hasher.NewHasherWithHashFn(func(dst []byte, input []byte) error {
+	h := hasher.NewHasherWithHashFn(func(dst []byte, input []byte) error { //nolint:staticcheck // a counting function must not be probed
 		return failing
 	})
 	defer h.Reset()
@@ -10552,5 +10553,479 @@ func TestHashTreeRootShortByteVectorInPackedScope(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("root = %x, want %x", got, want)
+	}
+}
+
+type hashAlgElem struct {
+	X uint64
+	Y [32]byte
+	Z uint16
+}
+
+type hashAlgContainer struct {
+	A uint64
+	B [48]byte
+	C []uint64      `ssz-max:"1024"`
+	D []hashAlgElem `ssz-max:"16"`
+}
+
+func newHashAlgContainer() *hashAlgContainer {
+	v := &hashAlgContainer{A: 7, C: []uint64{1, 2, 3, 4, 5}}
+	for i := range v.B {
+		v.B[i] = byte(i)
+	}
+	for i := uint64(0); i < 3; i++ {
+		v.D = append(v.D, hashAlgElem{X: i, Y: [32]byte{byte(i + 1)}, Z: uint16(i)})
+	}
+	return v
+}
+
+// secondHash is a hash algorithm of its own for the tests, SHA-512/256,
+// registered under a name so that a type can declare it with ssz-hash.
+var secondHash = func() *hasher.Algorithm {
+	alg, err := hasher.AlgorithmFor(func(dst, input []byte) error {
+		for i := 0; i+64 <= len(input); i += 64 {
+			sum := sha512.Sum512_256(input[i : i+64])
+			copy(dst[i/2:], sum[:])
+		}
+		return nil
+	})
+	if err == nil {
+		err = hasher.RegisterAlgorithm("sha512-256", alg)
+	}
+	if err != nil {
+		panic(err)
+	}
+	return alg
+}()
+
+// secondHashPair compresses two chunks with the second hash.
+func secondHashPair(a, b [32]byte) [32]byte {
+	return sha512.Sum512_256(append(a[:], b[:]...))
+}
+
+func TestHashAlgorithmOptions(t *testing.T) {
+	value := newHashAlgContainer()
+	second := WithHashAlgorithm(secondHash)
+
+	root := func(ds *DynSsz, opts ...CallOption) [32]byte {
+		t.Helper()
+		r, err := ds.HashTreeRoot(value, opts...)
+		if err != nil {
+			t.Fatalf("HashTreeRoot: %v", err)
+		}
+		return r
+	}
+
+	shaRoot := root(NewDynSsz(nil))
+	secondRoot := root(NewDynSsz(nil), second)
+	if shaRoot == secondRoot {
+		t.Fatal("both algorithms give the same root")
+	}
+
+	for name, got := range map[string][32]byte{
+		"explicit sha256":            root(NewDynSsz(nil), WithHashAlgorithm(hasher.SHA256)),
+		"sha256 instance default":    root(NewDynSsz(nil, WithDefaultHashAlgorithm(hasher.SHA256))),
+		"call overrides instance":    root(NewDynSsz(nil, WithDefaultHashAlgorithm(secondHash)), WithHashAlgorithm(hasher.SHA256)),
+		"nil algorithm keeps sha256": root(NewDynSsz(nil), WithHashAlgorithm(nil)),
+	} {
+		if got != shaRoot {
+			t.Errorf("%s: root %x, want the sha256 root %x", name, got, shaRoot)
+		}
+	}
+	for name, got := range map[string][32]byte{
+		"instance default": root(NewDynSsz(nil, WithDefaultHashAlgorithm(secondHash))),
+		"no fast hash":     root(NewDynSsz(nil, WithNoFastHash()), second),
+		"native":           root(NewDynSsz(nil), WithHashAlgorithm(secondHash)),
+		"reflection":       root(NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation()), second),
+		"async":            root(NewDynSsz(nil, WithAsyncHashing(0)), second),
+	} {
+		if got != secondRoot {
+			t.Errorf("%s: root %x, want the the second hash root %x", name, got, secondRoot)
+		}
+	}
+
+	// A hash of the caller's own is used like a built-in one.
+	custom, err := hasher.AlgorithmFor(func(dst, input []byte) error {
+		for i := 0; i+64 <= len(input); i += 64 {
+			sum := sha256.Sum256(input[i : i+64])
+			sum[0] ^= 0x40
+			copy(dst[i/2:], sum[:])
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("AlgorithmFor: %v", err)
+	}
+	customRoot := root(NewDynSsz(nil), WithHashAlgorithm(custom))
+	if customRoot == shaRoot || customRoot == secondRoot {
+		t.Error("a custom hash gives the root of a built-in one")
+	}
+	if got := root(NewDynSsz(nil, WithDefaultHashAlgorithm(custom), WithNoFastHash())); got != customRoot {
+		t.Errorf("custom instance default: root %x, want %x", got, customRoot)
+	}
+	customTree, err := NewDynSsz(nil).GetTree(value, WithHashAlgorithm(custom))
+	if err != nil || !bytes.Equal(customTree.Hash(), customRoot[:]) {
+		t.Errorf("custom tree root %x, %v; want %x", customTree.Hash(), err, customRoot)
+	}
+
+	// A container of two basic fields is the hash of its two chunks.
+	pair := struct{ A, B uint64 }{A: 1, B: 2}
+	got, err := NewDynSsz(nil).HashTreeRoot(&pair, second)
+	if err != nil {
+		t.Fatalf("HashTreeRoot: %v", err)
+	}
+	if want := secondHashPair([32]byte{1}, [32]byte{2}); got != want {
+		t.Errorf("two field container: root %x, want %x", got, want)
+	}
+}
+
+func TestHashTreeRootWithChecksWalkerAlgorithm(t *testing.T) {
+	ds := NewDynSsz(nil, WithDefaultHashAlgorithm(secondHash))
+	value := newHashAlgContainer()
+	want, err := ds.HashTreeRoot(value)
+	if err != nil {
+		t.Fatalf("HashTreeRoot: %v", err)
+	}
+
+	// A walker of the native counterpart computes the same hash.
+	hh := hasher.NewHasherWithAlgorithm(secondHash)
+	if err = ds.HashTreeRootWith(value, hh, WithHashAlgorithm(secondHash)); err != nil {
+		t.Fatalf("HashTreeRootWith a compatible walker: %v", err)
+	}
+	if got, rootErr := hh.HashRoot(); rootErr != nil || got != want {
+		t.Errorf("walker root %x, %v; want %x", got, rootErr, want)
+	}
+
+	// The walker decides: the instance default does not apply to it.
+	sha := hasher.NewHasher()
+	if err = ds.HashTreeRootWith(value, sha); err != nil {
+		t.Fatalf("HashTreeRootWith a sha256 walker: %v", err)
+	}
+	if got, rootErr := sha.HashRoot(); rootErr != nil || got == want {
+		t.Errorf("sha256 walker root %x, %v; want a root other than the the second hash one", got, rootErr)
+	}
+
+	for name, walker := range map[string]sszutils.HashWalker{
+		"hasher":  hasher.NewHasher(),
+		"wrapper": treeproof.NewWrapper(),
+	} {
+		err = ds.HashTreeRootWith(value, walker, WithHashAlgorithm(secondHash))
+		if !errors.Is(err, sszutils.ErrHashAlgorithmMismatch) {
+			t.Errorf("%s: err = %v, want ErrHashAlgorithmMismatch", name, err)
+		}
+	}
+}
+
+func TestGetTreeHashAlgorithm(t *testing.T) {
+	value := newHashAlgContainer()
+	second := WithHashAlgorithm(secondHash)
+	want, err := NewDynSsz(nil).HashTreeRoot(value, second)
+	if err != nil {
+		t.Fatalf("HashTreeRoot: %v", err)
+	}
+
+	for name, tc := range map[string]struct {
+		ds   *DynSsz
+		opts []CallOption
+	}{
+		"call option":      {NewDynSsz(nil), []CallOption{second}},
+		"instance default": {NewDynSsz(nil, WithDefaultHashAlgorithm(secondHash)), nil},
+		"no fast hash":     {NewDynSsz(nil, WithNoFastHash()), []CallOption{second}},
+		"native":           {NewDynSsz(nil), []CallOption{WithHashAlgorithm(secondHash)}},
+	} {
+		tree, treeErr := tc.ds.GetTree(value, tc.opts...)
+		if treeErr != nil {
+			t.Fatalf("%s: GetTree: %v", name, treeErr)
+		}
+		if !bytes.Equal(tree.Hash(), want[:]) {
+			t.Errorf("%s: tree root %x, want %x", name, tree.Hash(), want)
+		}
+
+		// Field C is the third of four fields: gindex 6. Its data tree is 12
+		// and holds 256 chunks, so its first chunk is 12*256.
+		proof, proofErr := tree.Prove(12 * 256)
+		if proofErr != nil {
+			t.Fatalf("%s: Prove: %v", name, proofErr)
+		}
+		ok, verifyErr := treeproof.VerifyProof(want[:], proof, treeproof.WithAlgorithm(secondHash))
+		if verifyErr != nil || !ok {
+			t.Errorf("%s: VerifyProof = %v, %v", name, ok, verifyErr)
+		}
+		if ok, verifyErr = treeproof.VerifyProof(want[:], proof); verifyErr != nil || ok {
+			t.Errorf("%s: VerifyProof as sha256 = %v, %v", name, ok, verifyErr)
+		}
+	}
+}
+
+// legacyRootStruct has a structure and hashes itself through the
+// argument-less method only, which returns a root no walk of it gives.
+type legacyRootStruct struct {
+	A uint64
+	B uint64
+}
+
+var legacyRootMarker = [32]byte{0xaa, 0xbb, 0xcc}
+
+func (l *legacyRootStruct) HashTreeRoot() ([32]byte, error) {
+	return legacyRootMarker, nil
+}
+
+// legacyRootCustom is a custom type that hashes itself through the
+// argument-less method only.
+type legacyRootCustom struct{ V [64]byte }
+
+func (c *legacyRootCustom) SizeSSZ() int                          { return 64 }
+func (c *legacyRootCustom) MarshalSSZ() ([]byte, error)           { return c.MarshalSSZTo(nil) }
+func (c *legacyRootCustom) MarshalSSZTo(b []byte) ([]byte, error) { return append(b, c.V[:]...), nil }
+func (c *legacyRootCustom) UnmarshalSSZ(b []byte) error {
+	copy(c.V[:], b)
+	return nil
+}
+
+func (c *legacyRootCustom) HashTreeRoot() ([32]byte, error) {
+	return legacyRootMarker, nil
+}
+
+// legacyRootSmallCustom is a custom type of 20 bytes that hashes itself
+// through the argument-less method only.
+type legacyRootSmallCustom struct{ V [20]byte }
+
+func (c *legacyRootSmallCustom) SizeSSZ() int                { return 20 }
+func (c *legacyRootSmallCustom) MarshalSSZ() ([]byte, error) { return c.MarshalSSZTo(nil) }
+func (c *legacyRootSmallCustom) MarshalSSZTo(b []byte) ([]byte, error) {
+	return append(b, c.V[:]...), nil
+}
+
+func (c *legacyRootSmallCustom) UnmarshalSSZ(b []byte) error {
+	copy(c.V[:], b)
+	return nil
+}
+
+func (c *legacyRootSmallCustom) HashTreeRoot() ([32]byte, error) {
+	return legacyRootMarker, nil
+}
+
+// legacyRootWord is a basic value that hashes itself through the
+// argument-less method only.
+type legacyRootWord uint64
+
+func (w *legacyRootWord) HashTreeRoot() ([32]byte, error) {
+	return legacyRootMarker, nil
+}
+
+// walkerRootCustom is a custom type that hashes itself into the walker it is
+// given.
+type walkerRootCustom struct{ legacyRootCustom }
+
+func (c *walkerRootCustom) HashTreeRootWith(hh sszutils.HashWalker) error {
+	idx := hh.StartTree(sszutils.TreeTypeNone)
+	hh.Append(c.V[:])
+	hh.Merkleize(idx)
+	return nil
+}
+
+func TestLegacyHashRootUnderAnotherHash(t *testing.T) {
+	second := WithHashAlgorithm(secondHash)
+	ds := NewDynSsz(nil)
+
+	type structHolder struct {
+		N uint64
+		L legacyRootStruct
+	}
+	holder := &structHolder{N: 1, L: legacyRootStruct{A: 2, B: 3}}
+
+	// Under sha256 the method's root is the field's chunk.
+	got, err := ds.HashTreeRoot(holder)
+	if err != nil {
+		t.Fatalf("sha256 HashTreeRoot: %v", err)
+	}
+	if want := sha256Pair([32]byte{1}, legacyRootMarker); !bytes.Equal(got[:], want) {
+		t.Errorf("sha256 root %x, want %x", got, want)
+	}
+
+	// Under the second hash the struct is walked instead.
+	got, err = ds.HashTreeRoot(holder, second)
+	if err != nil {
+		t.Fatalf("the second hash HashTreeRoot: %v", err)
+	}
+	inner := secondHashPair([32]byte{2}, [32]byte{3})
+	if want := secondHashPair([32]byte{1}, inner); got != want {
+		t.Errorf("the second hash root %x, want %x", got, want)
+	}
+	if got, err = ds.HashTreeRoot(&holder.L, second); err != nil || got != inner {
+		t.Errorf("the second hash root of the struct itself %x, %v; want %x", got, err, inner)
+	}
+
+	// A custom type answers for its root whatever it does to produce it: its
+	// method is called under every algorithm.
+	type customHolder struct {
+		N uint64
+		C legacyRootCustom `ssz-type:"custom" ssz-size:"64"`
+	}
+	custom := &customHolder{N: 1}
+	if got, err = ds.HashTreeRoot(custom); err != nil || !bytes.Equal(got[:], sha256Pair([32]byte{1}, legacyRootMarker)) {
+		t.Errorf("sha256 root of a custom type %x, %v", got, err)
+	}
+	wantCustom := secondHashPair([32]byte{1}, legacyRootMarker)
+	if got, err = ds.HashTreeRoot(custom, second); err != nil || got != wantCustom {
+		t.Errorf("the second hash root of a custom type %x, %v; want %x", got, err, wantCustom)
+	}
+	tree, err := ds.GetTree(custom, second)
+	if err != nil || !bytes.Equal(tree.Hash(), wantCustom[:]) {
+		t.Errorf("the second hash tree of a custom type: %v", err)
+	}
+
+	// A root that takes no hashing is the same under every algorithm, so
+	// the method of a basic value is called as well.
+	type chunkHolder struct {
+		N uint64
+		C legacyRootSmallCustom `ssz-type:"custom" ssz-size:"20"`
+		W legacyRootWord
+	}
+	chunks := &chunkHolder{N: 1}
+	wantChunks := secondHashPair(secondHashPair([32]byte{1}, legacyRootMarker), secondHashPair(legacyRootMarker, [32]byte{}))
+	if got, err = ds.HashTreeRoot(chunks, second); err != nil || got != wantChunks {
+		t.Errorf("the second hash root of single-chunk children %x, %v; want %x", got, err, wantChunks)
+	}
+
+	// One that hashes into the walker follows the walker's algorithm.
+	type walkerHolder struct {
+		N uint64
+		C walkerRootCustom `ssz-type:"custom" ssz-size:"64"`
+	}
+	got, err = ds.HashTreeRoot(&walkerHolder{N: 1}, second)
+	if err != nil {
+		t.Fatalf("the second hash HashTreeRoot of a walker custom type: %v", err)
+	}
+	if want := secondHashPair([32]byte{1}, secondHashPair([32]byte{}, [32]byte{})); got != want {
+		t.Errorf("walker custom type root %x, want %x", got, want)
+	}
+}
+
+type hashDeclSecond struct {
+	A uint64
+	B []uint16 `ssz-max:"40"`
+}
+
+type hashDeclSHA struct {
+	A uint64
+	B []uint16 `ssz-max:"40"`
+}
+
+type hashDeclNone struct {
+	A uint64
+	B []uint16 `ssz-max:"40"`
+}
+
+type hashDeclSecondView struct {
+	A uint64
+	B []uint16 `ssz-max:"40"`
+}
+
+type hashDeclNoneView struct {
+	A uint64
+	B []uint16 `ssz-max:"40"`
+}
+
+type hashDeclInvalid struct {
+	A uint64
+}
+
+// hashDeclHolder declares no hash and nests a type that declares one.
+type hashDeclHolder struct {
+	Inner hashDeclSecond
+	C     uint64
+}
+
+var (
+	_ = sszutils.Annotate[hashDeclSecond](`ssz-hash:"sha512-256"`)
+	_ = sszutils.Annotate[hashDeclSHA](`ssz-hash:"sha256"`)
+	_ = sszutils.Annotate[hashDeclSecondView](`ssz-hash:"sha512-256"`)
+	_ = sszutils.Annotate[hashDeclInvalid](`ssz-hash:"unregistered"`)
+)
+
+// A type declares the hash of its own tree with ssz-hash. A call that names
+// an algorithm overrides the declaration, and the declaration overrides the
+// default of the instance; a nested type's declaration does not apply.
+func TestHashAnnotation(t *testing.T) {
+	secondValue := &hashDeclSecond{A: 5, B: []uint16{1, 2, 3}}
+	shaValue := &hashDeclSHA{A: 5, B: []uint16{1, 2, 3}}
+	plainValue := &hashDeclNone{A: 5, B: []uint16{1, 2, 3}}
+
+	plain := NewDynSsz(nil)
+	secondDefault := NewDynSsz(nil, WithDefaultHashAlgorithm(secondHash))
+	root := func(ds *DynSsz, value any, opts ...CallOption) [32]byte {
+		t.Helper()
+		r, err := ds.HashTreeRoot(value, opts...)
+		if err != nil {
+			t.Fatalf("HashTreeRoot: %v", err)
+		}
+		return r
+	}
+	shaRoot := root(plain, plainValue, WithHashAlgorithm(hasher.SHA256))
+	secondRoot := root(plain, plainValue, WithHashAlgorithm(secondHash))
+
+	for name, tc := range map[string]struct {
+		got, want [32]byte
+	}{
+		"declared the second hash":                      {root(plain, secondValue), secondRoot},
+		"declared sha256":                               {root(plain, shaValue), shaRoot},
+		"no declaration":                                {root(plain, plainValue), shaRoot},
+		"declared sha256, the second hash instance":     {root(secondDefault, shaValue), shaRoot},
+		"no declaration, the second hash instance":      {root(secondDefault, plainValue), secondRoot},
+		"declared the second hash, call names sha256":   {root(plain, secondValue, WithHashAlgorithm(hasher.SHA256)), shaRoot},
+		"declared sha256, call names the second hash":   {root(plain, shaValue, WithHashAlgorithm(secondHash)), secondRoot},
+		"declared the second hash, no fast hash":        {root(NewDynSsz(nil, WithNoFastHash()), secondValue), secondRoot},
+		"declared the second hash, reflection":          {root(NewDynSsz(nil, WithNoDelegation(), WithNoFastSsz()), secondValue), secondRoot},
+		"view declares the second hash":                 {root(plain, plainValue, WithViewDescriptor((*hashDeclSecondView)(nil))), secondRoot},
+		"view declares none, data type sha256":          {root(secondDefault, shaValue, WithViewDescriptor((*hashDeclNoneView)(nil))), shaRoot},
+		"view declares the second hash over sha256":     {root(plain, shaValue, WithViewDescriptor((*hashDeclSecondView)(nil))), secondRoot},
+		"value form of a declared the second hash type": {root(plain, *secondValue), secondRoot},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s: root %x, want %x", name, tc.got, tc.want)
+		}
+	}
+
+	// The declaration of a nested type does not apply.
+	holder := &hashDeclHolder{Inner: *secondValue, C: 1}
+	var pair [64]byte
+	copy(pair[:32], shaRoot[:])
+	pair[32] = 1
+	if want := sha256.Sum256(pair[:]); root(plain, holder) != want {
+		t.Errorf("a nested declaration changed the root: %x, want %x", root(plain, holder), want)
+	}
+
+	// The tree of a type is built with the hash it declares.
+	tree, err := plain.GetTree(secondValue)
+	if err != nil || [32]byte(tree.Hash()) != secondRoot || !tree.Algorithm().Compatible(secondHash) {
+		t.Errorf("GetTree of a declared the second hash type: root %x, %v", tree.Hash(), err)
+	}
+
+	// A walker the caller supplies carries its own algorithm.
+	hh := hasher.SHA256.Pool().Get()
+	defer hasher.SHA256.Pool().Put(hh)
+	if err = plain.HashTreeRootWith(secondValue, hh); err != nil {
+		t.Fatalf("HashTreeRootWith: %v", err)
+	}
+	if got, rootErr := hh.HashRoot(); rootErr != nil || got != shaRoot {
+		t.Errorf("a SHA256 walker over a declared the second hash type: root %x, %v; want %x", got, rootErr, shaRoot)
+	}
+
+	// A hash no Algorithm is registered for is refused.
+	invalid := &hashDeclInvalid{A: 1}
+	if _, err = plain.HashTreeRoot(invalid); !errors.Is(err, sszutils.ErrInvalidTag) {
+		t.Errorf("HashTreeRoot of a type with an unknown hash: err = %v, want ErrInvalidTag", err)
+	}
+	if _, err = plain.GetTree(invalid); !errors.Is(err, sszutils.ErrInvalidTag) {
+		t.Errorf("GetTree of a type with an unknown hash: err = %v, want ErrInvalidTag", err)
+	}
+	if _, err = plain.HashTreeRoot(plainValue, WithViewDescriptor((*hashDeclInvalid)(nil))); !errors.Is(err, sszutils.ErrInvalidTag) {
+		t.Errorf("a view type with an unknown hash: err = %v, want ErrInvalidTag", err)
+	}
+	// A call that names its algorithm does not ask the type.
+	if _, err = plain.HashTreeRoot(invalid, WithHashAlgorithm(hasher.SHA256)); err != nil {
+		t.Errorf("an unknown hash under a call that names its algorithm: %v", err)
 	}
 }

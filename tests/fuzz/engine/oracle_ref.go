@@ -7,11 +7,14 @@ package engine
 
 import (
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/binary"
 	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/pk910/dynamic-ssz/hasher"
 )
 
 type oracleTag struct {
@@ -238,7 +241,7 @@ func oracleOffsets(count int, item func(int) []byte) []byte {
 	return out
 }
 
-func oracleHTR(value reflect.Value, tag oracleTag) [32]byte {
+func oracleHTR(value reflect.Value, tag oracleTag, hash oracleHash) [32]byte {
 	value = oracleDeref(value)
 	switch value.Kind() {
 	case reflect.Bool, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
@@ -246,20 +249,20 @@ func oracleHTR(value reflect.Value, tag oracleTag) [32]byte {
 		copy(root[:], oracleMarshal(value, tag))
 		return root
 	case reflect.Array, reflect.Slice:
-		return oracleCollectionHTR(value, tag)
+		return oracleCollectionHTR(value, tag, hash)
 	case reflect.Struct:
 		roots := make([][32]byte, value.NumField())
 		for i := range roots {
 			fieldTag, _ := parseOracleTag(value.Type().Field(i).Tag)
-			roots[i] = oracleHTR(value.Field(i), fieldTag)
+			roots[i] = oracleHTR(value.Field(i), fieldTag, hash)
 		}
-		return oracleMerkleize(roots, len(roots))
+		return oracleMerkleize(roots, len(roots), hash)
 	default:
 		panic("unsupported reference kind: " + value.Kind().String())
 	}
 }
 
-func oracleCollectionHTR(value reflect.Value, tag oracleTag) [32]byte {
+func oracleCollectionHTR(value reflect.Value, tag oracleTag, hash oracleHash) [32]byte {
 	elem := value.Type().Elem()
 	isVector := value.Kind() == reflect.Array || (len(tag.size) > 0 && tag.size[0] >= 0)
 	limit := value.Len()
@@ -274,16 +277,16 @@ func oracleCollectionHTR(value reflect.Value, tag oracleTag) [32]byte {
 	if oracleBasic(elem.Kind()) {
 		chunks := oracleChunkify(oracleMarshal(value, tag))
 		limitChunks := (limit*oracleBasicSize(elem.Kind()) + 31) / 32
-		root = oracleMerkleize(chunks, limitChunks)
+		root = oracleMerkleize(chunks, limitChunks, hash)
 	} else {
 		roots := make([][32]byte, value.Len())
 		for i := range roots {
-			roots[i] = oracleHTR(value.Index(i), tag.shift())
+			roots[i] = oracleHTR(value.Index(i), tag.shift(), hash)
 		}
-		root = oracleMerkleize(roots, limit)
+		root = oracleMerkleize(roots, limit, hash)
 	}
 	if !isVector {
-		root = oracleMixIn(root, uint64(value.Len()))
+		root = oracleMixIn(root, uint64(value.Len()), hash)
 	}
 	return root
 }
@@ -307,6 +310,30 @@ func oracleBasicSize(kind reflect.Kind) int {
 	}
 }
 
+// oracleHash compresses one pair of chunks.
+type oracleHash func(pair []byte) [32]byte
+
+// oracleSHA512256 is the oracle's second hash, SHA-512/256: roots under it
+// show that a value is merkleized with the algorithm a call names.
+func oracleSHA512256(pair []byte) [32]byte {
+	return sha512.Sum512_256(pair)
+}
+
+// secondHash is the Algorithm of the oracle's second hash.
+var secondHash = func() *hasher.Algorithm {
+	alg, err := hasher.AlgorithmFor(func(dst, input []byte) error {
+		for i := 0; i+64 <= len(input); i += 64 {
+			sum := sha512.Sum512_256(input[i : i+64])
+			copy(dst[i/2:], sum[:])
+		}
+		return nil
+	})
+	if err != nil {
+		panic(err)
+	}
+	return alg
+}()
+
 func oracleChunkify(data []byte) [][32]byte {
 	chunks := make([][32]byte, (len(data)+31)/32)
 	for i := range chunks {
@@ -315,7 +342,7 @@ func oracleChunkify(data []byte) [][32]byte {
 	return chunks
 }
 
-func oracleMerkleize(chunks [][32]byte, limit int) [32]byte {
+func oracleMerkleize(chunks [][32]byte, limit int, hash oracleHash) [32]byte {
 	count := max(len(chunks), limit)
 	width := 1
 	for width < count {
@@ -328,18 +355,18 @@ func oracleMerkleize(chunks [][32]byte, limit int) [32]byte {
 			var pair [64]byte
 			copy(pair[:32], nodes[2*i][:])
 			copy(pair[32:], nodes[2*i+1][:])
-			nodes[i] = sha256.Sum256(pair[:])
+			nodes[i] = hash(pair[:])
 		}
 		width /= 2
 	}
 	return nodes[0]
 }
 
-func oracleMixIn(root [32]byte, length uint64) [32]byte {
+func oracleMixIn(root [32]byte, length uint64, hash oracleHash) [32]byte {
 	var pair [64]byte
 	copy(pair[:32], root[:])
 	binary.LittleEndian.PutUint64(pair[32:40], length)
-	return sha256.Sum256(pair[:])
+	return hash(pair[:])
 }
 
 // referenceCheck returns supported=false when the independent oracle does not
@@ -361,9 +388,25 @@ func referenceCheck(value any, encoded []byte, root [32]byte) (detail string, su
 	if !reflect.DeepEqual(wantBytes, encoded) {
 		return fmt.Sprintf("marshal: dynssz=%x reference=%x", encoded, wantBytes), true, false
 	}
-	wantRoot := oracleHTR(rv, oracleTag{})
+	wantRoot := oracleHTR(rv, oracleTag{}, sha256.Sum256)
 	if wantRoot != root {
 		return fmt.Sprintf("root: dynssz=%x reference=%x", root, wantRoot), true, false
 	}
 	return "", true, true
+}
+
+// referenceSecondHashCheck compares a root under the oracle's second hash,
+// of a schema the oracle models, with the oracle's own.
+func referenceSecondHashCheck(value any, root [32]byte) (detail string, ok bool) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			detail = fmt.Sprintf("reference oracle panic: %v", recovered)
+			ok = false
+		}
+	}()
+	wantRoot := oracleHTR(reflect.ValueOf(value), oracleTag{}, oracleSHA512256)
+	if wantRoot != root {
+		return fmt.Sprintf("second hash root: dynssz=%x reference=%x", root, wantRoot), false
+	}
+	return "", true
 }

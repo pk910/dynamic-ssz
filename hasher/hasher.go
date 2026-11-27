@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"hash"
 	"math/bits"
+	"sync"
 
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
@@ -86,8 +87,12 @@ type Hasher struct {
 	tmp    []byte
 	tmpBuf [64]byte // inline backing to avoid heap allocation
 
-	// sha256 hash function
+	// alg is the Algorithm the hasher compresses with. hash and zero are its
+	// function and its zero subtree roots, read from it when the hasher is
+	// made or drawn from a pool.
 	hash HashFn
+	alg  *Algorithm
+	zero *zeroTable
 
 	// hashErr holds the first failure recorded for this hasher: an error a
 	// hash function returned, or a reduction handed more chunks than its
@@ -120,50 +125,102 @@ type Hasher struct {
 	jobRingBuf [asyncRingInline]asyncJob // inline backing to avoid heap allocation
 }
 
-// defaultHash is the built-in sha256 compression, used where no backend was
-// installed. The factory builds a pool of hash instances behind a closure, so
-// one is built for the process: a fresh one per acquisition pools nothing,
-// since no instance outlives the hasher that drew it.
+// defaultHash is the SHA256 compression of the Go standard library. The
+// factory builds a pool of hash instances behind a closure, so one is built
+// for the process.
 var defaultHash = NativeHashWrapperFactory(sha256.New)
 
-// defaultHashFn hands out that compression. It draws per-call instances from a
-// pool, so a hasher using it may be gated into async hashing.
-func defaultHashFn() HashFn {
-	return defaultHash
-}
-
-// NewHasher creates a new Hasher with the default sha256 hash function. The
-// hash function draws per-call instances from a pool, so the hasher may be
-// gated into async hashing.
+// NewHasher creates a new Hasher of SHA256Native. The hash function draws
+// per-call instances from a pool, so the hasher may be gated into async
+// hashing.
 //
 // It takes the built-in compression whatever FastHasherPool holds, so a
-// caller who installed a backend there names it here too, with
-// NewHasherWithHashFn, or draws the hasher from the pool with Get. A tree
-// built by treeproof.NewWrapper reads the pool instead, so the two answer
-// differently for the same value while only one of them is told.
+// caller who installed a backend there draws the hasher from the pool with
+// Get. A tree built by treeproof.NewWrapper reads the pool instead, so the two
+// answer differently for the same value while only one of them is told.
 func NewHasher() *Hasher {
-	return NewHasherWithHashFn(defaultHashFn())
+	h := newHasher(SHA256Native)
+	h.hash = defaultHash
+
+	return h
 }
 
-// NewHasherWithHash creates a new Hasher with a custom hash.Hash function.
-// hash.Hash instances are stateful and not safe for concurrent use, so such
-// a hasher must not be gated into async hashing (see SetAsyncHashing).
+// NewHasherWithHash creates a new Hasher that compresses with a hash.Hash
+// instance. hash.Hash instances are stateful and not safe for concurrent
+// use, so such a hasher must not be gated into async hashing (see
+// SetAsyncHashing).
+//
+// The hasher gets an Algorithm of its own, derived from the instance as
+// NewHasherWithHashFn derives it from a function. Compressions with the
+// instance are serialized, so that Algorithm is safe to share.
 func NewHasherWithHash(hh hash.Hash) *Hasher {
-	return NewHasherWithHashFn(NativeHashWrapper(hh))
+	if hh == nil {
+		return newHasherOfFn(nil)
+	}
+
+	// The Algorithm of the hasher can reach other goroutines, so the one
+	// instance is used by one of them at a time.
+	var mu sync.Mutex
+
+	return newHasherOfFn(func(dst, input []byte) error {
+		mu.Lock()
+		nativeHashPairs(hh, dst, input)
+		mu.Unlock()
+
+		return nil
+	})
 }
 
-// NewHasherWithHashFn creates a new Hasher with a custom HashFn function.
+// NewHasherWithHashFn creates a new Hasher that compresses with a custom
+// HashFn function.
+//
+// The hasher gets an Algorithm of its own, with the zero subtree roots of the
+// hash the function computes: the function is called once to find them, and
+// 64 times for a hash that neither a built-in Algorithm nor one AlgorithmFor
+// made computes. A function that fails one of these calls has no known hash:
+// HashRoot reports the failure, and Reset asks the function again.
+//
+// Deprecated: use NewHasherWithAlgorithm with the Algorithm AlgorithmFor
+// returns for the function, which is derived once instead of per hasher.
 func NewHasherWithHashFn(hh HashFn) *Hasher {
-	initHasher()
+	return newHasherOfFn(hh)
+}
 
+// NewHasherWithAlgorithm creates a new Hasher that compresses with the given
+// Algorithm.
+func NewHasherWithAlgorithm(alg *Algorithm) *Hasher {
+	return newHasher(alg)
+}
+
+func newHasherOfFn(fn HashFn) *Hasher {
+	h := newHasher(algorithmOfFn(fn))
+	// A hasher made without a function has none: it fails on its first
+	// compression instead of hashing with something the caller did not name.
+	if fn == nil {
+		h.hash = nil
+	}
+
+	return h
+}
+
+// newHasher creates a Hasher of alg. The function is read from the Algorithm
+// once: it is the only thing the hasher compresses with.
+func newHasher(alg *Algorithm) *Hasher {
 	h := &Hasher{
-		hash:       hh,
+		hash:       alg.HashFn(),
+		alg:        alg,
+		zero:       alg.zero(),
 		buf:        make([]byte, 0, 32*1024), // 32KB default buffer size
 		layerCount: -1,
 	}
 	h.tmp = h.tmpBuf[:]
 	h.layers = h.layerBuf[:0]
 	return h
+}
+
+// Algorithm returns the Algorithm the hasher compresses with.
+func (h *Hasher) Algorithm() *Algorithm {
+	return h.alg
 }
 
 // SetAsyncHashing gates this hasher into (or out of) background subtree
@@ -198,6 +255,12 @@ func (h *Hasher) setHashErr(err error) {
 func (h *Hasher) Reset() {
 	h.buf = h.buf[:0]
 	h.hashErr = nil
+	if h.alg != nil && h.alg.family.failure != nil {
+		// The function failed while its hash was identified: ask it again.
+		h.alg = algorithmOfFn(h.alg.family.build)
+		h.hash = h.alg.fn
+		h.zero = h.alg.zero()
+	}
 	h.discardJobs()
 	h.layerCount = -1
 	h.async = false
@@ -387,7 +450,7 @@ func (h *Hasher) internalMerkleizeWithMixin(indx int, num, limit uint64) {
 	input = append(input, zeroBytes[:32]...)
 	binary.LittleEndian.PutUint64(input[n:], num)
 
-	h.setHashErr(h.hash(input, input))
+	h.setHashErr(h.hash(input[:32], input))
 	h.buf = append(h.buf[:indx], input[:32]...)
 }
 
@@ -464,7 +527,7 @@ func (h *Hasher) PutProgressiveBitlist(bb []byte) {
 	n := len(input)
 	input = append(input, zeroBytes[:32]...)
 	binary.LittleEndian.PutUint64(input[n:], size)
-	h.setHashErr(h.hash(input, input))
+	h.setHashErr(h.hash(input[:32], input))
 	h.buf = append(h.buf[:indx], input[:32]...)
 }
 
@@ -1056,7 +1119,7 @@ func (h *Hasher) collapseAllDepths(layer *treeLayer, indx, bufEnd int, limit uin
 		if count%2 == 1 {
 			// Need space for zero hash pad. Use the buffer at bufEnd
 			// (which is within our working region or just past it).
-			copy(h.buf[bufEnd:bufEnd+32], zeroHashes[lowestDepth][:])
+			copy(h.buf[bufEnd:bufEnd+32], h.zero.hashes[lowestDepth][:])
 			count++
 			bufEnd += 32
 		}
@@ -1086,7 +1149,7 @@ func (h *Hasher) collapseAllDepths(layer *treeLayer, indx, bufEnd int, limit uin
 		// Expand using 64-byte workspace at bufEnd (safe — caller ensures space)
 		pos := bufEnd - 32
 		for currentDepth < targetDepth {
-			copy(h.buf[pos+32:pos+64], zeroHashes[currentDepth][:])
+			copy(h.buf[pos+32:pos+64], h.zero.hashes[currentDepth][:])
 			h.setHashErr(h.hash(h.buf[pos:pos+32], h.buf[pos:pos+64]))
 			currentDepth++
 		}
@@ -1145,7 +1208,7 @@ func (h *Hasher) collapseProgressiveLayer(layer *treeLayer, indx int) {
 	}
 
 	// accumulator starts as zero_node(0)
-	copy(h.tmp[32:64], zeroHashes[0][:])
+	copy(h.tmp[32:64], h.zero.hashes[0][:])
 	for i := nRoots - 1; i >= 0; i-- {
 		rootPos := indx + i*32
 		copy(h.tmp[:32], h.buf[rootPos:rootPos+32])
@@ -1318,7 +1381,7 @@ func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 		logfn("merkleize-mixin: %x (%d, %d) ", input, num, limit)
 	}
 
-	h.setHashErr(h.hash(input, input))
+	h.setHashErr(h.hash(input[:32], input))
 	h.buf = append(h.buf[:indx], input[:32]...)
 
 	if debug {
@@ -1419,7 +1482,7 @@ func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 	}
 
 	// input is of the form [<progressive_root><size>] of 64 bytes
-	h.setHashErr(h.hash(input, input))
+	h.setHashErr(h.hash(input[:32], input))
 	h.buf = append(h.buf[:indx], input[:32]...)
 
 	if debug {
@@ -1493,7 +1556,7 @@ func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []b
 	}
 
 	// input is of the form [<progressive_root><active_fields_root>] of 64 bytes
-	h.setHashErr(h.hash(input, input))
+	h.setHashErr(h.hash(input[:32], input))
 	h.buf = append(h.buf[:indx], input[:32]...)
 
 	if debug {
@@ -1555,7 +1618,7 @@ func (h *Hasher) merkleizeImpl(dst, input []byte, limit uint64) []byte {
 
 	depth := h.getDepth(limit)
 	if len(input) == 0 {
-		return append(dst, zeroHashes[depth][:]...)
+		return append(dst, h.zero.hashes[depth][:]...)
 	}
 
 	for i := uint8(0); i < depth; i++ {
@@ -1564,13 +1627,13 @@ func (h *Hasher) merkleizeImpl(dst, input []byte, limit uint64) []byte {
 
 		if oddNodeLength {
 			// is odd length
-			input = append(input, zeroHashes[i][:]...)
+			input = append(input, h.zero.hashes[i][:]...)
 			layerLen++
 		}
 
 		outputLen := (layerLen / 2) * 32
 
-		h.setHashErr(h.hash(input, input))
+		h.setHashErr(h.hash(input[:outputLen], input))
 		input = input[:outputLen]
 	}
 
@@ -1626,7 +1689,7 @@ func (h *Hasher) merkleizeProgressiveImpl(dst, chunks []byte, depth uint8) []byt
 	rightChunks := chunks[splitPoint:]
 	var rightRoot []byte
 	if len(rightChunks) == 0 {
-		rightRoot = zeroHashes[0][:]
+		rightRoot = h.zero.hashes[0][:]
 	} else {
 		// Ensure rightChunks are properly padded to 32-byte boundaries
 		if len(rightChunks)%32 != 0 {

@@ -176,16 +176,14 @@ caller's buffer never changes the tree.
 // Compute and cache every node hash in the subtree
 func (n *Node) Finalize(opts ...FinalizeOption) error
 
-// Finalize through a custom hash function instead of the default backend.
-// fn must support in-place hashing: dst aliases the front of input.
+// Deprecated: finalize through a function instead of the tree's algorithm.
 func WithHashFn(fn hasher.HashFn) FinalizeOption
 ```
 
-Trees returned by `GetTree` are already finalized. For manually assembled
-trees (`TreeFromNodes`, `NewNodeWithLR`, ...), `Hash`/`Prove`/`ProveMulti`
-finalize implicitly with default options; `Finalize` is the explicit entry
-point for configuring the hash function or for surfacing errors instead of
-panics. Any error — a hashing backend failure or a malformed tree (a branch
+Trees returned by `GetTree` are already finalized. For a tree taken from a
+`Wrapper` or assembled by hand, `Hash`/`Prove`/`ProveMulti` finalize
+implicitly with the tree's algorithm; `Finalize` is the explicit
+entry point for surfacing errors instead of panics. Any error — a hashing backend failure or a malformed tree (a branch
 with a single nil child) — aborts finalization immediately and is returned.
 Hashes cached before the abort remain valid, so a later `Finalize` resumes
 from them.
@@ -238,11 +236,53 @@ type Multiproof struct {
 
 ```go
 // Verify single proof
-func VerifyProof(root []byte, proof *Proof) (bool, error)
+func VerifyProof(root []byte, proof *Proof, opts ...Option) (bool, error)
 
 // Verify multi-proof
-func VerifyMultiproof(root []byte, proof [][]byte, leaves [][]byte, indices []int) (bool, error)
+func VerifyMultiproof(root []byte, proof [][]byte, leaves [][]byte, indices []int, opts ...Option) (bool, error)
 ```
+
+Without an option these functions verify the proof of a SHA-256 tree. For a
+tree built under another [hash algorithm](api-reference.md#hash-algorithms),
+name it with `WithAlgorithm`:
+
+```go
+tree, err := ds.GetTree(value, dynssz.WithHashAlgorithm(alg))
+proof, err := tree.Prove(index)
+
+ok, err := treeproof.VerifyProof(tree.Hash(), proof, treeproof.WithAlgorithm(alg))
+```
+
+A tree knows its algorithm: every `Node` carries it, so `Hash`, `Finalize`,
+`Prove`, `ProveMulti` and `Get` hash with the algorithm the tree was built
+for, whether or not the tree was finalized before. `Node.Algorithm()` reports
+it.
+
+Everything that makes a tree or reads a proof takes the same option:
+`NewWrapper`, `VerifyMultiproof`, `Multiproof.Compress` and
+`CompressedMultiproof.Decompress`. A proof does not record its algorithm: a
+multiproof compressed under one algorithm has to be decompressed and verified
+under the same one, and fails verification otherwise.
+
+A `*Node` is a handle to a node of a tree. `Get`, `Left` and `Right` return a
+new handle on every call, so two handles to the same node are not equal as
+pointers: compare them with `a.Same(b)`. Zero-padding nodes of one depth are
+one node wherever they stand in a tree.
+
+#### Building trees by hand (deprecated)
+
+The node constructors and tree builders (`NewNodeWithValue`, `NewNodeWithLR`,
+`NewEmptyNode`, `TreeFromChunks`, `TreeFromNodes*`, `LeafFrom*`) and the
+`Add*` methods of the `Wrapper` are deprecated: `GetTree`, or a value walked
+into a `Wrapper`, builds the tree. They remain for code written against
+earlier releases and take the same `WithAlgorithm` option.
+
+A leaf holds only data and fits into a tree of any algorithm. A subtree with
+branches belongs to the algorithm it was built for and cannot join a tree of
+another hash: `Wrapper.AddNode` and the builders fail with
+`ErrHashAlgorithmMismatch`, and `NewNodeWithLR`, which returns no error,
+panics. `LeafFromBytes` builds such a subtree for more than 32 bytes, so it
+takes the option of the tree it goes into.
 
 Every value handed to a verifier — the root, each leaf, and each proof hash —
 must be exactly 32 bytes, the SSZ chunk size. A shorter one is rejected rather

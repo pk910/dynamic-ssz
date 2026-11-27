@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"reflect"
+	"strings"
 	"testing"
 
 	dynssz "github.com/pk910/dynamic-ssz"
@@ -34,6 +35,20 @@ func TestReferenceOracleChecksClassicSchema(t *testing.T) {
 	}
 	if detail, supported, ok := referenceCheck(value, wantEncoding, root); !supported || !ok {
 		t.Fatalf("reference check = supported %v, ok %v: %s", supported, ok, detail)
+	}
+
+	secondRoot, err := ds.HashTreeRoot(value, dynssz.WithHashAlgorithm(secondHash))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail, ok := referenceSecondHashCheck(value, secondRoot); !ok {
+		t.Fatalf("second hash reference check failed: %s", detail)
+	}
+	if _, ok := referenceSecondHashCheck(value, root); ok {
+		t.Fatal("the sha256 root passed the second hash reference check")
+	}
+	if detail, ok := referenceSecondHashCheck(make(chan int), secondRoot); ok || !strings.Contains(detail, "panic") {
+		t.Fatalf("unsupported kind: ok %v, detail %q; want a reported panic", ok, detail)
 	}
 
 	bad := append([]byte(nil), wantEncoding...)

@@ -525,6 +525,11 @@ func (b *builder) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, schemaT
 
 	annotationTag, hasAnnotation := sszutils.LookupAnnotation(t)
 
+	// ssz-hash is declared by the type for its own tree, like ssz-static.
+	if hasAnnotation {
+		desc.HashAlgorithm, _ = ParseHashTag(annotationTag)
+	}
+
 	// ssz-static is declared by the type, for the type: it states how the type
 	// frames itself, which a reference to it neither supplies nor replaces. It
 	// is read from the type's own annotation whichever hints the reference

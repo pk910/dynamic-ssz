@@ -16,28 +16,13 @@ import (
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
-func TestInitHasher(t *testing.T) {
-	initHasher()
-
-	// Test that zeroBytes comes from sszutils
+func TestZeroBytes(t *testing.T) {
 	if !bytes.Equal(zeroBytes, sszutils.ZeroBytes()) {
 		t.Error("zeroBytes should match sszutils.ZeroBytes()")
 	}
 
-	// Test that zero hash levels are initialized
-	if len(zeroHashLevels) == 0 {
-		t.Error("zeroHashLevels should be initialized")
-	}
-
-	// Test that zeroHashLevels contains falseBytes at level 0
-	if level, ok := zeroHashLevels[string(zeroBytes[:32])]; !ok || level != 0 {
-		t.Error("zeroHashLevels should contain falseBytes at level 0")
-	}
-
-	// Test calling initHasher multiple times (should be safe)
-	initHasher()
-	if len(zeroHashLevels) == 0 {
-		t.Error("multiple calls to initHasher should be safe")
+	if level, ok := GetZeroHashLevelBytes(zeroBytes[:32]); !ok || level != 0 {
+		t.Error("the zero chunk should be the level 0 zero hash")
 	}
 }
 
@@ -257,13 +242,9 @@ func TestNewHasherWithHashFn(t *testing.T) {
 		t.Error("hasher should have hash function")
 	}
 
-	// NewHasherWithHashFn initializes the hasher state on demand.
 	h2 := NewHasherWithHashFn(customHashFn)
 	if h2 == nil {
 		t.Fatal("NewHasherWithHashFn should not return nil")
-	}
-	if len(zeroHashLevels) == 0 {
-		t.Error("NewHasherWithHashFn should initialize hasher state")
 	}
 }
 
@@ -2155,29 +2136,13 @@ func TestNativeHashWrapperOddLayer(t *testing.T) {
 	}
 }
 
-// The zero-hash accessors must build the lazy state themselves when they are the
-// first hasher API touched, rather than reading an uninitialized (all-zero)
-// table and silently returning wrong data.
-func TestZeroHashAccessorsSelfInitialize(t *testing.T) {
-	// Simulate a fresh process where no hasher has run yet.
-	hasherInitOnce = sync.Once{}
-	zeroHashes = [65][32]byte{}
-	zeroHashLevels = nil
-	zeroHashLevelsBytes = nil
-	zeroBytes = nil
-
-	// GetZeroHashes as the first call must return the built table, not zeros.
+// The zero-hash accessors answer from the built table whichever of them is
+// the first hasher API touched.
+func TestZeroHashAccessors(t *testing.T) {
 	hashes := GetZeroHashes()
 	if hashes[1] == ([32]byte{}) {
-		t.Fatal("GetZeroHashes returned an uninitialized (all-zero) table")
+		t.Fatal("GetZeroHashes returned an all-zero table")
 	}
-
-	// The level lookups must likewise self-initialize and recognize real zeros.
-	hasherInitOnce = sync.Once{}
-	zeroHashes = [65][32]byte{}
-	zeroHashLevels = nil
-	zeroHashLevelsBytes = nil
-	zeroBytes = nil
 	if lvl, ok := GetZeroHashLevelBytes(hashes[1][:]); !ok || lvl != 1 {
 		t.Fatalf("GetZeroHashLevelBytes = (%d, %v); want (1, true)", lvl, ok)
 	}
@@ -2331,13 +2296,21 @@ func TestHashRootReportsHashFnError(t *testing.T) {
 	later := errors.New("hash backend still unavailable")
 
 	var calls int
+	failing := false
+	good := NativeHashWrapperFactory(sha256.New)
 	hh := NewHasherWithHashFn(func(dst, src []byte) error {
+		if !failing {
+			return good(dst, src)
+		}
 		calls++
 		if calls == 1 {
 			return first
 		}
 		return later
 	})
+	// The function answers while the hasher is made, which identifies its
+	// hash, and fails from here on.
+	failing = true
 
 	idx := hh.Index()
 	for i := 0; i < 32; i++ {

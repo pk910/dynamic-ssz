@@ -198,3 +198,56 @@ func TestAnnotateConcurrentRegistrations(t *testing.T) {
 		}
 	}
 }
+
+type testHashAnnotated struct{}
+
+type testHashAnnotatedLater []uint64
+
+type testHashUnannotated []uint64
+
+// The name an ssz-hash annotation gives is found for the type and its
+// pointer, follows later registrations, and costs no lookup while no
+// annotation names a hash.
+func TestLookupHashAnnotation(t *testing.T) {
+	was := hashAnnotated.Swap(false)
+	defer hashAnnotated.CompareAndSwap(false, was)
+
+	Annotate[testHashUnannotated](`ssz-max:"8"`)
+	Annotate[testHashAnnotatedLater](`ssz-max:"8"`)
+	if hashAnnotated.Load() {
+		t.Fatal("an annotation without ssz-hash marks hashes as annotated")
+	}
+	if name, ok := LookupHashAnnotation(reflect.TypeFor[testHashAnnotatedLater]()); ok || name != "" {
+		t.Errorf("a type without ssz-hash declares %q", name)
+	}
+
+	Annotate[testHashAnnotated](`ssz-hash:"first"`)
+	Annotate[testHashAnnotatedLater](`ssz-hash:"second"`)
+	for typ, want := range map[reflect.Type]string{
+		reflect.TypeFor[testHashAnnotated]():       "first",
+		reflect.TypeFor[*testHashAnnotated]():      "first",
+		reflect.TypeFor[testHashAnnotatedLater]():  "second",
+		reflect.TypeFor[testHashUnannotated]():     "",
+		reflect.TypeFor[*testHashUnannotated]():    "",
+		reflect.TypeFor[map[string]struct{}]():     "",
+		reflect.TypeFor[testAnnotatedHashEmpty]():  "",
+		reflect.TypeFor[*testAnnotatedHashEmpty](): "",
+	} {
+		if name, ok := LookupHashAnnotation(typ); name != want || ok != (want != "") {
+			t.Errorf("LookupHashAnnotation(%v) = %q, %v; want %q", typ, name, ok, want)
+		}
+	}
+	if name, ok := LookupHashAnnotation(nil); ok || name != "" {
+		t.Errorf("LookupHashAnnotation(nil) = %q, %v", name, ok)
+	}
+
+	// The newest registration names the hash.
+	Annotate[testHashAnnotated](`ssz-hash:"third"`)
+	if name, _ := LookupHashAnnotation(reflect.TypeFor[testHashAnnotated]()); name != "third" {
+		t.Errorf("a later ssz-hash gives %q, want the newest", name)
+	}
+}
+
+type testAnnotatedHashEmpty struct{}
+
+var _ = Annotate[testAnnotatedHashEmpty](`ssz-hash:""`)

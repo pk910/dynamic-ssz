@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"crypto/sha512"
 	"encoding/binary"
 	"errors"
 	"math/big"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
@@ -2103,6 +2105,247 @@ type ForeignHashWithHolder struct {
 }
 
 var ForeignHashWithHolder_Payload = ForeignHashWithHolder{F: ForeignHashWith{A: 0x0102030405060708}, Y: 9}
+
+// ForeignRootOnlyList carries the fastssz method set without a
+// HashTreeRootWith, over a list without a limit: its structure has no hash
+// tree root, so its root is the one its method gives.
+type ForeignRootOnlyList struct{ L []uint64 }
+
+func (f *ForeignRootOnlyList) MarshalSSZ() ([]byte, error) {
+	return f.MarshalSSZTo(nil)
+}
+
+func (f *ForeignRootOnlyList) MarshalSSZTo(buf []byte) ([]byte, error) {
+	for _, v := range f.L {
+		buf = binary.LittleEndian.AppendUint64(buf, v)
+	}
+	return buf, nil
+}
+
+func (f *ForeignRootOnlyList) SizeSSZ() int { return 8 * len(f.L) }
+
+func (f *ForeignRootOnlyList) UnmarshalSSZ(buf []byte) error {
+	if len(buf)%8 != 0 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	f.L = make([]uint64, len(buf)/8)
+	for i := range f.L {
+		f.L[i] = binary.LittleEndian.Uint64(buf[8*i:])
+	}
+	return nil
+}
+
+// HashTreeRoot is a root of the type's own making: the number of values.
+func (f *ForeignRootOnlyList) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:], uint64(len(f.L)))
+	return root, nil
+}
+
+type ForeignRootOnlyListHolder struct {
+	X uint64
+	O ForeignRootOnlyList
+}
+
+var ForeignRootOnlyListHolder_Payload = ForeignRootOnlyListHolder{X: 7, O: ForeignRootOnlyList{L: []uint64{1, 2, 3}}}
+
+// ForeignRootOnlyWords is ForeignRootOnlyList over elements that are hashed
+// one by one.
+type ForeignRootOnlyWords struct{ L []uint32 }
+
+func (f *ForeignRootOnlyWords) MarshalSSZ() ([]byte, error) {
+	return f.MarshalSSZTo(nil)
+}
+
+func (f *ForeignRootOnlyWords) MarshalSSZTo(buf []byte) ([]byte, error) {
+	for _, v := range f.L {
+		buf = binary.LittleEndian.AppendUint32(buf, v)
+	}
+	return buf, nil
+}
+
+func (f *ForeignRootOnlyWords) SizeSSZ() int { return 4 * len(f.L) }
+
+func (f *ForeignRootOnlyWords) UnmarshalSSZ(buf []byte) error {
+	if len(buf)%4 != 0 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	f.L = make([]uint32, len(buf)/4)
+	for i := range f.L {
+		f.L[i] = binary.LittleEndian.Uint32(buf[4*i:])
+	}
+	return nil
+}
+
+// HashTreeRoot is a root of the type's own making: the number of values.
+func (f *ForeignRootOnlyWords) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:], uint64(len(f.L)))
+	return root, nil
+}
+
+type ForeignRootOnlyWordsHolder struct {
+	X uint64
+	O ForeignRootOnlyWords
+}
+
+var ForeignRootOnlyWordsHolder_Payload = ForeignRootOnlyWordsHolder{X: 7, O: ForeignRootOnlyWords{L: []uint32{1, 2, 3}}}
+
+// ForeignRootOnlyBits is ForeignRootOnlyList over a bitlist without a limit.
+type ForeignRootOnlyBits struct {
+	B []byte `ssz-type:"bitlist"`
+}
+
+func (f *ForeignRootOnlyBits) MarshalSSZ() ([]byte, error) {
+	return f.MarshalSSZTo(nil)
+}
+
+func (f *ForeignRootOnlyBits) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return append(buf, f.B...), nil
+}
+
+func (f *ForeignRootOnlyBits) SizeSSZ() int { return len(f.B) }
+
+func (f *ForeignRootOnlyBits) UnmarshalSSZ(buf []byte) error {
+	f.B = append([]byte(nil), buf...)
+	return nil
+}
+
+// HashTreeRoot is a root of the type's own making: the number of bytes.
+func (f *ForeignRootOnlyBits) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:], uint64(len(f.B)))
+	return root, nil
+}
+
+type ForeignRootOnlyBitsHolder struct {
+	X uint64
+	O ForeignRootOnlyBits
+}
+
+var ForeignRootOnlyBitsHolder_Payload = ForeignRootOnlyBitsHolder{X: 7, O: ForeignRootOnlyBits{B: []byte{0xa5, 0x03, 0x01}}}
+
+// ForeignRootOnlyElem holds a list without a limit: it has no hash tree root.
+type ForeignRootOnlyElem struct{ L []uint64 }
+
+// ForeignRootOnlyNested carries the fastssz method set without a
+// HashTreeRootWith, over a bounded list of elements that have no hash tree
+// root: its structure has a root as long as the list is empty.
+type ForeignRootOnlyNested struct {
+	Items []ForeignRootOnlyElem `ssz-max:"4"`
+}
+
+func (f *ForeignRootOnlyNested) MarshalSSZ() ([]byte, error) {
+	return f.MarshalSSZTo(nil)
+}
+
+func (f *ForeignRootOnlyNested) MarshalSSZTo(buf []byte) ([]byte, error) {
+	for i := range f.Items {
+		buf = binary.LittleEndian.AppendUint32(buf, uint32(len(f.Items[i].L)))
+		for _, v := range f.Items[i].L {
+			buf = binary.LittleEndian.AppendUint64(buf, v)
+		}
+	}
+	return buf, nil
+}
+
+func (f *ForeignRootOnlyNested) SizeSSZ() int {
+	size := 0
+	for i := range f.Items {
+		size += 4 + 8*len(f.Items[i].L)
+	}
+	return size
+}
+
+func (f *ForeignRootOnlyNested) UnmarshalSSZ(buf []byte) error {
+	f.Items = nil
+	for len(buf) > 0 {
+		if len(buf) < 4 {
+			return sszutils.ErrUnexpectedEOF
+		}
+		count := int(binary.LittleEndian.Uint32(buf))
+		buf = buf[4:]
+		if count > len(buf)/8 {
+			return sszutils.ErrUnexpectedEOF
+		}
+		elem := ForeignRootOnlyElem{L: make([]uint64, count)}
+		for i := range elem.L {
+			elem.L[i] = binary.LittleEndian.Uint64(buf[8*i:])
+		}
+		buf = buf[8*count:]
+		f.Items = append(f.Items, elem)
+	}
+	return nil
+}
+
+// HashTreeRoot is a root of the type's own making: the number of elements.
+func (f *ForeignRootOnlyNested) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:], uint64(len(f.Items)))
+	return root, nil
+}
+
+type ForeignRootOnlyNestedHolder struct {
+	X uint64
+	O ForeignRootOnlyNested
+}
+
+var ForeignRootOnlyNestedHolder_Payload = ForeignRootOnlyNestedHolder{X: 7}
+
+// ForeignDualHash carries the fastssz method set without a HashTreeRootWith
+// next to a spec-aware hash method. The two give different roots, which
+// tells which one an engine called.
+type ForeignDualHash struct{ A uint64 }
+
+func (f *ForeignDualHash) MarshalSSZ() ([]byte, error) {
+	return f.MarshalSSZTo(nil)
+}
+
+func (f *ForeignDualHash) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(buf, f.A), nil
+}
+
+func (f *ForeignDualHash) SizeSSZ() int { return 8 }
+
+func (f *ForeignDualHash) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	f.A = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+
+// HashTreeRoot is the root of a container with one uint64 field.
+func (f *ForeignDualHash) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:], f.A)
+	return root, nil
+}
+
+// HashTreeRootWithDyn hashes the complement of the field, and refuses a
+// value of zero.
+func (f *ForeignDualHash) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	if f.A == 0 {
+		return sszutils.ErrNotImplemented
+	}
+	indx := hh.Index()
+	hh.PutUint64(^f.A)
+	hh.Merkleize(indx)
+	return nil
+}
+
+type ForeignDualHashHolder struct {
+	F ForeignDualHash
+	Y uint8
+}
+
+// ForeignDualHashHolderPlain is ForeignDualHashHolder without generated code.
+type ForeignDualHashHolderPlain struct {
+	F ForeignDualHash
+	Y uint8
+}
+
+var ForeignDualHashHolder_Payload = ForeignDualHashHolder{F: ForeignDualHash{A: 0x0102030405060708}, Y: 9}
 
 // FastsszTagged uses the plain fastssz `ssz` tag; both engines read it as
 // ssz-type, so the bitlist is a bitlist and the excluded field is skipped.
@@ -6463,4 +6706,55 @@ type UnknownView_Dyn struct {
 type UnknownView_Static struct {
 	A uint64
 	C uint32
+}
+
+// Types that declare the hash of their own tree with ssz-hash.
+
+// HashAnnotatedInner declares SHA256, which applies where it is the root.
+type HashAnnotatedInner struct {
+	X uint64
+	Y [48]byte
+}
+
+var _ = sszutils.Annotate[HashAnnotatedInner](`ssz-hash:"sha256"`)
+
+// SecondHash is a hash algorithm of its own for the tests, SHA-512/256,
+// registered under a name so that a type can declare it with ssz-hash.
+var SecondHash = func() *hasher.Algorithm {
+	alg, err := hasher.AlgorithmFor(func(dst, input []byte) error {
+		for i := 0; i+64 <= len(input); i += 64 {
+			sum := sha512.Sum512_256(input[i : i+64])
+			copy(dst[i/2:], sum[:])
+		}
+		return nil
+	})
+	if err == nil {
+		err = hasher.RegisterAlgorithm("sha512-256", alg)
+	}
+	if err != nil {
+		panic(err)
+	}
+	return alg
+}()
+
+// HashAnnotated declares the second hash for its tree, nested types included.
+type HashAnnotated struct {
+	A     uint64
+	B     []uint16 `ssz-max:"64"`
+	Inner HashAnnotatedInner
+}
+
+var _ = sszutils.Annotate[HashAnnotated](`ssz-hash:"sha512-256"`)
+
+// HashUnannotated has the layout of HashAnnotated and declares no hash.
+type HashUnannotated struct {
+	A     uint64
+	B     []uint16 `ssz-max:"64"`
+	Inner HashAnnotatedInner
+}
+
+var HashAnnotated_Payload = HashAnnotated{
+	A:     7,
+	B:     []uint16{1, 2, 3},
+	Inner: HashAnnotatedInner{X: 9, Y: [48]byte{1, 2, 3}},
 }

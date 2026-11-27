@@ -79,6 +79,10 @@ var (
 	// an error the caller can handle. See WithMaxNestingDepth.
 	ErrMaxDepthExceeded = fmt.Errorf("maximum nesting depth exceeded")
 
+	// ErrHashAlgorithmMismatch is returned when a call names a hash algorithm
+	// other than the one the given hash walker compresses with.
+	ErrHashAlgorithmMismatch = fmt.Errorf("hash walker compresses with another hash algorithm")
+
 	// ErrBitlistNotTerminated is an alias for ErrInvalidValueRange,
 	// retained for backward compatibility. New code should use
 	// ErrInvalidValueRange with a descriptive message instead.
