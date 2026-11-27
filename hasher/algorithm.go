@@ -35,8 +35,10 @@ type fingerprint struct {
 // probePair is the pair of chunks a hash is identified by next to the pair
 // of zero chunks.
 var probePair = func() (pair [64]byte) {
+	// The chunks differ and the first is the larger one, so a hash that
+	// orders or swaps its input is told from one that does not.
 	for i := range pair {
-		pair[i] = byte(i + 1)
+		pair[i] = byte(0xff - i)
 	}
 
 	return pair
@@ -74,6 +76,9 @@ type Algorithm struct {
 	pool   *HasherPool
 	native *Algorithm
 	family *hashFamily
+	// stock is the function a built-in Algorithm comes with: while its pool
+	// still holds it, a pair is hashed with the Go standard library.
+	stock unsafe.Pointer
 }
 
 // SHA256 is the SSZ merkleization hash of the consensus specification,
@@ -107,6 +112,7 @@ func registerBuiltIn(name string, alg, native *Algorithm) {
 	for _, twin := range []*Algorithm{alg, native} {
 		twin.pool.alg = twin
 		twin.native = native
+		twin.stock = funcValue(twin.pool.HashFn)
 		addKnownAlgorithm(algorithmEntry{fn: funcValue(twin.HashFn()), alg: twin})
 	}
 	// A built-in name is registered once, during package initialization.
@@ -415,17 +421,21 @@ func (a *Algorithm) zero() *zeroTable {
 
 // HashPair compresses one pair of chunks into dst. SHA256 and SHA256Native
 // compute it with the Go standard library, which keeps the caller's pair on
-// its stack; every other Algorithm goes through its function, which gets a
-// copy.
+// its stack, as long as no other function is installed in their pool; every
+// other Algorithm goes through its function, which gets a copy.
 func (a *Algorithm) HashPair(dst *[32]byte, pair *[64]byte) error {
-	if a.fn == nil {
-		*dst = sha256.Sum256(pair[:])
+	fn := a.fn
+	if fn == nil {
+		if funcValue(a.pool.HashFn) == a.stock {
+			*dst = sha256.Sum256(pair[:])
 
-		return nil
+			return nil
+		}
+		fn = a.pool.CurrentHashFn()
 	}
 	p, _ := pairPool.Get().(*[64]byte)
 	*p = *pair
-	err := a.fn(p[:32], p[:])
+	err := fn(p[:32], p[:])
 	*dst = [32]byte(p[:32])
 	pairPool.Put(p)
 
@@ -437,8 +447,12 @@ var pairPool = sync.Pool{New: func() any { return new([64]byte) }}
 
 // ZeroHash returns a copy of the zero subtree root at the given depth; the
 // caller owns it. Depths outside the supported range are clamped to the
-// nearest valid level.
+// nearest valid level. An Algorithm whose hash could not be identified has
+// no zero subtree roots: it returns nil.
 func (a *Algorithm) ZeroHash(depth int) []byte {
+	if a.family.failure != nil {
+		return nil
+	}
 	if depth < 0 {
 		depth = 0
 	} else if depth >= zeroHashDepths {
@@ -448,7 +462,8 @@ func (a *Algorithm) ZeroHash(depth int) []byte {
 	return bytes.Clone(a.zero().hashes[depth][:])
 }
 
-// ZeroHashes returns the zero subtree roots of all 65 depths.
+// ZeroHashes returns the zero subtree roots of all 65 depths. They are all
+// zero for an Algorithm whose hash could not be identified.
 func (a *Algorithm) ZeroHashes() [65][32]byte {
 	return a.zero().hashes
 }

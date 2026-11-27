@@ -33,9 +33,13 @@ type hashTreeRootContext struct {
 	exprVars       *exprVarGenerator
 	staticSizeVars *staticSizeVarGenerator
 	usedDynSpecs   bool
-	valVarCounter  int
-	indexCounter   int
-	recursion      *recursionBound
+	// otherHashDynSpecs is set when the specs are used by nothing but a
+	// branch taken under another hash than SHA256. The type keeps its static
+	// methods then: they pass the global specs on.
+	otherHashDynSpecs bool
+	valVarCounter     int
+	indexCounter      int
+	recursion         *recursionBound
 	// depthAware is set while emitting a type that lies on a recursive cycle,
 	// where the body runs inside a depth-carrying method and can pass the depth
 	// on to a cyclic child.
@@ -113,6 +117,9 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 
 	if genDynamicFn && !ctx.usedDynSpecs && viewName == "" {
 		genStaticFn = true
+	}
+	if ctx.otherHashDynSpecs {
+		ctx.usedDynSpecs = true
 	}
 
 	// Static hash tree root function
@@ -369,7 +376,10 @@ func (ctx *hashTreeRootContext) hashDelegated(desc *ssztypes.TypeDescriptor, var
 			if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 && !ctx.options.WithoutDynamicExpressions {
 				// Another hash is what the spec-aware method of the type
 				// hashes with: it takes the walker.
+				usedDynSpecs := ctx.usedDynSpecs
 				ctx.hashDynamic(desc, varName, typePath, indent+1, padDelegate)
+				ctx.usedDynSpecs = usedDynSpecs
+				ctx.otherHashDynSpecs = true
 				ctx.appendCode(indent, "}\n")
 				return true, false, nil
 			}
@@ -1036,18 +1046,27 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 	}
 	packed := packedElemSize(desc.ElemDesc) > 0
 
+	// A list that is refused once its elements are walked is never reduced:
+	// it keeps neither the index of its tree nor its length.
+	refused := ctx.legacyWalk != "" && desc.SszTypeFlags&ssztypes.SszTypeFlagNoSszRoot != 0 &&
+		desc.SszType != ssztypes.SszProgressiveListType && maxVar == "0"
+	startTree := "idx := hh.StartTree(%s)\n"
+	if refused {
+		startTree = "hh.StartTree(%s)\n"
+	}
+
 	// Handle byte slices
 	switch {
 	case desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0:
-		ctx.appendCode(indent, "idx := hh.StartTree(%s)\n", treeTypeExpr(treeType, true))
+		ctx.appendCode(indent, startTree, treeTypeExpr(treeType, true))
 		ctx.appendCode(indent, "hh.AppendBytes32([]byte(%s))\n", getValueVar(true, ""))
 		itemSize = 1
 	case desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0:
-		ctx.appendCode(indent, "idx := hh.StartTree(%s)\n", treeTypeExpr(treeType, true))
+		ctx.appendCode(indent, startTree, treeTypeExpr(treeType, true))
 		ctx.appendCode(indent, "hh.AppendBytes32(%s[:])\n", getValueVar(false, ""))
 		itemSize = 1
 	default:
-		ctx.appendCode(indent, "idx := hh.StartTree(%s)\n", treeTypeExpr(treeType, packed))
+		ctx.appendCode(indent, startTree, treeTypeExpr(treeType, packed))
 
 		// Bulk uint64 list hashing; an element with a hash method of its own is
 		// walked one by one so the method is called.
@@ -1056,7 +1075,9 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 			ctx.appendCode(indent, "sszutils.HashUint64Slice(hh, %s)\n", getValueVar(true, ""))
 		} else {
 			// Hash all elements
-			addVlen()
+			if !refused {
+				addVlen()
+			}
 
 			indexVar, indexDefer := ctx.getIndexVar()
 			defer indexDefer()
@@ -1092,8 +1113,7 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 		// N to merkleize -- so hashing one is an extension, and the parser flags
 		// it when extended types are off.
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagNoSszRoot != 0 {
-			if ctx.legacyWalk != "" {
-				ctx.appendCode(indent, "_ = idx\n")
+			if refused {
 				ctx.hashRootless(desc, typePath, indent)
 				return nil
 			}
@@ -1138,6 +1158,13 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 	ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith("sszutils.ErrBitlistNotTerminatedFn()"))
 	ctx.appendCode(indent, "}\n")
 
+	if ctx.legacyWalk != "" && maxVar == "" && desc.SszType != ssztypes.SszProgressiveBitlistType && desc.SszTypeFlags&ssztypes.SszTypeFlagNoSszRoot != 0 {
+		// The bitlist is refused before it is parsed, as the reflection
+		// engine refuses it.
+		ctx.hashRootless(desc, typePath, indent)
+		return nil
+	}
+
 	ctx.appendCode(indent, "idx := hh.StartTree(sszutils.TreeTypeNone)\n")
 	hasherAlias := ctx.typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
 	sizeVar := "size"
@@ -1171,11 +1198,6 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 		// Bitlist[N] needs N to merkleize, so deriving the limit from the value
 		// is an extension; the parser flags it when extended types are off.
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagNoSszRoot != 0 {
-			if ctx.legacyWalk != "" {
-				ctx.appendCode(indent, "_, _ = idx, size\n")
-				ctx.hashRootless(desc, typePath, indent)
-				return nil
-			}
 			return ssztypes.NoSszRootError(desc)
 		}
 

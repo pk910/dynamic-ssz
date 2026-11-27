@@ -7190,6 +7190,8 @@ func TestCodegenHashAnnotation(t *testing.T) {
 // root under another hash, with both engines.
 func TestCodegenRootOnlyChildWithoutStructureRoot(t *testing.T) {
 	holder := ForeignRootOnlyListHolder_Payload
+	words := ForeignRootOnlyWordsHolder_Payload
+	bits := ForeignRootOnlyBitsHolder_Payload
 	var chunks [64]byte
 	binary.LittleEndian.PutUint64(chunks[:], holder.X)
 	binary.LittleEndian.PutUint64(chunks[32:], uint64(len(holder.O.L)))
@@ -7199,11 +7201,15 @@ func TestCodegenRootOnlyChildWithoutStructureRoot(t *testing.T) {
 		"generated":  dynssz.NewDynSsz(nil),
 		"reflection": dynssz.NewDynSsz(nil, dynssz.WithNoDelegation()),
 	} {
-		if root, err := ds.HashTreeRoot(&holder); err != nil || root != want {
-			t.Errorf("%s: root %x, %v; want %x", name, root, err, want)
-		}
-		if _, err := ds.HashTreeRoot(&holder, dynssz.WithHashAlgorithm(SecondHash)); !errors.Is(err, sszutils.ErrExtendedTypeDisabled) {
-			t.Errorf("%s under another hash: err = %v, want ErrExtendedTypeDisabled", name, err)
+		// The list is hashed in bulk in one holder and element by element
+		// in another.
+		for kind, value := range map[string]any{"uint64 list": &holder, "uint32 list": &words, "bitlist": &bits} {
+			if root, err := ds.HashTreeRoot(value); err != nil || root != want {
+				t.Errorf("%s %s: root %x, %v; want %x", name, kind, root, err, want)
+			}
+			if _, err := ds.HashTreeRoot(value, dynssz.WithHashAlgorithm(SecondHash)); !errors.Is(err, sszutils.ErrExtendedTypeDisabled) {
+				t.Errorf("%s %s under another hash: err = %v, want ErrExtendedTypeDisabled", name, kind, err)
+			}
 		}
 	}
 }
@@ -7261,6 +7267,21 @@ func TestCodegenRootOnlyChildWithDynamicHashRoot(t *testing.T) {
 	var wantSecond [32]byte
 	if err := SecondHash.HashPair(&wantSecond, &pair); err != nil {
 		t.Fatalf("HashPair: %v", err)
+	}
+
+	// The specs are needed under another hash alone: the type keeps the
+	// static methods it has without them.
+	var value any = &generated
+	if _, hasCode := value.(sszutils.DynamicHashRoot); hasCode {
+		if _, ok := value.(interface {
+			HashTreeRoot() ([32]byte, error)
+			HashTreeRootWith(sszutils.HashWalker) error
+		}); !ok {
+			t.Error("the generated type has no static hash methods")
+		}
+	}
+	if root, err := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz()).HashTreeRoot(&generated, second); err != nil || root != wantSecond {
+		t.Errorf("generated under another hash without fastssz: root %x, %v; want %x", root, err, wantSecond)
 	}
 
 	refusedGenerated, refusedReflected := generated, reflected

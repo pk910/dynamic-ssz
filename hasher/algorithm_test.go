@@ -4,11 +4,13 @@
 package hasher
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -849,6 +851,107 @@ func TestAlgorithmsAgreeingOnTheZeroPair(t *testing.T) {
 	own, sha := alg.ZeroHashes(), SHA256.ZeroHashes()
 	if own[1] != sha[1] || own[2] == sha[2] {
 		t.Error("the zero subtree roots are not those of the function")
+	}
+
+	// SHA256 over its chunks in ascending order agrees with SHA256 on every
+	// pair that is in that order already.
+	sorted, err := AlgorithmFor(func(dst, input []byte) error {
+		for i := 0; i+64 <= len(input); i += 64 {
+			pair := [64]byte(input[i : i+64])
+			if bytes.Compare(pair[:32], pair[32:]) > 0 {
+				copy(pair[:32], input[i+32:i+64])
+				copy(pair[32:], input[i:i+32])
+			}
+			sum := sha256.Sum256(pair[:])
+			copy(dst[i/2:], sum[:])
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("AlgorithmFor: %v", err)
+	}
+	if sorted.Compatible(SHA256) {
+		t.Error("SHA256 over sorted chunks is SHA256")
+	}
+}
+
+// A function installed in a built-in pool is the one a pair is hashed with.
+func TestHashPairAsksTheInstalledFunction(t *testing.T) { //nolint:paralleltest // changes the built-in pools
+	refusal := errors.New("refused")
+	var pair [64]byte
+	var got [32]byte
+	for _, alg := range []*Algorithm{SHA256, SHA256Native} {
+		pool := alg.Pool()
+		stock := pool.HashFn
+		pool.HashFn = func(_, _ []byte) error { return refusal }
+		err := alg.HashPair(&got, &pair)
+		pool.HashFn = saltedSHA256(0x44)
+		salted := alg.HashPair(&got, &pair)
+		pool.HashFn = stock
+		if !errors.Is(err, refusal) {
+			t.Errorf("HashPair err = %v, want the refusal of the installed function", err)
+		}
+		if want := refSaltedSHA256(0x44)([32]byte{}, [32]byte{}); salted != nil || got != want {
+			t.Errorf("HashPair = %x, %v; want what the installed function computes", got, salted)
+		}
+		if err = alg.HashPair(&got, &pair); err != nil || got != sha256.Sum256(pair[:]) {
+			t.Errorf("HashPair with the stock function = %x, %v", got, err)
+		}
+	}
+}
+
+// The Algorithm of a hasher around one hash instance is safe to share: the
+// instance is used by one goroutine at a time.
+func TestAlgorithmOfAHashInstanceIsShareable(t *testing.T) {
+	alg := NewHasherWithHash(sha256.New()).Algorithm()
+	root := func(alg *Algorithm) (root [32]byte, err error) {
+		err = alg.WithHasher(func(hh sszutils.HashWalker) error {
+			indx := hh.Index()
+			for i := uint64(0); i < 64; i++ {
+				hh.PutUint64(i)
+			}
+			hh.Merkleize(indx)
+			var hashErr error
+			root, hashErr = hh.HashRoot()
+
+			return hashErr
+		})
+
+		return root, err
+	}
+	want, err := root(SHA256Native)
+	if err != nil {
+		t.Fatalf("root: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				if got, rootErr := root(alg); rootErr != nil || got != want {
+					t.Errorf("root = %x, %v; want %x", got, rootErr, want)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// An Algorithm whose hash could not be identified has no zero subtree roots.
+func TestUnidentifiedAlgorithmHasNoZeroHashes(t *testing.T) {
+	refusal := errors.New("refused")
+	alg := NewHasherWithHashFn(func(_, _ []byte) error { return refusal }).Algorithm()
+	if hash := alg.ZeroHash(2); hash != nil {
+		t.Errorf("ZeroHash = %x, want none", hash)
+	}
+	if alg.ZeroHashes() != ([65][32]byte{}) {
+		t.Error("ZeroHashes are not all zero")
+	}
+	if _, ok := alg.ZeroHashLevel(make([]byte, 32)); ok {
+		t.Error("ZeroHashLevel knows a zero subtree root")
 	}
 }
 

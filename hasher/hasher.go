@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"hash"
 	"math/bits"
+	"sync"
 
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
@@ -150,13 +151,24 @@ func NewHasher() *Hasher {
 // SetAsyncHashing).
 //
 // The hasher gets an Algorithm of its own, derived from the instance as
-// NewHasherWithHashFn derives it from a function.
+// NewHasherWithHashFn derives it from a function. Compressions with the
+// instance are serialized, so that Algorithm is safe to share.
 func NewHasherWithHash(hh hash.Hash) *Hasher {
 	if hh == nil {
 		return newHasherOfFn(nil)
 	}
 
-	return newHasherOfFn(NativeHashWrapper(hh))
+	// The Algorithm of the hasher can reach other goroutines, so the one
+	// instance is used by one of them at a time.
+	var mu sync.Mutex
+
+	return newHasherOfFn(func(dst, input []byte) error {
+		mu.Lock()
+		nativeHashPairs(hh, dst, input)
+		mu.Unlock()
+
+		return nil
+	})
 }
 
 // NewHasherWithHashFn creates a new Hasher that compresses with a custom

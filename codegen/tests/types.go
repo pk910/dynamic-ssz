@@ -2149,6 +2149,82 @@ type ForeignRootOnlyListHolder struct {
 
 var ForeignRootOnlyListHolder_Payload = ForeignRootOnlyListHolder{X: 7, O: ForeignRootOnlyList{L: []uint64{1, 2, 3}}}
 
+// ForeignRootOnlyWords is ForeignRootOnlyList over elements that are hashed
+// one by one.
+type ForeignRootOnlyWords struct{ L []uint32 }
+
+func (f *ForeignRootOnlyWords) MarshalSSZ() ([]byte, error) {
+	return f.MarshalSSZTo(nil)
+}
+
+func (f *ForeignRootOnlyWords) MarshalSSZTo(buf []byte) ([]byte, error) {
+	for _, v := range f.L {
+		buf = binary.LittleEndian.AppendUint32(buf, v)
+	}
+	return buf, nil
+}
+
+func (f *ForeignRootOnlyWords) SizeSSZ() int { return 4 * len(f.L) }
+
+func (f *ForeignRootOnlyWords) UnmarshalSSZ(buf []byte) error {
+	if len(buf)%4 != 0 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	f.L = make([]uint32, len(buf)/4)
+	for i := range f.L {
+		f.L[i] = binary.LittleEndian.Uint32(buf[4*i:])
+	}
+	return nil
+}
+
+// HashTreeRoot is a root of the type's own making: the number of values.
+func (f *ForeignRootOnlyWords) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:], uint64(len(f.L)))
+	return root, nil
+}
+
+type ForeignRootOnlyWordsHolder struct {
+	X uint64
+	O ForeignRootOnlyWords
+}
+
+var ForeignRootOnlyWordsHolder_Payload = ForeignRootOnlyWordsHolder{X: 7, O: ForeignRootOnlyWords{L: []uint32{1, 2, 3}}}
+
+// ForeignRootOnlyBits is ForeignRootOnlyList over a bitlist without a limit.
+type ForeignRootOnlyBits struct {
+	B []byte `ssz-type:"bitlist"`
+}
+
+func (f *ForeignRootOnlyBits) MarshalSSZ() ([]byte, error) {
+	return f.MarshalSSZTo(nil)
+}
+
+func (f *ForeignRootOnlyBits) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return append(buf, f.B...), nil
+}
+
+func (f *ForeignRootOnlyBits) SizeSSZ() int { return len(f.B) }
+
+func (f *ForeignRootOnlyBits) UnmarshalSSZ(buf []byte) error {
+	f.B = append([]byte(nil), buf...)
+	return nil
+}
+
+// HashTreeRoot is a root of the type's own making: the number of bytes.
+func (f *ForeignRootOnlyBits) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:], uint64(len(f.B)))
+	return root, nil
+}
+
+type ForeignRootOnlyBitsHolder struct {
+	X uint64
+	O ForeignRootOnlyBits
+}
+
+var ForeignRootOnlyBitsHolder_Payload = ForeignRootOnlyBitsHolder{X: 7, O: ForeignRootOnlyBits{B: []byte{0xa5, 0x03, 0x01}}}
+
 // ForeignRootOnlyElem holds a list without a limit: it has no hash tree root.
 type ForeignRootOnlyElem struct{ L []uint64 }
 
