@@ -57,6 +57,7 @@ func TestAlgorithmsAreIsolated(t *testing.T) { //nolint:paralleltest // the buil
 		built bool
 	}{
 		{"sha256", [2]*hasher.Algorithm{hasher.SHA256, hasher.SHA256Native}, false},
+		{"keccak256", [2]*hasher.Algorithm{hasher.Keccak256, hasher.Keccak256Native}, false},
 		{"sha512/256", [2]*hasher.Algorithm{other, other}, true},
 	}
 

@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/pk910/dynamic-ssz/hasher"
+	"golang.org/x/crypto/sha3"
 )
 
 type oracleTag struct {
@@ -312,6 +313,29 @@ func oracleBasicSize(kind reflect.Kind) int {
 
 // oracleHash compresses one pair of chunks.
 type oracleHash func(pair []byte) [32]byte
+
+func oracleKeccak256(pair []byte) (out [32]byte) {
+	h := sha3.NewLegacyKeccak256()
+	h.Write(pair)
+	h.Sum(out[:0])
+	return out
+}
+
+// referenceKeccakCheck compares a Keccak-256 root of a schema the oracle
+// models with the oracle's own.
+func referenceKeccakCheck(value any, root [32]byte) (detail string, ok bool) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			detail = fmt.Sprintf("reference oracle panic: %v", recovered)
+			ok = false
+		}
+	}()
+	wantRoot := oracleHTR(reflect.ValueOf(value), oracleTag{}, oracleKeccak256)
+	if wantRoot != root {
+		return fmt.Sprintf("keccak256 root: dynssz=%x reference=%x", root, wantRoot), false
+	}
+	return "", true
+}
 
 // oracleSHA512256 is the oracle's second hash, SHA-512/256: roots under it
 // show that a value is merkleized with the algorithm a call names.

@@ -250,6 +250,8 @@ pool derived from it.
 |-----------|------|---------|
 | `hasher.SHA256` | SHA-256, the hash of the consensus specification (default) | [hashtree](https://github.com/OffchainLabs/hashtree) |
 | `hasher.SHA256Native` | SHA-256 | Go standard library |
+| `hasher.Keccak256` | Ethereum Keccak-256 (padding `0x01`, not NIST SHA3-256) | [keccaktree](https://github.com/pk910/keccaktree) |
+| `hasher.Keccak256Native` | Ethereum Keccak-256 | pure Go |
 
 Any other hash is used through the algorithm of its function:
 
@@ -263,8 +265,8 @@ compute the same hash, and the built-in algorithm for a built-in function. The
 function has to be deterministic, and an algorithm is kept for the life of the
 process, so make it once per hash rather than per use. Finding it costs one
 call of the function, and 64 for a hash no algorithm computes yet: its zero
-subtree roots are computed then. Those of SHA-256 are computed when they are
-first needed, and a function that computes a hash an algorithm exists for
+subtree roots are computed then. Those of SHA-256 and Keccak-256 are computed
+when they are first needed, and a function that computes a hash an algorithm exists for
 shares its zero subtree roots. `hasher.NewHasherWithHashFn(fn)` and a `hasher.HasherPool` made
 around a function derive their algorithm from that function in the same way,
 per hasher or per pool.
@@ -292,8 +294,9 @@ otherDs := dynssz.NewDynSsz(specs, dynssz.WithDefaultHashAlgorithm(alg))
 A type can declare the hash of its own tree with the
 [`ssz-hash`](ssz-annotations.md#ssz-hash) annotation, which suits a type that
 exists under one hash only, such as the state of a fork. The annotation names
-an algorithm: `sha256` is `hasher.SHA256`, and any other algorithm is given a
-name with `hasher.RegisterAlgorithm`, at package initialization:
+an algorithm: `sha256` is `hasher.SHA256`, `keccak256` is `hasher.Keccak256`,
+and any other algorithm is given a name with `hasher.RegisterAlgorithm`, at
+package initialization:
 
 ```go
 var _ = hasher.RegisterAlgorithm("my-hash", alg)

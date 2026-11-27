@@ -60,8 +60,8 @@ func WithNoDelegation() DynSszOption {
 }
 
 // WithNoFastHash disables the accelerated hashing libraries: a built-in hash
-// algorithm is replaced by its native Go counterpart, as hasher.SHA256 is by
-// hasher.SHA256Native.
+// algorithm is replaced by its native Go counterpart (hasher.SHA256Native,
+// hasher.Keccak256Native).
 func WithNoFastHash() DynSszOption {
 	return func(opts *DynSszOptions) {
 		opts.NoFastHash = true

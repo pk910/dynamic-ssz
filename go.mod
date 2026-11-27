@@ -4,6 +4,8 @@ go 1.22.2
 
 require (
 	github.com/pk910/hashtree-bindings v0.2.6
+	github.com/pk910/keccaktree v0.0.1
+	golang.org/x/crypto v0.31.0
 	golang.org/x/tools v0.30.0
 	gopkg.in/yaml.v3 v3.0.1
 )
