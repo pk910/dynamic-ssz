@@ -24,3 +24,12 @@ type AliasedTarget = AliasedAnnotated
 type RepeatedAnnotated []byte
 
 var _ = szs.Annotate[RepeatedAnnotated](`ssz-size:"4"`)
+
+// AliasedBytes names an unnamed type through an alias.
+type AliasedBytes = []byte
+
+// AliasedFields holds values typed through an alias.
+type AliasedFields struct {
+	Data  AliasedBytes   `ssz-max:"8"`
+	Items []AliasedBytes `ssz-max:"4,8"`
+}

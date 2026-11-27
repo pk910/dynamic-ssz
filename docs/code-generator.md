@@ -374,6 +374,10 @@ codeGen.Generate()
 
 See [SSZ Views](views.md) for detailed documentation on view concepts and usage.
 
+### Type Aliases
+
+A value typed through an alias (`type Root = [32]byte`) is generated under the name of the alias. `dynssz-gen` does this on every Go toolchain. A program that type-checks packages itself and passes the types to `codegen.WithGoTypesType` gets the same on Go 1.27 and newer, and on older toolchains when its own module declares `go 1.23` or newer or sets `//go:debug gotypesalias=1` in its main package; otherwise `go/types` resolves the alias away and the generated code names the type it stands for.
+
 ## Generated Methods
 
 The code generator produces different methods depending on the flags used:
