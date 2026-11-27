@@ -18,5 +18,11 @@ types:
     output: gen_annotated.go
   - name: AnnotatedNestedContainer_S
     output: gen_annotated.go
+  - name: HashAnnotatedInner
+    legacy: true
+  - name: HashAnnotated
+    legacy: true
+  - name: HashUnannotated
+    legacy: true
   - AnnotatedRootsField
   - AnnotatedRootsHolder

@@ -1085,6 +1085,21 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	// as it does in the reflection type cache: it overrides the type's own
 	// annotation and requires inline processing.
 	beingGenerated := p.getCompatFlag(innerDataType, innerSchemaType) != 0 || p.getCompatFlag(innerDataType, innerDataType) != 0
+
+	// ssz-hash is declared by the type for its own tree, on the schema type,
+	// as in the reflection type cache.
+	if p.AnnotationResolver != nil {
+		annotationType := types.Unalias(originalSchemaType)
+		if ptr, ok := annotationType.(*types.Pointer); ok {
+			annotationType = types.Unalias(ptr.Elem())
+		}
+		hashType, hashErr := ssztypes.ParseHashTag(p.AnnotationResolver(annotationType))
+		if hashErr != nil {
+			return nil, fmt.Errorf("failed to parse annotation for type %v: %v", originalType, hashErr)
+		}
+		desc.HashType = hashType
+	}
+
 	// A reference that declares an SSZ type other than the type's own overrides
 	// the type, as a size or limit the reference supplies does: the type is
 	// described inline and its own methods are not used, as in the reflection

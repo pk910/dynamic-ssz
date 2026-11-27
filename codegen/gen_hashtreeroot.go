@@ -42,6 +42,17 @@ type hashTreeRootContext struct {
 	depthAware bool
 }
 
+// withHasherOf returns the hasher package call that runs the argument-less
+// root methods of a type: the SHA256 default, or the hash the type declares
+// with ssz-hash.
+func withHasherOf(rootTypeDesc *ssztypes.TypeDescriptor) string {
+	if rootTypeDesc.HashType == ssztypes.SszHashKeccak256 {
+		return "Keccak256.WithHasher"
+	}
+
+	return "WithDefaultHasher"
+}
+
 // generateHashTreeRoot generates hash tree root methods for a specific type.
 //
 // This function creates the complete set of hash tree root methods for a type, including:
@@ -104,7 +115,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 		hasherAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
 		appendCode(codeBuilder, 0, "// HashTreeRoot computes the SSZ hash tree root of the %s.\n", typeName)
 		appendCode(codeBuilder, 0, "func (t %s) HashTreeRoot() (root [32]byte, err error) {\n", typeName)
-		appendCode(codeBuilder, 1, "err = %s.WithDefaultHasher(func(hh sszutils.HashWalker) (err error) {\n", hasherAlias)
+		appendCode(codeBuilder, 1, "err = %s.%s(func(hh sszutils.HashWalker) (err error) {\n", hasherAlias, withHasherOf(rootTypeDesc))
 		appendCode(codeBuilder, 2, "err = t.HashTreeRootWith(hh)\n")
 		appendCode(codeBuilder, 2, "if err == nil {\n")
 		if packedWordRoot(rootTypeDesc) {
@@ -144,7 +155,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 		hasherAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
 		appendCode(codeBuilder, 0, "// HashTreeRootDyn computes the SSZ hash tree root of the %s using dynamic specifications.\n", typeName)
 		appendCode(codeBuilder, 0, "func (t %s) HashTreeRootDyn(ds sszutils.DynamicSpecs) (root [32]byte, err error) {\n", typeName)
-		appendCode(codeBuilder, 1, "err = %s.WithDefaultHasher(func(hh sszutils.HashWalker) (err error) {\n", hasherAlias)
+		appendCode(codeBuilder, 1, "err = %s.%s(func(hh sszutils.HashWalker) (err error) {\n", hasherAlias, withHasherOf(rootTypeDesc))
 		appendCode(codeBuilder, 2, "err = t.HashTreeRootWithDyn(ds, hh)\n")
 		appendCode(codeBuilder, 2, "if err == nil {\n")
 		if packedWordRoot(rootTypeDesc) {

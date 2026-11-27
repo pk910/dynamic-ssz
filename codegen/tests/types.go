@@ -6464,3 +6464,35 @@ type UnknownView_Static struct {
 	A uint64
 	C uint32
 }
+
+// Types that declare the hash of their own tree with ssz-hash.
+
+// HashAnnotatedInner declares SHA256, which applies where it is the root.
+type HashAnnotatedInner struct {
+	X uint64
+	Y [48]byte
+}
+
+var _ = sszutils.Annotate[HashAnnotatedInner](`ssz-hash:"sha256"`)
+
+// HashAnnotated declares Keccak-256 for its tree, nested types included.
+type HashAnnotated struct {
+	A     uint64
+	B     []uint16 `ssz-max:"64"`
+	Inner HashAnnotatedInner
+}
+
+var _ = sszutils.Annotate[HashAnnotated](`ssz-hash:"keccak256"`)
+
+// HashUnannotated has the layout of HashAnnotated and declares no hash.
+type HashUnannotated struct {
+	A     uint64
+	B     []uint16 `ssz-max:"64"`
+	Inner HashAnnotatedInner
+}
+
+var HashAnnotated_Payload = HashAnnotated{
+	A:     7,
+	B:     []uint16{1, 2, 3},
+	Inner: HashAnnotatedInner{X: 9, Y: [48]byte{1, 2, 3}},
+}

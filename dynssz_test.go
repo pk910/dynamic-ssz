@@ -10410,3 +10410,132 @@ func TestLegacyHashRootUnderAnotherHash(t *testing.T) {
 		t.Errorf("walker custom type root %x, want %x", got, want)
 	}
 }
+
+type hashDeclKeccak struct {
+	A uint64
+	B []uint16 `ssz-max:"40"`
+}
+
+type hashDeclSHA struct {
+	A uint64
+	B []uint16 `ssz-max:"40"`
+}
+
+type hashDeclNone struct {
+	A uint64
+	B []uint16 `ssz-max:"40"`
+}
+
+type hashDeclKeccakView struct {
+	A uint64
+	B []uint16 `ssz-max:"40"`
+}
+
+type hashDeclNoneView struct {
+	A uint64
+	B []uint16 `ssz-max:"40"`
+}
+
+type hashDeclInvalid struct {
+	A uint64
+}
+
+// hashDeclHolder declares no hash and nests a type that declares one.
+type hashDeclHolder struct {
+	Inner hashDeclKeccak
+	C     uint64
+}
+
+var (
+	_ = sszutils.Annotate[hashDeclKeccak](`ssz-hash:"keccak256"`)
+	_ = sszutils.Annotate[hashDeclSHA](`ssz-hash:"sha256"`)
+	_ = sszutils.Annotate[hashDeclKeccakView](`ssz-hash:"keccak256"`)
+	_ = sszutils.Annotate[hashDeclInvalid](`ssz-hash:"keccak"`)
+)
+
+// A type declares the hash of its own tree with ssz-hash. A call that names
+// an algorithm overrides the declaration, and the declaration overrides the
+// default of the instance; a nested type's declaration does not apply.
+func TestHashAnnotation(t *testing.T) {
+	keccakValue := &hashDeclKeccak{A: 5, B: []uint16{1, 2, 3}}
+	shaValue := &hashDeclSHA{A: 5, B: []uint16{1, 2, 3}}
+	plainValue := &hashDeclNone{A: 5, B: []uint16{1, 2, 3}}
+
+	plain := NewDynSsz(nil)
+	keccakDefault := NewDynSsz(nil, WithDefaultHashAlgorithm(hasher.Keccak256))
+	root := func(ds *DynSsz, value any, opts ...CallOption) [32]byte {
+		t.Helper()
+		r, err := ds.HashTreeRoot(value, opts...)
+		if err != nil {
+			t.Fatalf("HashTreeRoot: %v", err)
+		}
+		return r
+	}
+	shaRoot := root(plain, plainValue, WithHashAlgorithm(hasher.SHA256))
+	keccakRoot := root(plain, plainValue, WithHashAlgorithm(hasher.Keccak256))
+
+	for name, tc := range map[string]struct {
+		got, want [32]byte
+	}{
+		"declared keccak256":                      {root(plain, keccakValue), keccakRoot},
+		"declared sha256":                         {root(plain, shaValue), shaRoot},
+		"no declaration":                          {root(plain, plainValue), shaRoot},
+		"declared sha256, keccak256 instance":     {root(keccakDefault, shaValue), shaRoot},
+		"no declaration, keccak256 instance":      {root(keccakDefault, plainValue), keccakRoot},
+		"declared keccak256, call names sha256":   {root(plain, keccakValue, WithHashAlgorithm(hasher.SHA256)), shaRoot},
+		"declared sha256, call names keccak256":   {root(plain, shaValue, WithHashAlgorithm(hasher.Keccak256)), keccakRoot},
+		"declared keccak256, no fast hash":        {root(NewDynSsz(nil, WithNoFastHash()), keccakValue), keccakRoot},
+		"declared keccak256, reflection":          {root(NewDynSsz(nil, WithNoDelegation(), WithNoFastSsz()), keccakValue), keccakRoot},
+		"view declares keccak256":                 {root(plain, plainValue, WithViewDescriptor((*hashDeclKeccakView)(nil))), keccakRoot},
+		"view declares none, data type sha256":    {root(keccakDefault, shaValue, WithViewDescriptor((*hashDeclNoneView)(nil))), shaRoot},
+		"view declares keccak256 over sha256":     {root(plain, shaValue, WithViewDescriptor((*hashDeclKeccakView)(nil))), keccakRoot},
+		"value form of a declared keccak256 type": {root(plain, *keccakValue), keccakRoot},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s: root %x, want %x", name, tc.got, tc.want)
+		}
+	}
+
+	// The declaration of a nested type does not apply.
+	holder := &hashDeclHolder{Inner: *keccakValue, C: 1}
+	var pair [64]byte
+	copy(pair[:32], shaRoot[:])
+	pair[32] = 1
+	if want := sha256.Sum256(pair[:]); root(plain, holder) != want {
+		t.Errorf("a nested declaration changed the root: %x, want %x", root(plain, holder), want)
+	}
+
+	// The tree of a type is built with the hash it declares.
+	tree, err := plain.GetTree(keccakValue)
+	if err != nil || [32]byte(tree.Hash()) != keccakRoot || !tree.Algorithm().Compatible(hasher.Keccak256) {
+		t.Errorf("GetTree of a declared keccak256 type: root %x, %v", tree.Hash(), err)
+	}
+
+	// A walker the caller supplies carries its own algorithm.
+	hh := hasher.SHA256.Pool().Get()
+	defer hasher.SHA256.Pool().Put(hh)
+	if err = plain.HashTreeRootWith(keccakValue, hh); err != nil {
+		t.Fatalf("HashTreeRootWith: %v", err)
+	}
+	if got, rootErr := hh.HashRoot(); rootErr != nil || got != shaRoot {
+		t.Errorf("a SHA256 walker over a declared keccak256 type: root %x, %v; want %x", got, rootErr, shaRoot)
+	}
+
+	// A hash the library does not know is refused.
+	invalid := &hashDeclInvalid{A: 1}
+	if _, err = plain.HashTreeRoot(invalid); !errors.Is(err, sszutils.ErrInvalidTag) {
+		t.Errorf("HashTreeRoot of a type with an unknown hash: err = %v, want ErrInvalidTag", err)
+	}
+	if _, err = plain.GetTree(invalid); !errors.Is(err, sszutils.ErrInvalidTag) {
+		t.Errorf("GetTree of a type with an unknown hash: err = %v, want ErrInvalidTag", err)
+	}
+	if err = plain.ValidateType(reflect.TypeOf(invalid)); !errors.Is(err, sszutils.ErrInvalidTag) {
+		t.Errorf("ValidateType of a type with an unknown hash: err = %v, want ErrInvalidTag", err)
+	}
+	if _, err = plain.HashTreeRoot(plainValue, WithViewDescriptor((*hashDeclInvalid)(nil))); !errors.Is(err, sszutils.ErrInvalidTag) {
+		t.Errorf("a view type with an unknown hash: err = %v, want ErrInvalidTag", err)
+	}
+	if _, err = plain.HashTreeRoot(invalid, WithHashAlgorithm(hasher.SHA256)); !errors.Is(err, sszutils.ErrInvalidTag) {
+		t.Errorf("an unknown hash with a named algorithm: err = %v, want ErrInvalidTag", err)
+	}
+}

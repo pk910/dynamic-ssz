@@ -109,6 +109,7 @@ type TypeDescriptor struct {
 	// Read only for the SSZ kinds that carry them.
 	Kind                   reflect.Kind              `json:"kind"`                    // Reflect kind of the type
 	WrapperFieldIndex      uint32                    `json:"wrapper_field,omitempty"` // Index of the wrapped value field in a wrapper struct (excluded fields may precede it)
+	HashType               SszHashType               `json:"hash,omitempty"`          // Hash the type declares for its own tree (ssz-hash annotation)
 	MinSize                int64                     `json:"min_size,omitempty"`      // Smallest serialization of this type; 0 when it has no floor (see SetMinSize)
 	BitSize                int64                     `json:"bit_size,omitempty"`      // Bit size for bit vector types (ssz-bitsize tag)
 	UnionVariants          map[uint8]*TypeDescriptor `json:"union,omitempty"`         // Union variant types by index (for CompatibleUnion)

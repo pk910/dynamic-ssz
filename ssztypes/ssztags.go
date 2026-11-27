@@ -942,3 +942,39 @@ func ParseTags(tag string) (typeHints []SszTypeHint, sizeHints []SszSizeHint, ma
 
 	return typeHints, sizeHints, maxSizeHints, nil
 }
+
+// SszHashType is the hash a type declares for its own tree with the ssz-hash
+// annotation. It applies where the type is the root of what is hashed.
+type SszHashType uint8
+
+const (
+	// SszHashUnspecified is the hash of a type that declares none.
+	SszHashUnspecified SszHashType = iota
+	// SszHashSha256 is declared by ssz-hash:"sha256".
+	SszHashSha256
+	// SszHashKeccak256 is declared by ssz-hash:"keccak256".
+	SszHashKeccak256
+)
+
+// ParseHashType parses the value of an ssz-hash annotation.
+func ParseHashType(value string) (SszHashType, error) {
+	switch value {
+	case "sha256":
+		return SszHashSha256, nil
+	case "keccak256":
+		return SszHashKeccak256, nil
+	default:
+		return SszHashUnspecified, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "invalid ssz-hash value %q (must be \"sha256\" or \"keccak256\")", value)
+	}
+}
+
+// ParseHashTag reads the ssz-hash annotation from a tag string. A tag
+// without one declares no hash.
+func ParseHashTag(tag string) (SszHashType, error) {
+	value, ok := reflect.StructTag(tag).Lookup("ssz-hash")
+	if !ok {
+		return SszHashUnspecified, nil
+	}
+
+	return ParseHashType(value)
+}

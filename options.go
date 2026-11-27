@@ -69,12 +69,14 @@ func WithNoFastHash() DynSszOption {
 }
 
 // WithDefaultHashAlgorithm sets the hash algorithm this instance merkleizes
-// with when a call names none: HashTreeRoot and GetTree compress with it.
+// with when neither the call names one nor the type of the value declares
+// one with an ssz-hash annotation: HashTreeRoot and GetTree compress with it.
 // Without this option the instance hashes with hasher.SHA256.
 // WithHashAlgorithm overrides it for a single call.
 //
 // The methods a type carries itself are not affected: a generated
-// HashTreeRoot() or HashTreeRootDyn(ds) always hashes with SHA256.
+// HashTreeRoot() or HashTreeRootDyn(ds) hashes with SHA256, or with the hash
+// the type declares.
 func WithDefaultHashAlgorithm(alg *hasher.Algorithm) DynSszOption {
 	return func(opts *DynSszOptions) {
 		opts.HashAlgorithm = alg
@@ -285,7 +287,8 @@ func WithStreamSizeLimit(size int) CallOption {
 }
 
 // WithHashAlgorithm selects the hash algorithm one HashTreeRoot or GetTree
-// call merkleizes with, overriding the instance default set by
+// call merkleizes with, overriding the hash the type of the value declares
+// with an ssz-hash annotation and the instance default set by
 // WithDefaultHashAlgorithm. The hash is a property of the value: a chain that
 // changes its hash at a fork keeps hashing older values with the previous
 // one, so both are in use side by side.

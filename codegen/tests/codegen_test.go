@@ -7114,6 +7114,68 @@ func TestCodegenUnknownGeneratedView(t *testing.T) {
 	})
 }
 
+// A type that declares its hash with ssz-hash is hashed with it where it is
+// the root, by both engines and by its generated argument-less methods; the
+// declaration of a nested type does not apply.
+func TestCodegenHashAnnotation(t *testing.T) {
+	engines := map[string]*dynssz.DynSsz{
+		"generated":  dynssz.NewDynSsz(nil),
+		"reflection": dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz()),
+	}
+	annotated := HashAnnotated_Payload
+	plain := HashUnannotated(annotated)
+
+	want := map[string][32]byte{}
+	for name, alg := range map[string]*hasher.Algorithm{"sha256": hasher.SHA256, "keccak256": hasher.Keccak256} {
+		root, err := engines["reflection"].HashTreeRoot(&plain, dynssz.WithHashAlgorithm(alg))
+		if err != nil {
+			t.Fatalf("%s root of the unannotated twin: %v", name, err)
+		}
+		want[name] = root
+	}
+
+	for name, ds := range engines {
+		if root, err := ds.HashTreeRoot(&annotated); err != nil || root != want["keccak256"] {
+			t.Errorf("%s: root %x, %v; want the Keccak-256 root %x", name, root, err, want["keccak256"])
+		}
+		if root, err := ds.HashTreeRoot(&annotated, dynssz.WithHashAlgorithm(hasher.SHA256)); err != nil || root != want["sha256"] {
+			t.Errorf("%s with the call option: root %x, %v; want the SHA-256 root %x", name, root, err, want["sha256"])
+		}
+		tree, err := ds.GetTree(&annotated)
+		if err != nil || [32]byte(tree.Hash()) != want["keccak256"] {
+			t.Errorf("%s: GetTree root differs from the Keccak-256 root: %v", name, err)
+		}
+	}
+
+	type rootMethods interface {
+		HashTreeRoot() ([32]byte, error)
+		HashTreeRootDyn(ds sszutils.DynamicSpecs) ([32]byte, error)
+	}
+	generated, ok := any(&annotated).(rootMethods)
+	if !ok {
+		t.Skip("no generated code present")
+	}
+	if root, err := generated.HashTreeRoot(); err != nil || root != want["keccak256"] {
+		t.Errorf("generated HashTreeRoot(): root %x, %v; want the Keccak-256 root %x", root, err, want["keccak256"])
+	}
+	if root, err := generated.HashTreeRootDyn(engines["generated"]); err != nil || root != want["keccak256"] {
+		t.Errorf("generated HashTreeRootDyn(): root %x, %v; want the Keccak-256 root %x", root, err, want["keccak256"])
+	}
+
+	// A type that declares SHA256, or none, keeps its SHA-256 methods.
+	inner := annotated.Inner
+	innerWant, err := engines["reflection"].HashTreeRoot(&inner, dynssz.WithHashAlgorithm(hasher.SHA256))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root, rootErr := any(&inner).(rootMethods).HashTreeRoot(); rootErr != nil || root != innerWant {
+		t.Errorf("generated HashTreeRoot() of a SHA256 type: root %x, %v; want %x", root, rootErr, innerWant)
+	}
+	if root, rootErr := any(&plain).(rootMethods).HashTreeRoot(); rootErr != nil || root != want["sha256"] {
+		t.Errorf("generated HashTreeRoot() of an unannotated type: root %x, %v; want %x", root, rootErr, want["sha256"])
+	}
+}
+
 // An argument-less HashTreeRoot method computes its root with sha256. Under
 // another hash both engines walk a child that has a structure, and still call
 // the method of a custom type, which answers for its root itself.

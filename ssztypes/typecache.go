@@ -688,6 +688,15 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 
 	annotationTag, hasAnnotation := sszutils.LookupAnnotation(t)
 
+	// ssz-hash is declared by the type for its own tree, like ssz-static.
+	if hasAnnotation {
+		hashType, hashErr := ParseHashTag(annotationTag)
+		if hashErr != nil {
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "failed to parse annotation for type %v: %v", t, hashErr)
+		}
+		desc.HashType = hashType
+	}
+
 	// ssz-static is declared by the type, for the type: it states how the type
 	// frames itself, which a reference to it neither supplies nor replaces. It
 	// is read from the type's own annotation whichever hints the reference
