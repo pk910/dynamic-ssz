@@ -4,23 +4,18 @@
 
 package ssztypes
 
-import (
-	"bytes"
-	"encoding/json"
-	"fmt"
-	"slices"
-)
-
 // childDerivedFlags are the type flags a descriptor accumulates from its
 // children during the build (see buildContainerDescriptor and the collection
 // builders). They mark spec-dependence anywhere in a type's subtree and gate
 // fastssz delegation, which bakes in spec-independent preset values.
 const childDerivedFlags = SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr | SszTypeFlagSizerWidth
 
-// FixupRecursiveFlags re-derives the child-propagated type flags across a
-// descriptor graph that contains at least one recursive cycle. It is shared by
-// the reflection type cache and the code generator's parser, which build their
-// descriptor graphs independently but propagate flags by the same rules.
+// FixupRecursiveFlags re-derives the child-propagated type flags across the
+// descriptor graphs below roots, which contain at least one recursive cycle.
+// It is shared by the reflection type cache and the code generator's parser,
+// which build their descriptor graphs independently but propagate flags by the
+// same rules. Both pass every descriptor built alongside the cycle: one that
+// is not linked into its parent is not reachable from the cycle head.
 //
 // During a recursive build, a back-edge hands out a descriptor whose
 // child-derived flags are not final yet, and descriptors built inside the
@@ -38,8 +33,8 @@ const childDerivedFlags = SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax |
 // resolved size or limit below the type differs from the static tags it baked
 // in. Custom types keep their compat flags — they have no traversed children,
 // so their flags can never change here anyway.
-func FixupRecursiveFlags(root *TypeDescriptor) {
-	markRecursionMembers(root)
+func FixupRecursiveFlags(roots ...*TypeDescriptor) {
+	markRecursionMembers(roots)
 
 	// Collect all reachable descriptors once; the visited set is keyed by
 	// pointer identity so cycles terminate.
@@ -67,7 +62,9 @@ func FixupRecursiveFlags(root *TypeDescriptor) {
 			collect(variant)
 		}
 	}
-	collect(root)
+	for _, root := range roots {
+		collect(root)
+	}
 
 	// Iterate to the fixpoint. Each sweep can only raise flags, and there are
 	// at most 4 flags per node, so the loop terminates after at most 4*len+1
@@ -146,7 +143,7 @@ func FixupRecursiveFlags(root *TypeDescriptor) {
 // reachable subgraph, which is complete once a member has been published, so
 // the first build reaching a descriptor marks it and a later build finds the
 // bit already set: a published descriptor is never written.
-func markRecursionMembers(root *TypeDescriptor) {
+func markRecursionMembers(roots []*TypeDescriptor) {
 	type node struct {
 		index, lowlink int
 		onStack        bool
@@ -214,88 +211,9 @@ func markRecursionMembers(root *TypeDescriptor) {
 			}
 		}
 	}
-	connect(root)
-}
-
-// marshalCyclicDescriptor serializes a descriptor graph that contains cycles
-// into a deterministic byte representation for hashing. Standard JSON
-// marshalling fails on cyclic graphs, so each reachable descriptor is assigned
-// an index in a deterministic traversal order and serialized shallowly, with
-// child descriptors written as index references. Field metadata that normally
-// travels inside the nested JSON (names, indices) is emitted alongside the
-// references; dynamic-field layout is fully derived from the fields and flags,
-// so it needs no separate representation.
-func marshalCyclicDescriptor(root *TypeDescriptor) []byte {
-	index := map[*TypeDescriptor]int{}
-	order := []*TypeDescriptor{}
-
-	var walk func(desc *TypeDescriptor)
-	walk = func(desc *TypeDescriptor) {
-		if desc == nil {
-			return
-		}
-		if _, seen := index[desc]; seen {
-			return
-		}
-		index[desc] = len(order)
-		order = append(order, desc)
-
-		if desc.ContainerDesc != nil {
-			for i := range desc.ContainerDesc.Fields {
-				walk(desc.ContainerDesc.Fields[i].Type)
-			}
-		}
-		walk(desc.ElemDesc)
-		for _, key := range sortedVariantKeys(desc.UnionVariants) {
-			walk(desc.UnionVariants[key])
+	for _, root := range roots {
+		if _, seen := nodes[root]; !seen && root != nil {
+			connect(root)
 		}
 	}
-	walk(root)
-
-	ref := func(desc *TypeDescriptor) int {
-		if desc == nil {
-			return -1
-		}
-		return index[desc]
-	}
-
-	var buf bytes.Buffer
-	for i, desc := range order {
-		shallow := *desc
-		shallow.ContainerDesc = nil
-		shallow.UnionVariants = nil
-		shallow.ElemDesc = nil
-		nodeJSON, _ := json.Marshal(&shallow)
-
-		fmt.Fprintf(&buf, "#%d:%s", i, nodeJSON)
-		if desc.ContainerDesc != nil {
-			for fi := range desc.ContainerDesc.Fields {
-				field := &desc.ContainerDesc.Fields[fi]
-				fmt.Fprintf(&buf, ";f:%s/%d/%d=%d", field.Name, field.SszIndex, field.FieldIndex, ref(field.Type))
-			}
-		}
-		if desc.ElemDesc != nil {
-			fmt.Fprintf(&buf, ";e=%d", ref(desc.ElemDesc))
-		}
-		for _, key := range sortedVariantKeys(desc.UnionVariants) {
-			fmt.Fprintf(&buf, ";u:%d=%d", key, ref(desc.UnionVariants[key]))
-		}
-		buf.WriteByte('\n')
-	}
-
-	return buf.Bytes()
-}
-
-// sortedVariantKeys returns the union variant keys in ascending order so the
-// traversal and serialization are deterministic across map iteration orders.
-func sortedVariantKeys(variants map[uint8]*TypeDescriptor) []uint8 {
-	if len(variants) == 0 {
-		return nil
-	}
-	keys := make([]uint8, 0, len(variants))
-	for key := range variants {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-	return keys
 }

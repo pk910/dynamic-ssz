@@ -2553,7 +2553,7 @@ func TestGenerateLeavesCallerCacheUntouched(t *testing.T) {
 	if _, err = cg.GenerateToMap(); err != nil {
 		t.Fatalf("extended types inherited from the cache: %v", err)
 	}
-	if n := len(extDs.GetTypeCache().GetAllTypes()); n != 0 {
+	if n := len(extDs.GetTypeCache().GetAllTypes()); n != 0 { //nolint:staticcheck // debugging aid under test
 		t.Fatalf("generation registered %d descriptors in the instance cache", n)
 	}
 }
@@ -4103,5 +4103,76 @@ func TestReflectFrontendOptionalCompiles(t *testing.T) {
 	}
 	for _, pkgErr := range pkgs[0].Errors {
 		t.Errorf("generated optional code does not compile: %v", pkgErr)
+	}
+}
+
+// The parser describes a custom type generated in the same run by its own
+// descriptor, which the referencing descriptor does not link to. That
+// descriptor gets the flags of a recursive cycle it is built alongside like
+// every linked one, so its flags do not depend on which type was requested
+// first, as in the reflection type cache.
+func TestParserSameRunCustomDescriptorFlags(t *testing.T) {
+	pkg := types.NewPackage("example.com/own", "own")
+	named := func(name string) *types.Named {
+		return types.NewNamed(types.NewTypeName(token.NoPos, pkg, name, nil), nil, nil)
+	}
+	field := func(name string, typ types.Type) *types.Var {
+		return types.NewField(token.NoPos, pkg, name, typ, false)
+	}
+	pointers := func(typ types.Type) types.Type { return types.NewSlice(types.NewPointer(typ)) }
+	uint64s := types.NewSlice(types.Typ[types.Uint64])
+	const max4, dynMax, custom = `ssz-max:"4"`, `ssz-max:"8" dynssz-max:"OWN_MAX"`, `ssz-type:"custom"`
+
+	head, member, inside := named("Head"), named("Member"), named("Inside")
+	head.SetUnderlying(types.NewStruct([]*types.Var{field("Kids", pointers(member)), field("D", uint64s)}, []string{max4, dynMax}))
+	member.SetUnderlying(types.NewStruct([]*types.Var{field("T", inside), field("X", types.Typ[types.Uint64])}, []string{custom, ""}))
+	inside.SetUnderlying(types.NewStruct([]*types.Var{field("Up", pointers(head))}, []string{max4}))
+
+	loopHead, loopMember, loop := named("LoopHead"), named("LoopMember"), named("Loop")
+	loopHead.SetUnderlying(types.NewStruct([]*types.Var{field("Kids", pointers(loopMember))}, []string{max4}))
+	loopMember.SetUnderlying(types.NewStruct([]*types.Var{field("Up", pointers(loopHead)), field("T", loop)}, []string{max4, custom}))
+	loop.SetUnderlying(types.NewStruct([]*types.Var{field("Self", pointers(loop))}, []string{max4}))
+
+	afterHead, afterMember, after, afterRoot := named("AfterHead"), named("AfterMember"), named("After"), named("AfterRoot")
+	afterHead.SetUnderlying(types.NewStruct([]*types.Var{field("Cs", pointers(afterMember)), field("D", uint64s)}, []string{max4, dynMax}))
+	afterMember.SetUnderlying(types.NewStruct([]*types.Var{field("Up", pointers(afterHead))}, []string{max4}))
+	after.SetUnderlying(types.NewStruct([]*types.Var{field("C", afterMember)}, []string{""}))
+	afterRoot.SetUnderlying(types.NewStruct([]*types.Var{field("H", types.NewPointer(afterHead)), field("W", after)}, []string{"", custom}))
+
+	methods := ssztypes.SszCompatFlagDynamicMarshaler | ssztypes.SszCompatFlagDynamicUnmarshaler | ssztypes.SszCompatFlagDynamicSizer | ssztypes.SszCompatFlagDynamicHashRoot
+	newParser := func() *Parser {
+		p := NewParser()
+		for _, typ := range []types.Type{inside, loop, after} {
+			p.CompatFlags[typ.String()] = methods
+		}
+		return p
+	}
+	flagsOf := func(p *Parser, typ types.Type) ssztypes.SszTypeFlag {
+		t.Helper()
+		desc, err := p.GetTypeDescriptor(typ, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("%v: %v", typ, err)
+		}
+		return desc.SszTypeFlags
+	}
+
+	for _, test := range []struct {
+		name         string
+		custom, root types.Type
+		want         ssztypes.SszTypeFlag
+	}{
+		{"built inside the open cycle", inside, types.NewPointer(head), ssztypes.SszTypeFlagHasMaxExpr},
+		{"its own cycle inside the open cycle", types.NewPointer(loop), types.NewPointer(loopHead), ssztypes.SszTypeFlagRecursionMember},
+		{"built after the cycle closed", after, afterRoot, ssztypes.SszTypeFlagHasMaxExpr},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			alone := flagsOf(newParser(), test.custom)
+			p := newParser()
+			flagsOf(p, test.root)
+			following := flagsOf(p, test.custom)
+			if alone != following || following&test.want == 0 {
+				t.Errorf("flags %v when requested first, %v after %v; want equal and %v set", alone, following, test.root, test.want)
+			}
+		})
 	}
 }
