@@ -11,6 +11,7 @@ Dynamic SSZ uses struct tags to control SSZ encoding behavior. This guide covers
 | `ssz-type` | Explicit type specification | `ssz-type:"uint256"` |
 | `ssz-bitsize` | Bit-level size for bitvectors | `ssz-bitsize:"12"` |
 | `ssz-index` | Field index for progressive containers | `ssz-index:"0"` |
+| `ssz-hash` | Hash algorithm of a type's own tree (type annotation) | `ssz-hash:"sha256"` |
 | `dynssz-size` | Dynamic size with expressions | `dynssz-size:"EPOCH_LENGTH*32"` |
 | `dynssz-max` | Dynamic maximum with expressions | `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"` |
 | `dynssz-bitsize` | Dynamic bit size for bitvectors | `dynssz-bitsize:"COMMITTEE_SIZE"` |
@@ -388,6 +389,31 @@ type BeaconState struct {
     NewField    *uint64 `ssz-index:"5"` // added in a later fork
 }
 ```
+
+### ssz-hash
+
+Declares the hash a type merkleizes its own tree with. It is a type
+annotation, set with `sszutils.Annotate[T]()`:
+
+```go
+type BeaconState struct {
+    // ...
+}
+
+var _ = hasher.RegisterAlgorithm("my-hash", alg)
+var _ = sszutils.Annotate[BeaconState](`ssz-hash:"my-hash"`)
+```
+
+The value is the name of a hash algorithm: `sha256`, or a name given to an
+algorithm with `hasher.RegisterAlgorithm`. A name no algorithm is registered
+under fails the hash with `ErrInvalidTag`. The declaration applies where the
+type is the root of what is hashed: `ds.HashTreeRoot(state)` and
+`ds.GetTree(state)` use it unless the call names an algorithm, and the
+generated `HashTreeRoot()` and `HashTreeRootDyn(ds)` of the type hash with
+it. A tree has one hash, so the declaration of a nested type does not apply,
+and neither does `ssz-hash` as a struct field tag. See
+[Hash algorithms](api-reference.md#hash-algorithms) for the order in which an
+algorithm is chosen.
 
 ## Expression Language
 
