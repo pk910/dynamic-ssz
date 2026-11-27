@@ -7,6 +7,8 @@ require github.com/pk910/dynamic-ssz v1.4.0
 require (
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/pk910/hashtree-bindings v0.2.6 // indirect
+	github.com/pk910/keccaktree v0.0.1 // indirect
+	golang.org/x/crypto v0.31.0 // indirect
 	golang.org/x/mod v0.23.0 // indirect
 	golang.org/x/sync v0.11.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect

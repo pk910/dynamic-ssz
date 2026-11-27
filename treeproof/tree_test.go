@@ -1741,7 +1741,7 @@ func TestPackageNamesNoHash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the package directory: %v", err)
 	}
-	forbidden := []string{"sha256.", "sha3.", "hasher.GetZeroHash", "hasher.FastHasherPool", "hasher.DefaultHasherPool", "hasher.SHA256Native"}
+	forbidden := []string{"sha256.", "sha3.", "hasher.GetZeroHash", "hasher.FastHasherPool", "hasher.DefaultHasherPool", "hasher.Keccak256", "hasher.SHA256Native"}
 	defaults := 0
 	for _, entry := range entries {
 		name := entry.Name()

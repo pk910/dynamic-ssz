@@ -404,8 +404,8 @@ var _ = hasher.RegisterAlgorithm("my-hash", alg)
 var _ = sszutils.Annotate[BeaconState](`ssz-hash:"my-hash"`)
 ```
 
-The value is the name of a hash algorithm: `sha256`, or a name given to an
-algorithm with `hasher.RegisterAlgorithm`. A name no algorithm is registered
+The value is the name of a hash algorithm: `sha256`, `keccak256`, or a name
+given to an algorithm with `hasher.RegisterAlgorithm`. A name no algorithm is registered
 under fails the hash with `ErrInvalidTag`. The declaration applies where the
 type is the root of what is hashed: `ds.HashTreeRoot(state)` and
 `ds.GetTree(state)` use it unless the call names an algorithm, and the

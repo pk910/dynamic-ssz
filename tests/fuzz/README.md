@@ -8,8 +8,8 @@ Valid values also run an oracle battery by default:
 
 - a small independent SSZ encoder and hash-tree-root implementation checks the
   classic, single-dimensional subset without calling dynamic-ssz internals,
-  for the SHA-256 root and the root under a second hash;
-- native SHA-256 and accelerated hashing must agree;
+  for the SHA-256 root, the Keccak-256 root and the root under a second hash;
+- native and accelerated hashing must agree, under SHA-256 and Keccak-256;
 - `SizeSSZ` must equal the marshaled length;
 - `HashTreeRootWith` and repeated root calculations must agree.
 

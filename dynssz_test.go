@@ -30,6 +30,7 @@ import (
 	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
 	"github.com/pk910/dynamic-ssz/treeproof"
+	"golang.org/x/crypto/sha3"
 )
 
 // Test types for DynamicEncoder/DynamicDecoder/DynamicMarshaler/DynamicUnmarshaler paths
@@ -11027,5 +11028,52 @@ func TestHashAnnotation(t *testing.T) {
 	// A call that names its algorithm does not ask the type.
 	if _, err = plain.HashTreeRoot(invalid, WithHashAlgorithm(hasher.SHA256)); err != nil {
 		t.Errorf("an unknown hash under a call that names its algorithm: %v", err)
+	}
+}
+
+type hashDeclKeccak struct {
+	A uint64
+	B []uint16 `ssz-max:"40"`
+}
+
+var _ = sszutils.Annotate[hashDeclKeccak](`ssz-hash:"keccak256"`)
+
+// Keccak-256 is built in: a call names it, a type declares it as
+// "keccak256", and the root is that of an independent Keccak-256
+// merkleization.
+func TestKeccak256(t *testing.T) {
+	keccakPair := func(a, b [32]byte) (out [32]byte) {
+		h := sha3.NewLegacyKeccak256()
+		h.Write(a[:])
+		h.Write(b[:])
+		h.Sum(out[:0])
+		return out
+	}
+	// The data tree of B: two chunks of room, the first holding the values.
+	var data, length [32]byte
+	binary.LittleEndian.PutUint16(data[:], 1)
+	binary.LittleEndian.PutUint16(data[2:], 2)
+	length[0] = 2
+	// 40 uint16 values take three chunks, so the list has room for four.
+	want := keccakPair([32]byte{5}, keccakPair(keccakPair(keccakPair(data, [32]byte{}), keccakPair([32]byte{}, [32]byte{})), length))
+
+	for name, tc := range map[string]struct {
+		ds    *DynSsz
+		value any
+		opts  []CallOption
+	}{
+		"call option":      {NewDynSsz(nil), &hashDeclNone{A: 5, B: []uint16{1, 2}}, []CallOption{WithHashAlgorithm(hasher.Keccak256)}},
+		"native":           {NewDynSsz(nil, WithNoFastHash()), &hashDeclNone{A: 5, B: []uint16{1, 2}}, []CallOption{WithHashAlgorithm(hasher.Keccak256)}},
+		"instance default": {NewDynSsz(nil, WithDefaultHashAlgorithm(hasher.Keccak256)), &hashDeclNone{A: 5, B: []uint16{1, 2}}, nil},
+		"declared":         {NewDynSsz(nil), &hashDeclKeccak{A: 5, B: []uint16{1, 2}}, nil},
+	} {
+		got, err := tc.ds.HashTreeRoot(tc.value, tc.opts...)
+		if err != nil || got != want {
+			t.Errorf("%s: root %x, %v; want %x", name, got, err, want)
+		}
+		tree, err := tc.ds.GetTree(tc.value, tc.opts...)
+		if err != nil || [32]byte(tree.Hash()) != want || !tree.Algorithm().Compatible(hasher.Keccak256) {
+			t.Errorf("%s: tree root %x, %v; want %x", name, tree.Hash(), err, want)
+		}
 	}
 }
