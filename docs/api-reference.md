@@ -275,7 +275,10 @@ per pool, and pay those calls each time.
 Two algorithms are compatible when they compute the same hash, whatever
 computes it: `alg.Compatible(other)`. `hasher.SHA256` and
 `hasher.SHA256Native` are compatible, and so is the algorithm of any other
-SHA-256 function.
+SHA-256 function. A hash is identified by what its function gives for two
+fixed pairs of chunks, which `AlgorithmFor` hashes in its one call. A hash
+function is handed a destination of half its input, which may be the front
+of that input.
 
 The algorithm is a property of the value, not of the process: a chain that
 changes its hash at a fork keeps hashing older values with the previous one.
