@@ -6403,6 +6403,37 @@ func TestCyclePublicationRedirectsReferences(t *testing.T) {
 }
 
 type (
+	twiceCycle struct {
+		Kids []*twiceCycle `ssz-max:"3"`
+		A    twiceMember
+		B    twiceMember
+	}
+	twiceMember struct {
+		Back []*twiceCycle `ssz-max:"2"`
+	}
+)
+
+// A descriptor completed inside an open cycle is not published yet, so a
+// second reference to its type before the head closes is served by the
+// build's own record of it: the type is built once.
+func TestOpenCycleReusesCompletedDescriptor(t *testing.T) {
+	cache := NewTypeCache(nil)
+	memberType := reflect.TypeOf(twiceMember{})
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(&twiceCycle{}), nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := desc.ContainerDesc.Fields
+	if fields[1].Type != fields[2].Type {
+		t.Error("the cycle member has two descriptors")
+	}
+	if fields[1].Type != cache.lookupPublished(memberType, memberType) {
+		t.Error("the cycle head does not reference the published descriptor of its member")
+	}
+}
+
+type (
 	nestA struct {
 		Bs     []*nestB `ssz-max:"4"`
 		Parked stepSized
