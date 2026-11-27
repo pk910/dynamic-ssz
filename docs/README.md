@@ -23,6 +23,7 @@
 - **[Performance Guide](performance.md)** - Optimization techniques and benchmarks
 - **[Ethereum Integration](go-eth2-client-integration.md)** - Working with go-eth2-client types
 - **[Troubleshooting](troubleshooting.md)** - Common issues and debugging
+- **[Formal Verification](formal-verification.md)** - Machine-checked certificates per type, the differential link, and what is not covered
 
 ## Examples
 

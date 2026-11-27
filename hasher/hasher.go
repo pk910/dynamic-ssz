@@ -21,11 +21,6 @@ import (
 // Compile-time check to ensure Hasher implements HashWalker interface
 var _ sszutils.HashWalker = (*Hasher)(nil)
 
-// incrementalBatchSize is the number of same-depth chunks to accumulate before
-// collapsing them into the next depth level. Must be a power of 2.
-// 256 chunks = 128 pairs per hash call, fits in L1 cache, good cgo amortization.
-const incrementalBatchSize = 256
-
 // maxTreeDepth is the maximum supported tree depth for incremental hashing.
 // 40 levels covers trees up to 2^40 ≈ 1 trillion leaves.
 const maxTreeDepth = 40
@@ -798,7 +793,7 @@ func (h *Hasher) maybeCollapseProgressive(layer *treeLayer) {
 	// consumption waits for a later round: it would move (or read) the node
 	// holes while the reductions are still in flight.
 	ast := h.asyncShared()
-	if ast != nil && layer.progressiveLevel >= 8 && h.precollapseCapRun(ast, layer) {
+	if ast != nil && layer.progressiveLevel >= asyncPrecollapseLevel && h.precollapseCapRun(ast, layer) {
 		return
 	}
 

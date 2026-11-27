@@ -34,40 +34,6 @@ import (
 // them are incomplete at any moment (the semaphore is held for the duration
 // of the reduction), which keeps the oldest entry of a full ring cheap to
 // wait on.
-const (
-	// asyncMinChunks is the minimum region width (in 32-byte chunks) worth
-	// handing to a background reduction; smaller regions reduce inline.
-	asyncMinChunks = 8192
-
-	// lazyFlushChunks is the pending-run width at which Collapse flushes
-	// deferred subtrees when async hashing is enabled. Runs this wide reduce
-	// in a single background job. With async hashing disabled, Collapse
-	// flushes on every call and the pending run stays at the cadence the
-	// caller collapses with.
-	lazyFlushChunks = 32768
-
-	// asyncActiveChunks is the active-region width at which Collapse runs
-	// progressive group finalization when async hashing is enabled.
-	// Deferring finalization gives element-root jobs time to complete in the
-	// background, so the drain at finalization rarely waits.
-	asyncActiveChunks = 131072
-
-	// asyncBufSize is the size of every job input buffer. Jobs are capped
-	// at lazyFlushChunks, so all buffers are interchangeable and no other
-	// size ever needs allocating: wider regions reduce as a sequence of
-	// cap-sized jobs whose remainder carries over to the next round.
-	asyncBufSize = lazyFlushChunks * 32
-
-	// asyncCapDepth is the subtree depth a full cap-sized reduction
-	// produces: a lazyFlushChunks-wide run of leaves becomes one node at
-	// this depth.
-	asyncCapDepth = 15
-
-	// asyncRingInline is the job-ring size served by the hasher's inline
-	// backing array; larger rings (workers > 8) allocate once.
-	asyncRingInline = 16
-)
-
 // asyncShared is the process-wide async hashing state. sem bounds concurrent
 // reductions; a slot is held from before the job input is copied until the
 // reduction finishes. bufs is a token free list with one token per job-ring

@@ -23,6 +23,7 @@ Dynamic SSZ is a production-ready Go library for [SSZ](https://github.com/ethere
 
 ### Beyond Serialization
 
+- **✅ Formal Verification** — per-type machine-checked certificates (Lean 4) of decode-canonicity, round trip, tree/root agreement and Merkle-proof correctness, anchored on the official [EthLib](https://github.com/ethereum/EthLib) SSZ specification and linked to both engines by a differential harness in CI — see [docs/formal-verification.md](docs/formal-verification.md)
 - **🌳 Merkle Proofs** — build full Merkle trees from any type (`GetTree`), generate single proofs and compressed multiproofs by generalized index, and verify them with the `treeproof` package
 - **👁️ SSZ Views** — apply multiple SSZ schemas to the same runtime type without duplicating structs (ideal for Ethereum fork handling)
 - **🎁 Type Wrapper** — attach SSZ annotations to non-struct top-level types like `TypeWrapper[Descriptor, []uint64]`
