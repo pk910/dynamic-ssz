@@ -291,7 +291,30 @@ tree, err := ds.GetTree(block, dynssz.WithHashAlgorithm(hasher.Keccak256))
 keccakDs := dynssz.NewDynSsz(specs, dynssz.WithDefaultHashAlgorithm(hasher.Keccak256))
 ```
 
-Where a caller supplies the hash walker, the walker carries the algorithm:
+A type can declare the hash of its own tree with the
+[`ssz-hash`](ssz-annotations.md#ssz-hash) annotation, which suits a type that
+exists under one hash only, such as the state of a fork:
+
+```go
+var _ = sszutils.Annotate[BeaconState](`ssz-hash:"keccak256"`)
+
+root, err := ds.HashTreeRoot(state) // Keccak-256
+```
+
+The algorithm of a call is the first of these that is set:
+
+1. the algorithm the call names (`WithHashAlgorithm`),
+2. the algorithm the type of the value declares (`ssz-hash`); under
+   `WithViewDescriptor` the view type is asked before the data type,
+3. the default of the instance (`WithDefaultHashAlgorithm`),
+4. SHA-256.
+
+Only the type of the value that is hashed is asked. A type used in trees of
+both hashes cannot declare one: its own root under another hash than SHA-256
+takes the call option or an instance with that default.
+
+Where a caller supplies the hash walker, the walker carries the algorithm,
+whatever the type declares:
 
 ```go
 hh := hasher.Keccak256.Pool().Get()
@@ -302,9 +325,10 @@ root, err := hh.HashRoot()
 ```
 
 The methods a type carries itself take no walker and no option: a generated
-`HashTreeRoot()` or `HashTreeRootDyn(ds)` always hashes with SHA-256. The root
-of a value under another algorithm is computed by `ds.HashTreeRoot` with the
-option, which runs the same generated code on a walker of that algorithm.
+`HashTreeRoot()` or `HashTreeRootDyn(ds)` hashes with SHA-256, or with the
+hash the type declares with `ssz-hash`. The root of a value under another
+algorithm is computed by `ds.HashTreeRoot` with the option, which runs the
+same generated code on a walker of that algorithm.
 
 Regenerate generated code before hashing with another algorithm. Code from a
 generator that predates hash algorithms calls the argument-less
