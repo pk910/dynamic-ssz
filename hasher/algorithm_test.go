@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/pk910/dynamic-ssz/internal/zerohash"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
@@ -36,6 +37,11 @@ func sha512256Fn(dst, input []byte) error {
 	return nil
 }
 
+// sha512256Twin is another SHA-512/256 function.
+func sha512256Twin(dst, input []byte) error {
+	return sha512256Fn(dst, input)
+}
+
 // otherAlgorithm is the Algorithm of a hash that is not SHA256.
 func otherAlgorithm(t *testing.T) *Algorithm {
 	t.Helper()
@@ -47,10 +53,7 @@ func otherAlgorithm(t *testing.T) *Algorithm {
 }
 
 // saltedSHA256 is a hash of its own: SHA256 with the first byte of every
-// digest flipped by salt. It is not inlined, so every closure it returns
-// runs the same code.
-//
-//go:noinline
+// digest flipped by salt.
 func saltedSHA256(salt byte) HashFn {
 	return func(dst, input []byte) error {
 		for i := 0; i+64 <= len(input); i += 64 {
@@ -169,6 +172,12 @@ func TestAlgorithmZeroHashes(t *testing.T) {
 		if got := tt.alg.ZeroHash(1000); [32]byte(got) != hashes[64] {
 			t.Errorf("%s: ZeroHash(1000) is not clamped to depth 64", tt.name)
 		}
+		if table := zerohash.Table(tt.alg); table == nil || *table != hashes {
+			t.Errorf("%s: the shared zero subtree roots are not those of the Algorithm", tt.name)
+		}
+		if zerohash.Table(nil) != nil || zerohash.Table((*Algorithm)(nil)) != nil {
+			t.Error("a value that is no Algorithm has zero subtree roots")
+		}
 		if _, ok := tt.alg.ZeroHashLevel(hashes[1][:31]); ok {
 			t.Errorf("%s: ZeroHashLevel accepted a short hash", tt.name)
 		}
@@ -221,13 +230,24 @@ func TestAlgorithmFor(t *testing.T) {
 	if err != nil || again != alg {
 		t.Errorf("the same function gave another algorithm: %v", err)
 	}
-	// Another closure of the same literal that computes the same hash is the
-	// same function to its callers.
-	again, err = AlgorithmFor(saltedSHA256(0x10))
-	if err != nil || again != alg {
-		t.Errorf("an equal closure gave another algorithm: %v", err)
+	// Another closure of the same literal is another function value: it gets
+	// an Algorithm of its own, of the same hash.
+	twin, err := AlgorithmFor(saltedSHA256(0x10))
+	if err != nil || twin == alg || !twin.Compatible(alg) || twin.family != alg.family {
+		t.Errorf("an equal closure is not a separate algorithm of the same hash: %v", err)
 	}
-	// One that computes another hash is not, though it shares the code.
+	// Two functions around hash instances of their own keep their instances.
+	first, second := sha256.New(), sha256.New()
+	firstAlg, err := AlgorithmFor(NativeHashWrapper(first))
+	if err != nil {
+		t.Fatalf("AlgorithmFor: %v", err)
+	}
+	secondAlg, err := AlgorithmFor(NativeHashWrapper(second))
+	if err != nil || firstAlg == secondAlg {
+		t.Errorf("two functions of two hash instances share an algorithm: %v", err)
+	}
+	// One that computes another hash is not compatible, though it shares the
+	// code.
 	other, err := AlgorithmFor(saltedSHA256(0x11))
 	if err != nil {
 		t.Fatalf("AlgorithmFor: %v", err)
@@ -300,7 +320,8 @@ func TestAlgorithmAccessors(t *testing.T) {
 		copy(pair[:32], a[:])
 		copy(pair[32:], b[:])
 		want := tt.ref(a, b)
-		if got, err := tt.alg.HashPair(&pair); err != nil || got != want {
+		var got [32]byte
+		if err := tt.alg.HashPair(&got, &pair); err != nil || got != want {
 			t.Errorf("%s: HashPair = %x, %v, want %x", tt.name, got, err, want)
 		}
 		var dst [32]byte
@@ -692,7 +713,7 @@ func TestAlgorithmsOfOneHashShareAFamily(t *testing.T) {
 	if first == second {
 		t.Fatal("functions of different code give one Algorithm")
 	}
-	if !first.Compatible(second) || first.ZeroHashTable() != second.ZeroHashTable() {
+	if !first.Compatible(second) || first.family != second.family {
 		t.Error("two Algorithms of one hash do not share its zero subtree roots")
 	}
 	if first.Compatible(nil) {
@@ -748,14 +769,15 @@ func TestHashPair(t *testing.T) {
 		{"sha512/256", otherAlgorithm(t), refSHA512256, 1},
 		{"salted", salted, refSaltedSHA256(0x52), 1},
 	} {
-		got, hashErr := tc.alg.HashPair(&pair)
+		var got [32]byte
+		hashErr := tc.alg.HashPair(&got, &pair)
 		if hashErr != nil {
 			t.Fatalf("%s: %v", tc.name, hashErr)
 		}
 		if got != tc.ref(a, b) {
 			t.Errorf("%s: HashPair = %x, want %x", tc.name, got, tc.ref(a, b))
 		}
-		allocs := testing.AllocsPerRun(100, func() { _, _ = tc.alg.HashPair(&pair) })
+		allocs := testing.AllocsPerRun(100, func() { _ = tc.alg.HashPair(&got, &pair) })
 		if allocs > tc.allocs {
 			t.Errorf("%s: HashPair allocates %v times, want at most %v", tc.name, allocs, tc.allocs)
 		}
@@ -779,14 +801,23 @@ func TestRegisterAlgorithm(t *testing.T) {
 	if err := RegisterAlgorithm("registry-test", other); err != nil {
 		t.Errorf("registering the same Algorithm again: %v", err)
 	}
+	// Another Algorithm of the same hash may claim the name too; the one
+	// registered first keeps it.
+	sameHash, err := AlgorithmFor(sha512256Twin)
+	if err != nil {
+		t.Fatalf("AlgorithmFor: %v", err)
+	}
+	if err = RegisterAlgorithm("registry-test", sameHash); err != nil {
+		t.Errorf("registering another Algorithm of the same hash: %v", err)
+	}
 	if alg, ok := AlgorithmByName("registry-test"); !ok || alg != other {
 		t.Error("the registered name does not find its Algorithm")
 	}
 	for name, err := range map[string]error{
-		"a name of another Algorithm": RegisterAlgorithm("registry-test", SHA256),
-		"sha256 for another":          RegisterAlgorithm("sha256", other),
-		"no name":                     RegisterAlgorithm("", other),
-		"no Algorithm":                RegisterAlgorithm("registry-test-nil", nil),
+		"a name of another hash": RegisterAlgorithm("registry-test", SHA256),
+		"sha256 for another":     RegisterAlgorithm("sha256", other),
+		"no name":                RegisterAlgorithm("", other),
+		"no Algorithm":           RegisterAlgorithm("registry-test-nil", nil),
 	} {
 		if err == nil {
 			t.Errorf("%s: registered", name)
@@ -796,7 +827,7 @@ func TestRegisterAlgorithm(t *testing.T) {
 	var a, b [32]byte
 	a[0], b[0] = 1, 2
 	var got [32]byte
-	err := WithNamedHasher("registry-test", func(hh sszutils.HashWalker) error {
+	err = WithNamedHasher("registry-test", func(hh sszutils.HashWalker) error {
 		indx := hh.Index()
 		hh.AppendBytes32(a[:])
 		hh.AppendBytes32(b[:])

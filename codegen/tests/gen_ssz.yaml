@@ -358,6 +358,8 @@ types:
     output: gen_edgecases.go
   - name: ForeignHashWithHolder
     output: gen_edgecases.go
+  - name: ForeignRootOnlyListHolder
+    output: gen_edgecases.go
   - name: FastsszTagged
     output: gen_edgecases.go
   - name: AliasAnnotatedHolder

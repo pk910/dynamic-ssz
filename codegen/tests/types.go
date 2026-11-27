@@ -2106,6 +2106,49 @@ type ForeignHashWithHolder struct {
 
 var ForeignHashWithHolder_Payload = ForeignHashWithHolder{F: ForeignHashWith{A: 0x0102030405060708}, Y: 9}
 
+// ForeignRootOnlyList carries the fastssz method set without a
+// HashTreeRootWith, over a list without a limit: its structure has no hash
+// tree root, so its root is the one its method gives.
+type ForeignRootOnlyList struct{ L []uint64 }
+
+func (f *ForeignRootOnlyList) MarshalSSZ() ([]byte, error) {
+	return f.MarshalSSZTo(nil)
+}
+
+func (f *ForeignRootOnlyList) MarshalSSZTo(buf []byte) ([]byte, error) {
+	for _, v := range f.L {
+		buf = binary.LittleEndian.AppendUint64(buf, v)
+	}
+	return buf, nil
+}
+
+func (f *ForeignRootOnlyList) SizeSSZ() int { return 8 * len(f.L) }
+
+func (f *ForeignRootOnlyList) UnmarshalSSZ(buf []byte) error {
+	if len(buf)%8 != 0 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	f.L = make([]uint64, len(buf)/8)
+	for i := range f.L {
+		f.L[i] = binary.LittleEndian.Uint64(buf[8*i:])
+	}
+	return nil
+}
+
+// HashTreeRoot is a root of the type's own making: the number of values.
+func (f *ForeignRootOnlyList) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:], uint64(len(f.L)))
+	return root, nil
+}
+
+type ForeignRootOnlyListHolder struct {
+	X uint64
+	O ForeignRootOnlyList
+}
+
+var ForeignRootOnlyListHolder_Payload = ForeignRootOnlyListHolder{X: 7, O: ForeignRootOnlyList{L: []uint64{1, 2, 3}}}
+
 // FastsszTagged uses the plain fastssz `ssz` tag; both engines read it as
 // ssz-type, so the bitlist is a bitlist and the excluded field is skipped.
 type FastsszTagged struct {

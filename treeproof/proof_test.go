@@ -1617,6 +1617,14 @@ func TestAlgorithmBackendRefusal(t *testing.T) {
 		}
 	}
 
+	// Leaves that fill their layer are not their own root while the backend
+	// refuses: the claimed root here is the first leaf, which is what the
+	// unhashed buffer holds.
+	full := multiproofs["full leaf layer"]
+	if ok, verifyErr := VerifyMultiproof(full.Leaves[0], nil, full.Leaves, full.Indices, WithAlgorithm(alg)); !errors.Is(verifyErr, errBackendRefused) || ok {
+		t.Errorf("full leaf layer against its first leaf: VerifyMultiproof = %v, %v; want the refusal", ok, verifyErr)
+	}
+
 	// A tree that could not be hashed reports the refusal and has no root.
 	w := NewWrapper(WithAlgorithm(alg))
 	paddedListWalk(w)

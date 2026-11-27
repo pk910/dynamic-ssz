@@ -9,13 +9,16 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
-// annotationEntry holds the tags registered for one type, newest first, and
-// the single tag string they merge into.
+// annotationEntry holds the tags registered for one type, newest first, the
+// single tag string they merge into, and the hash algorithm that string
+// names with ssz-hash.
 type annotationEntry struct {
 	tags   []string
 	merged string
+	hash   string
 }
 
 // typeAnnotations is a global registry mapping reflect.Type to the SSZ tags
@@ -25,6 +28,10 @@ var (
 	typeAnnotations sync.Map // map[reflect.Type]annotationEntry
 	annotationMutex sync.Mutex
 )
+
+// hashAnnotated is set once an annotation names a hash algorithm. Until
+// then LookupHashAnnotation has nothing to look up.
+var hashAnnotated atomic.Bool
 
 // Annotate registers SSZ annotations for a named (non-struct) type T.
 // The tag string uses the same format as Go struct field tags:
@@ -70,7 +77,13 @@ func Annotate[T any](tag string) bool {
 		}
 	}
 
-	typeAnnotations.Store(t, annotationEntry{tags: merged, merged: strings.Join(merged, " ")})
+	entry := annotationEntry{tags: merged, merged: strings.Join(merged, " ")}
+	entry.hash = reflect.StructTag(entry.merged).Get("ssz-hash")
+	if entry.hash != "" {
+		hashAnnotated.Store(true)
+	}
+
+	typeAnnotations.Store(t, entry)
 
 	return true // allows use in var _ = Annotate[T](...)
 }
@@ -96,4 +109,24 @@ func LookupAnnotation(t reflect.Type) (string, bool) {
 	}
 
 	return entry.merged, true
+}
+
+// LookupHashAnnotation returns the hash algorithm name the given type
+// declares with an ssz-hash annotation registered via Annotate[T](), or
+// ("", false) if it declares none.
+func LookupHashAnnotation(t reflect.Type) (string, bool) {
+	if !hashAnnotated.Load() || t == nil {
+		return "", false
+	}
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+
+	v, ok := typeAnnotations.Load(t)
+	if !ok {
+		return "", false
+	}
+	entry, _ := v.(annotationEntry)
+
+	return entry.hash, entry.hash != ""
 }

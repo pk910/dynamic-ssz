@@ -7185,6 +7185,29 @@ func TestCodegenHashAnnotation(t *testing.T) {
 	}
 }
 
+// A child that has only an argument-less HashTreeRoot() and a structure
+// without a hash tree root is hashed by its method under SHA256, and has no
+// root under another hash, with both engines.
+func TestCodegenRootOnlyChildWithoutStructureRoot(t *testing.T) {
+	holder := ForeignRootOnlyListHolder_Payload
+	var chunks [64]byte
+	binary.LittleEndian.PutUint64(chunks[:], holder.X)
+	binary.LittleEndian.PutUint64(chunks[32:], uint64(len(holder.O.L)))
+	want := sha256.Sum256(chunks[:])
+
+	for name, ds := range map[string]*dynssz.DynSsz{
+		"generated":  dynssz.NewDynSsz(nil),
+		"reflection": dynssz.NewDynSsz(nil, dynssz.WithNoDelegation()),
+	} {
+		if root, err := ds.HashTreeRoot(&holder); err != nil || root != want {
+			t.Errorf("%s: root %x, %v; want %x", name, root, err, want)
+		}
+		if _, err := ds.HashTreeRoot(&holder, dynssz.WithHashAlgorithm(SecondHash)); !errors.Is(err, sszutils.ErrExtendedTypeDisabled) {
+			t.Errorf("%s under another hash: err = %v, want ErrExtendedTypeDisabled", name, err)
+		}
+	}
+}
+
 // An argument-less HashTreeRoot method computes its root with sha256. Under
 // another hash both engines walk a child that has a structure, and still call
 // the method of a custom type, which answers for its root itself.
@@ -7200,7 +7223,8 @@ func TestCodegenLegacyHashRootUnderAnotherHash(t *testing.T) {
 	var chunks [64]byte
 	binary.LittleEndian.PutUint64(chunks[:], holder.F.A)
 	chunks[32] = holder.Y
-	want, err := SecondHash.HashPair(&chunks)
+	var want [32]byte
+	err := SecondHash.HashPair(&want, &chunks)
 	if err != nil {
 		t.Fatalf("HashPair: %v", err)
 	}

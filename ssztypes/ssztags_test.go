@@ -16,7 +16,7 @@ func TestParseHashTag(t *testing.T) {
 			t.Errorf("ParseHashTag(%q) = %q, %v; want %q", tag, got, ok, want)
 		}
 	}
-	for _, tag := range []string{``, `ssz-max:"4"`} {
+	for _, tag := range []string{``, `ssz-max:"4"`, `ssz-hash:""`} {
 		if got, ok := ParseHashTag(tag); ok {
 			t.Errorf("ParseHashTag(%q) = %q, want no hash", tag, got)
 		}

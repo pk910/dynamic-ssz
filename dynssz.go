@@ -1455,14 +1455,10 @@ func (d *DynSsz) hashAlgorithm(source any, cfg *callConfig) (*hasher.Algorithm, 
 func (d *DynSsz) declaredHashAlgorithm(source any, cfg *callConfig) (*hasher.Algorithm, error) {
 	name, declared := "", false
 	if cfg != nil && cfg.viewDescriptor != nil {
-		if tag, ok := sszutils.LookupAnnotation(reflect.TypeOf(cfg.viewDescriptor)); ok {
-			name, declared = ssztypes.ParseHashTag(tag)
-		}
+		name, declared = sszutils.LookupHashAnnotation(reflect.TypeOf(cfg.viewDescriptor))
 	}
 	if !declared {
-		if tag, ok := sszutils.LookupAnnotation(reflect.TypeOf(source)); ok {
-			name, declared = ssztypes.ParseHashTag(tag)
-		}
+		name, declared = sszutils.LookupHashAnnotation(reflect.TypeOf(source))
 	}
 	if !declared {
 		return nil, nil

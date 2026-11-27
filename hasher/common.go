@@ -152,6 +152,12 @@ func (hh *HasherPool) Algorithm() *Algorithm {
 	if hh.alg != nil {
 		return hh.alg
 	}
+
+	return hh.derivedAlgorithm()
+}
+
+// derivedAlgorithm returns the Algorithm of a pool that no Algorithm owns.
+func (hh *HasherPool) derivedAlgorithm() *Algorithm {
 	switch {
 	case hh == &FastHasherPool:
 		return SHA256
@@ -183,11 +189,12 @@ func (hh *HasherPool) CurrentHashFn() HashFn {
 
 // Get acquires a Hasher from the pool.
 func (hh *HasherPool) Get() *Hasher {
-	alg := hh.Algorithm()
 	hasher, _ := hh.pool.Get().(*Hasher)
-	if hasher == nil {
+	alg := hh.Algorithm()
+	switch {
+	case hasher == nil:
 		hasher = newHasher(alg)
-	} else {
+	case hasher.alg != alg:
 		hasher.alg = alg
 		hasher.zero = alg.zero()
 	}

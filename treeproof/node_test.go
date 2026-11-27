@@ -19,8 +19,8 @@ func TestZeroValueNode(t *testing.T) {
 	if !zero.IsLeaf() || zero.IsEmpty() || zero.Left() != nil || zero.Right() != nil {
 		t.Error("a zero-value Node is not a plain leaf")
 	}
-	if !bytes.Equal(zero.Hash(), zeroChunk[:]) || !bytes.Equal(zero.Value(), zeroChunk[:]) {
-		t.Errorf("a zero-value Node holds %x, want the zero chunk", zero.Hash())
+	if !bytes.Equal(zero.Hash(), zeroChunk[:]) || zero.Value() != nil {
+		t.Errorf("a zero-value Node hashes to %x with the value %x, want the zero chunk and no value", zero.Hash(), zero.Value())
 	}
 	if zero.Algorithm() != hasher.SHA256 {
 		t.Error("a zero-value Node names another Algorithm than SHA256")
@@ -69,6 +69,9 @@ func TestNodeSame(t *testing.T) {
 	}
 	if root, err = missing.Get(1); root != nil || err != nil {
 		t.Errorf("Get(1) of no node = %v, %v, want none", root, err)
+	}
+	if _, err = missing.Get(0); err == nil {
+		t.Error("Get(0) of no node reports no error")
 	}
 }
 

@@ -164,9 +164,9 @@ func NewHasherWithHash(hh hash.Hash) *Hasher {
 //
 // The hasher gets an Algorithm of its own, with the zero subtree roots of the
 // hash the function computes: the function is called once to find them, and
-// 64 times for a hash not seen before. A function that fails one of these
-// calls has no known hash: HashRoot reports the failure, and Reset asks the
-// function again.
+// 64 times for a hash that neither a built-in Algorithm nor one AlgorithmFor
+// made computes. A function that fails one of these calls has no known hash:
+// HashRoot reports the failure, and Reset asks the function again.
 //
 // Deprecated: use NewHasherWithAlgorithm with the Algorithm AlgorithmFor
 // returns for the function, which is derived once instead of per hasher.

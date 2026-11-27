@@ -54,7 +54,6 @@ func verifyProof(alg *hasher.Algorithm, root []byte, proof *Proof) (bool, error)
 	}
 
 	var tmp [64]byte
-	var err error
 	node := bytesToChunk(proof.Leaf)
 	for i, h := range proof.Hashes {
 		// Pad each sibling into a fresh 32-byte chunk (like VerifyMultiproof).
@@ -68,7 +67,7 @@ func verifyProof(alg *hasher.Algorithm, root []byte, proof *Proof) (bool, error)
 			copy(tmp[:32], node[:])
 			copy(tmp[32:], sibling[:])
 		}
-		if node, err = alg.HashPair(&tmp); err != nil {
+		if err := alg.HashPair(&node, &tmp); err != nil {
 			return false, err
 		}
 	}
@@ -282,8 +281,8 @@ func verifyMultiproofGeneral(alg *hasher.Algorithm, root []byte, proof, leaves [
 
 		copy(tmp[:32], left[:])
 		copy(tmp[32:], right[:])
-		parentHash, err := alg.HashPair(&tmp)
-		if err != nil {
+		var parentHash [32]byte
+		if err := alg.HashPair(&parentHash, &tmp); err != nil {
 			return false, err
 		}
 
@@ -364,11 +363,10 @@ func verifyMultiproofSameDepth(alg *hasher.Algorithm, root []byte, proof, leaves
 			if currentNode.index&1 == 1 && i+1 < len(currentLevel) && currentLevel[i+1].index == currentNode.index-1 {
 				copy(tmp[:32], currentLevel[i+1].hash[:])
 				copy(tmp[32:], currentNode.hash[:])
-				parentHash, hashErr := alg.HashPair(&tmp)
-				if hashErr != nil {
+				nextLevel = append(nextLevel, indexedChunk{index: parentIndex})
+				if hashErr := alg.HashPair(&nextLevel[len(nextLevel)-1].hash, &tmp); hashErr != nil {
 					return true, false, hashErr
 				}
-				nextLevel = append(nextLevel, indexedChunk{index: parentIndex, hash: parentHash})
 				i += 2
 				continue
 			}
@@ -393,11 +391,10 @@ func verifyMultiproofSameDepth(alg *hasher.Algorithm, root []byte, proof, leaves
 				copy(tmp[32:], proofSiblingHash[:])
 			}
 
-			parentHash, hashErr := alg.HashPair(&tmp)
-			if hashErr != nil {
+			nextLevel = append(nextLevel, indexedChunk{index: parentIndex})
+			if hashErr := alg.HashPair(&nextLevel[len(nextLevel)-1].hash, &tmp); hashErr != nil {
 				return true, false, hashErr
 			}
-			nextLevel = append(nextLevel, indexedChunk{index: parentIndex, hash: parentHash})
 			i++
 		}
 
@@ -532,9 +529,12 @@ func verifyFullTreeLeaves(alg *hasher.Algorithm, root []byte, leaves [][]byte, i
 	}
 	hh.Merkleize(appendStart)
 
-	valid = bytes.Equal(root, hh.Hash())
+	computed := hh.Hash()
+	if hashErr := hh.HashErr(); hashErr != nil {
+		return true, false, hashErr
+	}
 
-	return true, valid, hh.HashErr()
+	return true, bytes.Equal(root, computed), nil
 }
 
 // appendProofLeaf writes one proof leaf as a full 32-byte SSZ chunk.

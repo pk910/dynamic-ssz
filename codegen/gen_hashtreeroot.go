@@ -398,12 +398,55 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 		return err
 	}
 	if walk {
+		// A child without a hash tree root of its own structure is hashed by
+		// its method alone: under another hash it has no root, which is
+		// reported where the root would be produced, as the reflection engine
+		// does.
+		if rootless := rootlessWalk(desc, map[*ssztypes.TypeDescriptor]bool{}); rootless != nil {
+			message := fmt.Sprintf("%s has only an argument-less HashTreeRoot(), which hashes with SHA256, and cannot be walked under another hash: %v", ctx.typePrinter.TypeString(desc), ssztypes.NoSszRootError(rootless))
+			ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith(fmt.Sprintf("sszutils.NewSszError(sszutils.ErrExtendedTypeDisabled, %q)", message)))
+			ctx.appendCode(indent, "}\n")
+			return nil
+		}
 		walkErr := ctx.hashInline(desc, varName, typePath, indent+1, isRoot, isView, pack)
 		ctx.appendCode(indent, "}\n")
 		return walkErr
 	}
 
 	return ctx.hashInline(desc, varName, typePath, indent, isRoot, isView, pack)
+}
+
+// rootlessWalk returns the list or bitlist without a limit that a walk of
+// desc reaches, or nil when the walk has a hash tree root. A type below desc
+// that hashes into the walker itself is not walked.
+func rootlessWalk(desc *ssztypes.TypeDescriptor, seen map[*ssztypes.TypeDescriptor]bool) *ssztypes.TypeDescriptor {
+	if desc == nil || seen[desc] {
+		return nil
+	}
+	seen[desc] = true
+	if len(seen) > 1 && desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicHashRoot|ssztypes.SszCompatFlagFastsszHashRootWith) != 0 {
+		return nil
+	}
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagNoSszRoot != 0 {
+		return desc
+	}
+	if rootless := rootlessWalk(desc.ElemDesc, seen); rootless != nil {
+		return rootless
+	}
+	if desc.ContainerDesc != nil {
+		for i := range desc.ContainerDesc.Fields {
+			if rootless := rootlessWalk(desc.ContainerDesc.Fields[i].Type, seen); rootless != nil {
+				return rootless
+			}
+		}
+	}
+	for _, variant := range desc.UnionVariants {
+		if rootless := rootlessWalk(variant, seen); rootless != nil {
+			return rootless
+		}
+	}
+
+	return nil
 }
 
 // hashInline generates the walk of a type that is not hashed through a method

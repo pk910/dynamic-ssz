@@ -36,6 +36,7 @@ import (
 	"sync"
 
 	"github.com/pk910/dynamic-ssz/hasher"
+	"github.com/pk910/dynamic-ssz/internal/zerohash"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
@@ -196,7 +197,7 @@ type hashing struct {
 
 // hashingOf returns the hashing of the given Algorithm.
 func hashingOf(alg *hasher.Algorithm) hashing {
-	return hashing{fn: alg.HashFn(), zero: alg.ZeroHashTable()}
+	return hashing{fn: alg.HashFn(), zero: zerohash.Table(alg)}
 }
 
 // value returns the value of a node that holds one or needs none computed: a

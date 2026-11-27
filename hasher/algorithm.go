@@ -8,9 +8,10 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"reflect"
 	"sync/atomic"
+	"unsafe"
 
+	"github.com/pk910/dynamic-ssz/internal/zerohash"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
@@ -69,6 +70,15 @@ var SHA256Native = &Algorithm{pool: &DefaultHasherPool, family: sha256Family}
 
 func init() {
 	registerBuiltIn("sha256", SHA256, SHA256Native)
+
+	zerohash.Table = func(algorithm any) *[65][32]byte {
+		alg, ok := algorithm.(*Algorithm)
+		if !ok || alg == nil {
+			return nil
+		}
+
+		return &alg.zero().hashes
+	}
 }
 
 // registerBuiltIn makes an accelerated Algorithm and its pure Go counterpart
@@ -78,11 +88,7 @@ func registerBuiltIn(name string, alg, native *Algorithm) {
 	for _, twin := range []*Algorithm{alg, native} {
 		twin.pool.alg = twin
 		twin.native = native
-		addKnownAlgorithm(algorithmEntry{
-			code:        reflect.ValueOf(twin.HashFn()).Pointer(),
-			fingerprint: twin.family.fingerprint,
-			alg:         twin,
-		})
+		addKnownAlgorithm(algorithmEntry{fn: funcValue(twin.HashFn()), alg: twin})
 	}
 	// A built-in name is registered once, during package initialization.
 	_ = RegisterAlgorithm(name, alg)
@@ -149,8 +155,8 @@ func (f *hashFamily) zero() *zeroTable {
 func familyOf(fn HashFn, fingerprint [32]byte) (*hashFamily, error) {
 	if known := knownAlgorithms.Load(); known != nil {
 		for i := range *known {
-			if entry := &(*known)[i]; entry.fingerprint == fingerprint {
-				return entry.alg.family, nil
+			if family := (*known)[i].alg.family; family.fingerprint == fingerprint {
+				return family, nil
 			}
 		}
 	}
@@ -165,14 +171,12 @@ func familyOf(fn HashFn, fingerprint [32]byte) (*hashFamily, error) {
 	return family, nil
 }
 
-// algorithmEntry is an Algorithm AlgorithmFor returns, with what identifies
-// its function: the code it runs and its hash of a pair of zero chunks. The
-// code pointer alone does not, since every closure of one function literal
-// shares it.
+// algorithmEntry is an Algorithm AlgorithmFor returns, with the function
+// value it was made for. The entry holds the function, so its value is not
+// given to another function while the Algorithm exists.
 type algorithmEntry struct {
-	code        uintptr
-	fingerprint [32]byte
-	alg         *Algorithm
+	fn  unsafe.Pointer
+	alg *Algorithm
 }
 
 // knownAlgorithms holds the built-in Algorithms and those AlgorithmFor has
@@ -205,9 +209,10 @@ type namedAlgorithm struct {
 var namedAlgorithms atomic.Pointer[[]namedAlgorithm]
 
 // RegisterAlgorithm gives an Algorithm the name an ssz-hash annotation calls
-// it by. "sha256" names SHA256. A name belongs to one Algorithm: registering
-// it for another fails, registering it again for the same one does nothing.
-// Register at package initialization, before a value is hashed.
+// it by. "sha256" names SHA256. A name belongs to one hash: registering it
+// for an Algorithm of another hash fails, and registering it again for an
+// Algorithm of the same hash keeps the one registered first. Register at
+// package initialization, before a value is hashed.
 func RegisterAlgorithm(name string, alg *Algorithm) error {
 	if name == "" || alg == nil {
 		return errors.New("a hash algorithm is registered with a name and an algorithm")
@@ -219,10 +224,10 @@ func RegisterAlgorithm(name string, alg *Algorithm) error {
 		if named != nil {
 			for i := range *named {
 				if entry := &(*named)[i]; entry.name == name {
-					if entry.alg == alg {
+					if entry.alg.Compatible(alg) {
 						return nil
 					}
-					return fmt.Errorf("hash algorithm name %q is registered for another algorithm", name)
+					return fmt.Errorf("hash algorithm name %q is registered for another hash", name)
 				}
 			}
 			longer = append(make([]namedAlgorithm, 0, len(*named)+1), *named...)
@@ -262,42 +267,44 @@ func WithNamedHasher(name string, fn func(hh sszutils.HashWalker) error) error {
 // AlgorithmFor returns the Algorithm that compresses with fn. fn hashes its
 // input as consecutive 64-byte pairs into dst; it must be deterministic, safe
 // for concurrent use and support in-place hashing, where dst aliases the
-// front of the input.
+// front of the input. A function around one hash.Hash instance, as
+// NativeHashWrapper makes it, is not safe for concurrent use:
+// NativeHashWrapperFactory makes one that is.
 //
-// Functions that run the same code and compute the same hash give the same
-// Algorithm, which keeps the first of them; the function of a built-in
-// Algorithm gives that Algorithm. An Algorithm is kept for the life of the
-// process. Finding it costs one call of fn, and 64 for a hash no Algorithm
-// computes yet, whose zero subtree roots are computed then; a caller that
-// hashes often keeps the Algorithm. An error fn reports in these calls is
-// returned.
+// The same function value gives the same Algorithm, and the function of a
+// built-in Algorithm gives that Algorithm. Two closures are two function
+// values, also where they run the same code: each gets an Algorithm of its
+// own, and Algorithms that compute the same hash are compatible and share
+// its zero subtree roots. An Algorithm is kept for the life of the process,
+// so a caller makes it once and keeps it. Making it costs one call of fn,
+// and 64 for a hash no Algorithm computes yet, whose zero subtree roots are
+// computed then. An error fn reports in these calls is returned.
 func AlgorithmFor(fn HashFn) (*Algorithm, error) {
 	if fn == nil {
 		return nil, errors.New("hash function must not be nil")
 	}
-
-	fingerprint, err := fingerprintOf(fn)
-	if err != nil {
-		return nil, err
-	}
-	code := reflect.ValueOf(fn).Pointer()
+	value := funcValue(fn)
 
 	var created *Algorithm
 	for {
 		known := knownAlgorithms.Load()
 		for i := range *known {
-			if entry := &(*known)[i]; entry.code == code && entry.fingerprint == fingerprint {
+			if entry := &(*known)[i]; entry.fn == value {
 				return entry.alg, nil
 			}
 		}
 
 		if created == nil {
+			fingerprint, err := fingerprintOf(fn)
+			if err != nil {
+				return nil, err
+			}
 			if created, err = newAlgorithm(fn, fingerprint); err != nil {
 				return nil, err
 			}
 		}
 		longer := append(make([]algorithmEntry, 0, len(*known)+1), *known...)
-		longer = append(longer, algorithmEntry{code: code, fingerprint: fingerprint, alg: created})
+		longer = append(longer, algorithmEntry{fn: value, alg: created})
 		if knownAlgorithms.CompareAndSwap(known, &longer) {
 			return created, nil
 		}
@@ -381,17 +388,20 @@ func (a *Algorithm) zero() *zeroTable {
 	return a.family.zero()
 }
 
-// HashPair compresses one pair of chunks. Every SHA256 Algorithm computes it
-// with the Go standard library, which keeps the caller's pair on its stack;
-// the other hashes go through their function, which gets a copy.
-func (a *Algorithm) HashPair(pair *[64]byte) ([32]byte, error) {
+// HashPair compresses one pair of chunks into dst. Every SHA256 Algorithm
+// computes it with the Go standard library, which keeps the caller's pair on
+// its stack; the other hashes go through their function, which gets a copy.
+func (a *Algorithm) HashPair(dst *[32]byte, pair *[64]byte) error {
 	if a.family == sha256Family {
-		return sha256.Sum256(pair[:]), nil
+		*dst = sha256.Sum256(pair[:])
+
+		return nil
 	}
 	p := *pair
 	err := a.HashFn()(p[:32], p[:])
+	*dst = [32]byte(p[:32])
 
-	return [32]byte(p[:32]), err
+	return err
 }
 
 // ZeroHash returns a copy of the zero subtree root at the given depth; the
@@ -410,12 +420,6 @@ func (a *Algorithm) ZeroHash(depth int) []byte {
 // ZeroHashes returns the zero subtree roots of all 65 depths.
 func (a *Algorithm) ZeroHashes() [65][32]byte {
 	return a.zero().hashes
-}
-
-// ZeroHashTable returns the zero subtree roots of all 65 depths without
-// copying them. The table is shared and must not be modified.
-func (a *Algorithm) ZeroHashTable() *[65][32]byte {
-	return &a.zero().hashes
 }
 
 // ZeroHashLevel returns the depth of the zero subtree with the given root.

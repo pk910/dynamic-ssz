@@ -123,7 +123,10 @@ func (n *Node) Show(maxDepth int) {
 
 // Get fetches a node with the given general index.
 func (n *Node) Get(index int) (*Node, error) {
-	if n == nil && index == 1 {
+	if n == nil && index <= 1 {
+		if index < 1 {
+			return nil, errors.New("Node not found in tree")
+		}
 		return nil, nil
 	}
 	found, err := n.node().get(index)
@@ -217,6 +220,9 @@ func (n *Node) IsEmpty() bool {
 // branch hash or the zero subtree root of a zero-padding node — or nil for a
 // branch that has not been hashed yet.
 func (n *Node) Value() []byte {
+	if n.n == nil {
+		return nil
+	}
 	switch {
 	case n.node().isEmpty && !n.node().hasValue:
 		return n.Algorithm().ZeroHash(int(n.node().depth))
