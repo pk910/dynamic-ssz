@@ -258,16 +258,19 @@ Any other hash is used through the algorithm of its function:
 alg, err := hasher.AlgorithmFor(fn)
 ```
 
-`AlgorithmFor` returns one algorithm for functions that run the same code and
-compute the same hash, and the built-in algorithm for a built-in function. The
-function has to be deterministic, and an algorithm is kept for the life of the
-process, so make it once per hash rather than per use. Finding it costs one
-call of the function, and 64 for a hash no algorithm computes yet: its zero
-subtree roots are computed then. Those of SHA-256 are computed when they are
-first needed, and a function that computes a hash an algorithm exists for
-shares its zero subtree roots. `hasher.NewHasherWithHashFn(fn)` and a `hasher.HasherPool` made
-around a function derive their algorithm from that function in the same way,
-per hasher or per pool.
+`AlgorithmFor` returns the same algorithm for the same function value, and the
+built-in algorithm for a built-in function. Two closures are two function
+values, also where they run the same code: each gets an algorithm of its own.
+The function has to be deterministic and safe for concurrent use; a function
+around one `hash.Hash` instance (`hasher.NativeHashWrapper`) is not, one made
+with `hasher.NativeHashWrapperFactory` is. An algorithm is kept for the life
+of the process, so make it once per hash and keep it. Making it costs one call
+of the function, and 64 for a hash no algorithm computes yet: its zero subtree
+roots are computed then. Those of SHA-256 are computed when they are first
+needed, and a function that computes a hash an algorithm exists for shares its
+zero subtree roots. `hasher.NewHasherWithHashFn(fn)` and a `hasher.HasherPool`
+made around a function derive an algorithm from that function per hasher or
+per pool, and pay those calls each time.
 
 Two algorithms are compatible when they compute the same hash, whatever
 computes it: `alg.Compatible(other)`. `hasher.SHA256` and
@@ -296,14 +299,20 @@ an algorithm: `sha256` is `hasher.SHA256`, and any other algorithm is given a
 name with `hasher.RegisterAlgorithm`, at package initialization:
 
 ```go
-var _ = hasher.RegisterAlgorithm("my-hash", alg)
+func init() {
+	if err := hasher.RegisterAlgorithm("my-hash", alg); err != nil {
+		panic(err)
+	}
+}
+
 var _ = sszutils.Annotate[BeaconState](`ssz-hash:"my-hash"`)
 
 root, err := ds.HashTreeRoot(state) // the hash of alg
 ```
 
-A name belongs to one algorithm. A type that declares a name no algorithm is
-registered under fails to hash with `ErrInvalidTag`.
+A name belongs to one hash: registering it for an algorithm of another hash
+fails, so check the error. Names are compared as written. A type that declares
+a name no algorithm is registered under fails to hash with `ErrInvalidTag`.
 
 The algorithm of a call is the first of these that is set:
 

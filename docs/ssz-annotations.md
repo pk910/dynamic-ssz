@@ -400,7 +400,12 @@ type BeaconState struct {
     // ...
 }
 
-var _ = hasher.RegisterAlgorithm("my-hash", alg)
+func init() {
+	if err := hasher.RegisterAlgorithm("my-hash", alg); err != nil {
+		panic(err)
+	}
+}
+
 var _ = sszutils.Annotate[BeaconState](`ssz-hash:"my-hash"`)
 ```
 
