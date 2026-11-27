@@ -30,12 +30,19 @@ func (e *Engine) oracleChecks(entry corpus.TypeEntry, ds *dynssz.DynSsz, instanc
 		report(IssueSizeMismatch, "size", fmt.Sprintf("SizeSSZ=%d len(MarshalSSZ)=%d", size, len(encoded)), encoded)
 	}
 
+	secondRoot, secondErr := ds.HashTreeRoot(instance, dynssz.WithHashAlgorithm(secondHash))
+
 	if e.reference {
 		detail, supported, ok := referenceCheck(instance, encoded, root)
 		if supported {
 			e.stats.ReferenceChecks.Add(1)
 			if !ok {
 				report(IssueReferenceMismatch, "reference", detail, encoded)
+			}
+			if secondErr == nil {
+				if detail, ok = referenceSecondHashCheck(instance, secondRoot); !ok {
+					report(IssueReferenceMismatch, "reference", detail, encoded)
+				}
 			}
 		} else {
 			e.stats.ReferenceSkips.Add(1)

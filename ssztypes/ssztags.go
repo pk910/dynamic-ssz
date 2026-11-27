@@ -942,3 +942,10 @@ func ParseTags(tag string) (typeHints []SszTypeHint, sizeHints []SszSizeHint, ma
 
 	return typeHints, sizeHints, maxSizeHints, nil
 }
+
+// ParseHashTag reads the ssz-hash annotation from a tag string: the name of
+// the hash algorithm a type declares for its own tree. A tag without one
+// declares no hash.
+func ParseHashTag(tag string) (string, bool) {
+	return reflect.StructTag(tag).Lookup("ssz-hash")
+}

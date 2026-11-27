@@ -119,6 +119,7 @@ type TypeDescriptor struct {
 	// Read only for the SSZ kinds that carry them.
 	Kind                   reflect.Kind              `json:"kind"`                    // Reflect kind of the type
 	WrapperFieldIndex      uint32                    `json:"wrapper_field,omitempty"` // Index of the wrapped value field in a wrapper struct (excluded fields may precede it)
+	HashAlgorithm          string                    `json:"hash,omitempty"`          // Name of the hash algorithm the type declares for its own tree (ssz-hash annotation)
 	MinSize                int64                     `json:"min_size,omitempty"`      // Smallest serialization of this type; 0 when it has no floor (see SetMinSize)
 	BitSize                int64                     `json:"bit_size,omitempty"`      // Bit size for bit vector types (ssz-bitsize tag)
 	UnionVariants          map[uint8]*TypeDescriptor `json:"union,omitempty"`         // Union variant types by index (for CompatibleUnion)
@@ -151,6 +152,27 @@ type DynFieldDescriptor struct {
 	Field        *FieldDescriptor `json:"field"`
 	HeaderOffset int64            `json:"offset"`
 	Index        int32            `json:"index"` // Index of the field in the struct
+}
+
+// RootIsChunk reports whether the hash tree root of the type is its
+// serialization padded to one chunk, so that no hash is computed for it: a
+// basic value, or a vector of basic values or a bitvector of up to 32 bytes.
+// The root of such a type is the same under every hash algorithm.
+func (td *TypeDescriptor) RootIsChunk() bool {
+	for td.SszType == SszTypeWrapperType && td.ElemDesc != nil {
+		td = td.ElemDesc
+	}
+	if td.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagHasSizeExpr) != 0 {
+		return false
+	}
+	switch td.SszType {
+	case SszBitvectorType:
+		return td.Size <= 32
+	case SszVectorType:
+		return td.Size <= 32 && td.ElemDesc != nil && td.ElemDesc.SszType.IsBasic()
+	default:
+		return td.SszType.IsBasic()
+	}
 }
 
 // SetMinSize records the smallest number of bytes a value of this type can

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
@@ -44,18 +45,22 @@ type Validator struct {
 	WithdrawableEpoch          uint64
 }
 
-// CachedValidator wraps a Validator with a cached hash tree root. Root is
-// excluded from the SSZ schema via ssz-type:"-", so the wrapper serializes to
-// exactly the same bytes as a bare Validator. A nil Root means the cache is
-// stale and the next hash recomputes it.
+// CachedValidator wraps a Validator with a cached hash tree root. Root and
+// RootAlgorithm are excluded from the SSZ schema via ssz-type:"-", so the
+// wrapper serializes to exactly the same bytes as a bare Validator. A nil
+// Root means the cache is stale and the next hash recomputes it.
+//
+// A root belongs to the hash algorithm that produced it, so RootAlgorithm
+// records it: a walker of another algorithm does not get the cached root.
 //
 // The wrapper is also transparent for merkleization: an SSZ container with a
 // single field merkleizes to that field's root, so contributing Data's root as
 // the wrapper's root yields the same registry root as a list of bare
 // validators.
 type CachedValidator struct {
-	Data Validator
-	Root *[32]byte `ssz-type:"-"`
+	Data          Validator
+	Root          *[32]byte         `ssz-type:"-"`
+	RootAlgorithm *hasher.Algorithm `ssz-type:"-"`
 }
 
 var _ = sszutils.Annotate[CachedValidator](`ssz-type:"wrapper"`)
@@ -67,7 +72,8 @@ var _ sszutils.DynamicHashRoot = (*CachedValidator)(nil)
 // hashed through the same walker and the resulting root persisted for
 // subsequent calls.
 func (v *CachedValidator) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
-	if v.Root != nil {
+	alg := hasher.AlgorithmOf(hh)
+	if v.Root != nil && v.RootAlgorithm != nil && alg.Compatible(v.RootAlgorithm) {
 		hh.PutBytes(v.Root[:])
 		return nil
 	}
@@ -94,6 +100,7 @@ func (v *CachedValidator) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszut
 	}
 
 	v.Root = &root
+	v.RootAlgorithm = alg
 
 	return nil
 }

@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"crypto/sha512"
 	"encoding/binary"
 	"errors"
 	"math/big"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
@@ -6463,4 +6465,55 @@ type UnknownView_Dyn struct {
 type UnknownView_Static struct {
 	A uint64
 	C uint32
+}
+
+// Types that declare the hash of their own tree with ssz-hash.
+
+// HashAnnotatedInner declares SHA256, which applies where it is the root.
+type HashAnnotatedInner struct {
+	X uint64
+	Y [48]byte
+}
+
+var _ = sszutils.Annotate[HashAnnotatedInner](`ssz-hash:"sha256"`)
+
+// SecondHash is a hash algorithm of its own for the tests, SHA-512/256,
+// registered under a name so that a type can declare it with ssz-hash.
+var SecondHash = func() *hasher.Algorithm {
+	alg, err := hasher.AlgorithmFor(func(dst, input []byte) error {
+		for i := 0; i+64 <= len(input); i += 64 {
+			sum := sha512.Sum512_256(input[i : i+64])
+			copy(dst[i/2:], sum[:])
+		}
+		return nil
+	})
+	if err == nil {
+		err = hasher.RegisterAlgorithm("sha512-256", alg)
+	}
+	if err != nil {
+		panic(err)
+	}
+	return alg
+}()
+
+// HashAnnotated declares the second hash for its tree, nested types included.
+type HashAnnotated struct {
+	A     uint64
+	B     []uint16 `ssz-max:"64"`
+	Inner HashAnnotatedInner
+}
+
+var _ = sszutils.Annotate[HashAnnotated](`ssz-hash:"sha512-256"`)
+
+// HashUnannotated has the layout of HashAnnotated and declares no hash.
+type HashUnannotated struct {
+	A     uint64
+	B     []uint16 `ssz-max:"64"`
+	Inner HashAnnotatedInner
+}
+
+var HashAnnotated_Payload = HashAnnotated{
+	A:     7,
+	B:     []uint16{1, 2, 3},
+	Inner: HashAnnotatedInner{X: 9, Y: [48]byte{1, 2, 3}},
 }

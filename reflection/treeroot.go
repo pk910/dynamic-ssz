@@ -147,8 +147,18 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 				return nil
 			}
 
-			if hasher, ok := sourceValuePtr.Interface().(sszutils.FastsszHashRoot); ok {
-				hashBytes, err := hasher.HashTreeRoot()
+			// The argument-less HashTreeRoot computes its root on its own,
+			// with SHA256. A custom type answers for its root whatever it
+			// does to produce it, and a root that takes no hashing is the
+			// same under every hash; any other type is walked instead
+			// under another hash.
+			rootHasher, ok := sourceValuePtr.Interface().(sszutils.FastsszHashRoot)
+			if ok && sourceType.SszType != ssztypes.SszCustomType && !sourceType.RootIsChunk() &&
+				!hasher.AlgorithmOf(hh).Compatible(hasher.SHA256) {
+				ok = false
+			}
+			if ok {
+				hashBytes, err := rootHasher.HashTreeRoot()
 				if err != nil {
 					return fmt.Errorf("failed HashTreeRoot: %w", err)
 				}

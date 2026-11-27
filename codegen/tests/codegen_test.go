@@ -1626,6 +1626,20 @@ func testCodegenPayloadByReflection(t *testing.T, payload any, specs map[string]
 		t.Fatalf("HashTreeRoot mismatch: ref=%x gen=%x", refHash, genHash)
 	}
 
+	// Under another hash the engines agree as well.
+	second := dynssz.WithHashAlgorithm(SecondHash)
+	genSecond, err := genDs.HashTreeRoot(payload, second)
+	if err != nil {
+		t.Fatalf("generated HashTreeRoot under the second hash failed: %v", err)
+	}
+	refSecond, err := refDs.HashTreeRoot(payload, second)
+	if err != nil {
+		t.Fatalf("reflection HashTreeRoot under the second hash failed: %v", err)
+	}
+	if refSecond != genSecond {
+		t.Fatalf("second hash HashTreeRoot mismatch: ref=%x gen=%x", refSecond, genSecond)
+	}
+
 	// Compare size
 	refSize, err := refDs.SizeSSZ(payload)
 	if err != nil {
@@ -7098,4 +7112,120 @@ func TestCodegenUnknownGeneratedView(t *testing.T) {
 			t.Errorf("own view MarshalSSZ = %x, %v; want %x", got, err, want)
 		}
 	})
+}
+
+// A type that declares its hash with ssz-hash is hashed with it where it is
+// the root, by both engines and by its generated argument-less methods; the
+// declaration of a nested type does not apply.
+func TestCodegenHashAnnotation(t *testing.T) {
+	engines := map[string]*dynssz.DynSsz{
+		"generated":  dynssz.NewDynSsz(nil),
+		"reflection": dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz()),
+	}
+	annotated := HashAnnotated_Payload
+	plain := HashUnannotated(annotated)
+
+	want := map[string][32]byte{}
+	for name, alg := range map[string]*hasher.Algorithm{"sha256": hasher.SHA256, "second": SecondHash} {
+		root, err := engines["reflection"].HashTreeRoot(&plain, dynssz.WithHashAlgorithm(alg))
+		if err != nil {
+			t.Fatalf("%s root of the unannotated twin: %v", name, err)
+		}
+		want[name] = root
+	}
+
+	for name, ds := range engines {
+		if root, err := ds.HashTreeRoot(&annotated); err != nil || root != want["second"] {
+			t.Errorf("%s: root %x, %v; want the root of the declared hash %x", name, root, err, want["second"])
+		}
+		if root, err := ds.HashTreeRoot(&annotated, dynssz.WithHashAlgorithm(hasher.SHA256)); err != nil || root != want["sha256"] {
+			t.Errorf("%s with the call option: root %x, %v; want the SHA-256 root %x", name, root, err, want["sha256"])
+		}
+		tree, err := ds.GetTree(&annotated)
+		if err != nil || [32]byte(tree.Hash()) != want["second"] {
+			t.Errorf("%s: GetTree root differs from the root of the declared hash: %v", name, err)
+		}
+	}
+
+	type rootMethods interface {
+		HashTreeRoot() ([32]byte, error)
+		HashTreeRootDyn(ds sszutils.DynamicSpecs) ([32]byte, error)
+	}
+	generated, ok := any(&annotated).(rootMethods)
+	if !ok {
+		t.Skip("no generated code present")
+	}
+	if root, err := generated.HashTreeRoot(); err != nil || root != want["second"] {
+		t.Errorf("generated HashTreeRoot(): root %x, %v; want the root of the declared hash %x", root, err, want["second"])
+	}
+	if root, err := generated.HashTreeRootDyn(engines["generated"]); err != nil || root != want["second"] {
+		t.Errorf("generated HashTreeRootDyn(): root %x, %v; want the root of the declared hash %x", root, err, want["second"])
+	}
+
+	// A type that declares SHA256, or none, keeps its SHA-256 methods.
+	inner := annotated.Inner
+	innerWant, err := engines["reflection"].HashTreeRoot(&inner, dynssz.WithHashAlgorithm(hasher.SHA256))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		value any
+		want  [32]byte
+	}{
+		"a SHA256 type":       {&inner, innerWant},
+		"an unannotated type": {&plain, want["sha256"]},
+	} {
+		methods, hasMethods := tc.value.(rootMethods)
+		if !hasMethods {
+			t.Fatalf("%s has no generated root methods", name)
+		}
+		if root, rootErr := methods.HashTreeRoot(); rootErr != nil || root != tc.want {
+			t.Errorf("generated HashTreeRoot() of %s: root %x, %v; want %x", name, root, rootErr, tc.want)
+		}
+	}
+}
+
+// An argument-less HashTreeRoot method computes its root with sha256. Under
+// another hash both engines walk a child that has a structure, and still call
+// the method of a custom type, which answers for its root itself.
+func TestCodegenLegacyHashRootUnderAnotherHash(t *testing.T) {
+	second := dynssz.WithHashAlgorithm(SecondHash)
+	engines := map[string]*dynssz.DynSsz{
+		"generated":  dynssz.NewDynSsz(nil),
+		"reflection": dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz()),
+	}
+
+	// A structured child is walked.
+	holder := ForeignHashWithHolder_Payload
+	var chunks [64]byte
+	binary.LittleEndian.PutUint64(chunks[:], holder.F.A)
+	chunks[32] = holder.Y
+	want, err := SecondHash.HashPair(&chunks)
+	if err != nil {
+		t.Fatalf("HashPair: %v", err)
+	}
+	for name, ds := range engines {
+		root, rootErr := ds.HashTreeRoot(&holder, second)
+		if rootErr != nil || root != want {
+			t.Errorf("%s structured child: root %x, %v; want %x", name, root, rootErr, want)
+		}
+	}
+
+	// A custom type is hashed through its method, declared size or not.
+	for name, payload := range map[string]any{
+		"sized custom type":   &BasicSizedCustomHolder_Payload,
+		"unsized custom type": &CustomTypes1_Payload,
+	} {
+		roots := make([][32]byte, 0, len(engines))
+		for engine, ds := range engines {
+			root, rootErr := ds.HashTreeRoot(payload, second)
+			if rootErr != nil {
+				t.Errorf("%s %s: %v", engine, name, rootErr)
+			}
+			roots = append(roots, root)
+		}
+		if roots[0] != roots[1] {
+			t.Errorf("%s: the engines disagree: %x != %x", name, roots[0], roots[1])
+		}
+	}
 }
