@@ -11,8 +11,11 @@ import (
 	"math"
 	"math/big"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
@@ -732,7 +735,7 @@ func TestTypeCache_HintedCacheManagement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if len(cache.hintedDescriptors[listKey]) == 0 {
+	if cache.hintedLen(listKey) == 0 {
 		t.Fatal("expected a hinted variant for []uint64 with ssz-max")
 	}
 
@@ -747,13 +750,21 @@ func TestTypeCache_HintedCacheManagement(t *testing.T) {
 	}
 
 	cache.RemoveType(listType)
-	if len(cache.hintedDescriptors[listKey]) != 0 {
+	if cache.hintedLen(listKey) != 0 {
 		t.Error("RemoveType left the hinted variants in place")
 	}
 
+	cache.RemoveType(outerType)
+	cache.RemoveType(reflect.TypeOf(hintedInner{}))
+	if _, err = cache.GetTypeDescriptor(outerType, nil, nil, nil); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	if cache.hintedLen(listKey) == 0 {
+		t.Fatal("the rebuild published no hinted variant")
+	}
 	cache.RemoveAllTypes()
-	if len(cache.hintedDescriptors) != 0 || len(cache.GetAllTypes()) != 0 {
-		t.Fatalf("RemoveAllTypes left %d hinted keys and %d listed types", len(cache.hintedDescriptors), len(cache.GetAllTypes()))
+	if len(cache.hinted) != 0 || len(cache.GetAllTypes()) != 0 {
+		t.Fatalf("RemoveAllTypes left %d hinted keys and %d listed types", len(cache.hinted), len(cache.GetAllTypes()))
 	}
 
 	second, err := cache.GetTypeDescriptor(outerType, nil, nil, nil)
@@ -875,21 +886,21 @@ func TestTypeCache_GetCompatFlag(t *testing.T) {
 	cache := NewTypeCache(ds)
 
 	// Test with empty compat flags
-	flag := cache.getCompatFlag(reflect.TypeOf(uint32(0)), reflect.TypeOf(uint32(0)))
+	flag := newBuilder(cache).getCompatFlag(reflect.TypeOf(uint32(0)), reflect.TypeOf(uint32(0)))
 	if flag != 0 {
 		t.Errorf("Expected 0 compat flag for uint32, got %d", flag)
 	}
 
 	// Test with pointer type
 	ptrType := reflect.TypeOf((*uint32)(nil))
-	flag = cache.getCompatFlag(ptrType, ptrType)
+	flag = newBuilder(cache).getCompatFlag(ptrType, ptrType)
 	if flag != 0 {
 		t.Errorf("Expected 0 compat flag for pointer type, got %d", flag)
 	}
 
 	// Add a compat flag and test
 	cache.CompatFlags["uint32"] = SszCompatFlagFastsszBufferMarshaler
-	flag = cache.getCompatFlag(reflect.TypeOf(uint32(0)), reflect.TypeOf(uint32(0)))
+	flag = newBuilder(cache).getCompatFlag(reflect.TypeOf(uint32(0)), reflect.TypeOf(uint32(0)))
 	if flag != SszCompatFlagFastsszBufferMarshaler {
 		t.Errorf("Expected SszCompatFlagMarshalSSZTo, got %d", flag)
 	}
@@ -5415,43 +5426,6 @@ func TestNewTypeCacheNilSpecs(t *testing.T) {
 	}
 }
 
-func TestWrapperTypeCompatible(t *testing.T) {
-	type myByte byte
-	type myUint64 uint64
-	type myString string
-	type structA struct{ A uint64 }
-	type structB struct{ B uint32 }
-
-	cases := []struct {
-		name             string
-		actual, expected reflect.Type
-		want             bool
-	}{
-		{"identical", reflect.TypeOf([]byte(nil)), reflect.TypeOf([]byte(nil)), true},
-		{"namedScalar", reflect.TypeOf(myUint64(0)), reflect.TypeOf(uint64(0)), true},
-		{"namedString", reflect.TypeOf(myString("")), reflect.TypeOf(""), true},
-		{"scalarKindMismatch", reflect.TypeOf(int32(0)), reflect.TypeOf(uint64(0)), false},
-		{"sliceVsString", reflect.TypeOf(""), reflect.TypeOf([]byte(nil)), false},
-		{"sliceNamedElem", reflect.TypeOf([]myByte(nil)), reflect.TypeOf([]byte(nil)), true},
-		{"sliceElemMismatch", reflect.TypeOf([]uint32(nil)), reflect.TypeOf([]byte(nil)), false},
-		{"ptrVsValue", reflect.TypeOf((*uint64)(nil)), reflect.TypeOf(uint64(0)), false},
-		{"ptrNamedElem", reflect.TypeOf((*myUint64)(nil)), reflect.TypeOf((*uint64)(nil)), true},
-		{"arraySameLen", reflect.TypeOf([8]myByte{}), reflect.TypeOf([8]byte{}), true},
-		{"arrayLenMismatch", reflect.TypeOf([16]byte{}), reflect.TypeOf([8]byte{}), false},
-		{"arrayElemMismatch", reflect.TypeOf([8]uint16{}), reflect.TypeOf([8]byte{}), false},
-		// Composite kinds with matching Kind but different layout must not match.
-		{"structMismatch", reflect.TypeOf(structA{}), reflect.TypeOf(structB{}), false},
-		{"sameStruct", reflect.TypeOf(structA{}), reflect.TypeOf(structA{}), true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := wrapperTypeCompatible(tc.actual, tc.expected); got != tc.want {
-				t.Errorf("wrapperTypeCompatible(%v, %v) = %v, want %v", tc.actual, tc.expected, got, tc.want)
-			}
-		})
-	}
-}
-
 type wrapDescBytes struct {
 	Data []byte `ssz-max:"32"`
 }
@@ -5728,24 +5702,28 @@ type staticNoSizer struct{}
 
 func TestDelegatedStaticSize(t *testing.T) {
 	tc := NewTypeCache(nil)
+	// A build holds buildMu when it sizes a type; the sizer runs with it
+	// released and gives it back.
+	tc.buildMu.Lock()
+	defer tc.buildMu.Unlock()
 
-	sz, sized, err := tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticDynSizer{}))
+	sz, sized, err := newBuilder(tc).delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticDynSizer{}))
 	if err != nil || !sized || sz != 8 {
 		t.Errorf("dynssz sizer: size=%d sized=%v err=%v; want 8", sz, sized, err)
 	}
 
-	sz, sized, err = tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticFastSizer{}))
+	sz, sized, err = newBuilder(tc).delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticFastSizer{}))
 	if err != nil || !sized || sz != 16 {
 		t.Errorf("fastssz sizer: size=%d sized=%v err=%v; want 16", sz, sized, err)
 	}
 
-	if _, _, err = tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticNoSizer{})); err == nil {
+	if _, _, err = newBuilder(tc).delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticNoSizer{})); err == nil {
 		t.Error("no sizer: expected error")
 	}
 
 	// A sizer that refuses states no size, which describes the type without a
 	// fixed one rather than refusing the type.
-	if sz, sized, err := tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(delegatedNegSize{})); err != nil || sized || sz != 0 {
+	if sz, sized, err := newBuilder(tc).delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(delegatedNegSize{})); err != nil || sized || sz != 0 {
 		t.Errorf("refusing sizer: size=%d sized=%v err=%v; want no size and no error", sz, sized, err)
 	}
 }
@@ -6067,9 +6045,9 @@ func TestGetTypeHashRecursive(t *testing.T) {
 }
 
 // purgeFailA/purgeFailC form a legal recursive cycle with a later invalid
-// sibling, so the top-level build fails after cycle members were cached. The
-// two differently-hinted references to the same list type leave two hinted
-// variants under one cache key, so the purge walks both branches.
+// sibling, so the top-level build fails after cycle members completed. The
+// two differently-hinted references to the same list type are two hinted
+// variants under one cache key.
 type purgeFailA struct {
 	F1  []purgeFailC `ssz-max:"4"`
 	F2  []purgeFailC `ssz-max:"8"`
@@ -6080,20 +6058,961 @@ type purgeFailC struct {
 	F3 *purgeFailA
 }
 
-// A failed recursive build must leave neither plain descriptors nor hinted
-// variants behind: everything cached during the build was built against an
-// abandoned graph.
-func TestFailedRecursiveBuildPurgesCaches(t *testing.T) {
+// hasPlain reports whether a hint-free descriptor of key is published.
+func (tc *TypeCache) hasPlain(key typeKey) bool {
+	return tc.lookupPublished(key.runtime, key.schema) != nil
+}
+
+// hintedLen returns the number of hinted variants published for key.
+func (tc *TypeCache) hintedLen(key typeKey) int {
+	tc.buildMu.Lock()
+	defer tc.buildMu.Unlock()
+
+	return len(tc.hinted[key])
+}
+
+// plainCount returns the number of published hint-free descriptors, views
+// included.
+func (tc *TypeCache) plainCount() int {
+	n := 0
+	tc.published.Range(func(_, e any) bool {
+		entry, ok := e.(*typeEntry)
+		if !ok {
+			return true
+		}
+		if entry.plain.Load() != nil {
+			n++
+		}
+		entry.views.Range(func(_, _ any) bool {
+			n++
+			return true
+		})
+		return true
+	})
+	return n
+}
+
+type (
+	keptLeaf struct{ V uint16 }
+	keptFail struct {
+		Leaf keptLeaf
+		Kids []*keptFail `ssz-max:"4"`
+		Bad  map[string]int
+	}
+)
+
+// A failed recursive build publishes neither plain descriptors nor hinted
+// variants that completed inside the open cycle: they reference the cycle
+// head, which never completes. What completed before the cycle opened stays.
+func TestFailedRecursiveBuildPublishesNoCycleMember(t *testing.T) {
 	cache := NewTypeCache(&dummyDynamicSpecs{})
 
 	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(&purgeFailA{}), nil, nil, nil); err == nil {
 		t.Fatal("expected error for map field")
 	}
-	if n := len(cache.descriptors); n != 0 {
-		t.Errorf("plain cache should be empty after failed recursive build, has %d entries", n)
+	if n := cache.plainCount(); n != 0 {
+		t.Errorf("%d plain descriptors published by the failed recursive build", n)
 	}
-	if n := len(cache.hintedDescriptors); n != 0 {
-		t.Errorf("hinted cache should be empty after failed recursive build, has %d entries", n)
+	if n := len(cache.hinted); n != 0 {
+		t.Errorf("%d hinted keys published by the failed recursive build", n)
+	}
+
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(&keptFail{}), nil, nil, nil); err == nil {
+		t.Fatal("expected error for map field")
+	}
+	leafType := reflect.TypeOf(keptLeaf{})
+	if cache.lookupPublished(leafType, leafType) == nil {
+		t.Error("the descriptor completed before the cycle opened is not published")
+	}
+	if n := len(cache.hinted); n != 0 || cache.hasPlain(typeKey{runtime: reflect.TypeOf(&keptFail{}), schema: reflect.TypeOf(&keptFail{})}) {
+		t.Errorf("the failed cycle published its head or %d hinted keys", n)
+	}
+}
+
+type (
+	publishNested  struct{ V uint32 }
+	publishFailing struct {
+		N publishNested
+		M map[string]uint32
+	}
+)
+
+// A build that fails keeps the descriptors it completed and published; the
+// failing type itself is not cached.
+func TestFailedBuildKeepsCompletedDescriptors(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	nested, failing := reflect.TypeOf(publishNested{}), reflect.TypeOf(publishFailing{})
+
+	if _, err := cache.GetTypeDescriptor(failing, nil, nil, nil); err == nil {
+		t.Fatal("expected error for map field")
+	}
+	if cache.hasPlain(typeKey{runtime: failing, schema: failing}) {
+		t.Error("the failing type is published")
+	}
+	published := cache.lookupPublished(nested, nested)
+	if published == nil || published.Size != 4 {
+		t.Fatalf("nested type after the failed build: %+v", published)
+	}
+	if desc, err := cache.GetTypeDescriptor(nested, nil, nil, nil); err != nil || desc != published {
+		t.Errorf("nested type alone: %p, %v, want %p", desc, err, published)
+	}
+}
+
+// stepSizedOf is a static custom type whose sizer counts its calls and runs
+// stepHook, so a test can act while a build has buildMu released. T tells the
+// instantiations apart.
+type stepSizedOf[T any] struct{ V uint32 }
+
+type (
+	stepSized = stepSizedOf[uint8]
+	stepOther = stepSizedOf[uint16]
+)
+
+var (
+	_ = sszutils.Annotate[stepSized](`ssz-type:"custom" ssz-static:"true"`)
+	_ = sszutils.Annotate[stepOther](`ssz-type:"custom" ssz-static:"true"`)
+)
+
+var (
+	stepCalls int
+	stepHook  func()
+)
+
+func (s *stepSizedOf[T]) SizeSSZDyn(sszutils.DynamicSpecs) int {
+	stepCalls++
+	if hook := stepHook; hook != nil {
+		stepHook = nil
+		hook()
+	}
+	return 4
+}
+
+func (s *stepSizedOf[T]) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, 0, 0, 0, 0), nil
+}
+
+func (s *stepSizedOf[T]) UnmarshalSSZDyn(sszutils.DynamicSpecs, []byte) error { return nil }
+
+func (s *stepSizedOf[T]) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutBytes(make([]byte, 32))
+	return nil
+}
+
+type (
+	stepLeaf   struct{ V uint64 }
+	stepShared struct{ S stepOther }
+	stepRoot   struct {
+		Leaf   stepLeaf
+		Parked stepSized
+		Shared stepShared
+	}
+)
+
+// A descriptor is published as soon as it is complete, and a build that
+// released buildMu uses what was published meanwhile.
+func TestBuildPublishesCompletedDescriptors(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	leafType, sharedType, rootType := reflect.TypeOf(stepLeaf{}), reflect.TypeOf(stepShared{}), reflect.TypeOf(stepRoot{})
+
+	var leaf, shared *TypeDescriptor
+	stepCalls = 0
+	stepHook = func() {
+		leaf = cache.lookupPublished(leafType, leafType)
+		if cache.lookupPublished(rootType, rootType) != nil {
+			t.Error("the root is published while it is under construction")
+		}
+		var err error
+		if shared, err = cache.GetTypeDescriptor(sharedType, nil, nil, nil); err != nil {
+			t.Error(err)
+		}
+	}
+	root, err := cache.GetTypeDescriptor(rootType, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if leaf == nil || root.ContainerDesc.Fields[0].Type != leaf {
+		t.Error("the leaf was not published before the root completed")
+	}
+	if shared == nil || root.ContainerDesc.Fields[2].Type != shared {
+		t.Error("the root does not reference the descriptor published while it waited")
+	}
+	// One call for the root's field, one inside the build the hook started:
+	// the root does not build the shared type again.
+	if stepCalls != 2 {
+		t.Errorf("sizer ran %d times, want 2", stepCalls)
+	}
+}
+
+type (
+	stepNode struct {
+		Before stepLeaf
+		Kids   []*stepNode `ssz-max:"4"`
+		Ref    stepRef
+		Parked stepSized
+	}
+	stepRef struct {
+		N []*stepNode `ssz-max:"4"`
+	}
+)
+
+// Descriptors that reference a type still under construction are published
+// with it, not before.
+func TestBuildHoldsOpenCycle(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	leafType, refType, nodeType := reflect.TypeOf(stepLeaf{}), reflect.TypeOf(stepRef{}), reflect.TypeOf(&stepNode{})
+
+	ran := false
+	stepHook = func() {
+		ran = true
+		if cache.lookupPublished(leafType, leafType) == nil {
+			t.Error("a descriptor completed before the cycle opened is not published")
+		}
+		if cache.lookupPublished(refType, refType) != nil || len(cache.hinted) != 0 {
+			t.Error("a descriptor referencing the open cycle head is published")
+		}
+	}
+	node, err := cache.GetTypeDescriptor(nodeType, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ran {
+		t.Fatal("the sizer hook did not run")
+	}
+
+	ref := cache.lookupPublished(refType, refType)
+	if ref == nil || node.ContainerDesc.Fields[2].Type != ref {
+		t.Fatal("the cycle head does not reference the published descriptor of its member")
+	}
+	kids := node.ContainerDesc.Fields[1].Type
+	if kids.ElemDesc != node || ref.ContainerDesc.Fields[0].Type != kids {
+		t.Error("the cycle does not close on the published head")
+	}
+	leaf := node.ContainerDesc.Fields[0].Type
+	if node.SszTypeFlags&ref.SszTypeFlags&SszTypeFlagRecursionMember == 0 || leaf.SszTypeFlags&SszTypeFlagRecursionMember != 0 {
+		t.Errorf("recursion members: node %v, ref %v, leaf %v", node.SszTypeFlags, ref.SszTypeFlags, leaf.SszTypeFlags)
+	}
+	if node.SszTypeFlags&SszTypeFlagSizerWidth == 0 || kids.SszTypeFlags&SszTypeFlagSizerWidth == 0 {
+		t.Errorf("flags of the cycle are not re-derived: node %v, kids %v", node.SszTypeFlags, kids.SszTypeFlags)
+	}
+}
+
+type (
+	stepMid    struct{ S stepSized }
+	stepHolder struct {
+		L []stepMid `ssz-max:"4"`
+	}
+	stepContested struct {
+		LA []stepMid `ssz-max:"4"`
+		LB []stepMid `ssz-max:"4"`
+		A  stepMid
+		B  stepMid
+	}
+)
+
+// A build whose types another build publishes while it has them under
+// construction ends up referencing the published descriptors only.
+func TestBuildYieldsToPublishedDescriptors(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	var holder *TypeDescriptor
+	stepHook = func() {
+		var err error
+		if holder, err = cache.GetTypeDescriptor(reflect.TypeOf(stepHolder{}), nil, nil, nil); err != nil {
+			t.Error(err)
+		}
+	}
+	root, err := cache.GetTypeDescriptor(reflect.TypeOf(stepContested{}), nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if holder == nil {
+		t.Fatal("the sizer hook did not run")
+	}
+
+	list := holder.ContainerDesc.Fields[0].Type
+	fields := root.ContainerDesc.Fields
+	if fields[0].Type != list || fields[1].Type != list {
+		t.Error("the root does not reference the published list descriptor")
+	}
+	if fields[2].Type != list.ElemDesc || fields[3].Type != list.ElemDesc {
+		t.Error("the root does not reference the published element descriptor")
+	}
+	if n := cache.hintedLen(typeKey{runtime: list.Type, schema: list.Type}); n != 1 {
+		t.Errorf("%d list variants published, want 1", n)
+	}
+}
+
+type (
+	stepUnionVariants struct {
+		A stepMid
+		B uint64
+	}
+	stepUnion struct {
+		Variant uint8
+		Data    any
+	}
+	stepCycle struct {
+		Kids []*stepCycle `ssz-max:"4"`
+		Mids []stepMid    `ssz-max:"8"`
+		Mid  stepMid
+		U    stepUnion `ssz-type:"compatible-union"`
+	}
+)
+
+func (u *stepUnion) GetDescriptorType() reflect.Type { return reflect.TypeOf(stepUnionVariants{}) }
+
+// The members of a cycle are published together. Where another build
+// published one of the types they reference meanwhile, every reference to the
+// build's own copy is redirected: list element, container field and union
+// variant.
+func TestCyclePublicationRedirectsReferences(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	var mid *TypeDescriptor
+	stepHook = func() {
+		var err error
+		if mid, err = cache.GetTypeDescriptor(reflect.TypeOf(stepMid{}), nil, nil, nil); err != nil {
+			t.Error(err)
+		}
+	}
+	root, err := cache.GetTypeDescriptor(reflect.TypeOf(&stepCycle{}), nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mid == nil {
+		t.Fatal("the sizer hook did not run")
+	}
+
+	fields := root.ContainerDesc.Fields
+	if fields[0].Type.ElemDesc != root {
+		t.Error("the cycle does not close on the published head")
+	}
+	if fields[1].Type.ElemDesc != mid {
+		t.Error("list element references the build's own copy")
+	}
+	if fields[2].Type != mid {
+		t.Error("container field references the build's own copy")
+	}
+	if fields[3].Type.UnionVariants[1] != mid {
+		t.Error("union variant references the build's own copy")
+	}
+	if mid.ContainerDesc.Fields[0].Type != cache.lookupPublished(reflect.TypeOf(stepSized{}), reflect.TypeOf(stepSized{})) {
+		t.Error("the published type references an unpublished descriptor")
+	}
+}
+
+type (
+	twiceCycle struct {
+		Kids []*twiceCycle `ssz-max:"3"`
+		A    twiceMember
+		B    twiceMember
+	}
+	twiceMember struct {
+		Back []*twiceCycle `ssz-max:"2"`
+	}
+)
+
+// A descriptor completed inside an open cycle is not published yet, so a
+// second reference to its type before the head closes is served by the
+// build's own record of it: the type is built once.
+func TestOpenCycleReusesCompletedDescriptor(t *testing.T) {
+	cache := NewTypeCache(nil)
+	memberType := reflect.TypeOf(twiceMember{})
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(&twiceCycle{}), nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := desc.ContainerDesc.Fields
+	if fields[1].Type != fields[2].Type {
+		t.Error("the cycle member has two descriptors")
+	}
+	if fields[1].Type != cache.lookupPublished(memberType, memberType) {
+		t.Error("the cycle head does not reference the published descriptor of its member")
+	}
+}
+
+type (
+	nestA struct {
+		Bs     []*nestB `ssz-max:"4"`
+		Parked stepSized
+	}
+	nestB struct {
+		As []*nestA `ssz-max:"4"`
+		Cs []*nestC `ssz-max:"4"`
+	}
+	nestC struct {
+		Bs []*nestB `ssz-max:"4"`
+	}
+)
+
+// An inner cycle that closes inside an outer one is held with it: its members
+// reference the outer head, and their flags are re-derived with the head's.
+func TestNestedCycleHeldUntilOuterHead(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	bType, cType := reflect.TypeOf(&nestB{}), reflect.TypeOf(&nestC{})
+
+	ran := false
+	stepHook = func() {
+		ran = true
+		if cache.lookupPublished(bType, bType) != nil || cache.lookupPublished(cType, cType) != nil || len(cache.hinted) != 0 {
+			t.Error("a member of the outer cycle is published while its head is open")
+		}
+	}
+	a, err := cache.GetTypeDescriptor(reflect.TypeOf(&nestA{}), nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ran {
+		t.Fatal("the sizer hook did not run")
+	}
+
+	b, c := cache.lookupPublished(bType, bType), cache.lookupPublished(cType, cType)
+	if b == nil || c == nil {
+		t.Fatal("the cycle members are not published")
+	}
+	listOfA := b.ContainerDesc.Fields[0].Type
+	if a.ContainerDesc.Fields[0].Type.ElemDesc != b || listOfA.ElemDesc != a || c.ContainerDesc.Fields[0].Type.ElemDesc != b {
+		t.Error("the cycles do not close on the published descriptors")
+	}
+	if listOfA.SszTypeFlags&SszTypeFlagSizerWidth == 0 || c.SszTypeFlags&SszTypeFlagSizerWidth == 0 {
+		t.Errorf("flags of the inner cycle are not re-derived: []*nestA %v, nestC %v", listOfA.SszTypeFlags, c.SszTypeFlags)
+	}
+}
+
+type (
+	afterLeaf struct{ V uint16 }
+	afterSelf struct {
+		Kids []*afterSelf `ssz-max:"4"`
+	}
+	afterMid struct {
+		Leaf   afterLeaf
+		Parked stepSized
+	}
+	afterRoot struct {
+		C   *afterSelf
+		Mid afterMid
+	}
+)
+
+// Once a cycle has closed, descriptors completed after it are published on
+// completion again.
+func TestBuildPublishesAfterCycleClosed(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	leafType, selfType := reflect.TypeOf(afterLeaf{}), reflect.TypeOf(&afterSelf{})
+
+	ran := false
+	stepHook = func() {
+		ran = true
+		if cache.lookupPublished(selfType, selfType) == nil {
+			t.Error("the closed cycle is not published")
+		}
+		if cache.lookupPublished(leafType, leafType) == nil {
+			t.Error("a descriptor completed after the cycle closed is not published")
+		}
+	}
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(afterRoot{}), nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !ran {
+		t.Fatal("the sizer hook did not run")
+	}
+}
+
+type (
+	hintWrap struct {
+		L []stepMid `ssz-max:"4"`
+	}
+	hintCycle struct {
+		Kids []*hintCycle `ssz-max:"4"`
+		Wrap hintWrap
+	}
+)
+
+// A hinted variant another build publishes while this one holds its own copy
+// inside an open cycle is replaced in the descriptor that references it.
+func TestHintedVariantYieldsInsideCycle(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	var holder *TypeDescriptor
+	stepHook = func() {
+		var err error
+		if holder, err = cache.GetTypeDescriptor(reflect.TypeOf(stepHolder{}), nil, nil, nil); err != nil {
+			t.Error(err)
+		}
+	}
+	root, err := cache.GetTypeDescriptor(reflect.TypeOf(&hintCycle{}), nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if holder == nil {
+		t.Fatal("the sizer hook did not run")
+	}
+
+	list := holder.ContainerDesc.Fields[0].Type
+	if root.ContainerDesc.Fields[1].Type.ContainerDesc.Fields[0].Type != list {
+		t.Error("the cycle member references the build's own copy of the hinted list")
+	}
+	if n := cache.hintedLen(typeKey{runtime: list.Type, schema: list.Type}); n != 1 {
+		t.Errorf("%d list variants published, want 1", n)
+	}
+}
+
+// A lock-free reader that picks up a cycle head sees its references already
+// redirected: the race detector reports a redirect made after the head is
+// stored, and a reader that saw the build's own copy fails the comparison.
+func TestPublishRedirectsBeforeStoring(t *testing.T) {
+	headType := reflect.TypeOf(&stepCycle{})
+	for range 100 {
+		cache := NewTypeCache(&dummyDynamicSpecs{})
+		stepHook = func() {
+			if _, err := cache.GetTypeDescriptor(reflect.TypeOf(stepMid{}), nil, nil, nil); err != nil {
+				t.Error(err)
+			}
+		}
+
+		var seen [3]*TypeDescriptor
+		var failed atomic.Bool
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for !failed.Load() {
+				if head := cache.lookupPublished(headType, headType); head != nil {
+					fields := head.ContainerDesc.Fields
+					seen = [3]*TypeDescriptor{fields[1].Type.ElemDesc, fields[2].Type, fields[3].Type.UnionVariants[1]}
+					return
+				}
+				runtime.Gosched()
+			}
+		}()
+		root, err := cache.GetTypeDescriptor(headType, nil, nil, nil)
+		if err != nil {
+			failed.Store(true)
+			t.Fatal(err)
+		}
+		<-done
+
+		mid := root.ContainerDesc.Fields[2].Type
+		if seen != [3]*TypeDescriptor{mid, mid, mid} {
+			t.Fatal("a reader saw a reference to the build's own copy")
+		}
+	}
+}
+
+// flipSized is a static custom type whose sizer returns flipSize and runs
+// stepHook.
+type flipSized struct{ V uint32 }
+
+var _ = sszutils.Annotate[flipSized](`ssz-type:"custom" ssz-static:"true"`)
+
+var flipSize int
+
+func (s *flipSized) SizeSSZDyn(sszutils.DynamicSpecs) int {
+	size := flipSize
+	if hook := stepHook; hook != nil {
+		stepHook = nil
+		hook()
+	}
+	return size
+}
+
+func (s *flipSized) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, 0, 0, 0, 0), nil
+}
+
+func (s *flipSized) UnmarshalSSZDyn(sszutils.DynamicSpecs, []byte) error { return nil }
+
+func (s *flipSized) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutBytes(make([]byte, 32))
+	return nil
+}
+
+type (
+	flipFlat struct {
+		S flipSized
+		T uint32
+	}
+	flipCycle struct {
+		Kids []*flipCycle `ssz-max:"4"`
+		S    flipSized
+		More []uint8 `ssz-max:"8"`
+	}
+)
+
+// A type whose sizer returns one size to this build and another to a build
+// that publishes first cannot be laid out consistently: the build fails and
+// publishes nothing that was laid out with its own size.
+func TestSizerReturningDifferentSizesFailsBuild(t *testing.T) {
+	sizedType := reflect.TypeOf(flipSized{})
+	for _, root := range []reflect.Type{reflect.TypeOf(flipFlat{}), reflect.TypeOf(&flipCycle{})} {
+		cache := NewTypeCache(&dummyDynamicSpecs{})
+		flipSize = 4
+		stepHook = func() {
+			flipSize = 8
+			if _, err := cache.GetTypeDescriptor(sizedType, nil, nil, nil); err != nil {
+				t.Error(err)
+			}
+		}
+		_, err := cache.GetTypeDescriptor(root, nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "same size on every call") {
+			t.Errorf("%v: got %v, want a size mismatch error", root, err)
+		}
+		if cache.hasPlain(typeKey{runtime: root, schema: root}) || len(cache.hinted) != 0 {
+			t.Errorf("%v: the failed build published its root or a hinted variant", root)
+		}
+
+		// With a sizer that agrees with what is published the type describes.
+		desc, err := cache.GetTypeDescriptor(root, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("%v: %v", root, err)
+		}
+		for _, field := range desc.ContainerDesc.Fields {
+			if field.Type.Type == sizedType && field.Type.Size != 8 {
+				t.Errorf("%v: field size %d, want 8", root, field.Type.Size)
+			}
+		}
+	}
+}
+
+// lockProbe runs inside the sizers below.
+var lockProbe func()
+
+type (
+	lockDynSizer  struct{}
+	lockFastSizer struct{}
+	lockViewSizer struct{}
+)
+
+func (lockDynSizer) SizeSSZDyn(sszutils.DynamicSpecs) int {
+	lockProbe()
+	return 8
+}
+
+func (lockFastSizer) SizeSSZ() int {
+	lockProbe()
+	return 8
+}
+func (lockFastSizer) MarshalSSZ() ([]byte, error)           { return nil, nil }
+func (lockFastSizer) MarshalSSZTo(b []byte) ([]byte, error) { return b, nil }
+
+func (lockViewSizer) SizeSSZDynView(any) func(sszutils.DynamicSpecs) int {
+	return func(sszutils.DynamicSpecs) int {
+		lockProbe()
+		return 8
+	}
+}
+
+// Every kind of sizer runs with buildMu released, so it may call back into
+// the cache, and the build holds the lock again afterwards.
+func TestSizersRunWithoutBuildLock(t *testing.T) {
+	tc := NewTypeCache(nil)
+	tc.buildMu.Lock()
+	defer tc.buildMu.Unlock()
+
+	released := false
+	lockProbe = func() {
+		if tc.buildMu.TryLock() {
+			released = true
+			tc.buildMu.Unlock()
+		}
+	}
+	var view any = struct{}{}
+	tests := []struct {
+		name string
+		desc *TypeDescriptor
+		typ  reflect.Type
+	}{
+		{"dynssz sizer", &TypeDescriptor{}, reflect.TypeOf(lockDynSizer{})},
+		{"fastssz sizer", &TypeDescriptor{}, reflect.TypeOf(lockFastSizer{})},
+		{"view sizer", &TypeDescriptor{GoTypeFlags: GoTypeFlagIsView, CodegenInfo: &view}, reflect.TypeOf(lockViewSizer{})},
+	}
+	for _, test := range tests {
+		released = false
+		size, sized, err := newBuilder(tc).delegatedStaticSize(test.desc, test.typ)
+		if err != nil || !sized || size != 8 {
+			t.Errorf("%s: size=%d sized=%v err=%v", test.name, size, sized, err)
+		}
+		if !released {
+			t.Errorf("%s: ran with buildMu held", test.name)
+		}
+		if tc.buildMu.TryLock() {
+			tc.buildMu.Unlock()
+			t.Fatalf("%s: buildMu is not held after the sizer returned", test.name)
+		}
+	}
+}
+
+type (
+	listedRun struct {
+		A uint64
+		B uint32
+	}
+	listedView struct {
+		A uint64
+	}
+)
+
+// GetAllTypes lists a view pair, and lists a type that has both a hint-free
+// descriptor and hinted variants once.
+func TestGetAllTypesListsEachPairOnce(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	runType, viewType := reflect.TypeOf(listedRun{}), reflect.TypeOf(listedView{})
+
+	if _, err := cache.GetTypeDescriptorWithSchema(runType, viewType, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cache.GetTypeDescriptor(runType, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cache.GetTypeDescriptor(runType, nil, nil, []SszTypeHint{{Type: SszContainerType}}); err != nil {
+		t.Fatal(err)
+	}
+	if cache.hintedLen(typeKey{runtime: runType, schema: runType}) != 1 {
+		t.Fatal("the hinted request published no hinted variant")
+	}
+
+	seen := make(map[[2]reflect.Type]int, 8)
+	for _, pair := range cache.GetAllTypes() {
+		seen[pair]++
+	}
+	if n := seen[[2]reflect.Type{runType, viewType}]; n != 1 {
+		t.Errorf("view pair listed %d times, want 1", n)
+	}
+	if n := seen[[2]reflect.Type{runType, runType}]; n != 1 {
+		t.Errorf("type with a hint-free descriptor and a hinted variant listed %d times, want 1", n)
+	}
+}
+
+type (
+	ownHead struct {
+		Kids []*ownMember `ssz-max:"4"`
+		D    []uint64     `ssz-max:"8" dynssz-max:"OWN_MAX"`
+	}
+	ownMember struct {
+		T ownInside `ssz-type:"custom"`
+		X uint64
+	}
+	ownInside struct {
+		Up []*ownHead `ssz-max:"4"`
+	}
+
+	ownLoopHead struct {
+		Kids []*ownLoopMember `ssz-max:"4"`
+	}
+	ownLoopMember struct {
+		Up []*ownLoopHead `ssz-max:"4"`
+		T  ownLoop        `ssz-type:"custom"`
+	}
+	ownLoop struct {
+		Self []*ownLoop `ssz-max:"4"`
+	}
+	ownLoopUser struct {
+		Kids []*ownLoopUser `ssz-max:"4"`
+		T    *ownLoop
+	}
+
+	ownAfterHead struct {
+		Cs []*ownAfterMember `ssz-max:"4"`
+		D  []uint64          `ssz-max:"8" dynssz-max:"OWN_MAX"`
+	}
+	ownAfterMember struct {
+		Up []*ownAfterHead `ssz-max:"4"`
+	}
+	ownAfter     struct{ C ownAfterMember }
+	ownAfterRoot struct {
+		H *ownAfterHead
+		W ownAfter `ssz-type:"custom"`
+	}
+)
+
+// A cache that builds for code generation describes a custom type generated
+// in the same run by its own descriptor, which the referencing descriptor
+// does not link to. That descriptor gets the flags of a recursive cycle it is
+// built alongside like every linked one, so its flags do not depend on which
+// type was requested first, and it is not written once it is published.
+func TestSameRunCustomDescriptorFlags(t *testing.T) {
+	methods := SszCompatFlagDynamicMarshaler | SszCompatFlagDynamicUnmarshaler | SszCompatFlagDynamicSizer | SszCompatFlagDynamicHashRoot
+	newCache := func() *TypeCache {
+		cache := NewTypeCache(nil)
+		cache.DisableSpecResolution()
+		for _, name := range []string{"ownInside", "ownLoop", "ownAfter"} {
+			cache.CompatFlags["github.com/pk910/dynamic-ssz/ssztypes."+name] = methods
+		}
+		return cache
+	}
+	flagsOf := func(cache *TypeCache, typ reflect.Type) SszTypeFlag {
+		t.Helper()
+		desc, err := cache.GetTypeDescriptor(typ, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("%v: %v", typ, err)
+		}
+		return desc.SszTypeFlags
+	}
+
+	tests := []struct {
+		name         string
+		custom, root reflect.Type
+		want         SszTypeFlag
+	}{
+		{"built inside the open cycle", reflect.TypeOf(ownInside{}), reflect.TypeOf(&ownHead{}), SszTypeFlagHasMaxExpr},
+		{"its own cycle inside the open cycle", reflect.TypeOf(&ownLoop{}), reflect.TypeOf(&ownLoopHead{}), SszTypeFlagRecursionMember},
+		{"built after the cycle closed", reflect.TypeOf(ownAfter{}), reflect.TypeOf(ownAfterRoot{}), SszTypeFlagHasMaxExpr},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			alone := flagsOf(newCache(), test.custom)
+			cache := newCache()
+			flagsOf(cache, test.root)
+			after := flagsOf(cache, test.custom)
+			if alone != after || after&test.want == 0 {
+				t.Errorf("flags %v when requested first, %v after %v; want equal and %v set", alone, after, test.root, test.want)
+			}
+		})
+	}
+
+	// A later build that links to the published descriptor inside a cycle of
+	// its own leaves it as it is.
+	cache := newCache()
+	flagsOf(cache, reflect.TypeOf(&ownLoopHead{}))
+	before := flagsOf(cache, reflect.TypeOf(&ownLoop{}))
+	flagsOf(cache, reflect.TypeOf(&ownLoopUser{}))
+	if after := flagsOf(cache, reflect.TypeOf(&ownLoop{})); after != before {
+		t.Errorf("published descriptor changed from %v to %v", before, after)
+	}
+}
+
+type (
+	firstUseShared struct{ V uint32 }
+	firstUseA      struct {
+		X uint64
+		S firstUseShared
+	}
+	firstUseB struct {
+		S firstUseShared
+		L []uint64 `ssz-max:"4"`
+	}
+)
+
+// Goroutines that first use overlapping types at the same time all get the
+// one published descriptor of each, and the shared nested type is published
+// once and referenced by both roots.
+func TestTypeCacheConcurrentFirstUse(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	roots := []reflect.Type{reflect.TypeOf(firstUseA{}), reflect.TypeOf(&firstUseB{}), reflect.TypeOf(firstUseShared{})}
+
+	const workers = 24
+	got := make([]*TypeDescriptor, workers)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			desc, err := cache.GetTypeDescriptor(roots[i%len(roots)], nil, nil, nil)
+			if err != nil {
+				t.Errorf("%v: %v", roots[i%len(roots)], err)
+			}
+			got[i] = desc
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	for i, desc := range got {
+		if want, _ := cache.GetTypeDescriptor(roots[i%len(roots)], nil, nil, nil); desc != want {
+			t.Errorf("worker %d got a %v descriptor other than the published one", i, roots[i%len(roots)])
+		}
+	}
+	shared, _ := cache.GetTypeDescriptor(roots[2], nil, nil, nil)
+	a, _ := cache.GetTypeDescriptor(roots[0], nil, nil, nil)
+	b, _ := cache.GetTypeDescriptor(roots[1], nil, nil, nil)
+	if a.ContainerDesc.Fields[1].Type != shared || b.ContainerDesc.Fields[0].Type != shared {
+		t.Error("the roots do not reference the published descriptor of the shared type")
+	}
+
+	seen := make(map[[2]reflect.Type]int, 8)
+	for _, pair := range cache.GetAllTypes() {
+		seen[pair]++
+	}
+	for pair, n := range seen {
+		if n != 1 {
+			t.Errorf("GetAllTypes lists %v %d times", pair, n)
+		}
+	}
+	for _, root := range roots {
+		if seen[[2]reflect.Type{root, root}] != 1 {
+			t.Errorf("GetAllTypes omits %v", root)
+		}
+	}
+}
+
+type (
+	raceA struct {
+		V  uint64
+		Bs []*raceB `ssz-max:"4"`
+	}
+	raceB struct{ A *raceA }
+)
+
+// reachableFlags reads the type flags of every descriptor reachable from desc,
+// the way a reader walking a published graph reads its nodes, and returns
+// their union.
+func reachableFlags(desc *TypeDescriptor) SszTypeFlag {
+	var sum SszTypeFlag
+	seen := make(map[*TypeDescriptor]bool, 8)
+	var walk func(d *TypeDescriptor)
+	walk = func(d *TypeDescriptor) {
+		if d == nil || seen[d] {
+			return
+		}
+		seen[d] = true
+		sum |= d.SszTypeFlags
+		if d.ContainerDesc != nil {
+			for i := range d.ContainerDesc.Fields {
+				walk(d.ContainerDesc.Fields[i].Type)
+			}
+		}
+		walk(d.ElemDesc)
+	}
+	walk(desc)
+	return sum
+}
+
+// A cycle member is stored before its cycle head, so once a lock-free reader
+// can hold the member, publication must not write to anything the member
+// reaches. The reader reads every node of the member's graph as soon as the
+// member appears; the race detector reports any write publication makes to a
+// node after storing the member.
+func TestPublishWritesNothingReachable(t *testing.T) {
+	memberType := reflect.TypeOf(&raceB{})
+	for range 200 {
+		cache := NewTypeCache(&dummyDynamicSpecs{})
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			if _, err := cache.GetTypeDescriptor(reflect.TypeOf(&raceA{}), nil, nil, nil); err != nil {
+				t.Error(err)
+			}
+		}()
+		for finished := false; ; {
+			if member := cache.lookupPublished(memberType, memberType); member != nil {
+				if reachableFlags(member)&SszTypeFlagRecursionMember == 0 {
+					t.Fatal("a published cycle holds no descriptor marked as a recursion member")
+				}
+				break
+			}
+			if finished {
+				t.Fatal("the build finished without publishing the cycle member")
+			}
+			select {
+			case <-done:
+				finished = true
+			default:
+			}
+		}
+		<-done
 	}
 }
 
@@ -6852,54 +7771,6 @@ func TestTypeCacheRefusesUnionCarrierOnBothBuilders(t *testing.T) {
 		if !errors.Is(err, sszutils.ErrInvalidConstraint) {
 			t.Errorf("%v: err = %v, want the carrier refused", hint.Type, err)
 		}
-	}
-}
-
-// The union carrier is what the size, marshal and hash paths read the selector
-// and the data from, so a shape those paths cannot read is refused here.
-func TestValidateUnionCarrier(t *testing.T) {
-	type carrier struct {
-		Selector uint8
-		Data     any
-	}
-	type wideSelector struct {
-		Selector uint64
-		Data     any
-	}
-	type signedSelector struct {
-		Selector int8
-		Data     any
-	}
-	type selectorOnly struct {
-		Selector uint8
-	}
-
-	for _, tt := range []struct {
-		name     string
-		typ      reflect.Type
-		accepted bool
-	}{
-		{"a selector and a data field", reflect.TypeOf(carrier{}), true},
-		{"through a pointer", reflect.TypeOf(&carrier{}), true},
-		{"not a struct", reflect.TypeOf(uint32(0)), false},
-		{"no data field", reflect.TypeOf(selectorOnly{}), false},
-		{"a signed selector", reflect.TypeOf(signedSelector{}), false},
-		// A wider selector carries bits the walks drop when they narrow
-		// field 0 to a uint8, so the carrier never holds one.
-		{"a wider selector", reflect.TypeOf(wideSelector{}), false},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateUnionCarrier(tt.typ, "union")
-			if tt.accepted {
-				if err != nil {
-					t.Fatalf("unexpected error: %v", err)
-				}
-				return
-			}
-			if !errors.Is(err, sszutils.ErrInvalidConstraint) {
-				t.Fatalf("err = %v, want the carrier refused", err)
-			}
-		})
 	}
 }
 
@@ -7936,7 +8807,7 @@ func TestTypeCache_RemoveTypeBothForms(t *testing.T) {
 			}
 
 			cache.RemoveType(removed)
-			if _, ok := cache.descriptors[typeKey{runtime: requested, schema: requested}]; ok {
+			if cache.hasPlain(typeKey{runtime: requested, schema: requested}) {
 				t.Errorf("RemoveType(%v) left %v cached", removed, requested)
 			}
 			if again, _ := cache.GetTypeDescriptor(requested, nil, nil, nil); again == first {
@@ -7959,11 +8830,11 @@ func TestTypeCache_RemoveTypeBothForms(t *testing.T) {
 		if _, err := cache.GetTypeDescriptor(reflect.TypeOf(&removeHolder{}), nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
-		if len(cache.hintedDescriptors[listPtrKey]) == 0 {
+		if cache.hintedLen(listPtrKey) == 0 {
 			t.Fatal("expected a hinted variant for the tagged pointer field")
 		}
 		cache.RemoveType(removed)
-		if len(cache.hintedDescriptors[listPtrKey]) != 0 {
+		if cache.hintedLen(listPtrKey) != 0 {
 			t.Errorf("RemoveType(%v) left the hinted pointer variant", removed)
 		}
 	}
@@ -7988,8 +8859,45 @@ func TestTypeCache_RemoveTypeBothForms(t *testing.T) {
 			t.Fatal(err)
 		}
 		cache.RemoveTypeKey(val, viewVal)
-		if _, ok := cache.descriptors[typeKey{runtime: pair[0], schema: pair[1]}]; ok {
+		if cache.hasPlain(typeKey{runtime: pair[0], schema: pair[1]}) {
 			t.Errorf("RemoveTypeKey left the view pair %v/%v cached", pair[0], pair[1])
 		}
 	}
+}
+
+// benchCheckpoint is a Checkpoint-sized container: an epoch and a root.
+type benchCheckpoint struct {
+	Epoch uint64
+	Root  [32]byte
+}
+
+// BenchmarkTypeCacheLookup measures the per-call lookup of a cached
+// descriptor, the path every DynSsz entry point takes, from one goroutine and
+// from many at once.
+func BenchmarkTypeCacheLookup(b *testing.B) {
+	cache := NewTypeCache(nil)
+	typ := reflect.TypeOf(&benchCheckpoint{})
+	if _, err := cache.GetTypeDescriptor(typ, nil, nil, nil); err != nil {
+		b.Fatal(err)
+	}
+
+	b.Run("sequential", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, err := cache.GetTypeDescriptor(typ, nil, nil, nil); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("parallel", func(b *testing.B) {
+		b.ReportAllocs()
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				if _, err := cache.GetTypeDescriptor(typ, nil, nil, nil); err != nil {
+					b.Error(err)
+					return
+				}
+			}
+		})
+	})
 }

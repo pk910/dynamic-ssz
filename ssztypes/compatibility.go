@@ -121,10 +121,9 @@ func delegationMethodByName(t reflect.Type, name string) (reflect.Method, bool) 
 // delegation hot path, so it is memoized per TypeCache. A nil map means no
 // delegation method is promoted.
 func (tc *TypeCache) PromotedDelegationMethods(targetType reflect.Type) map[string]bool {
-	// A reflect.Type holds its type pointer in its data word, and two of them
-	// are the same type exactly when they hold the same pointer. A map over
-	// the pointer is looked up without hashing an interface.
-	word := (*[2]unsafe.Pointer)(unsafe.Pointer(&targetType))[1]
+	// A map over the type's identity word is looked up without hashing an
+	// interface.
+	word := TypeWord(targetType)
 
 	var current map[unsafe.Pointer]map[string]bool
 	if cache := tc.promotedDelegation.Load(); cache != nil {

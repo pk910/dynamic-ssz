@@ -165,10 +165,11 @@ func (e *parserBuildEntry) matchesHints(typeHints []ssztypes.SszTypeHint, sizeHi
 }
 
 // parserPendingKey records a cache insertion of the current top-level build so
-// a failed build can purge it.
+// a failed build can purge it and a recursive one can fix up its flags.
 type parserPendingKey struct {
 	key    string
 	hinted bool
+	desc   *ssztypes.TypeDescriptor
 }
 
 // Parser provides compile-time type analysis for SSZ code generation.
@@ -568,10 +569,15 @@ func (p *Parser) GetTypeDescriptorWithSchema(dataType, schemaType types.Type, ty
 	}
 
 	// A build that involved a recursive cycle has descriptors that read
-	// in-progress children; re-derive the child-propagated flags now that the
-	// graph is complete. Non-recursive builds are already exact.
+	// in-progress children; re-derive the child-propagated flags of every
+	// descriptor it cached now that the graph is complete. Non-recursive
+	// builds are already exact.
 	if p.recursion {
-		ssztypes.FixupRecursiveFlags(desc)
+		built := make([]*ssztypes.TypeDescriptor, 0, len(p.pendingKeys))
+		for _, pending := range p.pendingKeys {
+			built = append(built, pending.desc)
+		}
+		ssztypes.FixupRecursiveFlags(built...)
 	}
 
 	return desc, nil
@@ -948,7 +954,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 
 	if cacheable {
 		p.cache[typeKey] = desc
-		p.pendingKeys = append(p.pendingKeys, parserPendingKey{key: typeKey})
+		p.pendingKeys = append(p.pendingKeys, parserPendingKey{key: typeKey, desc: desc})
 	}
 
 	// Every build is tracked, cacheable or not, so a reference returning to any
@@ -1682,7 +1688,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			maxSizeHints: slices.Clone(callerMaxSizeHints),
 		}
 		p.hintedCache[typeKey] = append(p.hintedCache[typeKey], variant)
-		p.pendingKeys = append(p.pendingKeys, parserPendingKey{key: typeKey, hinted: true})
+		p.pendingKeys = append(p.pendingKeys, parserPendingKey{key: typeKey, hinted: true, desc: desc})
 	}
 
 	// Completed post-order like the reflection type cache, so both front-ends

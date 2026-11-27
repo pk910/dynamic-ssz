@@ -226,7 +226,10 @@ if err != nil {
 out, _ := json.MarshalIndent(desc, "", "  ")
 fmt.Println("Type descriptor:", string(out))
 
-// List all cached types (runtime type and schema type per entry)
+// List all cached types (runtime type and schema type per entry).
+// GetAllTypes is a deprecated debugging aid: fine at a debugger prompt or in
+// a throwaway diagnostic, not something to build program logic on. The same
+// goes for RemoveType, RemoveTypeKey and RemoveAllTypes.
 for _, pair := range cache.GetAllTypes() {
     fmt.Println("cached:", pair[0], "schema:", pair[1])
 }

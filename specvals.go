@@ -15,6 +15,7 @@ import (
 	"strings"
 	"unsafe"
 
+	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
@@ -564,19 +565,11 @@ func stripSpecSpaces(name string) string {
 	}, name)
 }
 
-// specSetKeyWord returns the identity of a spec set key: the type pointer a
-// reflect.Type holds. Two keys are the same type exactly when they hold the
-// same pointer, and a map over the pointer is looked up without hashing an
-// interface, which is most of what a lookup by reflect.Type costs.
-func specSetKeyWord(key reflect.Type) unsafe.Pointer {
-	return (*[2]unsafe.Pointer)(unsafe.Pointer(&key))[1]
-}
-
 // LoadSpecSet returns the spec set cached for the generated type key, or nil
 // when no method of that type has resolved one under this instance yet.
 func (d *DynSsz) LoadSpecSet(key reflect.Type) []uint64 {
 	if sets := d.specSets.Load(); sets != nil {
-		return (*sets)[specSetKeyWord(key)]
+		return (*sets)[ssztypes.TypeWord(key)]
 	}
 	return nil
 }
@@ -585,7 +578,7 @@ func (d *DynSsz) LoadSpecSet(key reflect.Type) []uint64 {
 // instance never change, so two callers that resolved the set at the same time
 // hold equal sets; the first one stored is the one every caller shares.
 func (d *DynSsz) StoreSpecSet(key reflect.Type, set []uint64) []uint64 {
-	word := specSetKeyWord(key)
+	word := ssztypes.TypeWord(key)
 
 	d.specCacheMutex.Lock()
 	defer d.specCacheMutex.Unlock()

@@ -1091,7 +1091,7 @@ func TestSizeSSZFastSszFallback(t *testing.T) {
 	// Don't set NoFastSsz = true, but manually set CompatFlags to trigger fallback
 
 	// Clear any cached types
-	dynssz.GetTypeCache().RemoveAllTypes()
+	dynssz.GetTypeCache().RemoveAllTypes() //nolint:staticcheck // debugging aid under test
 
 	// Set compat flag for a type that doesn't actually implement FastSSZ
 	dynssz.GetTypeCache().CompatFlags["struct { Field0 uint64 }"] = ssztypes.SszCompatFlagFastsszSurface
@@ -1115,7 +1115,7 @@ func TestSizeSSZDynamicSizerFallback(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Clear any cached types
-	dynssz.GetTypeCache().RemoveAllTypes()
+	dynssz.GetTypeCache().RemoveAllTypes() //nolint:staticcheck // debugging aid under test
 
 	// Set compat flag for DynamicSizer on a type that doesn't implement it
 	dynssz.GetTypeCache().CompatFlags["struct { Field0 uint32 }"] = ssztypes.SszCompatFlagDynamicSizer
