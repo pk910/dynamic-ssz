@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of the dynamic-ssz library.
 
+// A type alias reaches the generator as the alias on every Go toolchain, so
+// the same sources give the same code whichever one built the command. Go
+// 1.26 and older resolve aliases away when the module that builds the
+// command declares a Go version below 1.23.
+//
+//go:debug gotypesalias=1
+
 // Package main implements the dynssz-gen command.
 package main
 

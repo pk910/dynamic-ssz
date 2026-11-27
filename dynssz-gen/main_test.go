@@ -680,6 +680,29 @@ func TestRun_AliasTarget(t *testing.T) {
 	}
 }
 
+// A value typed through an alias is generated under the name of the alias,
+// whichever Go toolchain runs the generator.
+func TestRun_AliasedFieldKeepsItsName(t *testing.T) {
+	config := Config{
+		PackagePath:   "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg",
+		TypeNames:     "AliasedFields",
+		OutputFile:    filepath.Join(t.TempDir(), "output.go"),
+		WithStreaming: true,
+	}
+	if err := run(&config); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	code, err := os.ReadFile(config.OutputFile)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	for _, want := range []string{"t AliasedBytes) int", "t []AliasedBytes) int"} {
+		if !strings.Contains(string(code), want) {
+			t.Errorf("the generated code does not name the alias: %q is missing", want)
+		}
+	}
+}
+
 // An Annotate type argument matches its target as a type: through an alias or
 // a pointer, but never a same-named type of another package or another
 // instantiation of the same generic type.
