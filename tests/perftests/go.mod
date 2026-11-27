@@ -13,7 +13,7 @@ require (
 require (
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/pk910/hashtree-bindings v0.2.6 // indirect
-	github.com/pk910/keccaktree v0.0.0-20261107050236-6ede9ab1aacf // indirect
+	github.com/pk910/keccaktree v0.0.1 // indirect
 	golang.org/x/crypto v0.31.0 // indirect
 	golang.org/x/mod v0.23.0 // indirect
 	golang.org/x/sync v0.11.0 // indirect
