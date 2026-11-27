@@ -7168,11 +7168,20 @@ func TestCodegenHashAnnotation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if root, rootErr := any(&inner).(rootMethods).HashTreeRoot(); rootErr != nil || root != innerWant {
-		t.Errorf("generated HashTreeRoot() of a SHA256 type: root %x, %v; want %x", root, rootErr, innerWant)
-	}
-	if root, rootErr := any(&plain).(rootMethods).HashTreeRoot(); rootErr != nil || root != want["sha256"] {
-		t.Errorf("generated HashTreeRoot() of an unannotated type: root %x, %v; want %x", root, rootErr, want["sha256"])
+	for name, tc := range map[string]struct {
+		value any
+		want  [32]byte
+	}{
+		"a SHA256 type":       {&inner, innerWant},
+		"an unannotated type": {&plain, want["sha256"]},
+	} {
+		methods, hasMethods := tc.value.(rootMethods)
+		if !hasMethods {
+			t.Fatalf("%s has no generated root methods", name)
+		}
+		if root, rootErr := methods.HashTreeRoot(); rootErr != nil || root != tc.want {
+			t.Errorf("generated HashTreeRoot() of %s: root %x, %v; want %x", name, root, rootErr, tc.want)
+		}
 	}
 }
 

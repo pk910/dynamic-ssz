@@ -31,7 +31,10 @@ func refKeccak256(a, b [32]byte) (out [32]byte) {
 }
 
 // saltedSHA256 is a hash of its own: SHA256 with the first byte of every
-// digest flipped by salt.
+// digest flipped by salt. It is not inlined, so every closure it returns
+// runs the same code.
+//
+//go:noinline
 func saltedSHA256(salt byte) HashFn {
 	return func(dst, input []byte) error {
 		for i := 0; i+64 <= len(input); i += 64 {
