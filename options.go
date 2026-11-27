@@ -15,7 +15,6 @@ type DynSszOptions struct {
 	NoFastSsz              bool
 	NoDelegation           bool
 	NoFastHash             bool
-	HashAlgorithm          *hasher.Algorithm
 	AsyncHashing           bool
 	AsyncHashingWorkers    int
 	ExtendedTypes          bool
@@ -25,6 +24,7 @@ type DynSszOptions struct {
 	StreamReaderBufferSize int
 	MaxStreamSize          int
 	MaxNestingDepth        int
+	HashAlgorithm          *hasher.Algorithm
 }
 
 // WithNoFastSsz disables fastssz fallback for types that implement fastssz
