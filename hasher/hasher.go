@@ -138,7 +138,10 @@ var defaultHash = NativeHashWrapperFactory(sha256.New)
 // Get. A tree built by treeproof.NewWrapper reads the pool instead, so the two
 // answer differently for the same value while only one of them is told.
 func NewHasher() *Hasher {
-	return newHasher(SHA256Native)
+	h := newHasher(SHA256Native)
+	h.hash = defaultHash
+
+	return h
 }
 
 // NewHasherWithHash creates a new Hasher that compresses with a hash.Hash
@@ -149,6 +152,10 @@ func NewHasher() *Hasher {
 // The hasher gets an Algorithm of its own, derived from the instance as
 // NewHasherWithHashFn derives it from a function.
 func NewHasherWithHash(hh hash.Hash) *Hasher {
+	if hh == nil {
+		return newHasherOfFn(nil)
+	}
+
 	return newHasherOfFn(NativeHashWrapper(hh))
 }
 
@@ -157,8 +164,9 @@ func NewHasherWithHash(hh hash.Hash) *Hasher {
 //
 // The hasher gets an Algorithm of its own, with the zero subtree roots of the
 // hash the function computes: the function is called once to find them, and
-// 64 times for a hash not seen before. A function that fails that call is
-// taken to compute SHA256.
+// 64 times for a hash not seen before. A function that fails one of these
+// calls has no known hash: HashRoot reports the failure, and Reset asks the
+// function again.
 //
 // Deprecated: use NewHasherWithAlgorithm with the Algorithm AlgorithmFor
 // returns for the function, which is derived once instead of per hasher.
@@ -176,7 +184,9 @@ func newHasherOfFn(fn HashFn) *Hasher {
 	h := newHasher(algorithmOfFn(fn))
 	// A hasher made without a function has none: it fails on its first
 	// compression instead of hashing with something the caller did not name.
-	h.hash = fn
+	if fn == nil {
+		h.hash = nil
+	}
 
 	return h
 }
@@ -233,6 +243,12 @@ func (h *Hasher) setHashErr(err error) {
 func (h *Hasher) Reset() {
 	h.buf = h.buf[:0]
 	h.hashErr = nil
+	if h.alg != nil && h.alg.family.unknown {
+		// The function failed while its hash was identified: ask it again.
+		h.alg = algorithmOfFn(h.alg.family.build)
+		h.hash = h.alg.fn
+		h.zero = h.alg.zero()
+	}
 	h.discardJobs()
 	h.layerCount = -1
 	h.async = false

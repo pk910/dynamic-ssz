@@ -377,12 +377,24 @@ func TestHasherOfFunctionDerivesItsAlgorithm(t *testing.T) {
 		t.Error("a pool given another function kept the algorithm of the first")
 	}
 
-	// A function that cannot be probed, or none at all, is taken to compute
-	// SHA256.
+	// A function that fails while its hash is identified has no known hash:
+	// the hasher reports the failure, and identifies the hash once the
+	// function answers.
 	refusal := errors.New("backend refused")
-	failing := NewHasherWithHashFn(func(_, _ []byte) error { return refusal })
-	if !failing.Algorithm().Compatible(SHA256) {
-		t.Error("the hasher of a failing function is not SHA256 compatible")
+	refusing := true
+	failing := NewHasherWithHashFn(func(dst, input []byte) error {
+		if refusing {
+			return refusal
+		}
+		return keccak256Fn(dst, input)
+	})
+	for _, known := range []*Algorithm{SHA256, Keccak256, failing.Algorithm()} {
+		if failing.Algorithm().Compatible(known) && known != failing.Algorithm() {
+			t.Error("the hasher of a failing function names a known hash")
+		}
+	}
+	if other := NewHasherWithHashFn(func(_, _ []byte) error { return refusal }); other.Algorithm().Compatible(failing.Algorithm()) {
+		t.Error("two functions of unknown hashes are taken to compute the same one")
 	}
 	idx := failing.StartTree(sszutils.TreeTypeBinary)
 	failing.Append(chunks[0][:])
@@ -391,8 +403,52 @@ func TestHasherOfFunctionDerivesItsAlgorithm(t *testing.T) {
 	if _, err := failing.HashRoot(); !errors.Is(err, refusal) {
 		t.Errorf("failing function: HashRoot err = %v, want the refusal", err)
 	}
+	refusing = false
+	failing.Reset()
+	if got := root(failing); got != want(refKeccak256) || !failing.Algorithm().Compatible(Keccak256) {
+		t.Errorf("after the function answers: root %x, want the Keccak-256 root %x", got, want(refKeccak256))
+	}
+
+	// A pool around such a function asks it again for every hasher.
+	refusing = true
+	refusingPool := &HasherPool{HashFn: func(dst, input []byte) error {
+		if refusing {
+			return refusal
+		}
+		return keccak256Fn(dst, input)
+	}}
+	hh = refusingPool.Get()
+	idx = hh.StartTree(sszutils.TreeTypeBinary)
+	hh.Append(chunks[0][:])
+	hh.Append(chunks[1][:])
+	hh.Merkleize(idx)
+	if _, err := hh.HashRoot(); !errors.Is(err, refusal) {
+		t.Errorf("pool of a failing function: HashRoot err = %v, want the refusal", err)
+	}
+	refusing = false
+	if got := root(refusingPool.Get()); got != want(refKeccak256) {
+		t.Errorf("pool after the function answers: root %x, want %x", got, want(refKeccak256))
+	}
+
+	// A function that identifies as a hash of its own and fails while the
+	// zero subtree roots are computed has no known hash either.
+	var calls int
+	partial := NewHasherWithHashFn(func(dst, input []byte) error {
+		calls++
+		if calls > 10 {
+			return refusal
+		}
+		return saltedSHA256(0x21)(dst, input)
+	})
+	if partial.Algorithm().Compatible(SHA256) {
+		t.Error("a function that failed while its zero subtree roots were computed is taken to compute SHA256")
+	}
+
 	if !NewHasherWithHashFn(nil).Algorithm().Compatible(SHA256) {
 		t.Error("the hasher of a nil function is not SHA256 compatible")
+	}
+	if !NewHasherWithHash(nil).Algorithm().Compatible(SHA256) {
+		t.Error("the hasher of a nil hash is not SHA256 compatible")
 	}
 }
 
@@ -572,25 +628,130 @@ func TestAlgorithmAsyncMatchesSync(t *testing.T) { //nolint:paralleltest // asyn
 // ResetZeroTables drops the zero subtree roots of the built-in Algorithms,
 // as if none had been used yet.
 func ResetZeroTables() {
-	for _, alg := range []*Algorithm{SHA256, SHA256Native, Keccak256, Keccak256Native} {
-		alg.table.Store(nil)
+	for _, family := range []*hashFamily{sha256Family, keccak256Family} {
+		family.table.Store(nil)
 	}
 }
 
 // ZeroTableBuilt reports whether the Algorithm holds its zero subtree roots.
 func ZeroTableBuilt(alg *Algorithm) bool {
-	return alg.table.Load() != nil
+	return alg.family.table.Load() != nil
 }
 
 // CountCompressions counts the calls of the Algorithm's hash function until
 // the returned function is called.
 func CountCompressions(alg *Algorithm, calls *atomic.Int64) (restore func()) {
-	installed := alg.pool.HashFn
-	fn := alg.pool.CurrentHashFn()
-	alg.pool.HashFn = func(dst, input []byte) error {
+	fn := alg.HashFn()
+	counting := func(dst, input []byte) error {
 		calls.Add(1)
 		return fn(dst, input)
 	}
+	if alg.fn != nil {
+		alg.fn = counting
+		return func() { alg.fn = fn }
+	}
+	installed := alg.pool.HashFn
+	alg.pool.HashFn = counting
 
 	return func() { alg.pool.HashFn = installed }
+}
+
+// The function of a built-in Algorithm gives that Algorithm.
+func TestAlgorithmForBuiltIns(t *testing.T) {
+	for name, alg := range map[string]*Algorithm{
+		"SHA256": SHA256, "SHA256Native": SHA256Native, "Keccak256": Keccak256, "Keccak256Native": Keccak256Native,
+	} {
+		got, err := AlgorithmFor(alg.HashFn())
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got != alg {
+			t.Errorf("%s: AlgorithmFor gives another Algorithm for its function", name)
+		}
+	}
+}
+
+// Algorithms of one hash share its zero subtree roots, whatever code computes
+// it, and nothing is compatible with no Algorithm.
+func TestAlgorithmsOfOneHashShareAFamily(t *testing.T) {
+	inner := saltedSHA256(0x51)
+	first, err := AlgorithmFor(inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := AlgorithmFor(func(dst, input []byte) error { return inner(dst, input) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("functions of different code give one Algorithm")
+	}
+	if !first.Compatible(second) || first.ZeroHashTable() != second.ZeroHashTable() {
+		t.Error("two Algorithms of one hash do not share its zero subtree roots")
+	}
+	if first.Compatible(nil) {
+		t.Error("an Algorithm is compatible with none")
+	}
+}
+
+// The function of an Algorithm is fixed: its pool's field does not replace it.
+func TestAlgorithmFunctionIsFixed(t *testing.T) { //nolint:paralleltest // changes a built-in pool
+	pool := Keccak256.Pool()
+	installed := pool.HashFn
+	pool.HashFn = defaultHash
+	defer func() { pool.HashFn = installed }()
+
+	var a, b [32]byte
+	a[0], b[0] = 1, 2
+	want := refKeccak256(a, b)
+
+	hh := pool.Get()
+	defer pool.Put(hh)
+	indx := hh.Index()
+	hh.AppendBytes32(a[:])
+	hh.AppendBytes32(b[:])
+	hh.Merkleize(indx)
+	got, err := hh.HashRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("root %x, want the Keccak-256 root %x", got, want)
+	}
+}
+
+// HashPair computes the pair with the Algorithm's hash, without a heap
+// allocation for SHA256 and with one for the copy another hash is given.
+func TestHashPair(t *testing.T) {
+	var pair [64]byte
+	pair[0], pair[32] = 1, 2
+	a, b := [32]byte(pair[:32]), [32]byte(pair[32:])
+
+	salted, err := AlgorithmFor(saltedSHA256(0x52))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		alg    *Algorithm
+		ref    refPair
+		allocs float64
+	}{
+		{"SHA256", SHA256, refSHA256, 0},
+		{"SHA256Native", SHA256Native, refSHA256, 0},
+		{"Keccak256", Keccak256, refKeccak256, 1},
+		{"salted", salted, refSaltedSHA256(0x52), 1},
+	} {
+		got, hashErr := tc.alg.HashPair(&pair)
+		if hashErr != nil {
+			t.Fatalf("%s: %v", tc.name, hashErr)
+		}
+		if got != tc.ref(a, b) {
+			t.Errorf("%s: HashPair = %x, want %x", tc.name, got, tc.ref(a, b))
+		}
+		allocs := testing.AllocsPerRun(100, func() { _, _ = tc.alg.HashPair(&pair) })
+		if allocs > tc.allocs {
+			t.Errorf("%s: HashPair allocates %v times, want at most %v", tc.name, allocs, tc.allocs)
+		}
+	}
 }

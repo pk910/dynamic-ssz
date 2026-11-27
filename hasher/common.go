@@ -12,9 +12,9 @@ import (
 	"fmt"
 	"hash"
 	"math/bits"
-	"reflect"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 
 	"github.com/pk910/dynamic-ssz/sszutils"
 	hashtree "github.com/pk910/hashtree-bindings"
@@ -123,8 +123,10 @@ func WithDefaultHasher(fn func(hh sszutils.HashWalker) error) error {
 //
 // The pool of an Algorithm is the one its Pool method returns. A pool created
 // outside this package hashes with the Algorithm derived from its HashFn, as
-// NewHasherWithHashFn derives it, and with SHA256Native when it has none; set
-// HashFn before the pool is used.
+// NewHasherWithHashFn derives it, and with SHA256Native when it has none. The
+// HashFn of a pool an Algorithm returns is not what that Algorithm compresses
+// with, except for FastHasherPool and DefaultHasherPool, where it installs
+// another SHA256 backend.
 type HasherPool struct {
 	HashFn HashFn
 	alg    *Algorithm
@@ -132,11 +134,17 @@ type HasherPool struct {
 	pool   sync.Pool
 }
 
-// ownAlgorithm is the Algorithm a pool derived from its HashFn, with the code
-// of that function.
+// ownAlgorithm is the Algorithm a pool derived from its HashFn, with the
+// function value it was derived from.
 type ownAlgorithm struct {
-	code uintptr
-	alg  *Algorithm
+	fn  unsafe.Pointer
+	alg *Algorithm
+}
+
+// funcValue returns what identifies a function value: two closures of one
+// function literal run the same code and are still two values.
+func funcValue(fn HashFn) unsafe.Pointer {
+	return *(*unsafe.Pointer)(unsafe.Pointer(&fn))
 }
 
 // Algorithm returns the Algorithm the hashers of the pool compress with.
@@ -144,16 +152,21 @@ func (hh *HasherPool) Algorithm() *Algorithm {
 	if hh.alg != nil {
 		return hh.alg
 	}
-	if hh.HashFn == nil {
+	switch {
+	case hh == &FastHasherPool:
+		return SHA256
+	case hh == &DefaultHasherPool, hh.HashFn == nil:
 		return SHA256Native
 	}
 
-	code := reflect.ValueOf(hh.HashFn).Pointer()
-	if own := hh.own.Load(); own != nil && own.code == code {
+	fn := funcValue(hh.HashFn)
+	if own := hh.own.Load(); own != nil && own.fn == fn {
 		return own.alg
 	}
 	alg := algorithmOfFn(hh.HashFn)
-	hh.own.Store(&ownAlgorithm{code: code, alg: alg})
+	if !alg.family.unknown {
+		hh.own.Store(&ownAlgorithm{fn: fn, alg: alg})
+	}
 
 	return alg
 }
@@ -171,14 +184,21 @@ func (hh *HasherPool) CurrentHashFn() HashFn {
 // Get acquires a Hasher from the pool.
 func (hh *HasherPool) Get() *Hasher {
 	alg := hh.Algorithm()
-	h := hh.pool.Get()
-	if h == nil {
-		return newHasher(alg)
+	hasher, _ := hh.pool.Get().(*Hasher)
+	if hasher == nil {
+		hasher = newHasher(alg)
+	} else {
+		hasher.alg = alg
+		hasher.zero = alg.zero()
 	}
-	hasher, _ := h.(*Hasher)
-	hasher.alg = alg
-	hasher.hash = alg.HashFn()
-	hasher.zero = alg.zero()
+	// SHA256 and SHA256Native name no function: the pool's own is used,
+	// which is the built-in for a pool without one.
+	if alg.fn != nil {
+		hasher.hash = alg.fn
+	} else {
+		hasher.hash = hh.CurrentHashFn()
+	}
+
 	return hasher
 }
 

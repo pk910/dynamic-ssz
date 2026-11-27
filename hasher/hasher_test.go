@@ -2296,15 +2296,21 @@ func TestHashRootReportsHashFnError(t *testing.T) {
 	later := errors.New("hash backend still unavailable")
 
 	var calls int
+	failing := false
+	good := NativeHashWrapperFactory(sha256.New)
 	hh := NewHasherWithHashFn(func(dst, src []byte) error {
+		if !failing {
+			return good(dst, src)
+		}
 		calls++
 		if calls == 1 {
 			return first
 		}
 		return later
 	})
-	// Making the hasher probes the function once.
-	calls = 0
+	// The function answers while the hasher is made, which identifies its
+	// hash, and fails from here on.
+	failing = true
 
 	idx := hh.Index()
 	for i := 0; i < 32; i++ {
