@@ -167,7 +167,10 @@ and hashed and the outer type's other fields do not appear.
   values or a bitvector of up to 32 bytes. Any other child is walked instead,
   by both engines.
   `HashTreeRootWith(hh)` and `HashTreeRootWithDyn(ds, hh)` hash into the
-  walker and are delegated to under every algorithm.
+  walker and are delegated to under every algorithm. Generated code applies
+  this rule from the generator version that knows hash algorithms on:
+  regenerate older code before hashing with another algorithm, since it
+  calls the argument-less method of every such child.
 
 ## Wrappers of a generated type
 

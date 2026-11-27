@@ -221,7 +221,8 @@ func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error
 Builds the complete Merkle tree for proof generation. The returned tree is
 finalized (every branch hash cached), so it is read-only and immediately safe
 for concurrent proof generation. On a finalization error the partially
-finalized tree is returned alongside the error.
+finalized tree is returned alongside the error. The tree knows the hash
+algorithm it was built for (`tree.Algorithm()`) and uses it for every proof.
 
 ```go
 tree, err := ds.GetTree(myStruct)
@@ -259,13 +260,16 @@ Any other hash is used through the algorithm of its function:
 alg, err := hasher.AlgorithmFor(fn)
 ```
 
-`AlgorithmFor` returns the same algorithm for the same function. Finding it
-costs one call of the function, so keep the algorithm where roots are computed
-often. The zero subtree roots of an algorithm are computed when they are first
-needed; a function that computes SHA-256 or Keccak-256 uses those of the
-built-in algorithm. `hasher.NewHasherWithHashFn(fn)` and a `hasher.HasherPool`
-made around a function derive their algorithm from that function in the same
-way, per hasher or per pool.
+`AlgorithmFor` returns one algorithm for functions that run the same code and
+compute the same hash, and the built-in algorithm for a built-in function. The
+function has to be deterministic, and an algorithm is kept for the life of the
+process, so make it once per hash rather than per use. Finding it costs one
+call of the function, and 64 for a hash no algorithm computes yet: its zero
+subtree roots are computed then. Those of SHA-256 and Keccak-256 are computed
+when they are first needed, and a function that computes one of these hashes
+shares them. `hasher.NewHasherWithHashFn(fn)` and a `hasher.HasherPool` made
+around a function derive their algorithm from that function in the same way,
+per hasher or per pool.
 
 Two algorithms are compatible when they compute the same hash, whatever
 computes it: `alg.Compatible(other)`. `hasher.SHA256` and
@@ -301,6 +305,12 @@ The methods a type carries itself take no walker and no option: a generated
 `HashTreeRoot()` or `HashTreeRootDyn(ds)` always hashes with SHA-256. The root
 of a value under another algorithm is computed by `ds.HashTreeRoot` with the
 option, which runs the same generated code on a walker of that algorithm.
+
+Regenerate generated code before hashing with another algorithm. Code from a
+generator that predates hash algorithms calls the argument-less
+`HashTreeRoot()` of such a child without asking for the algorithm, so its
+SHA-256 root ends up in a tree of another hash, and no error reports it.
+Roots under SHA-256 are not affected.
 
 A hand-written argument-less `HashTreeRoot()` likewise computes its root on
 its own, with SHA-256. Under another algorithm both engines treat a child
