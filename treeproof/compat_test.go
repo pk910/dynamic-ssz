@@ -1598,3 +1598,35 @@ func TestWrapperAddNodeNil(t *testing.T) {
 		t.Error("AddNode should add the node even if nil")
 	}
 }
+
+// An Algorithm whose hash could not be identified has no zero subtree roots:
+// a tree of padding alone has no root under it.
+func TestPaddingUnderAnUnidentifiedHash(t *testing.T) {
+	backend := errors.New("hash backend unavailable")
+	w := NewWrapperWithHashFn(func(_, _ []byte) error { return backend })
+
+	tree, err := TreeFromNodes(nil, 4, WithAlgorithm(w.Algorithm()))
+	if err != nil {
+		t.Fatalf("TreeFromNodes: %v", err)
+	}
+	if err = tree.Finalize(); !errors.Is(err, backend) {
+		t.Errorf("Finalize err = %v, want %v", err, backend)
+	}
+	if hash := tree.Hash(); hash != nil {
+		t.Errorf("Hash = %x, want none", hash)
+	}
+	if value := tree.Value(); value != nil {
+		t.Errorf("Value = %x, want none", value)
+	}
+	if _, err = tree.Prove(1); !errors.Is(err, backend) {
+		t.Errorf("Prove err = %v, want %v", err, backend)
+	}
+	if _, err = tree.ProveMulti([]int{2}); !errors.Is(err, backend) {
+		t.Errorf("ProveMulti err = %v, want %v", err, backend)
+	}
+
+	w.AddNode(tree)
+	if _, err = w.HashRoot(); !errors.Is(err, backend) {
+		t.Errorf("HashRoot err = %v, want %v", err, backend)
+	}
+}

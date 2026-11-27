@@ -170,7 +170,7 @@ func (hh *HasherPool) derivedAlgorithm() *Algorithm {
 		return own.alg
 	}
 	alg := algorithmOfFn(hh.HashFn)
-	if !alg.family.unknown {
+	if alg.family.failure == nil {
 		hh.own.Store(&ownAlgorithm{fn: fn, alg: alg})
 	}
 

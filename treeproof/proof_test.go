@@ -1578,8 +1578,15 @@ func TestVerifyMultiproofWithAlgorithm(t *testing.T) {
 // A backend that refuses to hash fails the tree and the verification instead
 // of deciding them.
 func TestAlgorithmBackendRefusal(t *testing.T) {
+	t.Run("a hash of its own", func(t *testing.T) { backendRefusal(t, 0x03) })
+	// A function that computes SHA256 is still the one that is asked.
+	t.Run("a SHA256 function", func(t *testing.T) { backendRefusal(t, 0x00) })
+}
+
+func backendRefusal(t *testing.T, salt byte) {
+	t.Helper()
 	var fail atomic.Bool
-	alg := customAlgorithm(t, 0x03, &fail)
+	alg := customAlgorithm(t, salt, &fail)
 
 	tree, root := algorithmTree(t, alg, paddedListWalk)
 	proof, err := tree.Prove(130)

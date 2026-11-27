@@ -7,7 +7,8 @@
 package zerohash
 
 // Table returns the zero subtree roots of a *hasher.Algorithm, one per tree
-// depth, or nil for any other value. The array is the one every hasher of
-// that hash reads: it must not be written. The hasher package installs the
-// function when it is initialized.
-var Table func(algorithm any) *[65][32]byte
+// depth. The array is the one every hasher of that hash reads: it must not
+// be written. An Algorithm whose hash could not be identified has none, and
+// what its function reported is returned instead. The hasher package
+// installs the function when it is initialized.
+var Table func(algorithm any) (*[65][32]byte, error)

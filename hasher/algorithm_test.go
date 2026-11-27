@@ -65,6 +65,18 @@ func saltedSHA256(salt byte) HashFn {
 	}
 }
 
+// strictSaltedSHA256 is saltedSHA256 that takes only a destination of half
+// its input.
+func strictSaltedSHA256(salt byte) HashFn {
+	hash := saltedSHA256(salt)
+	return func(dst, input []byte) error {
+		if len(dst) != len(input)/2 {
+			return errors.New("the destination is not half the input")
+		}
+		return hash(dst, input)
+	}
+}
+
 func refSaltedSHA256(salt byte) refPair {
 	return func(a, b [32]byte) [32]byte {
 		sum := refSHA256(a, b)
@@ -85,11 +97,16 @@ func algorithmRefs(t *testing.T) []algorithmRef {
 	if err != nil {
 		t.Fatalf("AlgorithmFor: %v", err)
 	}
+	strict, err := AlgorithmFor(strictSaltedSHA256(0x02))
+	if err != nil {
+		t.Fatalf("AlgorithmFor: %v", err)
+	}
 	return []algorithmRef{
 		{"sha256", SHA256, refSHA256},
 		{"sha256 native", SHA256Native, refSHA256},
 		{"sha512/256", otherAlgorithm(t), refSHA512256},
 		{"custom", custom, refSaltedSHA256(0x01)},
+		{"strict destination", strict, refSaltedSHA256(0x02)},
 	}
 }
 
@@ -172,11 +189,13 @@ func TestAlgorithmZeroHashes(t *testing.T) {
 		if got := tt.alg.ZeroHash(1000); [32]byte(got) != hashes[64] {
 			t.Errorf("%s: ZeroHash(1000) is not clamped to depth 64", tt.name)
 		}
-		if table := zerohash.Table(tt.alg); table == nil || *table != hashes {
-			t.Errorf("%s: the shared zero subtree roots are not those of the Algorithm", tt.name)
+		if table, err := zerohash.Table(tt.alg); err != nil || *table != hashes {
+			t.Errorf("%s: the shared zero subtree roots are not those of the Algorithm: %v", tt.name, err)
 		}
-		if zerohash.Table(nil) != nil || zerohash.Table((*Algorithm)(nil)) != nil {
-			t.Error("a value that is no Algorithm has zero subtree roots")
+		for _, none := range []any{nil, (*Algorithm)(nil)} {
+			if table, err := zerohash.Table(none); table != nil || err == nil {
+				t.Error("a value that is no Algorithm has zero subtree roots")
+			}
 		}
 		if _, ok := tt.alg.ZeroHashLevel(hashes[1][:31]); ok {
 			t.Errorf("%s: ZeroHashLevel accepted a short hash", tt.name)
@@ -766,8 +785,8 @@ func TestHashPair(t *testing.T) {
 	}{
 		{"SHA256", SHA256, refSHA256, 0},
 		{"SHA256Native", SHA256Native, refSHA256, 0},
-		{"sha512/256", otherAlgorithm(t), refSHA512256, 1},
-		{"salted", salted, refSaltedSHA256(0x52), 1},
+		{"sha512/256", otherAlgorithm(t), refSHA512256, 0},
+		{"salted", salted, refSaltedSHA256(0x52), 0},
 	} {
 		var got [32]byte
 		hashErr := tc.alg.HashPair(&got, &pair)
@@ -781,6 +800,55 @@ func TestHashPair(t *testing.T) {
 		if allocs > tc.allocs {
 			t.Errorf("%s: HashPair allocates %v times, want at most %v", tc.name, allocs, tc.allocs)
 		}
+	}
+}
+
+// A function that computes SHA256 is asked for every pair, so what it
+// refuses is refused.
+func TestHashPairAsksTheFunction(t *testing.T) {
+	refusal := errors.New("refused")
+	alg, err := AlgorithmFor(func(dst, input []byte) error {
+		if input[0] == 0xee {
+			return refusal
+		}
+		return defaultHash(dst, input)
+	})
+	if err != nil || !alg.Compatible(SHA256) {
+		t.Fatalf("a SHA256 function is not a SHA256 algorithm: %v", err)
+	}
+	var pair [64]byte
+	var got [32]byte
+	if err = alg.HashPair(&got, &pair); err != nil || got != sha256.Sum256(pair[:]) {
+		t.Errorf("HashPair = %x, %v", got, err)
+	}
+	pair[0] = 0xee
+	if err = alg.HashPair(&got, &pair); !errors.Is(err, refusal) {
+		t.Errorf("HashPair err = %v, want the refusal of the function", err)
+	}
+}
+
+// A hash is told from another by more than a pair of zero chunks: functions
+// that agree on that pair alone are different hashes.
+func TestAlgorithmsAgreeingOnTheZeroPair(t *testing.T) {
+	alg, err := AlgorithmFor(func(dst, input []byte) error {
+		for i := 0; i+64 <= len(input); i += 64 {
+			sum := sha256.Sum256(input[i : i+64])
+			if [64]byte(input[i:i+64]) != ([64]byte{}) {
+				sum[0] ^= 0x77
+			}
+			copy(dst[i/2:], sum[:])
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("AlgorithmFor: %v", err)
+	}
+	if alg.Compatible(SHA256) || alg.family == sha256Family {
+		t.Fatal("a function that agrees with SHA256 on the zero pair alone is SHA256")
+	}
+	own, sha := alg.ZeroHashes(), SHA256.ZeroHashes()
+	if own[1] != sha[1] || own[2] == sha[2] {
+		t.Error("the zero subtree roots are not those of the function")
 	}
 }
 

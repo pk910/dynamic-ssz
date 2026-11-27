@@ -2149,6 +2149,128 @@ type ForeignRootOnlyListHolder struct {
 
 var ForeignRootOnlyListHolder_Payload = ForeignRootOnlyListHolder{X: 7, O: ForeignRootOnlyList{L: []uint64{1, 2, 3}}}
 
+// ForeignRootOnlyElem holds a list without a limit: it has no hash tree root.
+type ForeignRootOnlyElem struct{ L []uint64 }
+
+// ForeignRootOnlyNested carries the fastssz method set without a
+// HashTreeRootWith, over a bounded list of elements that have no hash tree
+// root: its structure has a root as long as the list is empty.
+type ForeignRootOnlyNested struct {
+	Items []ForeignRootOnlyElem `ssz-max:"4"`
+}
+
+func (f *ForeignRootOnlyNested) MarshalSSZ() ([]byte, error) {
+	return f.MarshalSSZTo(nil)
+}
+
+func (f *ForeignRootOnlyNested) MarshalSSZTo(buf []byte) ([]byte, error) {
+	for i := range f.Items {
+		buf = binary.LittleEndian.AppendUint32(buf, uint32(len(f.Items[i].L)))
+		for _, v := range f.Items[i].L {
+			buf = binary.LittleEndian.AppendUint64(buf, v)
+		}
+	}
+	return buf, nil
+}
+
+func (f *ForeignRootOnlyNested) SizeSSZ() int {
+	size := 0
+	for i := range f.Items {
+		size += 4 + 8*len(f.Items[i].L)
+	}
+	return size
+}
+
+func (f *ForeignRootOnlyNested) UnmarshalSSZ(buf []byte) error {
+	f.Items = nil
+	for len(buf) > 0 {
+		if len(buf) < 4 {
+			return sszutils.ErrUnexpectedEOF
+		}
+		count := int(binary.LittleEndian.Uint32(buf))
+		buf = buf[4:]
+		if count > len(buf)/8 {
+			return sszutils.ErrUnexpectedEOF
+		}
+		elem := ForeignRootOnlyElem{L: make([]uint64, count)}
+		for i := range elem.L {
+			elem.L[i] = binary.LittleEndian.Uint64(buf[8*i:])
+		}
+		buf = buf[8*count:]
+		f.Items = append(f.Items, elem)
+	}
+	return nil
+}
+
+// HashTreeRoot is a root of the type's own making: the number of elements.
+func (f *ForeignRootOnlyNested) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:], uint64(len(f.Items)))
+	return root, nil
+}
+
+type ForeignRootOnlyNestedHolder struct {
+	X uint64
+	O ForeignRootOnlyNested
+}
+
+var ForeignRootOnlyNestedHolder_Payload = ForeignRootOnlyNestedHolder{X: 7}
+
+// ForeignDualHash carries the fastssz method set without a HashTreeRootWith
+// next to a spec-aware hash method. The two give different roots, which
+// tells which one an engine called.
+type ForeignDualHash struct{ A uint64 }
+
+func (f *ForeignDualHash) MarshalSSZ() ([]byte, error) {
+	return f.MarshalSSZTo(nil)
+}
+
+func (f *ForeignDualHash) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(buf, f.A), nil
+}
+
+func (f *ForeignDualHash) SizeSSZ() int { return 8 }
+
+func (f *ForeignDualHash) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	f.A = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+
+// HashTreeRoot is the root of a container with one uint64 field.
+func (f *ForeignDualHash) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:], f.A)
+	return root, nil
+}
+
+// HashTreeRootWithDyn hashes the complement of the field, and refuses a
+// value of zero.
+func (f *ForeignDualHash) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	if f.A == 0 {
+		return sszutils.ErrNotImplemented
+	}
+	indx := hh.Index()
+	hh.PutUint64(^f.A)
+	hh.Merkleize(indx)
+	return nil
+}
+
+type ForeignDualHashHolder struct {
+	F ForeignDualHash
+	Y uint8
+}
+
+// ForeignDualHashHolderPlain is ForeignDualHashHolder without generated code.
+type ForeignDualHashHolderPlain struct {
+	F ForeignDualHash
+	Y uint8
+}
+
+var ForeignDualHashHolder_Payload = ForeignDualHashHolder{F: ForeignDualHash{A: 0x0102030405060708}, Y: 9}
+
 // FastsszTagged uses the plain fastssz `ssz` tag; both engines read it as
 // ssz-type, so the bitlist is a bitlist and the excluded field is skipped.
 type FastsszTagged struct {

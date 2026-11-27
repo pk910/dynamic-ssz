@@ -243,7 +243,7 @@ func (h *Hasher) setHashErr(err error) {
 func (h *Hasher) Reset() {
 	h.buf = h.buf[:0]
 	h.hashErr = nil
-	if h.alg != nil && h.alg.family.unknown {
+	if h.alg != nil && h.alg.family.failure != nil {
 		// The function failed while its hash was identified: ask it again.
 		h.alg = algorithmOfFn(h.alg.family.build)
 		h.hash = h.alg.fn
@@ -438,7 +438,7 @@ func (h *Hasher) internalMerkleizeWithMixin(indx int, num, limit uint64) {
 	input = append(input, zeroBytes[:32]...)
 	binary.LittleEndian.PutUint64(input[n:], num)
 
-	h.setHashErr(h.hash(input, input))
+	h.setHashErr(h.hash(input[:32], input))
 	h.buf = append(h.buf[:indx], input[:32]...)
 }
 
@@ -515,7 +515,7 @@ func (h *Hasher) PutProgressiveBitlist(bb []byte) {
 	n := len(input)
 	input = append(input, zeroBytes[:32]...)
 	binary.LittleEndian.PutUint64(input[n:], size)
-	h.setHashErr(h.hash(input, input))
+	h.setHashErr(h.hash(input[:32], input))
 	h.buf = append(h.buf[:indx], input[:32]...)
 }
 
@@ -1369,7 +1369,7 @@ func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 		logfn("merkleize-mixin: %x (%d, %d) ", input, num, limit)
 	}
 
-	h.setHashErr(h.hash(input, input))
+	h.setHashErr(h.hash(input[:32], input))
 	h.buf = append(h.buf[:indx], input[:32]...)
 
 	if debug {
@@ -1470,7 +1470,7 @@ func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 	}
 
 	// input is of the form [<progressive_root><size>] of 64 bytes
-	h.setHashErr(h.hash(input, input))
+	h.setHashErr(h.hash(input[:32], input))
 	h.buf = append(h.buf[:indx], input[:32]...)
 
 	if debug {
@@ -1544,7 +1544,7 @@ func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []b
 	}
 
 	// input is of the form [<progressive_root><active_fields_root>] of 64 bytes
-	h.setHashErr(h.hash(input, input))
+	h.setHashErr(h.hash(input[:32], input))
 	h.buf = append(h.buf[:indx], input[:32]...)
 
 	if debug {
@@ -1621,7 +1621,7 @@ func (h *Hasher) merkleizeImpl(dst, input []byte, limit uint64) []byte {
 
 		outputLen := (layerLen / 2) * 32
 
-		h.setHashErr(h.hash(input, input))
+		h.setHashErr(h.hash(input[:outputLen], input))
 		input = input[:outputLen]
 	}
 

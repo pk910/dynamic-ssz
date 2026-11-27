@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"unsafe"
 
@@ -25,18 +26,33 @@ type zeroTable struct {
 	levels map[[32]byte]int
 }
 
+// fingerprint tells one hash from another: what it gives for a pair of zero
+// chunks and for probePair.
+type fingerprint struct {
+	zero, probe [32]byte
+}
+
+// probePair is the pair of chunks a hash is identified by next to the pair
+// of zero chunks.
+var probePair = func() (pair [64]byte) {
+	for i := range pair {
+		pair[i] = byte(i + 1)
+	}
+
+	return pair
+}()
+
 // hashFamily is one hash, whatever computes it: the Algorithms that compute
 // the same hash share a family, and with it the zero subtree roots.
 type hashFamily struct {
-	// fingerprint is the hash of a pair of zero chunks, which tells one
-	// hash from another.
-	fingerprint [32]byte
+	fingerprint fingerprint
 	// build computes the zero subtree roots when they are first needed.
 	build HashFn
 	table atomic.Pointer[zeroTable]
-	// unknown marks the hash of a function that failed while it was
-	// identified: it is no hash another Algorithm computes.
-	unknown bool
+	// failure is what a function reported while its hash was identified:
+	// the family is then no hash another Algorithm computes, and it has no
+	// zero subtree roots.
+	failure error
 }
 
 // sha256Family is the hash of the consensus specification.
@@ -71,13 +87,16 @@ var SHA256Native = &Algorithm{pool: &DefaultHasherPool, family: sha256Family}
 func init() {
 	registerBuiltIn("sha256", SHA256, SHA256Native)
 
-	zerohash.Table = func(algorithm any) *[65][32]byte {
+	zerohash.Table = func(algorithm any) (*[65][32]byte, error) {
 		alg, ok := algorithm.(*Algorithm)
 		if !ok || alg == nil {
-			return nil
+			return nil, errors.New("not a hash algorithm")
+		}
+		if alg.family.failure != nil {
+			return nil, alg.family.failure
 		}
 
-		return &alg.zero().hashes
+		return &alg.zero().hashes, nil
 	}
 }
 
@@ -94,30 +113,35 @@ func registerBuiltIn(name string, alg, native *Algorithm) {
 	_ = RegisterAlgorithm(name, alg)
 }
 
-// sha256Fingerprint is the SHA256 hash of a pair of zero chunks: what tells
-// a function that computes SHA256 from any other.
-var sha256Fingerprint = [32]byte{
-	0xf5, 0xa5, 0xfd, 0x42, 0xd1, 0x6a, 0x20, 0x30, 0x27, 0x98, 0xef, 0x6e, 0xd3, 0x09, 0x97, 0x9b,
-	0x43, 0x00, 0x3d, 0x23, 0x20, 0xd9, 0xf0, 0xe8, 0xea, 0x98, 0x31, 0xa9, 0x27, 0x59, 0xfb, 0x4b,
+// sha256Fingerprint is what tells a function that computes SHA256 from any
+// other.
+var sha256Fingerprint = fingerprint{
+	zero: [32]byte{
+		0xf5, 0xa5, 0xfd, 0x42, 0xd1, 0x6a, 0x20, 0x30, 0x27, 0x98, 0xef, 0x6e, 0xd3, 0x09, 0x97, 0x9b,
+		0x43, 0x00, 0x3d, 0x23, 0x20, 0xd9, 0xf0, 0xe8, 0xea, 0x98, 0x31, 0xa9, 0x27, 0x59, 0xfb, 0x4b,
+	},
+	probe: sha256.Sum256(probePair[:]),
 }
 
-// fingerprintOf returns the hash fn gives for a pair of zero chunks.
-func fingerprintOf(fn HashFn) ([32]byte, error) {
-	buf := make([]byte, 64)
-	if err := fn(buf[:32], buf); err != nil {
-		return [32]byte{}, err
+// fingerprintOf returns the fingerprint of the hash fn computes. Both pairs
+// are hashed in one call.
+func fingerprintOf(fn HashFn) (fingerprint, error) {
+	buf := make([]byte, 128)
+	copy(buf[64:], probePair[:])
+	if err := fn(buf[:64], buf); err != nil {
+		return fingerprint{}, err
 	}
 
-	return [32]byte(buf[:32]), nil
+	return fingerprint{zero: [32]byte(buf[:32]), probe: [32]byte(buf[32:64])}, nil
 }
 
 // buildZeroTable computes the zero subtree roots above the given hash of a
 // pair of zero chunks.
-func buildZeroTable(fingerprint [32]byte, fn HashFn) (*zeroTable, error) {
+func buildZeroTable(zeroPair [32]byte, fn HashFn) (*zeroTable, error) {
 	t := &zeroTable{levels: make(map[[32]byte]int, zeroHashDepths)}
 	t.levels[t.hashes[0]] = 0
-	t.hashes[1] = fingerprint
-	t.levels[fingerprint] = 1
+	t.hashes[1] = zeroPair
+	t.levels[zeroPair] = 1
 
 	buf := make([]byte, 64)
 	for i := 2; i < zeroHashDepths; i++ {
@@ -142,7 +166,7 @@ func (f *hashFamily) zero() *zeroTable {
 	// Only a built-in hash comes without its table, and its function does
 	// not fail. Hashers that get here together each build the table; the
 	// first one stored is the one all of them use.
-	t, _ := buildZeroTable(f.fingerprint, f.build)
+	t, _ := buildZeroTable(f.fingerprint.zero, f.build)
 	f.table.CompareAndSwap(nil, t)
 
 	return f.table.Load()
@@ -152,20 +176,20 @@ func (f *hashFamily) zero() *zeroTable {
 // fn computes: the family of an Algorithm that computes the same hash, or a
 // new one. The zero subtree roots of a new family are computed here, so a
 // function that fails reports it.
-func familyOf(fn HashFn, fingerprint [32]byte) (*hashFamily, error) {
+func familyOf(fn HashFn, id fingerprint) (*hashFamily, error) {
 	if known := knownAlgorithms.Load(); known != nil {
 		for i := range *known {
-			if family := (*known)[i].alg.family; family.fingerprint == fingerprint {
+			if family := (*known)[i].alg.family; family.fingerprint == id {
 				return family, nil
 			}
 		}
 	}
 
-	t, err := buildZeroTable(fingerprint, fn)
+	t, err := buildZeroTable(id.zero, fn)
 	if err != nil {
 		return nil, err
 	}
-	family := &hashFamily{fingerprint: fingerprint, build: fn}
+	family := &hashFamily{fingerprint: id, build: fn}
 	family.table.Store(t)
 
 	return family, nil
@@ -295,11 +319,11 @@ func AlgorithmFor(fn HashFn) (*Algorithm, error) {
 		}
 
 		if created == nil {
-			fingerprint, err := fingerprintOf(fn)
+			id, err := fingerprintOf(fn)
 			if err != nil {
 				return nil, err
 			}
-			if created, err = newAlgorithm(fn, fingerprint); err != nil {
+			if created, err = newAlgorithm(fn, id); err != nil {
 				return nil, err
 			}
 		}
@@ -311,10 +335,10 @@ func AlgorithmFor(fn HashFn) (*Algorithm, error) {
 	}
 }
 
-// newAlgorithm makes an Algorithm of its own for fn, whose hash of a pair of
-// zero chunks is fingerprint.
-func newAlgorithm(fn HashFn, fingerprint [32]byte) (*Algorithm, error) {
-	family, err := familyOf(fn, fingerprint)
+// newAlgorithm makes an Algorithm of its own for fn, whose hash has the given
+// fingerprint.
+func newAlgorithm(fn HashFn, id fingerprint) (*Algorithm, error) {
+	family, err := familyOf(fn, id)
 	if err != nil {
 		return nil, err
 	}
@@ -332,15 +356,15 @@ func newAlgorithm(fn HashFn, fingerprint [32]byte) (*Algorithm, error) {
 func algorithmOfFn(fn HashFn) *Algorithm {
 	family := sha256Family
 	if fn != nil {
-		fingerprint, err := fingerprintOf(fn)
+		id, err := fingerprintOf(fn)
 		if err == nil {
 			var alg *Algorithm
-			if alg, err = newAlgorithm(fn, fingerprint); err == nil {
+			if alg, err = newAlgorithm(fn, id); err == nil {
 				return alg
 			}
 		}
 
-		family = &hashFamily{build: fn, unknown: true}
+		family = &hashFamily{build: fn, failure: err}
 		family.table.Store(&zeroTable{})
 		fn = func(_, _ []byte) error { return err }
 	}
@@ -354,13 +378,14 @@ func algorithmOfFn(fn HashFn) *Algorithm {
 
 // Compatible reports whether both Algorithms compute the same hash, so a tree
 // has one root under either of them. Algorithms that differ only in their
-// backend, as SHA256 and SHA256Native do, are compatible.
+// backend, as SHA256 and SHA256Native do, are compatible. A hash is told
+// from another by what it gives for two fixed pairs of chunks.
 func (a *Algorithm) Compatible(other *Algorithm) bool {
 	if other == nil {
 		return false
 	}
 
-	return a.family == other.family || (!a.family.unknown && a.family.fingerprint == other.family.fingerprint)
+	return a.family == other.family || (a.family.failure == nil && a.family.fingerprint == other.family.fingerprint)
 }
 
 // Native returns the pure Go counterpart of a built-in Algorithm, and the
@@ -388,21 +413,27 @@ func (a *Algorithm) zero() *zeroTable {
 	return a.family.zero()
 }
 
-// HashPair compresses one pair of chunks into dst. Every SHA256 Algorithm
-// computes it with the Go standard library, which keeps the caller's pair on
-// its stack; the other hashes go through their function, which gets a copy.
+// HashPair compresses one pair of chunks into dst. SHA256 and SHA256Native
+// compute it with the Go standard library, which keeps the caller's pair on
+// its stack; every other Algorithm goes through its function, which gets a
+// copy.
 func (a *Algorithm) HashPair(dst *[32]byte, pair *[64]byte) error {
-	if a.family == sha256Family {
+	if a.fn == nil {
 		*dst = sha256.Sum256(pair[:])
 
 		return nil
 	}
-	p := *pair
-	err := a.HashFn()(p[:32], p[:])
+	p, _ := pairPool.Get().(*[64]byte)
+	*p = *pair
+	err := a.fn(p[:32], p[:])
 	*dst = [32]byte(p[:32])
+	pairPool.Put(p)
 
 	return err
 }
+
+// pairPool holds the copies HashPair hands a hash function.
+var pairPool = sync.Pool{New: func() any { return new([64]byte) }}
 
 // ZeroHash returns a copy of the zero subtree root at the given depth; the
 // caller owns it. Depths outside the supported range are clamped to the

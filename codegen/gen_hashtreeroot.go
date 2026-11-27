@@ -40,6 +40,11 @@ type hashTreeRootContext struct {
 	// where the body runs inside a depth-carrying method and can pass the depth
 	// on to a cyclic child.
 	depthAware bool
+	// legacyWalk names the type whose walk is being emitted because it has
+	// only an argument-less HashTreeRoot() and the walker hashes with
+	// another hash. A list without a limit below it is refused where the
+	// emitted code would reduce it, as the reflection engine refuses it.
+	legacyWalk string
 }
 
 // withHasherOf returns the hasher package call that runs the argument-less
@@ -326,13 +331,8 @@ func (ctx *hashTreeRootContext) hashDelegated(desc *ssztypes.TypeDescriptor, var
 		// its spec-aware hasher whenever it has one, as its other operations
 		// are.
 		if !ctx.options.WithoutDynamicExpressions && (!useFastSsz || desc.SszType == ssztypes.SszCustomType) {
-			fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "HashTreeRootWithDyn")
 			appendPackedStart()
-			ctx.appendCode(indent, "if err := %s.%s(ds, hh%s); err != nil {\n\treturn %s\n}\n", varName, fn, arg, typePath.getErrorWith("err"))
-			ctx.usedDynSpecs = true
-			if padDelegate {
-				ctx.appendCode(indent, "hh.FillUpTo32()\n")
-			}
+			ctx.hashDynamic(desc, varName, typePath, indent, padDelegate)
 			appendPackedCheck()
 			return true, false, nil
 		}
@@ -366,12 +366,29 @@ func (ctx *hashTreeRootContext) hashDelegated(desc *ssztypes.TypeDescriptor, var
 			ctx.appendCode(indent, "if %s {\n", ctx.sha256Walker())
 			ctx.appendCode(indent+1, "if root, err := %s.HashTreeRoot(); err != nil {\n\treturn %s\n} else {\n\thh.AppendBytes32(root[:])\n}\n", varName, typePath.getErrorWith("err"))
 			ctx.appendCode(indent, "} else {\n")
+			if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 && !ctx.options.WithoutDynamicExpressions {
+				// Another hash is what the spec-aware method of the type
+				// hashes with: it takes the walker.
+				ctx.hashDynamic(desc, varName, typePath, indent+1, padDelegate)
+				ctx.appendCode(indent, "}\n")
+				return true, false, nil
+			}
 			return false, true, nil
 		}
 		return true, false, nil
 	}
 
 	return false, false, nil
+}
+
+// hashDynamic emits the call to the spec-aware hash method of a type.
+func (ctx *hashTreeRootContext) hashDynamic(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, padDelegate bool) {
+	fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "HashTreeRootWithDyn")
+	ctx.appendCode(indent, "if err := %s.%s(ds, hh%s); err != nil {\n\treturn %s\n}\n", varName, fn, arg, typePath.getErrorWith("err"))
+	ctx.usedDynSpecs = true
+	if padDelegate {
+		ctx.appendCode(indent, "hh.FillUpTo32()\n")
+	}
 }
 
 // hashType generates hash tree root code for any SSZ type, delegating to specific hashers.
@@ -398,17 +415,12 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 		return err
 	}
 	if walk {
-		// A child without a hash tree root of its own structure is hashed by
-		// its method alone: under another hash it has no root, which is
-		// reported where the root would be produced, as the reflection engine
-		// does.
-		if rootless := rootlessWalk(desc, map[*ssztypes.TypeDescriptor]bool{}); rootless != nil {
-			message := fmt.Sprintf("%s has only an argument-less HashTreeRoot(), which hashes with SHA256, and cannot be walked under another hash: %v", ctx.typePrinter.TypeString(desc), ssztypes.NoSszRootError(rootless))
-			ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith(fmt.Sprintf("sszutils.NewSszError(sszutils.ErrExtendedTypeDisabled, %q)", message)))
-			ctx.appendCode(indent, "}\n")
-			return nil
+		outer := ctx.legacyWalk
+		if outer == "" {
+			ctx.legacyWalk = ctx.typePrinter.TypeString(desc)
 		}
 		walkErr := ctx.hashInline(desc, varName, typePath, indent+1, isRoot, isView, pack)
+		ctx.legacyWalk = outer
 		ctx.appendCode(indent, "}\n")
 		return walkErr
 	}
@@ -416,37 +428,11 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 	return ctx.hashInline(desc, varName, typePath, indent, isRoot, isView, pack)
 }
 
-// rootlessWalk returns the list or bitlist without a limit that a walk of
-// desc reaches, or nil when the walk has a hash tree root. A type below desc
-// that hashes into the walker itself is not walked.
-func rootlessWalk(desc *ssztypes.TypeDescriptor, seen map[*ssztypes.TypeDescriptor]bool) *ssztypes.TypeDescriptor {
-	if desc == nil || seen[desc] {
-		return nil
-	}
-	seen[desc] = true
-	if len(seen) > 1 && desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicHashRoot|ssztypes.SszCompatFlagFastsszHashRootWith) != 0 {
-		return nil
-	}
-	if desc.SszTypeFlags&ssztypes.SszTypeFlagNoSszRoot != 0 {
-		return desc
-	}
-	if rootless := rootlessWalk(desc.ElemDesc, seen); rootless != nil {
-		return rootless
-	}
-	if desc.ContainerDesc != nil {
-		for i := range desc.ContainerDesc.Fields {
-			if rootless := rootlessWalk(desc.ContainerDesc.Fields[i].Type, seen); rootless != nil {
-				return rootless
-			}
-		}
-	}
-	for _, variant := range desc.UnionVariants {
-		if rootless := rootlessWalk(variant, seen); rootless != nil {
-			return rootless
-		}
-	}
-
-	return nil
+// hashRootless emits the refusal of a list or bitlist without a limit that
+// the walk of ctx.legacyWalk reaches.
+func (ctx *hashTreeRootContext) hashRootless(desc *ssztypes.TypeDescriptor, typePath typePathList, indent int) {
+	message := fmt.Sprintf("%s has only an argument-less HashTreeRoot(), which hashes with SHA256, and cannot be walked under another hash: %v", ctx.legacyWalk, ssztypes.NoSszRootError(desc))
+	ctx.appendCode(indent, "if err := sszutils.NewSszError(sszutils.ErrExtendedTypeDisabled, %q); err != nil {\n\treturn %s\n}\n", message, typePath.getErrorWith("err"))
 }
 
 // hashInline generates the walk of a type that is not hashed through a method
@@ -1106,6 +1092,11 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 		// N to merkleize -- so hashing one is an extension, and the parser flags
 		// it when extended types are off.
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagNoSszRoot != 0 {
+			if ctx.legacyWalk != "" {
+				ctx.appendCode(indent, "_ = idx\n")
+				ctx.hashRootless(desc, typePath, indent)
+				return nil
+			}
 			return ssztypes.NoSszRootError(desc)
 		}
 
@@ -1180,6 +1171,11 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 		// Bitlist[N] needs N to merkleize, so deriving the limit from the value
 		// is an extension; the parser flags it when extended types are off.
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagNoSszRoot != 0 {
+			if ctx.legacyWalk != "" {
+				ctx.appendCode(indent, "_, _ = idx, size\n")
+				ctx.hashRootless(desc, typePath, indent)
+				return nil
+			}
 			return ssztypes.NoSszRootError(desc)
 		}
 

@@ -193,11 +193,16 @@ func emptyNode(depth int) *node {
 type hashing struct {
 	fn   hasher.HashFn
 	zero *[65][32]byte
+	// err is why the Algorithm has no zero subtree roots: nothing is hashed
+	// or read with it then.
+	err error
 }
 
 // hashingOf returns the hashing of the given Algorithm.
 func hashingOf(alg *hasher.Algorithm) hashing {
-	return hashing{fn: alg.HashFn(), zero: zerohash.Table(alg)}
+	zero, err := zerohash.Table(alg)
+
+	return hashing{fn: alg.HashFn(), zero: zero, err: err}
 }
 
 // value returns the value of a node that holds one or needs none computed: a
@@ -671,6 +676,9 @@ func (s *finalizeScratch) release() {
 // of the walk position — and their unhashed children always sit one depth
 // deeper, so the deepest-first flush order holds.
 func (n *node) finalize(h *hashing) error {
+	if h.err != nil {
+		return h.err
+	}
 	// A cached root value certifies the whole subtree is finalized.
 	if n == nil || n.hasValue || (n.left == nil && n.right == nil) {
 		return nil

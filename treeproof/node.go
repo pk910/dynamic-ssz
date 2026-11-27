@@ -225,7 +225,11 @@ func (n *Node) Value() []byte {
 	}
 	switch {
 	case n.node().isEmpty && !n.node().hasValue:
-		return n.Algorithm().ZeroHash(int(n.node().depth))
+		h := hashingOf(n.Algorithm())
+		if h.err != nil {
+			return nil
+		}
+		return bytes.Clone(h.value(n.node())[:])
 	case n.node().hasValue:
 		return bytes.Clone(n.node().value[:])
 	default:

@@ -7208,6 +7208,79 @@ func TestCodegenRootOnlyChildWithoutStructureRoot(t *testing.T) {
 	}
 }
 
+// A child with only an argument-less HashTreeRoot() is walked under another
+// hash, and a list without a limit below it is refused where it is reduced:
+// a value that never reaches one has a root in both engines.
+func TestCodegenRootOnlyChildReachingNoRoot(t *testing.T) {
+	second := dynssz.WithHashAlgorithm(SecondHash)
+	empty := ForeignRootOnlyNestedHolder_Payload
+	filled := ForeignRootOnlyNestedHolder{X: 7, O: ForeignRootOnlyNested{Items: []ForeignRootOnlyElem{{L: []uint64{1}}}}}
+
+	// The empty list of at most four elements is the zero subtree root of
+	// depth two with the length mixed in.
+	var pair [64]byte
+	var list, want [32]byte
+	copy(pair[:32], SecondHash.ZeroHash(2))
+	if err := SecondHash.HashPair(&list, &pair); err != nil {
+		t.Fatalf("HashPair: %v", err)
+	}
+	pair = [64]byte{}
+	binary.LittleEndian.PutUint64(pair[:], empty.X)
+	copy(pair[32:], list[:])
+	if err := SecondHash.HashPair(&want, &pair); err != nil {
+		t.Fatalf("HashPair: %v", err)
+	}
+
+	for name, ds := range map[string]*dynssz.DynSsz{
+		"generated":  dynssz.NewDynSsz(nil),
+		"reflection": dynssz.NewDynSsz(nil, dynssz.WithNoDelegation()),
+	} {
+		if root, err := ds.HashTreeRoot(&empty, second); err != nil || root != want {
+			t.Errorf("%s empty: root %x, %v; want %x", name, root, err, want)
+		}
+		if _, err := ds.HashTreeRoot(&filled, second); !errors.Is(err, sszutils.ErrExtendedTypeDisabled) {
+			t.Errorf("%s with an element: err = %v, want ErrExtendedTypeDisabled", name, err)
+		}
+	}
+}
+
+// A child with an argument-less HashTreeRoot() and a spec-aware hash method
+// is hashed through the first under SHA256 and through the second, which
+// takes the walker, under another hash.
+func TestCodegenRootOnlyChildWithDynamicHashRoot(t *testing.T) {
+	second := dynssz.WithHashAlgorithm(SecondHash)
+	ds := dynssz.NewDynSsz(nil)
+	generated := ForeignDualHashHolder_Payload
+	reflected := ForeignDualHashHolderPlain(generated)
+
+	var pair [64]byte
+	binary.LittleEndian.PutUint64(pair[:], generated.F.A)
+	pair[32] = generated.Y
+	wantSHA256 := sha256.Sum256(pair[:])
+	binary.LittleEndian.PutUint64(pair[:], ^generated.F.A)
+	var wantSecond [32]byte
+	if err := SecondHash.HashPair(&wantSecond, &pair); err != nil {
+		t.Fatalf("HashPair: %v", err)
+	}
+
+	refusedGenerated, refusedReflected := generated, reflected
+	refusedGenerated.F.A, refusedReflected.F.A = 0, 0
+	for name, values := range map[string][2]any{
+		"generated":  {&generated, &refusedGenerated},
+		"reflection": {&reflected, &refusedReflected},
+	} {
+		if root, err := ds.HashTreeRoot(values[0]); err != nil || root != wantSHA256 {
+			t.Errorf("%s under SHA256: root %x, %v; want %x", name, root, err, wantSHA256)
+		}
+		if root, err := ds.HashTreeRoot(values[0], second); err != nil || root != wantSecond {
+			t.Errorf("%s under another hash: root %x, %v; want %x", name, root, err, wantSecond)
+		}
+		if _, err := ds.HashTreeRoot(values[1], second); !errors.Is(err, sszutils.ErrNotImplemented) {
+			t.Errorf("%s under another hash: err = %v, want the refusal of the child", name, err)
+		}
+	}
+}
+
 // An argument-less HashTreeRoot method computes its root with sha256. Under
 // another hash both engines walk a child that has a structure, and still call
 // the method of a custom type, which answers for its root itself.
